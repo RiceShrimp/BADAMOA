@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv sync --all-extras
+      - run: uv run ruff check .
+      - run: uv run pytest
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      # The wheel must contain the built web UI and install without the Hub extras.
+      - run: uv build --wheel -o dist
+      - name: Node-only install has no Hub dependencies
+        shell: bash
+        run: |
+          uv venv .venv-node
+          uv pip install --python .venv-node dist/*.whl
+          uv run --no-project --python .venv-node python -c "import badamoa.node.agent, importlib.util as u; assert u.find_spec('fastapi') is None"

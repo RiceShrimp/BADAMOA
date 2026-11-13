@@ -1,0 +1,293 @@
+"""MCP server (``/mcp``, Streamable HTTP).
+
+The Hub *is* the MCP server: the built-in agent runtime and external agents
+(Claude Code, …) are all clients of this one surface, and every tool goes
+through the same ``services`` layer and RBAC as the REST API.
+
+Auth: ``Authorization: Bearer <API token>``. An ASGI guard rejects anonymous
+requests; each tool re-authenticates from the request headers so calls are
+attributed to the right user.
+"""
+
+from __future__ import annotations
+
+import functools
+import json
+import time
+from typing import Any
+
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
+from mcp.server.streamable_http_manager import StreamableHTTPASGIApp
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp_types import ToolAnnotations
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from badamoa.core.protocol import TERMINAL_STATUSES
+
+from . import services
+from .deps import Hub
+from .install import join_commands
+from .models import User
+
+INSTRUCTIONS = """\
+BADAMOA는 설치형 비전 MLOps 플랫폼입니다. 이 서버로 Hub에 연결된 노드(학습/저장/추론 서버)를
+조회하고 작업(Job)을 실행·추적할 수 있습니다.
+
+- 먼저 list_nodes로 온라인 노드를 확인하세요.
+- run_job은 작업을 큐에 넣고 즉시 반환합니다. wait_for_job으로 완료를 기다린 뒤 get_job_logs로 로그를 봅니다.
+- 실패한 작업은 get_job의 error와 로그 끝부분을 함께 확인하세요.
+"""
+
+READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+
+
+class BearerGuard:
+    """Reject requests without a valid user token before they reach the MCP transport."""
+
+    def __init__(self, app: ASGIApp, hub: Hub) -> None:
+        self.app = app
+        self.hub = hub
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+            if _user_from_header(self.hub, headers.get("authorization")) is None:
+                response = JSONResponse(
+                    {"error": "unauthorized", "detail": "Authorization: Bearer <BADAMOA API token> 헤더가 필요합니다."},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def _user_from_header(hub: Hub, header: str | None) -> User | None:
+    scheme, _, token = (header or "").partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    with hub.db.session() as db:
+        user = services.authenticate(db, token.strip())
+        if user is not None:
+            db.expunge(user)
+        return user
+
+
+def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
+    mcp = MCPServer(
+        name="badamoa",
+        title="BADAMOA",
+        instructions=INSTRUCTIONS,
+        version=services.HUB_VERSION,
+        log_level="WARNING",
+    )
+
+    def user_of(ctx: Context) -> User:
+        headers = ctx.headers or {}
+        user = _user_from_header(hub, headers.get("authorization"))
+        if user is None:
+            raise ToolError("인증되지 않은 요청입니다.")
+        return user
+
+    def guarded(fn):
+        """Surface ServiceError to the model as an anticipated tool failure (its message is shown)."""
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except services.ServiceError as e:
+                raise ToolError(e.message) from e
+
+        return wrapper
+
+    # ---- tools: nodes --------------------------------------------------------
+
+    @mcp.tool(title="노드 목록", annotations=READ_ONLY)
+    @guarded
+    def list_nodes(ctx: Context) -> list[dict[str, Any]]:
+        """Hub에 연결된 모든 노드와 상태(online/offline), OS, 역할, GPU, 현재 사용률을 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return services.list_nodes(db, hub.settings)
+
+    @mcp.tool(title="노드 상세", annotations=READ_ONLY)
+    @guarded
+    def get_node(node_id: str, ctx: Context) -> dict[str, Any]:
+        """노드 하나의 상세 정보(하드웨어, 드라이버, 최근 지표)를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return services.serialize_node(services.get_node(db, node_id), hub.settings)
+
+    @mcp.tool(title="노드 추가 명령 생성", annotations=WRITE)
+    @guarded
+    def create_node_join_command(
+        ctx: Context, roles: list[str] | None = None, ttl_minutes: int = 60
+    ) -> dict[str, Any]:
+        """원격 머신을 노드로 추가하는 1회용 설치 명령(Linux/Windows)을 만듭니다. 관리자 전용.
+
+        roles: compute | storage | inference 중 선택 (기본: 전부).
+        반환된 명령을 원격 머신의 터미널에서 실행하면 노드가 Hub에 등록됩니다.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            token, row = services.create_join_token(db, user, roles, ttl_minutes)
+            services.audit(db, user.id, "mcp", "node.join_token", row.id, roles=row.roles)
+            hub_url = (hub.settings.public_url or _origin(ctx) or "").rstrip("/")
+            return {
+                "roles": row.roles,
+                "expires_at": row.expires_at.isoformat() + "Z",
+                "commands": join_commands(hub_url, token),
+            }
+
+    # ---- tools: jobs ---------------------------------------------------------
+
+    @mcp.tool(title="작업 유형 목록", annotations=READ_ONLY)
+    @guarded
+    def list_job_types(ctx: Context) -> list[dict[str, Any]]:
+        """실행할 수 있는 작업 유형과 각 유형의 파라미터 스키마를 반환합니다."""
+        user_of(ctx)
+        return services.list_job_types()
+
+    @mcp.tool(title="작업 실행", annotations=WRITE)
+    @guarded
+    def run_job(
+        type: str, ctx: Context, params: dict[str, Any] | None = None, node_id: str | None = None
+    ) -> dict[str, Any]:
+        """작업을 큐에 넣습니다. node_id를 생략하면 조건에 맞는 아무 온라인 노드가 실행합니다.
+
+        즉시 반환하므로 wait_for_job으로 완료를 기다리세요.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            job = services.create_job(db, user, type, params, node_id, via="mcp")
+            return services.serialize_job(job, services.node_name_map(db))
+
+    @mcp.tool(title="작업 조회", annotations=READ_ONLY)
+    @guarded
+    def get_job(job_id: str, ctx: Context) -> dict[str, Any]:
+        """작업의 상태, 실행 노드, 결과 또는 오류를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return services.serialize_job(services.get_job(db, job_id), services.node_name_map(db))
+
+    @mcp.tool(title="작업 완료 대기", annotations=READ_ONLY)
+    @guarded
+    def wait_for_job(job_id: str, ctx: Context, timeout_seconds: int = 30) -> dict[str, Any]:
+        """작업이 끝날 때까지(최대 timeout_seconds, 상한 120초) 기다린 뒤 상태를 반환합니다.
+
+        시간 안에 끝나지 않으면 현재 상태(running 등)를 그대로 반환하니 다시 호출하세요.
+        """
+        user_of(ctx)
+        deadline = time.monotonic() + max(0, min(timeout_seconds, 120))
+        while True:
+            with hub.db.session() as db:
+                job = services.get_job(db, job_id)
+                data = services.serialize_job(job, services.node_name_map(db))
+            if data["status"] in TERMINAL_STATUSES or time.monotonic() >= deadline:
+                return data
+            time.sleep(0.5)
+
+    @mcp.tool(title="작업 목록", annotations=READ_ONLY)
+    @guarded
+    def list_jobs(
+        ctx: Context, status: str | None = None, node_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """최근 작업 목록. status(queued|running|succeeded|failed|canceled)와 node_id로 거를 수 있습니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            names = services.node_name_map(db)
+            return [services.serialize_job(j, names) for j in services.list_jobs(db, status, node_id, limit)]
+
+    @mcp.tool(title="작업 로그", annotations=READ_ONLY)
+    @guarded
+    def get_job_logs(job_id: str, ctx: Context, tail: int = 200) -> str:
+        """작업 로그의 마지막 tail줄(상한 2000)을 텍스트로 반환합니다."""
+        user_of(ctx)
+        tail = max(1, min(tail, 2000))
+        with hub.db.session() as db:
+            job = services.get_job(db, job_id)
+            lines = services.get_logs(db, job_id, after=max(0, job.log_count - tail), limit=tail)
+        return "\n".join(f"[{line['stream']}] {line['text']}" for line in lines) or "(로그 없음)"
+
+    @mcp.tool(title="작업 취소", annotations=DESTRUCTIVE)
+    @guarded
+    def cancel_job(job_id: str, ctx: Context) -> dict[str, Any]:
+        """대기 중이거나 실행 중인 작업을 취소합니다."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            job = services.cancel_job(db, user, job_id, via="mcp")
+            return services.serialize_job(job, services.node_name_map(db))
+
+    # ---- resources -----------------------------------------------------------
+
+    @mcp.resource("badamoa://nodes", name="nodes", title="노드 현황", mime_type="application/json")
+    def nodes_resource() -> str:
+        """연결된 노드와 현재 상태."""
+        with hub.db.session() as db:
+            return json.dumps(services.list_nodes(db, hub.settings), ensure_ascii=False, indent=2)
+
+    @mcp.resource("badamoa://jobs/{job_id}", name="job", title="작업", mime_type="application/json")
+    def job_resource(job_id: str) -> str:
+        """작업 하나의 상태와 결과."""
+        with hub.db.session() as db:
+            try:
+                job = services.get_job(db, job_id)
+            except services.ServiceError as e:
+                raise ResourceNotFoundError(e.message) from e
+            data = services.serialize_job(job, services.node_name_map(db))
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    @mcp.resource("badamoa://jobs/{job_id}/logs", name="job-logs", title="작업 로그", mime_type="text/plain")
+    def job_logs_resource(job_id: str) -> str:
+        """작업의 전체 로그(최대 5000줄)."""
+        with hub.db.session() as db:
+            try:
+                lines = services.get_logs(db, job_id, limit=5000)
+            except services.ServiceError as e:
+                raise ResourceNotFoundError(e.message) from e
+        return "\n".join(line["text"] for line in lines)
+
+    # ---- prompts -------------------------------------------------------------
+
+    @mcp.prompt(name="diagnose-failed-job", title="실패한 작업 진단")
+    def diagnose_failed_job(job_id: str) -> str:
+        """실패한 작업의 원인을 찾습니다."""
+        return (
+            f"BADAMOA 작업 {job_id}가 실패했습니다. get_job으로 상태와 error를 확인하고, "
+            "get_job_logs로 로그 끝부분을 읽은 뒤, 실행된 노드를 get_node로 조회해 "
+            "원인(환경·드라이버·메모리·파라미터 등)과 해결 방법을 한국어로 정리해 주세요."
+        )
+
+    @mcp.prompt(name="node-health-report", title="노드 상태 점검")
+    def node_health_report() -> str:
+        """모든 노드의 상태를 점검합니다."""
+        return (
+            "list_nodes로 BADAMOA의 모든 노드를 조회하고, 오프라인 노드, 디스크 여유가 10% 미만인 노드, "
+            "GPU 메모리가 거의 찬 노드를 찾아 표로 정리해 주세요. 온라인 노드마다 system.info 작업을 "
+            "실행해(run_job → wait_for_job) 드라이버·GPU 정보도 함께 확인해 주세요."
+        )
+
+    # Building the app creates the session manager; we mount only the transport endpoint.
+    mcp.streamable_http_app(
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        # The Hub is reached by LAN address and every request needs a bearer token,
+        # so Host-header pinning (meant for unauthenticated localhost servers) is off.
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    return mcp, BearerGuard(StreamableHTTPASGIApp(mcp.session_manager), hub)
+
+
+def _origin(ctx: Context) -> str | None:
+    headers = ctx.headers or {}
+    host = headers.get("host")
+    if not host:
+        return None
+    scheme = headers.get("x-forwarded-proto", "http")
+    return f"{scheme}://{host}"

@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base, utcnow
+
+
+def _uuid() -> str:
+    return uuid.uuid4().hex
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), default="member")  # admin | member
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ApiToken(Base):
+    """Bearer tokens for humans: browser sessions and long-lived API/MCP tokens."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # session | api
+    name: Mapped[str] = mapped_column(String(128), default="")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(16))  # first chars, for display
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship()
+
+
+class JoinToken(Base):
+    __tablename__ = "join_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    used_by_node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class Node(Base):
+    __tablename__ = "nodes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    labels: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    os: Mapped[str] = mapped_column(String(16), default="")
+    info: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    agent_version: Mapped[str] = mapped_column(String(32), default="")
+    is_local: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_status_created", "status", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    type: Mapped[str] = mapped_column(String(64))
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    # Placement: a specific node, or any node that satisfies the requirements.
+    target_node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    requirements: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    node_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_via: Mapped[str] = mapped_column(String(32), default="api")  # api | ui | mcp
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class JobLog(Base):
+    __tablename__ = "job_logs"
+    __table_args__ = (Index("ix_job_logs_job_seq", "job_id", "seq", unique=True),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)
+    ts: Mapped[datetime] = mapped_column(DateTime)
+    stream: Mapped[str] = mapped_column(String(8), default="stdout")
+    text: Mapped[str] = mapped_column(Text)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    via: Mapped[str] = mapped_column(String(32), default="api")
+    action: Mapped[str] = mapped_column(String(64))
+    target: Mapped[str] = mapped_column(String(128), default="")
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
