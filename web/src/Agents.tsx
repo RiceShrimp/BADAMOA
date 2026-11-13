@@ -1,6 +1,12 @@
 import { type FormEvent, useState } from "react";
 import { type ApiTokenInfo, api } from "./api";
-import { CopyBlock, timeAgo, usePolling } from "./ui";
+import { CopyBlock, Icon, timeAgo, usePolling } from "./ui";
+
+const CAPABILITIES = [
+  { icon: "server", title: "노드 조회", text: "어떤 서버가 온라인인지, GPU와 디스크가 얼마나 남았는지" },
+  { icon: "activity", title: "작업 실행·추적", text: "작업을 실행하고, 끝날 때까지 기다리고, 로그를 읽고, 취소" },
+  { icon: "alert", title: "진단", text: "실패한 작업의 원인 분석, 전체 노드 상태 점검" },
+];
 
 export function Agents() {
   const { data: tokens, refresh } = usePolling(() => api<ApiTokenInfo[]>("/tokens"), 10000);
@@ -32,46 +38,69 @@ export function Agents() {
     <>
       <div className="page-head">
         <div>
-          <h1>에이전트 연결</h1>
+          <h1>에이전트</h1>
           <p className="muted">
-            BADAMOA Hub는 MCP 서버입니다. Claude Code 같은 에이전트를 붙이면 노드 조회와 작업 실행을 대화로 할 수 있습니다.
+            BADAMOA Hub는 MCP 서버입니다. Claude Code 같은 에이전트를 연결하면 아래 일을 대화로 시킬 수 있습니다.
           </p>
         </div>
       </div>
 
-      <section className="card">
-        <h3>1. 토큰 만들기</h3>
-        <form className="inline-form" onSubmit={create}>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="토큰 이름" required />
-          <button className="primary">토큰 발급</button>
-        </form>
-        {error && <div className="error">{error}</div>}
-        {created && (
-          <>
-            <CopyBlock label="새 토큰 — 지금만 볼 수 있으니 복사해 두세요" text={created} />
-          </>
-        )}
-      </section>
+      <div className="stats three">
+        {CAPABILITIES.map((c) => (
+          <div className="stat" key={c.title}>
+            <div className="eyebrow">
+              <Icon name={c.icon} size={14} />
+              {c.title}
+            </div>
+            <p className="cap-text">{c.text}</p>
+          </div>
+        ))}
+      </div>
 
-      <section className="card">
-        <h3>2. 에이전트에 연결하기</h3>
-        <CopyBlock
-          label="Claude Code"
-          text={`claude mcp add --transport http badamoa ${mcpUrl} --header "Authorization: Bearer ${shown}"`}
-        />
-        <CopyBlock
-          label="그 외 MCP 클라이언트 (JSON 설정)"
-          text={JSON.stringify(
-            { mcpServers: { badamoa: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${shown}` } } } },
-            null,
-            2,
-          )}
-        />
-        <p className="muted small">연결한 뒤 에이전트에게 "BADAMOA 노드 상태 점검해줘"라고 요청해 보세요.</p>
-      </section>
+      <div className="two-col">
+        <section className="card">
+          <div className="card-head">
+            <h3>
+              <span className="step-num">1</span>토큰 만들기
+            </h3>
+          </div>
+          <p className="muted">에이전트는 이 토큰을 발급한 사람의 권한으로 동작합니다.</p>
+          <form className="inline-form" onSubmit={create}>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="토큰 이름" required aria-label="토큰 이름" />
+            <button className="primary">토큰 발급</button>
+          </form>
+          {error && <div className="error">{error}</div>}
+          {created && <CopyBlock label="새 토큰 — 지금만 볼 수 있으니 복사해 두세요" text={created} />}
+        </section>
+
+        <section className="card">
+          <div className="card-head">
+            <h3>
+              <span className="step-num">2</span>에이전트에 연결하기
+            </h3>
+          </div>
+          <CopyBlock
+            label="Claude Code"
+            text={`claude mcp add --transport http badamoa ${mcpUrl} --header "Authorization: Bearer ${shown}"`}
+          />
+          <details>
+            <summary>그 외 MCP 클라이언트 (JSON 설정)</summary>
+            <CopyBlock
+              text={JSON.stringify(
+                { mcpServers: { badamoa: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${shown}` } } } },
+                null,
+                2,
+              )}
+            />
+          </details>
+          <p className="muted small">연결한 뒤 "BADAMOA 노드 상태 점검해줘"라고 요청해 보세요.</p>
+        </section>
+      </div>
 
       <section className="card table-wrap">
-        <h3>발급한 토큰</h3>
+        <div className="card-head">
+          <h3>발급한 토큰</h3>
+        </div>
         <table>
           <thead>
             <tr>
@@ -92,7 +121,9 @@ export function Agents() {
             )}
             {tokens?.map((t) => (
               <tr key={t.id}>
-                <td>{t.name}</td>
+                <td>
+                  <strong>{t.name}</strong>
+                </td>
                 <td className="mono muted">{t.prefix}…</td>
                 <td>{t.last_used_at ? timeAgo(t.last_used_at) : <span className="muted">사용 전</span>}</td>
                 <td className="muted">{timeAgo(t.created_at)}</td>

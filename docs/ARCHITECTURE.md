@@ -16,7 +16,9 @@ BADAMOA
     └─ Hub · Job 큐 · 원격 노드 · MCP 서버 · 서브에이전트
 ```
 
-최초 구상은 [PLANS.md](PLANS.md), 단계별 일정은 [ROADMAP.md](ROADMAP.md).
+최초 구상은 [PLANS.md](PLANS.md), 단계별 일정은 [ROADMAP.md](ROADMAP.md),
+화면 구성과 레퍼런스(Ultralytics Platform · Roboflow) 분석은 [REFERENCE_STUDY.md](REFERENCE_STUDY.md),
+사내 화면을 바탕으로 한 데이터셋·노드 자원 화면 설계는 [SCREEN_SPECS.md](SCREEN_SPECS.md).
 
 ## 1. 목표와 전제
 
@@ -92,6 +94,8 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 ### 4.2 Job과 Service
 
 - **Job** (배치): 학습, 오토라벨, 임베딩, 평가, export. 큐 → 조건에 맞는 노드가 long-poll로 가져감 → 서브프로세스 실행 → 로그 스트리밍 → 결과. Phase 0에 구현됨.
+- **배정 단위는 GPU다.** 서버를 여러 사람이 직접 쓰는 환경이므로 BADAMOA가 GPU를 독점한다고 가정하지 않는다. 작업은 "GPU n개 · VRAM 최소 x"를 요구하고, 다른 프로세스가 쓰고 있는 GPU는 바쁜 것으로 보아 배정하지 않는다. 노드는 배정받은 GPU만 보이게 해서 실행하고, 대기 중인 작업에는 이유를 표시한다 ([SCREEN_SPECS.md](SCREEN_SPECS.md) 3.3).
+- **노드 자원 이력**: Node Agent가 CPU·메모리·GPU(사용률·메모리·온도·전력·점유자)·디스크·사용자별 사용량을 보내고, Hub가 1분 → 10분 → 1시간으로 줄여 30일 보관한다.
 - **Service** (온라인): 텍스트 검색용 임베딩, 검수 화면의 SAM 클릭 보조, 샘플 테스트, RTSP 실시간 추론처럼 **즉시 응답**이 필요한 것. 노드가 모델을 띄워 두고, 노드↔Hub 사이 WebSocket 터널로 요청을 중계한다(브라우저가 노드에 직접 닿을 필요 없음). 첫 대화형 기능이 필요한 Phase 2에서 도입.
 - **플러그인**: Trainer / Labeler / Generator / Exporter / Curator. 각자 `manifest`(지원 OS, 최소 VRAM, CUDA, 의존성 lock)와 독립 venv를 가진다. 스케줄러는 매니페스트에 맞는 노드에만 배정한다.
   - 실행 방식 두 가지: **로컬 venv**(노드에서 직접) / **원격 엔드포인트**(이미 떠 있는 추론 서버·NIM을 호출). Cosmos Transfer나 대형 VLM은 12GB급 GPU에서 못 돌리므로 후자가 필요하다.
@@ -111,9 +115,22 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 
 ### 4.4 데이터 모델
 
-- **제어 엔티티 (SQLite)**: User, ApiToken, Node, Job, JobLog, AuditLog, Project, Ontology, DatasetVersion, Run, ModelVersion, Engine, Deployment, Plugin, StorageLocation, LicenseRecord
+> 사내 Dataset Catalog의 개념(계열 → 릴리스, 라벨 공간, 라벨 개정, 라벨 상태)을 참고해 같은 구조로 설계한다. 그 도구를 대체하거나 데이터를 옮겨 오지는 않는다.
+> 상세와 근거는 [SCREEN_SPECS.md](SCREEN_SPECS.md) 2장. 아래에서 **DatasetVersion = 릴리스**, **Ontology = 라벨 공간**이다.
+
+- **항목은 이미지 또는 시퀀스**(영상·스켈레톤)이고 sha256으로 식별한다. 사이트·카메라는 정해진 메타 필드다.
+- **라벨은 덮어쓰지 않고 개정(Label revision)으로 쌓인다.** 개정은 라벨 공간, 출처, 날짜, **빠짐없이 라벨한 클래스 목록**, 라벨 상태(라벨 있음 / 배경으로 확인 / 미라벨)를 가진다. 릴리스는 항목마다 (split, 가리키는 개정)을 기록하므로, 한 이미지를 여러 릴리스가 서로 다른 라벨로 공유한다.
+- **릴리스는 base 릴리스에서 파생**되고, 항목 → 포함된 릴리스 역참조를 지원한다.
+- **제어 엔티티 (SQLite)**: User, ApiToken, Node, Job, JobLog, AuditLog, Project, Ontology, DatasetVersion, Run, ModelVersion, Engine, Deployment, Plugin, StorageLocation, LicenseRecord, NodeMetric(시계열 요약)
 - **대량 데이터 (Lance)**: `samples(hash, uri, 메타, 태그, embedding)`, `annotations(sample_hash, 형태, 클래스, source, confidence, review_status)`
+- **Folder → Project.** 폴더는 프로젝트를 묶는 선택적 1단 분류다. **Project** = 하나의 태스크 범위로, 온톨로지를 공유하는 데이터셋 여러 개·Run·모델·승인 요청을 묶는다.
+- **Batch** = 가져오기 한 번(이름 · 태그 · 출처 · 시각). 모든 샘플은 자신이 들어온 배치를 기억한다 — 가져오기 취소, 배치 단위 오토라벨·검수 배정, 출처 필터에 쓴다.
+- **split은 데이터셋 안에서 샘플의 속성**이고, 버전을 찍을 때 고정된다. **전처리·증강은 버전에 굽지 않고 학습 설정(Run)에 둔다** — 이미지 복제가 없고, 같은 버전으로 설정만 바꿔 실험할 수 있다.
+- **버전끼리 비교**할 수 있다: 추가/제거된 샘플, 바뀐 라벨, 클래스 분포 변화.
+- **샘플 라이브러리 → 데이터셋 → DatasetVersion** 3층. 이미지는 프로젝트의 샘플 라이브러리에 한 번만 들어가고(content hash), 데이터셋은 그 위의 작업용 묶음, 버전은 그 시점의 불변 스냅샷이다. 같은 이미지를 여러 데이터셋이 복사 없이 쓴다.
 - **DatasetVersion** = 불변 manifest(샘플 hash 목록 + 라벨 스냅샷 + split + 온톨로지 버전 + 생성 Job). split은 카메라/장면/시간 **그룹 단위**로 나누고 train↔test near-dup 누수를 검사한다.
+- **삭제는 휴지통으로.** 데이터셋·모델은 soft delete 후 일정 기간 복구할 수 있다. 실제 파일 정리는 어떤 버전도 참조하지 않는 blob만 대상으로 한다.
+- **Run은 재현 가능해야 한다.** 플러그인 버전·설정·DatasetVersion을 기록하고, 화면에서 "같은 설정으로 다시 실행"과 CLI·MCP 호출 예시를 제공한다.
 - **Annotation.source** = `human | autolabel:<model>@<ver> | synthetic:<generator>`
 - **Model Contract** = 입력 크기·전처리·클래스·임계값·온톨로지 버전. SDK·추론 서비스·Edge가 같은 계약을 쓴다 (학습/배포 전처리 불일치 방지).
 
@@ -162,9 +179,16 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
   `claude mcp add --transport http badamoa http://<hub>:8470/mcp --header "Authorization: Bearer <token>"`
 - **권한**: 에이전트는 토큰 주인의 역할을 그대로 따른다. 조회 = 자유 / GPU 소모 = 확인 / 승격·배포·삭제 = Hub 승인 요청(사람이 UI에서 승인할 때까지 `pending`). 모든 호출은 감사 로그에 남는다.
 
-### 관리 화면
-노드(추가·역할·상태·GPU·디스크), 작업(큐·로그), 에이전트 연결 — Phase 0 구현.
-이후 데이터셋, 검수, 실험 비교, 레지스트리, 배포 현황, 설정이 추가된다.
+### 화면
+사이드바는 제품 구조 그대로다: 홈 → **Build**(샘플 라이브러리, 데이터셋) → **Annotate**(오토라벨, 검수) → **Develop**(학습, 모델) → **Automate**(배포, 파이프라인) → **MOA**(노드, 작업, 에이전트).
+아직 없는 화면은 흐리게 두고 추가될 Phase를 표시한다.
+
+- 구현됨(Phase 0): 홈(상태 요약 · 시작하기 · 최근 활동 · 최근 작업), 노드, 작업, 에이전트, 밝은/어두운 테마
+- 모든 엔티티 상세 화면은 같은 틀을 쓴다: 머리말(이름 · 배지) → 요약 줄 → 탭
+  - 데이터셋: 샘플 / 클래스 / 분포 / 품질 / 모델 / 버전
+  - 모델: 개요(지표 카드) / 학습(지표 · 콘솔 · 시스템) / 테스트 / 내보내기 / 배포 / 계보
+- 버전 표시(오른쪽 위)를 누르면 릴리즈 노트가 열린다. 내용은 저장소의 `CHANGELOG.md` 하나에서 나온다.
+- 전체 구성과 근거는 [REFERENCE_STUDY.md](REFERENCE_STUDY.md) 4장
 
 ## 6. 설치·운영
 

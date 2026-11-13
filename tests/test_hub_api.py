@@ -104,6 +104,19 @@ def test_node_lifecycle_and_job_flow(client, admin):
     assert client.get(f"/api/jobs/{job['id']}/logs?after=1", headers=admin).json()[0]["seq"] == 2
 
 
+def test_activity_feed_lists_recent_actions_newest_first(client, admin):
+    assert client.get("/api/activity").status_code == 401
+    node_id, _ = _join(client, admin)
+    job = client.post("/api/jobs", json={"type": "system.info"}, headers=admin).json()
+    feed = client.get("/api/activity?limit=3", headers=admin).json()
+    assert [(e["action"], e["target"]) for e in feed] == [
+        ("job.create", job["id"]),
+        ("node.register", node_id),
+        ("node.join_token", feed[2]["target"]),
+    ]
+    assert feed[0]["username"] == "admin" and feed[0]["detail"]["type"] == "system.info"
+
+
 def test_job_targeted_at_one_node_is_not_claimed_by_another(client, admin):
     node_a, auth_a = _join(client, admin)
     _, auth_b = _join(client, admin)

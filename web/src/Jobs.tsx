@@ -1,27 +1,56 @@
 import { useEffect, useRef, useState } from "react";
 import { type Job, type JobType, type LogLine, type NodeInfo, api } from "./api";
-import { Badge, Modal, STATUS_LABEL, duration, timeAgo, usePolling } from "./ui";
+import { Badge, Icon, Modal, STATUS_LABEL, Stat, VIA_LABEL, duration, timeAgo, usePolling } from "./ui";
 
-const VIA_LABEL: Record<string, string> = { ui: "웹", mcp: "에이전트(MCP)", api: "API" };
+const FILTERS = ["all", "running", "queued", "succeeded", "failed", "canceled"] as const;
+type Filter = (typeof FILTERS)[number];
 
 export function Jobs() {
-  const { data: jobs, error, refresh } = usePolling(() => api<Job[]>("/jobs?limit=100"), 3000);
+  const { data: jobs, error, refresh } = usePolling(() => api<Job[]>("/jobs?limit=200"), 3000);
+  const [filter, setFilter] = useState<Filter>("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  const count = (status: string) => jobs?.filter((j) => j.status === status).length ?? 0;
+  const shown = jobs?.filter((j) => filter === "all" || j.status === filter);
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1>작업</h1>
-          <p className="muted">노드에서 실행되는 모든 작업과 로그입니다.</p>
+          <p className="muted">노드에서 실행되는 모든 작업입니다. 행을 누르면 실시간 로그를 볼 수 있습니다.</p>
         </div>
         <button className="primary" onClick={() => setCreating(true)}>
-          + 작업 실행
+          <Icon name="plus" />
+          작업 실행
         </button>
       </div>
+
+      <div className="stats">
+        <Stat icon="activity" label="실행 중" value={count("running")} sub="지금 노드에서 도는 작업" />
+        <Stat icon="clock" label="대기" value={count("queued")} sub="노드 배정을 기다리는 작업" />
+        <Stat icon="check" label="성공" value={count("succeeded")} sub="최근 200개 기준" />
+        <Stat icon="alert" label="실패" value={count("failed")} sub="최근 200개 기준" />
+      </div>
+
+      <div className="chips" role="tablist" aria-label="상태 필터">
+        {FILTERS.map((f) => (
+          <button
+            key={f}
+            role="tab"
+            aria-selected={filter === f}
+            className={`chip ${filter === f ? "active" : ""}`}
+            onClick={() => setFilter(f)}
+          >
+            {f === "all" ? "전체" : STATUS_LABEL[f]}
+            <span>{f === "all" ? (jobs?.length ?? 0) : count(f)}</span>
+          </button>
+        ))}
+      </div>
+
       {error && <div className="error">{error}</div>}
-      <div className="card table-wrap">
+      <div className="card table-wrap flush">
         <table>
           <thead>
             <tr>
@@ -30,30 +59,32 @@ export function Jobs() {
               <th>노드</th>
               <th>요청</th>
               <th>소요</th>
-              <th>생성</th>
+              <th className="right">생성</th>
             </tr>
           </thead>
           <tbody>
-            {jobs?.length === 0 && (
+            {shown?.length === 0 && (
               <tr>
                 <td colSpan={6} className="empty">
-                  아직 실행한 작업이 없습니다.
+                  {filter === "all" ? "아직 실행한 작업이 없습니다." : "이 상태의 작업이 없습니다."}
                 </td>
               </tr>
             )}
-            {jobs?.map((job) => (
+            {shown?.map((job) => (
               <tr key={job.id} onClick={() => setSelected(job.id)} className="clickable">
                 <td>
-                  <div>{job.title}</div>
+                  <strong>{job.title}</strong>
                   <div className="muted small mono">{job.type}</div>
                 </td>
                 <td>
                   <Badge kind={job.status}>{STATUS_LABEL[job.status]}</Badge>
                 </td>
                 <td>{job.node_name ?? <span className="muted">배정 대기</span>}</td>
-                <td>{VIA_LABEL[job.created_via] ?? job.created_via}</td>
-                <td>{duration(job.duration_s)}</td>
-                <td className="muted">{timeAgo(job.created_at)}</td>
+                <td>
+                  <span className="tag">{VIA_LABEL[job.created_via] ?? job.created_via}</span>
+                </td>
+                <td className="num">{duration(job.duration_s)}</td>
+                <td className="muted right">{timeAgo(job.created_at)}</td>
               </tr>
             ))}
           </tbody>
@@ -105,16 +136,32 @@ function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => void }) {
     <Modal title={job ? job.title : "작업"} onClose={onClose}>
       {job && (
         <>
-          <div className="job-meta">
-            <Badge kind={job.status}>{STATUS_LABEL[job.status]}</Badge>
-            <span>{job.node_name ?? "배정 대기"}</span>
-            <span className="muted">{duration(job.duration_s)}</span>
-            <span className="muted mono small">{job.id}</span>
+          <div className="facts">
+            <div>
+              <div className="eyebrow">상태</div>
+              <Badge kind={job.status}>{STATUS_LABEL[job.status]}</Badge>
+            </div>
+            <div>
+              <div className="eyebrow">노드</div>
+              {job.node_name ?? "배정 대기"}
+            </div>
+            <div>
+              <div className="eyebrow">소요</div>
+              {duration(job.duration_s)}
+            </div>
+            <div>
+              <div className="eyebrow">요청</div>
+              {VIA_LABEL[job.created_via] ?? job.created_via}
+            </div>
+            <div>
+              <div className="eyebrow">ID</div>
+              <span className="mono small">{job.id.slice(0, 12)}</span>
+            </div>
           </div>
           {job.error && <div className="error">{job.error}</div>}
           <pre className="log" ref={logRef}>
             {lines.length === 0 ? (
-              <span className="muted">{active ? "로그를 기다리는 중…" : "로그가 없습니다."}</span>
+              <span className="dim">{active ? "로그를 기다리는 중…" : "로그가 없습니다."}</span>
             ) : (
               lines.map((l) => (
                 <div key={l.seq} className={l.stream === "system" ? "log-system" : ""}>

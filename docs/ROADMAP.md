@@ -8,9 +8,11 @@
 | Phase | 내용 | 완료 기준 |
 |---|---|---|
 | **0. 골격** ✅ | 단일 패키지, Hub(계정·노드·Job·로그), Node Agent, MCP 서버, 웹 UI, 노드 설치 스크립트 | 아래 체크리스트 |
-| **1. Develop: 첫 학습 E2E** | 플러그인 시스템(manifest·노드별 venv·GPU 스택), 저장 위치, 라벨된 데이터셋 import(COCO/YOLO) → DatasetVersion, Ultralytics YOLO det Trainer, 자체 실험 추적(지표·곡선·아티팩트), 평가(mAP), 모델 레지스트리(alias) | 데이터셋을 가져와 Windows·Ubuntu 노드 각각에서 YOLO 학습 → 학습 곡선 → 모델 등록 → 두 모델 비교, 계보 역추적. 같은 흐름을 MCP로도 수행 |
-| **2. Build: 데이터 인텔리전스** | Lance 샘플 저장소(100만 장 벤치마크), 데이터 그리드, Service 터널, SigLIP2 임베딩·텍스트/이미지 검색, 씬 태깅, 큐레이션(near-dup·uniqueness), 온톨로지, Data QA, 그룹 split·누수 검사 | "night truck" 검색 → 뷰 저장 → 스냅샷 → 학습. near-dup 제거 전후 수치 확인 |
-| **3. Annotate: 오토라벨** | Labeler 플러그인(OVD → SAM → VLM 검증 → SigLIP2 cls), 신뢰도 라우팅, 내장 검수 에디터, 출처 기록, 오토라벨 정밀도 리포트, CVAT/Label Studio 내보내기·가져오기 | 무라벨 1천 장 → 오토라벨 → 검수 → DatasetVersion → 학습. 정답 셋 대비 오토라벨 mAP 측정 |
+| **0.5 MOA: 노드 자원 관리** | Node Agent 수집 확대(GPU별 온도·전력·점유 사용자, 마운트·물리 디스크, 사용자별 사용량, 로그인 세션), 시계열 이력(1분→10분→1시간, 30일), 서버 카드·서버 상세 화면(그래프 8종·표), 디스크 가득 참 예상, **GPU 단위 배정과 공유 서버 공존**(남이 쓰는 GPU는 바쁜 것으로 처리, 대기 사유 표시) — [SCREEN_SPECS.md](SCREEN_SPECS.md) 3.2~3.3 | 사람이 직접 학습을 돌리고 있는 서버에 작업을 보내면 빈 GPU에만 배정되고, 빈 GPU가 없으면 이유와 함께 대기. 상세 화면에서 30일 이력 확인 |
+| **1A. Build: 데이터셋 카탈로그** | 저장 위치, 폴더·Project, 라벨 공간, **복사 없이 등록**(폴더·COCO/YOLO), 라벨 개정(출처·빠짐없이 라벨한 클래스·라벨 상태), 릴리스(base·통계·메모), 화면: 계열 트리 · 릴리스(통계 타일·필터·그리드) · 항목 상세(오버레이·개정 목록·포함된 릴리스) · 릴리스 비교, 내보내기, 휴지통 — [SCREEN_SPECS.md](SCREEN_SPECS.md) 2~3.1 | 수십만 장 규모의 데이터셋을 등록해 필터·페이지 이동이 즉시 반응하고, 이미지의 개정 이력과 포함된 릴리스를 볼 수 있으며, 두 릴리스의 차이를 확인 |
+| **1B. Develop: 첫 학습 E2E** | 플러그인 시스템(manifest·노드별 venv·GPU 스택), 릴리스 → 학습 포맷 변환(클래스 부분집합·빠짐없이 라벨한 클래스 반영), Ultralytics YOLO det Trainer, 자체 실험 추적(지표·곡선·아티팩트), 평가(mAP), 모델 레지스트리(alias), 화면: 학습(Run 여러 개의 지표를 작은 그래프로 겹쳐 비교·재실행) · 모델(지표 카드·탭) | 릴리스를 골라 Windows·Ubuntu 노드 각각에서 YOLO 학습 → 학습 곡선 → 모델 등록 → 두 모델 비교, 계보 역추적. 같은 흐름을 MCP로도 수행 |
+| **2. Build: 데이터 인텔리전스** | Lance 샘플 저장소(100만 장 벤치마크), 샘플 라이브러리 화면, 명령 팔레트(전역 검색), 저장 공간 사용량, Service 터널, SigLIP2 임베딩·텍스트/이미지 검색, 씬 태깅, 큐레이션(near-dup·uniqueness), 온톨로지, Data QA, 그룹 split·누수 검사 | "night truck" 검색 → 뷰 저장 → 스냅샷 → 학습. near-dup 제거 전후 수치 확인 |
+| **3. Annotate: 오토라벨** | Labeler 플러그인(OVD → SAM → VLM 검증 → SigLIP2 cls), 신뢰도 라우팅, 배치 보드(미배정→오토라벨→검수→완료), 내장 검수 에디터, 출처 기록, 오토라벨 정밀도 리포트, CVAT/Label Studio 내보내기·가져오기 | 무라벨 1천 장 → 오토라벨 → 검수 → DatasetVersion → 학습. 정답 셋 대비 오토라벨 mAP 측정 |
 | **4. Develop: 확장·Export·추론** | Trainer 추가(RT-DETR/D-FINE, Seg, Cls, Custom 템플릿), 증류·semi-supervised 모드, golden set·슬라이스 평가·실패 케이스 뷰, ONNX/TensorRT export, Model Contract, 추론 서비스(REST)·샘플 테스트·RTSP 스트리밍, Jetson 노드, Python SDK | x86 GPU에서 TensorRT 엔진의 FPS·정확도 리포트(Jetson 확보 시 Jetson도), 추론 API 호출, 실시간 스트림 표시 |
 | **5. Automate: 플라이휠** | 파이프라인 템플릿·트리거, 승격 게이트 + 승인, 추론 노드 배포·롤백, 현장 샘플 피드백, 드리프트 감시 | 새 데이터를 넣기만 하면 재학습 → 게이트 → 승인 대기까지 자동으로 진행 |
 | **6. MOA: 에이전트** | (MCP Tools·Resources·Prompts는 매 Phase 기능과 함께 추가) Claude Code 플러그인 생성, 승인 요청 게이트, 내장 런타임(로컬 LLM·Claude), 서브에이전트 + subagent-as-tool, 채팅 패널 | Claude Code에서, 그리고 로컬 모델만으로 "검색 → 오토라벨 → 학습 → 비교"를 수행하고 승격에서 승인 요청으로 멈춤 |
@@ -27,7 +29,9 @@
 - [x] Job: 큐, long-poll 배정(대상 노드·역할 조건), 로그 스트리밍, 취소, 끊긴 노드의 Job 정리
 - [x] Node Agent: `join` / `run`, Job 서브프로세스 실행, All-in-one(Hub가 곧 노드)
 - [x] MCP `/mcp`: Bearer 토큰, Tools 9개 · Resources 3개 · Prompts 2개
-- [x] 웹 UI: 초기 설정, 로그인, 노드(추가 명령·설정), 작업(실행·로그·취소), 에이전트 연결
+- [x] 웹 UI: 초기 설정, 로그인, 홈(상태 요약·시작하기·최근 활동), 노드(추가 명령·설정), 작업(상태 필터·실행·로그·취소), 에이전트 연결, 밝은/어두운 테마
+- [x] BADA·MOA 구조의 사이드바 (아직 없는 화면은 추가될 Phase 표시)
+- [x] 릴리즈 노트: `CHANGELOG.md` + 앱 안에서 보기 (버전 표시를 누르면 열림)
 - [x] Hub의 wheel 인덱스에서 노드 설치 (`uv tool install --index <hub>/install/simple/`)
 - [x] 테스트 19개(Hub API · 실제 Hub+Node Agent · MCP JSON-RPC), CI(Ubuntu·Windows)
 - [ ] 노드 설치 스크립트(`node.sh` / `node.ps1`)와 부팅 서비스 등록을 실제 원격 머신에서 검증 — 관리자 권한이 필요해 아직 실행해 보지 못함

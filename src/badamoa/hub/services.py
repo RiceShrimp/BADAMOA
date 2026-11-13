@@ -518,6 +518,28 @@ def node_name_map(db: Session) -> dict[str, str]:
     return {nid: name for nid, name in db.execute(select(Node.id, Node.name))}
 
 
+def list_activity(db: Session, limit: int = 20) -> list[dict[str, Any]]:
+    """Recent audit entries, newest first, for the activity feed."""
+    rows = db.execute(
+        select(AuditLog, User.username)
+        .outerjoin(User, User.id == AuditLog.user_id)
+        .order_by(AuditLog.id.desc())
+        .limit(max(1, min(limit, 200)))
+    ).all()
+    return [
+        {
+            "id": entry.id,
+            "ts": iso(entry.ts),
+            "username": username,
+            "via": entry.via,
+            "action": entry.action,
+            "target": entry.target,
+            "detail": entry.detail,
+        }
+        for entry, username in rows
+    ]
+
+
 def sweep_lost_jobs(db: Session, settings: HubSettings) -> int:
     """Fail running jobs whose node stopped heart-beating."""
     cutoff = utcnow() - timedelta(seconds=settings.node_lost_after_s)

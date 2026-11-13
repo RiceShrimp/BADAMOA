@@ -9,7 +9,7 @@
 원격 학습·데이터 서버를 한 줄 명령으로 붙이며, Claude Code 같은 에이전트가 MCP로 전부 조작할 수 있게 만드는 것이 목표입니다.
 
 지금은 **Phase 0(골격)** 입니다: Hub, Node Agent, Job 실행·로그, MCP 서버, 웹 UI.
-설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 일정은 [docs/ROADMAP.md](docs/ROADMAP.md), 최초 구상은 [docs/PLANS.md](docs/PLANS.md).
+바뀐 내용은 [CHANGELOG.md](CHANGELOG.md), 설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 일정은 [docs/ROADMAP.md](docs/ROADMAP.md), 화면 구성과 레퍼런스 분석은 [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md), 최초 구상은 [docs/PLANS.md](docs/PLANS.md).
 
 ## 실행 (개발 환경)
 
@@ -42,7 +42,7 @@ uv run badamoa hub run --home .badamoa/hub
    ```
 
    ```bash
-   uv run badamoa hub publish-wheel .badamoa/dist/badamoa-0.1.0-py3-none-any.whl --home .badamoa/hub
+   uv run badamoa hub publish-wheel .badamoa/dist/badamoa-0.2.0-py3-none-any.whl --home .badamoa/hub
    ```
 
 2. 웹 UI → **노드** → **노드 추가** 에서 나오는 한 줄 명령을 원격 서버(Ubuntu 또는 Windows)에서 실행합니다.

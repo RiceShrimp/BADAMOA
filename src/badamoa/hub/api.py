@@ -13,6 +13,7 @@ from .db import iso
 from .deps import Hub, admin_user, current_user, db_session, get_hub, public_base_url
 from .install import join_commands
 from .models import User
+from .release_notes import load_release_notes
 
 router = APIRouter(prefix="/api")
 
@@ -85,6 +86,18 @@ def delete_token(token_id: str, user: User = Depends(current_user), db: Session 
     services.revoke_token(db, user, token_id)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/release-notes")
+def release_notes(_: User = Depends(current_user)) -> dict[str, Any]:
+    return {"version": services.HUB_VERSION, "releases": load_release_notes()}
+
+
+@router.get("/activity")
+def activity(
+    limit: int = 20, _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> list[dict[str, Any]]:
+    return services.list_activity(db, limit)
 
 
 # ---- users (admin) -------------------------------------------------------------
