@@ -332,8 +332,12 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         unlabelled: str = "exclude",
         gpus: int | None = None,
         base_model_id: str = "",
+        tags: list[str] | None = None,
+        note: str = "",
     ) -> dict[str, Any]:
         """릴리스로 학습을 시작합니다. 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
+
+        tags · note: 나중에 찾고 묶어 보기 위한 태그와 메모 (예: tags=["야간", "baseline"]).
 
         base_model_id: 등록된 모델에서 이어서 학습할 때 그 모델의 id (비우면 사전학습 가중치에서 시작).
 
@@ -359,6 +363,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 unlabelled=unlabelled,
                 gpus=gpus,
                 base_model_id=base_model_id,
+                tags=tags,
+                note=note,
                 via="mcp",
             )
             db.flush()
@@ -378,11 +384,27 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
     @mcp.tool(title="학습 실행 목록", annotations=READ_ONLY)
     @guarded
-    def list_training_runs(project_id: str, ctx: Context, limit: int = 30) -> list[dict[str, Any]]:
-        """프로젝트의 학습 실행을 최신순으로 반환합니다: 상태, 진행 epoch, 지표(mAP 등), 쓴 릴리스, 만들어진 모델."""
+    def list_training_runs(
+        project_id: str, ctx: Context, limit: int = 30, tag: str = "", query: str = ""
+    ) -> list[dict[str, Any]]:
+        """프로젝트의 학습 실행을 최신순으로 반환합니다: 상태, epoch, 지표(mAP 등), 릴리스, 만들어진 모델, 메모, 태그.
+
+        tag: 이 태그가 붙은 실행만. query: 이름 · 메모 · 태그에서 찾을 글자.
+        """
         user_of(ctx)
         with hub.db.session() as db:
-            return training.list_runs(db, hub.settings, project_id, limit=limit)
+            return training.list_runs(db, hub.settings, project_id, limit=limit, tag=tag, q=query)
+
+    @mcp.tool(title="학습 실행 메모 · 태그", annotations=WRITE)
+    @guarded
+    def update_training_run(
+        run_id: str, ctx: Context, name: str | None = None, note: str | None = None, tags: list[str] | None = None
+    ) -> dict[str, Any]:
+        """학습 실행의 이름을 바꾸거나 메모를 쓰거나 태그를 정합니다. 넘긴 것만 바뀌고, tags는 목록 전체를 바꿉니다."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            run = training.update_run(db, user, run_id, name=name, note=note, tags=tags, via="mcp")
+            return training.run_view(db, hub.settings, run)
 
     @mcp.tool(title="학습 실행 조회", annotations=READ_ONLY)
     @guarded
@@ -398,11 +420,26 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
     @mcp.tool(title="모델 목록", annotations=READ_ONLY)
     @guarded
-    def list_models(project_id: str, ctx: Context) -> list[dict[str, Any]]:
-        """프로젝트에 등록된 모델 버전과 지표, alias(champion/challenger), 계보(학습 실행·릴리스)를 반환합니다."""
+    def list_models(
+        project_id: str, ctx: Context, name: str = "", alias: str = "", tag: str = "", query: str = ""
+    ) -> list[dict[str, Any]]:
+        """프로젝트에 등록된 모델 버전과 지표, alias, 태그, 설명, 계보(학습 실행·릴리스)를 반환합니다.
+
+        name과 alias를 함께 주면 그 alias가 가리키는 버전만 돌려줍니다 (예: name="street-yolo11n", alias="production").
+        tag: 이 태그가 붙은 버전만. query: 이름 · 설명 · 태그에서 찾을 글자.
+        """
         user_of(ctx)
         with hub.db.session() as db:
-            return training.list_models(db, hub.settings, project_id)
+            return training.list_models(db, hub.settings, project_id, tag=tag, q=query, name=name, alias=alias)
+
+    @mcp.tool(title="모델 설명 · 태그", annotations=WRITE)
+    @guarded
+    def update_model(model_id: str, ctx: Context, note: str | None = None, tags: list[str] | None = None) -> dict[str, Any]:
+        """모델 버전의 설명을 쓰거나 태그를 정합니다. 넘긴 것만 바뀌고, tags는 목록 전체를 바꿉니다."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            model = training.update_model(db, user, model_id, note=note, tags=tags, via="mcp")
+            return training.model_view(db, hub.settings, model)
 
     @mcp.tool(title="모델 조회", annotations=READ_ONLY)
     @guarded
@@ -416,14 +453,15 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
     @mcp.tool(title="모델 alias 지정", annotations=WRITE)
     @guarded
-    def set_model_alias(model_id: str, alias: str, ctx: Context) -> dict[str, Any]:
-        """모델 버전에 alias를 붙입니다: champion | challenger | ""(해제).
+    def set_model_alias(model_id: str, alias: str, ctx: Context, remove: bool = False) -> dict[str, Any]:
+        """모델 버전에 alias를 붙입니다 (예: champion, challenger, production, staging — 다른 이름도 됨).
 
-        같은 이름의 다른 버전에 있던 같은 alias는 이 버전으로 옮겨집니다.
+        같은 이름의 다른 버전에 있던 같은 alias는 이 버전으로 옮겨집니다. 한 버전에 여러 alias를 붙일 수 있습니다.
+        remove=True면 그 alias만 떼고, alias=""이면 이 버전의 alias를 모두 뗍니다.
         """
         user = user_of(ctx)
         with hub.db.session() as db:
-            model = training.set_alias(db, user, model_id, alias, via="mcp")
+            model = training.set_alias(db, user, model_id, alias, via="mcp", remove=remove)
             return training.model_view(db, hub.settings, model)
 
     # ---- resources -----------------------------------------------------------

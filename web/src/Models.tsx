@@ -1,3 +1,4 @@
+import { AliasChip, AliasEditor, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
 import { useEffect, useState } from "react";
 import { ModelOps } from "./ModelOps";
 import { ProjectPicker, useProject } from "./ProjectPicker";
@@ -9,6 +10,7 @@ import {
   type ModelDetail,
   type ModelInfo,
   type ModelOp,
+  type ProjectTags,
   classScore,
   delta,
   keyMetrics,
@@ -22,9 +24,6 @@ export function Models({ modelId, isAdmin }: { modelId?: string; isAdmin: boolea
   return <ModelList projects={projects} projectId={projectId} onProject={choose} />;
 }
 
-function Alias({ alias }: { alias: string }) {
-  return alias ? <span className={`alias ${alias}`}>{alias}</span> : null;
-}
 
 function ModelList({
   projects,
@@ -35,20 +34,36 @@ function ModelList({
   projectId: string;
   onProject: (id: string) => void;
 }) {
+  const [typed, setTyped] = useState("");
+  const [tag, setTag] = useState("");
+  const query = useDebounced(typed.trim());
+  const filtered = query !== "" || tag !== "";
   const { data: models } = usePolling(
-    () => (projectId ? api<ModelInfo[]>(`/projects/${projectId}/models`) : Promise.resolve([])),
+    () =>
+      projectId
+        ? api<ModelInfo[]>(`/projects/${projectId}/models?${new URLSearchParams({ q: query, tag }).toString()}`)
+        : Promise.resolve([]),
     10000,
-    [projectId],
+    [projectId, query, tag],
+  );
+  const { data: projectTags } = usePolling(
+    () => (projectId ? api<ProjectTags>(`/projects/${projectId}/tags`) : Promise.resolve({ runs: [], models: [] })),
+    30000,
+    [projectId, models?.length],
   );
   const [picked, setPicked] = useState<string[]>([]);
   const metricKeys = keyMetrics(projects?.find((p) => p.id === projectId)?.task);
   const primary = metricKeys[0];
-  useEffect(() => setPicked([]), [projectId]);
+  useEffect(() => {
+    setPicked([]);
+    setTag("");
+    setTyped("");
+  }, [projectId]);
 
   const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].slice(-2));
   const families = new Set(models?.map((m) => m.name)).size;
   const best = [...(models ?? [])].sort((a, b) => (b.metrics[primary] ?? 0) - (a.metrics[primary] ?? 0))[0];
-  const champion = models?.find((m) => m.alias === "champion");
+  const champion = models?.find((m) => m.aliases.includes("champion"));
 
   return (
     <>
@@ -82,6 +97,17 @@ function ModelList({
 
       {picked.length === 2 && <CompareModels ids={picked} onClose={() => setPicked([])} />}
 
+      {(filtered || (models?.length ?? 0) > 5 || (projectTags?.models.length ?? 0) > 0) && (
+        <ListFilter
+          query={typed}
+          onQuery={setTyped}
+          tags={projectTags?.models ?? []}
+          tag={tag}
+          onTag={setTag}
+          placeholder="이름 · 설명 · 태그로 찾기"
+        />
+      )}
+
       <div className="card flush table-wrap">
         <table className="runs">
           <thead>
@@ -102,7 +128,13 @@ function ModelList({
             {models?.length === 0 && (
               <tr>
                 <td colSpan={9} className="empty">
-                  아직 등록된 모델이 없습니다. <a href="#/training">학습</a>을 실행하면 끝날 때 자동으로 등록됩니다.
+                  {filtered ? (
+                    "찾는 모델이 없습니다."
+                  ) : (
+                    <>
+                      아직 등록된 모델이 없습니다. <a href="#/training">학습</a>을 실행하면 끝날 때 자동으로 등록됩니다.
+                    </>
+                  )}
                 </td>
               </tr>
             )}
@@ -122,10 +154,14 @@ function ModelList({
                   <strong>
                     {m.name} <span className="version">v{m.version}</span>
                   </strong>{" "}
-                  <Alias alias={m.alias} />
+                  {m.aliases.map((a) => (
+                    <AliasChip key={a} alias={a} />
+                  ))}{" "}
+                  <TagList tags={m.tags} />
                   <div className="muted small">
                     {m.arch} · {m.class_count}개 클래스 · {m.imgsz}px
                   </div>
+                  {m.note && <div className="note-line">{m.note}</div>}
                 </td>
                 {metricKeys.map((k) => (
                   <td key={k} className="num right">
@@ -343,14 +379,21 @@ function sign(now: number | undefined, before: number | undefined): string {
 function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) {
   const { data: model, error, refresh } = usePolling(() => api<ModelDetail>(`/models/${modelId}`), 30000, [modelId]);
   const [failure, setFailure] = useState<string | null>(null);
+  const projectOf = model?.project_id ?? "";
+  const { data: projectTags } = usePolling(
+    () => (projectOf ? api<ProjectTags>(`/projects/${projectOf}/tags`) : Promise.resolve({ runs: [], models: [] })),
+    60000,
+    [projectOf],
+  );
+  const { data: suggested } = usePolling(() => api<string[]>("/model-aliases"), 600000);
 
   if (error && !model) return <div className="error">{error}</div>;
   if (!model) return <div className="muted">불러오는 중…</div>;
 
-  const setAlias = async (alias: string) => {
+  const change = async (work: () => Promise<unknown>) => {
     try {
       setFailure(null);
-      await api(`/models/${model.id}/alias`, { body: { alias } });
+      await work();
       await refresh();
     } catch (e) {
       setFailure(e instanceof Error ? e.message : String(e));
@@ -375,21 +418,12 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
         <div>
           <h1 className="with-badge">
             {model.name} <span className="version">v{model.version}</span>
-            <Alias alias={model.alias} />
           </h1>
           <p className="muted">
             {model.arch} · {model.task === "classify" ? "분류" : "객체 검출"} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
           </p>
         </div>
         <div className="head-actions">
-          <label className="project-picker">
-            <span className="eyebrow">alias</span>
-            <select value={model.alias} onChange={(e) => void setAlias(e.target.value)} aria-label="alias">
-              <option value="">없음</option>
-              <option value="champion">champion</option>
-              <option value="challenger">challenger</option>
-            </select>
-          </label>
           <a className="btn" href={model.download_url} download>
             가중치 받기 ({bytesLabel(model.bytes)})
           </a>
@@ -400,6 +434,23 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
           )}
         </div>
       </div>
+      <div className="model-marks">
+        <AliasEditor
+          aliases={model.aliases}
+          suggestions={suggested ?? []}
+          onAdd={(alias) => change(() => api(`/models/${model.id}/alias`, { body: { alias } }))}
+          onRemove={(alias) =>
+            change(() => api(`/models/${model.id}/alias/${encodeURIComponent(alias)}`, { method: "DELETE" }))
+          }
+        />
+      </div>
+      <Annotations
+        note={model.note}
+        tags={model.tags}
+        noteLabel="설명"
+        known={(projectTags?.models ?? []).map((t) => t.name)}
+        onSave={(fields) => change(() => api(`/models/${model.id}`, { method: "PATCH", body: fields }))}
+      />
       {failure && <div className="error">{failure}</div>}
 
       <div className="stats metrics">

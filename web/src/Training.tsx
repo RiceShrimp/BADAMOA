@@ -1,3 +1,4 @@
+import { AliasChip, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
 import { FileList, fileSize } from "./Files";
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LineChart } from "./Chart";
@@ -11,6 +12,7 @@ import {
   type ClassMetric,
   METRIC_LABEL,
   type ModelInfo,
+  type ProjectTags,
   type Run,
   type RunDetail,
   STAGE_LABEL,
@@ -78,10 +80,22 @@ function RunList({
   startWith?: string;
 }) {
   const [busy, setBusy] = useState(true);
+  const [typed, setTyped] = useState("");
+  const [tag, setTag] = useState("");
+  const query = useDebounced(typed.trim());
+  const filtered = query !== "" || tag !== "";
   const { data: runs, refresh } = usePolling(
-    () => (projectId ? api<Run[]>(`/projects/${projectId}/runs`) : Promise.resolve([])),
+    () =>
+      projectId
+        ? api<Run[]>(`/projects/${projectId}/runs?${new URLSearchParams({ q: query, tag }).toString()}`)
+        : Promise.resolve([]),
     busy ? 3000 : 15000,
-    [projectId],
+    [projectId, query, tag],
+  );
+  const { data: projectTags } = usePolling(
+    () => (projectId ? api<ProjectTags>(`/projects/${projectId}/tags`) : Promise.resolve({ runs: [], models: [] })),
+    30000,
+    [projectId, runs?.length],
   );
   const [picked, setPicked] = useState<string[] | null>(null); // null: follow the newest runs
   const [creating, setCreating] = useState(startWith !== undefined);
@@ -89,7 +103,11 @@ function RunList({
   const metricKeys = keyMetrics(task);
   const primary = metricKeys[0];
 
-  useEffect(() => setPicked(null), [projectId]);
+  useEffect(() => {
+    setPicked(null);
+    setTag("");
+    setTyped("");
+  }, [projectId]);
   useEffect(() => setBusy(!!runs?.some((r) => ACTIVE.includes(r.status))), [runs]);
 
   const compared = useMemo(() => {
@@ -139,6 +157,17 @@ function RunList({
 
       {compared.length > 0 && <Comparison ids={compared} live={busy} task={task} />}
 
+      {(filtered || (runs?.length ?? 0) > 5 || (projectTags?.runs.length ?? 0) > 0) && (
+        <ListFilter
+          query={typed}
+          onQuery={setTyped}
+          tags={projectTags?.runs ?? []}
+          tag={tag}
+          onTag={setTag}
+          placeholder="이름 · 메모 · 태그로 찾기"
+        />
+      )}
+
       <div className="card flush table-wrap">
         <table className="runs">
           <thead>
@@ -161,7 +190,7 @@ function RunList({
             {runs?.length === 0 && (
               <tr>
                 <td colSpan={11} className="empty">
-                  아직 학습한 적이 없습니다. "새 학습"으로 릴리스를 골라 시작하세요.
+                  {filtered ? "찾는 실행이 없습니다." : '아직 학습한 적이 없습니다. "새 학습"으로 릴리스를 골라 시작하세요.'}
                 </td>
               </tr>
             )}
@@ -182,11 +211,12 @@ function RunList({
                     </label>
                   </td>
                   <td>
-                    <strong>{run.name}</strong>
+                    <strong>{run.name}</strong> <TagList tags={run.tags} />
                     <div className="muted small">
                       {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 릴리스"} ·{" "}
                       {run.template.variant || run.template.title}
                     </div>
+                    {run.note && <div className="note-line">{run.note}</div>}
                   </td>
                   <td>
                     <Badge kind={run.status}>{STATUS_LABEL[run.status]}</Badge>
@@ -350,6 +380,12 @@ function RunView({ runId }: { runId: string }) {
   const { data: run, error, refresh } = usePolling(() => api<RunDetail>(`/runs/${runId}`), live ? 2500 : 20000, [runId]);
   const [working, setWorking] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const projectOf = run?.project_id ?? "";
+  const { data: projectTags } = usePolling(
+    () => (projectOf ? api<ProjectTags>(`/projects/${projectOf}/tags`) : Promise.resolve({ runs: [], models: [] })),
+    60000,
+    [projectOf],
+  );
   useEffect(() => setLive(!run || ACTIVE.includes(run.status)), [run]);
 
   if (error && !run) return <div className="error">{error}</div>;
@@ -455,6 +491,18 @@ function RunView({ runId }: { runId: string }) {
         </div>
       </div>
 
+      <Annotations
+        note={run.note}
+        tags={run.tags}
+        name={run.name}
+        noteLabel="메모"
+        known={(projectTags?.runs ?? []).map((t) => t.name)}
+        onSave={async (fields) => {
+          await api(`/runs/${run.id}`, { method: "PATCH", body: fields });
+          await refresh();
+        }}
+      />
+
       {failure && <div className="error">{failure}</div>}
       {active && <Stages run={run} />}
       {run.status === "queued" && run.wait_reason && <div className="notice">{run.wait_reason}</div>}
@@ -481,7 +529,9 @@ function RunView({ runId }: { runId: string }) {
             </strong>
             <span className="muted"> 모델로 등록되었습니다</span>
           </span>
-          {run.model.alias && <span className={`alias ${run.model.alias}`}>{run.model.alias}</span>}
+          {run.model.aliases.map((a) => (
+            <AliasChip key={a} alias={a} />
+          ))}
           <Icon name="arrow" size={14} />
         </a>
       )}

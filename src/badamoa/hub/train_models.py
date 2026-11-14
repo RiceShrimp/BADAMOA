@@ -86,9 +86,23 @@ class Run(Base):
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # final metrics of the best weights
     class_metrics: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     source_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the run this one repeats
+    note: Mapped[str] = mapped_column(Text, default="")  # what the person tried, in their words (W&B notes)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Tag(Base):
+    """A label on a run or a model version, to find and group them (W&B tags, MLflow tags)."""
+
+    __tablename__ = "tags"
+    __table_args__ = (UniqueConstraint("kind", "object_id", "name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(8))  # run | model
+    object_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(48), index=True)
 
 
 class RunMetric(Base):
@@ -143,7 +157,10 @@ class ModelVersion(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     version: Mapped[int] = mapped_column(Integer)
-    alias: Mapped[str] = mapped_column(String(16), default="")  # "" | champion | challenger
+    # Names that point at this version within its family, like MLflow's aliases ("champion", "production").
+    # An alias sits on one version of a family at a time; a version can carry several.
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    alias: Mapped[str] = mapped_column(String(32), default="")  # the first of ``aliases``, for older readers
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task: Mapped[str] = mapped_column(String(16), default="detect")

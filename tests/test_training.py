@@ -232,7 +232,8 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": "champion"}).json()["alias"] == "champion"
     assert hub.post(f"/api/models/{v2['id']}/alias", json={"alias": "champion"}).json()["alias"] == "champion"
     assert hub.get(f"/api/models/{v1['id']}").json()["alias"] == ""
-    assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": "best"}).status_code == 400
+    for reserved in ("latest", "v3", "two words"):  # version spellings are not aliases
+        assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": reserved}).status_code == 400
 
     runs = hub.get(f"/api/projects/{release['project_id']}/runs").json()
     assert [r["name"] for r in runs] == ["street-v1-yolo11n-2", "street-v1-yolo11n"]
@@ -284,6 +285,97 @@ def test_training_through_mcp(hub, release):
     assert call("set_model_alias", {"model_id": model["id"], "alias": "challenger"})["alias"] == "challenger"
     fetched = call("get_model", {"model_id": model["id"]})
     assert fetched["alias"] == "challenger" and "download_url" not in fetched and fetched["release"]["version"] == "v1"
+
+    # notes, tags and aliases are there for agents as well
+    noted = call("update_training_run", {"run_id": run["id"], "note": "기준선", "tags": ["baseline"]})
+    assert (noted["note"], noted["tags"]) == ("기준선", ["baseline"])
+    assert [
+        r["id"] for r in call("list_training_runs", {"project_id": release["project_id"], "tag": "baseline"})["result"]
+    ] == [run["id"]]
+    call("set_model_alias", {"model_id": model["id"], "alias": "production"})
+    call("update_model", {"model_id": model["id"], "note": "현장 배포용", "tags": ["edge"]})
+    found = call("list_models", {"project_id": release["project_id"], "name": model["name"], "alias": "production"})
+    assert [(m["id"], m["aliases"], m["note"], m["tags"]) for m in found["result"]] == [
+        (model["id"], ["challenger", "production"], "현장 배포용", ["edge"])
+    ]
+    left = call("set_model_alias", {"model_id": model["id"], "alias": "challenger", "remove": True})
+    assert left["aliases"] == ["production"] and left["alias"] == "production"
+
+
+def test_notes_tags_and_aliases(hub, release):
+    project = release["project_id"]
+    first, job = _train(hub, release, {"epochs": 2})
+    assert job["status"] == "succeeded"
+    second = hub.post(
+        "/api/runs",
+        json={
+            "release_id": release["id"],
+            "template": "dummy",
+            "params": {"epochs": 2},
+            "gpus": 0,
+            "tags": ["야간", " baseline "],
+        },
+    ).json()
+    assert second["tags"] == ["baseline", "야간"]
+    assert _wait(hub, second["job_id"])["status"] == "succeeded"
+
+    # ---- a run's name, note and tags
+    edited = hub.patch(
+        f"/api/runs/{first['id']}", json={"name": "lr 낮춤", "note": "lr0 0.001로", "tags": ["baseline", "Baseline", "lr"]}
+    )
+    assert edited.status_code == 200, edited.text
+    assert (edited.json()["name"], edited.json()["note"], edited.json()["tags"]) == (
+        "lr 낮춤",
+        "lr0 0.001로",
+        ["baseline", "lr"],
+    )
+    assert hub.patch(f"/api/runs/{first['id']}", json={"name": second["name"]}).status_code == 409
+    assert hub.patch(f"/api/runs/{first['id']}", json={"name": "  "}).status_code == 400
+    assert hub.patch(f"/api/runs/{first['id']}", json={"tags": [f"t{i}" for i in range(21)]}).status_code == 400
+    assert hub.patch(f"/api/runs/{first['id']}", json={"note": "lr0 0.001로, warmup 없음"}).json()["tags"] == [
+        "baseline",
+        "lr",
+    ]
+
+    runs = lambda **query: [r["id"] for r in hub.get(f"/api/projects/{project}/runs", params=query).json()]  # noqa: E731
+    assert runs(tag="baseline") == [second["id"], first["id"]] and runs(tag="lr") == [first["id"]]
+    assert runs(q="warmup") == [first["id"]] and runs(q="야간") == [second["id"]] and runs(q="낮춤") == [first["id"]]
+    tags = hub.get(f"/api/projects/{project}/tags").json()
+    assert tags["runs"] == [{"name": "baseline", "count": 2}, {"name": "lr", "count": 1}, {"name": "야간", "count": 1}]
+
+    # Run again and continue keep the tags: they belong to the experiment.
+    again = hub.post(f"/api/runs/{first['id']}/rerun").json()
+    assert again["tags"] == ["baseline", "lr"] and again["note"] == ""
+    hub.post(f"/api/jobs/{again['job_id']}/cancel")
+    _wait(hub, again["job_id"])
+
+    # ---- a model's description, tags and aliases
+    model_id = hub.get(f"/api/runs/{first['id']}").json()["model"]["id"]
+    other_id = hub.get(f"/api/runs/{second['id']}").json()["model"]["id"]
+    described = hub.patch(f"/api/models/{model_id}", json={"note": "야간 데이터 보강 전 기준", "tags": ["기준"]}).json()
+    assert (described["note"], described["tags"]) == ("야간 데이터 보강 전 기준", ["기준"])
+    for alias in ("champion", "production", "현장-1"):
+        assert hub.post(f"/api/models/{model_id}/alias", json={"alias": alias}).status_code == 200
+    assert hub.get(f"/api/models/{model_id}").json()["aliases"] == ["champion", "production", "현장-1"]
+    moved = hub.post(f"/api/models/{other_id}/alias", json={"alias": "production"}).json()
+    assert moved["aliases"] == ["production"]  # one version per alias in a family: it moved
+    assert hub.get(f"/api/models/{model_id}").json()["aliases"] == ["champion", "현장-1"]
+    removed = hub.delete(f"/api/models/{model_id}/alias/champion").json()
+    assert removed["aliases"] == ["현장-1"] and removed["alias"] == "현장-1"
+    by_alias = hub.get(f"/api/projects/{project}/models", params={"name": moved["name"], "alias": "production"}).json()
+    assert [m["id"] for m in by_alias] == [other_id]
+    assert [m["id"] for m in hub.get(f"/api/projects/{project}/models", params={"tag": "기준"}).json()] == [model_id]
+    assert [m["id"] for m in hub.get(f"/api/projects/{project}/models", params={"q": "보강"}).json()] == [model_id]
+    assert hub.get(f"/api/projects/{project}/tags").json()["models"] == [{"name": "기준", "count": 1}]
+    assert "production" in hub.get("/api/model-aliases").json()
+
+    # Deleting takes the tags along.
+    assert hub.delete(f"/api/runs/{first['id']}").status_code == 200
+    assert hub.get(f"/api/projects/{project}/tags").json()["runs"] == [
+        {"name": "baseline", "count": 2},
+        {"name": "lr", "count": 1},
+        {"name": "야간", "count": 1},
+    ]  # the run started again keeps its own copy
 
 
 def test_evaluate_export_and_test_a_model(hub, release, tmp_path):

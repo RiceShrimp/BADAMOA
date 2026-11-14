@@ -48,13 +48,33 @@ class NewRun(BaseModel):
     gpus: int | None = None
     min_vram_mb: int = 0
     base_model_id: str = ""  # continue from this registered model's weights
+    tags: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class RunUpdate(BaseModel):
+    name: str | None = None
+    note: str | None = None
+    tags: list[str] | None = None
 
 
 @router.get("/projects/{project_id}/runs")
 def list_runs(
-    project_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+    project_id: str,
+    tag: str = "",
+    q: str = "",
+    limit: int = 200,
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> list[dict[str, Any]]:
-    return training.list_runs(db, hub.settings, project_id)
+    """The project's runs, newest first; ``tag`` keeps one tag, ``q`` searches names, notes and tags."""
+    return training.list_runs(db, hub.settings, project_id, limit=limit, tag=tag, q=q)
+
+
+@router.get("/projects/{project_id}/tags")
+def project_tags(project_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    return training.project_tags(db, project_id)
 
 
 @router.post("/runs")
@@ -71,6 +91,19 @@ def get_run(
     run_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
     return training.run_view(db, hub.settings, training.get_run(db, run_id), detail=True)
+
+
+@router.patch("/runs/{run_id}")
+def update_run(
+    run_id: str,
+    body: RunUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    run = training.update_run(db, user, run_id, **body.model_dump(), via="ui")
+    db.commit()
+    return training.run_view(db, hub.settings, run)
 
 
 @router.get("/runs/{run_id}/system")
@@ -112,11 +145,29 @@ class AliasRequest(BaseModel):
     alias: str = ""
 
 
+class ModelUpdate(BaseModel):
+    note: str | None = None
+    tags: list[str] | None = None
+
+
 @router.get("/projects/{project_id}/models")
 def list_models(
-    project_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+    project_id: str,
+    tag: str = "",
+    q: str = "",
+    name: str = "",
+    alias: str = "",
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> list[dict[str, Any]]:
-    return training.list_models(db, hub.settings, project_id)
+    """Model versions; ``name`` and ``alias`` together find the version an alias points at."""
+    return training.list_models(db, hub.settings, project_id, tag=tag, q=q, name=name, alias=alias)
+
+
+@router.get("/model-aliases")
+def model_aliases(_: User = Depends(current_user)) -> list[str]:
+    return list(training.SUGGESTED_ALIASES)
 
 
 @router.get("/models/{model_id}")
@@ -138,6 +189,32 @@ def set_alias(
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     model = training.set_alias(db, user, model_id, body.alias, via="ui")
+    db.commit()
+    return training.model_view(db, hub.settings, model, detail=True)
+
+
+@router.delete("/models/{model_id}/alias/{alias}")
+def remove_alias(
+    model_id: str,
+    alias: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    model = training.set_alias(db, user, model_id, alias, via="ui", remove=True)
+    db.commit()
+    return training.model_view(db, hub.settings, model, detail=True)
+
+
+@router.patch("/models/{model_id}")
+def update_model(
+    model_id: str,
+    body: ModelUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    model = training.update_model(db, user, model_id, **body.model_dump(), via="ui")
     db.commit()
     return training.model_view(db, hub.settings, model, detail=True)
 

@@ -86,11 +86,18 @@ export interface Run {
   config: RunConfig;
   release: { id: string; dataset: string; version: string } | null;
   metrics: Record<string, number>;
-  model: { id: string; name: string; version: number; alias: string } | null;
+  model: { id: string; name: string; version: number; alias: string; aliases: string[] } | null;
   base_model: { id: string; name: string; version: number } | null;
   resumed_from: { id: string; name: string } | null;
   can_resume: boolean;
   source_run_id: string | null;
+  note: string;
+  tags: string[];
+}
+
+export interface ProjectTags {
+  runs: { name: string; count: number }[];
+  models: { name: string; count: number }[];
 }
 
 /** Detection templates report mAP per class; classification templates report precision, recall and F1. */
@@ -138,6 +145,9 @@ export interface ModelInfo {
   name: string;
   version: number;
   alias: string;
+  aliases: string[];
+  tags: string[];
+  note: string;
   task: string;
   arch: string;
   template: { name: string; title: string; version: string };

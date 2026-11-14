@@ -16,6 +16,8 @@ _ADDED_COLUMNS = [
     ("runs", "checkpoint", "JSON DEFAULT '{}'"),
     ("model_versions", "template", "JSON DEFAULT '{}'"),
     ("projects", "settings", "JSON DEFAULT '{}'"),
+    ("runs", "note", "TEXT DEFAULT ''"),
+    ("model_versions", "aliases", "JSON DEFAULT '[]'"),
 ]
 
 
@@ -67,9 +69,13 @@ class Database:
         """Minimal forward migration until Alembic lands: add columns newer versions introduced."""
         inspector = inspect(self.engine)
         with self.engine.begin() as conn:
+            added = set()
             for table, column, ddl in _ADDED_COLUMNS:
                 if column not in {c["name"] for c in inspector.get_columns(table)}:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+                    added.add((table, column))
+            if ("model_versions", "aliases") in added:  # the one alias a version could have had before
+                conn.execute(text("""UPDATE model_versions SET aliases = '["' || alias || '"]' WHERE alias != ''"""))
 
     @contextmanager
     def session(self) -> Iterator[Session]:

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
@@ -19,9 +19,15 @@ from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
-from .train_models import ModelVersion, Run, RunFile, RunMetric, Template
+from .train_models import ModelVersion, Run, RunFile, RunMetric, Tag, Template
 
-ALIASES = ("champion", "challenger")
+# Offered first in the screen; any other name works too (MLflow aliases are free names).
+SUGGESTED_ALIASES = ("champion", "challenger", "production", "staging")
+ALIAS_RE = re.compile(r"^[0-9A-Za-z가-힣][0-9A-Za-z가-힣._-]{0,31}$")
+MAX_ALIASES = 10
+MAX_TAGS = 20
+TAG_LENGTH = 48
+MAX_NOTE = 20000
 STAGES = ("data", "env", "train", "upload")
 MANIFEST_MAX = 5000
 # The number a run is judged by: decides which step counts as "best so far".
@@ -83,6 +89,8 @@ def start_run(
     source_run_id: str | None = None,
     base_model_id: str = "",
     resume_run_id: str = "",
+    tags: list[str] | None = None,
+    note: str = "",
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
@@ -158,10 +166,13 @@ def start_run(
         },
         epochs=int(epochs) if isinstance(epochs, int | float) else 0,
         source_run_id=source_run_id,
+        note=note.strip()[:MAX_NOTE],
         created_by=user.id,
     )
     db.add(run)
     db.flush()
+    if tags:
+        _set_tags(db, project.id, "run", run.id, tags)
     job = services.create_job(
         db,
         user,
@@ -225,6 +236,7 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         min_vram_mb=c.get("min_vram_mb", 0),
         base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,
+        tags=tags_of(db, "run", [source.id]).get(source.id, []),
         via=via,
     )
 
@@ -263,6 +275,8 @@ def resume(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,
         resume_run_id=source.id,
+        tags=tags_of(db, "run", [source.id]).get(source.id, []),
+        note=source.note or "",
         via=via,
     )
 
@@ -558,7 +572,12 @@ def _settings_of(db: Session, run: Run) -> list[dict[str, Any]]:
 
 
 def run_view(
-    db: Session, settings: HubSettings, run: Run, detail: bool = False, node_names: dict[str, str] | None = None
+    db: Session,
+    settings: HubSettings,
+    run: Run,
+    detail: bool = False,
+    node_names: dict[str, str] | None = None,
+    tags: list[str] | None = None,
 ) -> dict[str, Any]:
     job = db.get(Job, run.job_id) if run.job_id else None
     release = db.get(Release, run.release_id)
@@ -592,12 +611,18 @@ def run_view(
         "config": run.config,
         "release": {"id": release.id, "dataset": dataset.name, "version": release.version} if release and dataset else None,
         "metrics": run.summary or {},  # final metrics once finished, the best step so far before that
-        "model": {"id": model.id, "name": model.name, "version": model.version, "alias": model.alias} if model else None,
+        "model": (
+            {"id": model.id, "name": model.name, "version": model.version, "alias": model.alias, "aliases": _aliases(model)}
+            if model
+            else None
+        ),
         "base_model": run.config.get("base_model"),  # the registered model this run started from, if any
         "resumed_from": run.config.get("resumed_from"),  # the interrupted run this one continues
         "can_resume": _can_resume(db, run, status),
         "checkpoint_epoch": (run.checkpoint or {}).get("epoch"),  # how far a resumed run would start from
         "source_run_id": run.source_run_id,
+        "note": run.note or "",
+        "tags": tags if tags is not None else tags_of(db, "run", [run.id]).get(run.id, []),
     }
     if detail:
         rows = db.scalars(select(RunMetric).where(RunMetric.run_id == run.id).order_by(RunMetric.step)).all()
@@ -618,16 +643,119 @@ def run_view(
     return view
 
 
-def list_runs(db: Session, settings: HubSettings, project_id: str, limit: int = 200) -> list[dict[str, Any]]:
+def _search(query: Any, table: Any, kind: str, tag: str, q: str) -> Any:
+    """Narrow a listing to one tag and/or a text found in the name, the note or a tag."""
+    if tag:
+        query = query.where(table.id.in_(select(Tag.object_id).where(Tag.kind == kind, Tag.name == tag)))
+    if q.strip():
+        like = f"%{q.strip()}%"
+        tagged = select(Tag.object_id).where(Tag.kind == kind, Tag.name.ilike(like))
+        query = query.where(or_(table.name.ilike(like), table.note.ilike(like), table.id.in_(tagged)))
+    return query
+
+
+def list_runs(
+    db: Session, settings: HubSettings, project_id: str, limit: int = 200, tag: str = "", q: str = ""
+) -> list[dict[str, Any]]:
     catalog.get_project(db, project_id)
-    runs = db.scalars(
-        select(Run)
-        .where(Run.project_id == project_id, Run.deleted_at.is_(None))
-        .order_by(Run.created_at.desc())
-        .limit(max(1, min(limit, 500)))
-    ).all()
+    query = select(Run).where(Run.project_id == project_id, Run.deleted_at.is_(None))
+    query = _search(query, Run, "run", tag, q).order_by(Run.created_at.desc()).limit(max(1, min(limit, 500)))
+    runs = db.scalars(query).all()
     names = services.node_name_map(db)
-    return [run_view(db, settings, run, node_names=names) for run in runs]
+    tags = tags_of(db, "run", [r.id for r in runs])
+    return [run_view(db, settings, run, node_names=names, tags=tags.get(run.id, [])) for run in runs]
+
+
+# ---- notes and tags ---------------------------------------------------------------------
+
+
+def clean_tags(tags: list[str]) -> list[str]:
+    """Trimmed, single-spaced, without repeats (ignoring case)."""
+    out: list[str] = []
+    for raw in tags:
+        tag = " ".join(str(raw).split())[:TAG_LENGTH]
+        if tag and tag.lower() not in {t.lower() for t in out}:
+            out.append(tag)
+    if len(out) > MAX_TAGS:
+        raise ServiceError(400, f"태그는 {MAX_TAGS}개까지 붙일 수 있습니다.")
+    return out
+
+
+def tags_of(db: Session, kind: str, ids: list[str]) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        for row in db.scalars(select(Tag).where(Tag.kind == kind, Tag.object_id.in_(chunk)).order_by(Tag.name)):
+            found.setdefault(row.object_id, []).append(row.name)
+    return found
+
+
+def _set_tags(db: Session, project_id: str, kind: str, object_id: str, tags: list[str]) -> list[str]:
+    wanted = clean_tags(tags)
+    existing = {t.name: t for t in db.scalars(select(Tag).where(Tag.kind == kind, Tag.object_id == object_id))}
+    for name, row in existing.items():
+        if name not in wanted:
+            db.delete(row)
+    for name in wanted:
+        if name not in existing:
+            db.add(Tag(project_id=project_id, kind=kind, object_id=object_id, name=name))
+    db.flush()
+    return wanted
+
+
+def _drop_tags(db: Session, kind: str, object_id: str) -> None:
+    for row in db.scalars(select(Tag).where(Tag.kind == kind, Tag.object_id == object_id)):
+        db.delete(row)
+
+
+def project_tags(db: Session, project_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Every tag used in a project, most used first: what the screen offers to filter by."""
+    catalog.get_project(db, project_id)
+    found: dict[str, list[dict[str, Any]]] = {"runs": [], "models": []}
+    count = func.count(Tag.id)
+    rows = db.execute(
+        select(Tag.kind, Tag.name, count).where(Tag.project_id == project_id).group_by(Tag.kind, Tag.name).order_by(
+            count.desc(), Tag.name
+        )
+    )
+    for kind, name, n in rows:
+        found["runs" if kind == "run" else "models"].append({"name": name, "count": n})
+    return found
+
+
+def update_run(
+    db: Session,
+    user: User,
+    run_id: str,
+    *,
+    name: str | None = None,
+    note: str | None = None,
+    tags: list[str] | None = None,
+    via: str = "api",
+) -> Run:
+    """Rename a run, write its note, set its tags. Anyone in the team may: it is shared bookkeeping."""
+    run = get_run(db, run_id)
+    changed: dict[str, Any] = {}
+    if name is not None:
+        name = " ".join(name.split())[:160]
+        if not name:
+            raise ServiceError(400, "이름을 비울 수 없습니다.")
+        if name != run.name:
+            taken = db.scalar(
+                select(Run.id).where(
+                    Run.project_id == run.project_id, Run.name == name, Run.deleted_at.is_(None), Run.id != run.id
+                )
+            )
+            if taken:
+                raise ServiceError(409, f"이 프로젝트에 이미 {name} 실행이 있습니다.")
+            changed["name"], run.name = name, name
+    if note is not None:
+        run.note = note.strip()[:MAX_NOTE]
+        changed["note"] = len(run.note)
+    if tags is not None:
+        changed["tags"] = _set_tags(db, run.project_id, "run", run.id, tags)
+    services.audit(db, user.id, via, "run.update", run.id, **changed)
+    return run
 
 
 def delete_run(db: Session, user: User, run_id: str, storage: Storage | None = None) -> None:
@@ -638,6 +766,7 @@ def delete_run(db: Session, user: User, run_id: str, storage: Storage | None = N
     if user.role != "admin" and run.created_by != user.id:
         raise ServiceError(403, "자신이 시작한 학습만 지울 수 있습니다.")
     run.deleted_at = utcnow()
+    _drop_tags(db, "run", run.id)
     if run.checkpoint:  # nobody can resume a deleted run: its checkpoint goes too
         spent, run.checkpoint = run.checkpoint.get("blob", ""), {}
         db.flush()
@@ -655,7 +784,18 @@ def get_model(db: Session, model_id: str) -> ModelVersion:
     return model
 
 
-def model_view(db: Session, settings: HubSettings, model: ModelVersion, detail: bool = False) -> dict[str, Any]:
+def _aliases(model: ModelVersion) -> list[str]:
+    return list(model.aliases or ([model.alias] if model.alias else []))
+
+
+def _put_aliases(model: ModelVersion, aliases: list[str]) -> None:
+    model.aliases = aliases
+    model.alias = aliases[0] if aliases else ""
+
+
+def model_view(
+    db: Session, settings: HubSettings, model: ModelVersion, detail: bool = False, tags: list[str] | None = None
+) -> dict[str, Any]:
     release = db.get(Release, model.release_id) if model.release_id else None
     dataset = db.get(Dataset, release.dataset_id) if release else None
     run = db.get(Run, model.run_id) if model.run_id else None
@@ -669,6 +809,9 @@ def model_view(db: Session, settings: HubSettings, model: ModelVersion, detail: 
         "name": model.name,
         "version": model.version,
         "alias": model.alias,
+        "aliases": _aliases(model),
+        "tags": tags if tags is not None else tags_of(db, "model", [model.id]).get(model.id, []),
+        "note": model.note or "",
         "task": model.task,
         "arch": model.arch,
         "trainer": model.trainer,
@@ -686,7 +829,6 @@ def model_view(db: Session, settings: HubSettings, model: ModelVersion, detail: 
         view["class_metrics"] = model.class_metrics or []
         view["file_name"] = model.file_name
         view["sha256"] = model.blob
-        view["note"] = model.note
         view["config"] = run.config if run else {}
         view["info"] = run.info if run else {}
         view["export"] = run.export if run else {}
@@ -695,32 +837,70 @@ def model_view(db: Session, settings: HubSettings, model: ModelVersion, detail: 
     return view
 
 
-def list_models(db: Session, settings: HubSettings, project_id: str) -> list[dict[str, Any]]:
+def list_models(
+    db: Session, settings: HubSettings, project_id: str, tag: str = "", q: str = "", name: str = "", alias: str = ""
+) -> list[dict[str, Any]]:
+    """The project's model versions; ``name`` + ``alias`` finds the version an alias points at (MLflow ``name@alias``)."""
     catalog.get_project(db, project_id)
-    models = db.scalars(
-        select(ModelVersion)
-        .where(ModelVersion.project_id == project_id, ModelVersion.deleted_at.is_(None))
-        .order_by(ModelVersion.name, ModelVersion.version.desc())
-    ).all()
-    return [model_view(db, settings, m) for m in models]
+    query = select(ModelVersion).where(ModelVersion.project_id == project_id, ModelVersion.deleted_at.is_(None))
+    if name:
+        query = query.where(ModelVersion.name == name)
+    query = _search(query, ModelVersion, "model", tag, q).order_by(ModelVersion.name, ModelVersion.version.desc())
+    models = [m for m in db.scalars(query) if not alias or alias in _aliases(m)]
+    tags = tags_of(db, "model", [m.id for m in models])
+    return [model_view(db, settings, m, tags=tags.get(m.id, [])) for m in models]
 
 
-def set_alias(db: Session, user: User, model_id: str, alias: str, via: str = "api") -> ModelVersion:
-    """Give a version an alias. Within a model family an alias sits on one version at a time."""
-    alias = alias.strip()
-    if alias and alias not in ALIASES:
-        raise ServiceError(400, f"alias는 {', '.join(ALIASES)} 중 하나이거나 비워 두어야 합니다.")
+def update_model(
+    db: Session, user: User, model_id: str, *, note: str | None = None, tags: list[str] | None = None, via: str = "api"
+) -> ModelVersion:
+    """A version's description (what it is for, what changed) and its tags."""
     model = get_model(db, model_id)
-    if alias:
-        holders = db.scalars(
+    changed: dict[str, Any] = {}
+    if note is not None:
+        model.note = note.strip()[:MAX_NOTE]
+        changed["note"] = len(model.note)
+    if tags is not None:
+        changed["tags"] = _set_tags(db, model.project_id, "model", model.id, tags)
+    services.audit(db, user.id, via, "model.update", model.id, name=model.name, version=model.version, **changed)
+    return model
+
+
+def set_alias(db: Session, user: User, model_id: str, alias: str, via: str = "api", remove: bool = False) -> ModelVersion:
+    """Point an alias at this version (MLflow model aliases), or take it off with ``remove``.
+
+    Within a model family an alias sits on one version at a time, so it moves here from wherever
+    it was; a version can carry several. An empty alias clears all of this version's.
+    """
+    model = get_model(db, model_id)
+    alias = alias.strip()
+    if not alias:
+        _put_aliases(model, [])
+    elif remove:
+        _put_aliases(model, [a for a in _aliases(model) if a != alias])
+    else:
+        if not ALIAS_RE.match(alias) or alias.lower() == "latest" or re.fullmatch(r"[vV]\d+", alias):
+            raise ServiceError(
+                400, "alias는 32자 이내의 글자·숫자·._- 로 짓고, latest나 v1 같은 버전 표기는 쓸 수 없습니다."
+            )
+        family = db.scalars(
             select(ModelVersion).where(
-                ModelVersion.project_id == model.project_id, ModelVersion.name == model.name, ModelVersion.alias == alias
+                ModelVersion.project_id == model.project_id,
+                ModelVersion.name == model.name,
+                ModelVersion.id != model.id,
+                ModelVersion.deleted_at.is_(None),
             )
         )
-        for other in holders:
-            other.alias = ""
-    model.alias = alias
-    services.audit(db, user.id, via, "model.alias", model.id, name=model.name, version=model.version, alias=alias)
+        for other in family:
+            if alias in _aliases(other):
+                _put_aliases(other, [a for a in _aliases(other) if a != alias])
+        if alias not in _aliases(model):
+            if len(_aliases(model)) >= MAX_ALIASES:
+                raise ServiceError(400, f"한 버전에 alias는 {MAX_ALIASES}개까지입니다.")
+            _put_aliases(model, [*_aliases(model), alias])
+    services.audit(
+        db, user.id, via, "model.alias", model.id, name=model.name, version=model.version, alias=alias, removed=remove
+    )
     return model
 
 
@@ -728,5 +908,6 @@ def delete_model(db: Session, user: User, model_id: str) -> None:
     services.require_admin(user)
     model = get_model(db, model_id)
     model.deleted_at = utcnow()
-    model.alias = ""
+    _put_aliases(model, [])
+    _drop_tags(db, "model", model.id)
     services.audit(db, user.id, "api", "model.delete", model.id, name=model.name, version=model.version)
