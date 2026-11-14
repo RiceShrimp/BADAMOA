@@ -35,6 +35,8 @@ _TRAIN_PARAMS: dict[str, Any] = {
         "unlabelled": {"type": "string", "default": "exclude"},
         # Used only when the release has no val split: this share of train is held out.
         "val_fraction": {"type": "number", "minimum": 0, "maximum": 0.9, "default": 0.2},
+        # Start from a registered model's weights: {"blob", "file_name"}.
+        "init_weights": {"type": "object"},
     },
 }
 

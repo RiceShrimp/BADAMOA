@@ -65,7 +65,9 @@ def main(argv: list[str]) -> int:
     emit("info", ultralytics=ultralytics.__version__, torch=torch.__version__, device=device, gpus=gpus)
 
     weights = params["model"]
-    if not params.get("pretrained", True):
+    if cfg.get("init_weights"):
+        weights = cfg["init_weights"]  # continue from a registered model
+    elif not params.get("pretrained", True):
         weights = Path(weights).stem + ".yaml"  # same architecture, random initialisation
     model = YOLO(weights)
 

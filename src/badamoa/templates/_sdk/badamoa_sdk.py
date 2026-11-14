@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "3"
+__version__ = "4"
 
 
 # ---- 설정 선언 ---------------------------------------------------------------------------
@@ -146,6 +146,8 @@ class Run:
         self.cache = Path(cfg.get("cache", "."))  # 실행 사이에 유지되는 폴더 (사전학습 가중치 등)
         self.device: str = cfg.get("device", "cpu")  # "cpu" 또는 "0", "0,1" (배정받은 GPU는 0번부터)
         self.classes: list[str] = cfg.get("classes", [])
+        # 등록된 모델에서 이어서 학습할 때 그 모델의 가중치 파일 (아니면 None)
+        self.init_weights = Path(cfg["init_weights"]) if cfg.get("init_weights") else None
         # 평가·내보내기·테스트(eval · export · predict 진입점)에서만 채워지는 값
         self.weights = Path(cfg["weights"]) if cfg.get("weights") else None  # 다룰 모델의 가중치 파일
         self.train_params: dict[str, Any] = cfg.get("train_params", {})  # 그 모델을 학습할 때의 설정
@@ -239,6 +241,41 @@ def log_model(weights: str | Path, classes: list[dict[str, Any]] | None = None) 
     run = _current()
     run._weights = str(weights)
     run._class_metrics = classes or []
+
+
+def lightning_callback() -> Any:
+    """PyTorch Lightning용 콜백: `Trainer(callbacks=[bm.lightning_callback()])`.
+
+    검증이 끝날 때마다 Lightning이 모은 지표(`self.log(...)`로 기록한 것)와 진행률을 BADAMOA에 알립니다.
+    """
+    try:
+        from lightning.pytorch.callbacks import Callback
+    except ImportError:
+        from pytorch_lightning.callbacks import Callback
+
+    class BadamoaCallback(Callback):
+        def on_validation_epoch_end(self, trainer: Any, pl_module: Any) -> None:
+            if getattr(trainer, "sanity_checking", False):
+                return
+            epoch(trainer.current_epoch + 1, trainer.max_epochs or 0, dict(trainer.callback_metrics))
+
+    return BadamoaCallback()
+
+
+def hf_callback() -> Any:
+    """Hugging Face Trainer용 콜백: `Trainer(..., callbacks=[bm.hf_callback()])`.
+
+    Trainer가 로그를 남길 때마다(loss, eval 지표) step과 함께 BADAMOA에 알립니다.
+    """
+    from transformers import TrainerCallback
+
+    class BadamoaCallback(TrainerCallback):
+        def on_log(self, args: Any, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            if logs:
+                log(logs, step=state.global_step)
+                progress(state.global_step, state.max_steps or 0)
+
+    return BadamoaCallback()
 
 
 def log_artifact(path: str | Path, name: str | None = None) -> None:

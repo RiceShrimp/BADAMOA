@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
-from . import catalog, registry, services
+from . import catalog, registry, resources, services
 from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Project, Release, ReleaseItem, StorageLocation
 from .config import HubSettings
 from .db import iso, utcnow
@@ -80,12 +80,15 @@ def start_run(
     gpus: int | None = None,
     min_vram_mb: int = 0,
     source_run_id: str | None = None,
+    base_model_id: str = "",
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
 
     ``template`` and ``environment`` may be left empty: the project's default
-    template and the template's default environment are used.
+    template and the template's default environment are used. ``base_model_id``
+    starts from the weights of a registered model instead of pretrained ones
+    (training on with new data).
     """
     release = catalog.get_release(db, release_id)
     if release.status != "ready":
@@ -112,6 +115,11 @@ def start_run(
         raise ServiceError(400, f"라벨 공간 {space.name}에 없는 클래스 id가 있습니다: {sorted(set(chosen) - known)}")
     node = data_node(db, release.id)
     env = registry.environment_for_run(db, manifest, environment, node)
+    base = None
+    if base_model_id:
+        base = get_model(db, base_model_id)
+        if base.project_id != project.id or base.trainer != row.name:
+            raise ServiceError(400, f"{row.title}로 만든 이 프로젝트의 모델에서만 이어서 학습할 수 있습니다.")
     gpu_count = (1 if node.info.get("gpus") else 0) if gpus is None else gpus
 
     # What the model is called: the chosen variant (yolo11n.pt → yolo11n), else the template itself.
@@ -142,6 +150,7 @@ def start_run(
             "gpus": gpu_count,
             "min_vram_mb": min_vram_mb,
             "model_name": _slug(model_name),
+            **({"base_model": {"id": base.id, "name": base.name, "version": base.version}} if base else {}),
         },
         epochs=int(epochs) if isinstance(epochs, int | float) else 0,
         source_run_id=source_run_id,
@@ -170,6 +179,7 @@ def start_run(
             "classes": chosen,
             "unlabelled": unlabelled,
             "val_fraction": val_fraction,
+            **({"init_weights": {"blob": base.blob, "file_name": base.file_name or "best.pt"}} if base else {}),
         },
         node.id,
         via=via,
@@ -208,6 +218,7 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         val_fraction=c.get("val_fraction", 0.2),
         gpus=c.get("gpus"),
         min_vram_mb=c.get("min_vram_mb", 0),
+        base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,
         via=via,
     )
@@ -269,6 +280,24 @@ def release_manifest(db: Session, node: Node, release: Release, after: int = 0, 
         ],
         "next": rows[-1][1].id if len(rows) == limit else None,
     }
+
+
+def init_weights(db: Session, node: Node, job_id: str) -> str:
+    """The storage key of the weights this run starts from, when it continues a registered model."""
+    job, _ = _running(db, node, job_id)
+    blob = ((job.params or {}).get("init_weights") or {}).get("blob")
+    if not blob:
+        raise ServiceError(404, "이 실행은 등록된 모델에서 시작하지 않습니다.")
+    return blob
+
+
+def system(db: Session, run: Run) -> dict[str, Any]:
+    """CPU, memory and GPU load of the server while the run was on it."""
+    job = db.get(Job, run.job_id) if run.job_id else None
+    if job is None or job.node_id is None or job.started_at is None:
+        return {"timestamps": [], "series": {}, "gpu_indices": [], "step_s": 60, "from": None, "to": None}
+    history = resources.window(db, job.node_id, job.started_at, job.finished_at or utcnow())
+    return {**history, "gpu_indices": job.gpu_indices or []}
 
 
 def template_bundle(db: Session, node: Node, job_id: str) -> str:
@@ -461,6 +490,7 @@ def run_view(
         "release": {"id": release.id, "dataset": dataset.name, "version": release.version} if release and dataset else None,
         "metrics": run.summary or {},  # final metrics once finished, the best step so far before that
         "model": {"id": model.id, "name": model.name, "version": model.version, "alias": model.alias} if model else None,
+        "base_model": run.config.get("base_model"),  # the registered model this run started from, if any
         "source_run_id": run.source_run_id,
     }
     if detail:

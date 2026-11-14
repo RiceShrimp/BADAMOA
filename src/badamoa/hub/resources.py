@@ -127,6 +127,38 @@ def history(db: Session, node_id: str, range_name: str, now: datetime | None = N
     }
 
 
+def window(db: Session, node_id: str, start: datetime, end: datetime) -> dict[str, Any]:
+    """History of a node between two moments (the lifetime of a job), at the finest resolution still kept."""
+    rows: list[NodeMetric] = []
+    res = "1m"
+    for res in RESOLUTIONS:  # minute buckets are pruned first; older jobs fall back to coarser ones
+        first = _bucket(start, RESOLUTIONS[res])
+        rows = list(
+            db.scalars(
+                select(NodeMetric)
+                .where(NodeMetric.node_id == node_id, NodeMetric.res == res, NodeMetric.ts >= first, NodeMetric.ts <= end)
+                .order_by(NodeMetric.ts)
+            )
+        )
+        if rows:
+            break
+    keys = sorted({key for row in rows for key in row.data})
+    series: dict[str, dict[str, list[float | None]]] = {key: {"avg": [], "max": []} for key in keys}
+    for row in rows:
+        for key in keys:
+            cell = row.data.get(key)
+            series[key]["avg"].append(round(cell[0] / cell[1], 2) if cell and cell[1] else None)
+            series[key]["max"].append(round(cell[2], 2) if cell else None)
+    return {
+        "resolution": res,
+        "step_s": RESOLUTIONS[res],
+        "from": iso(_bucket(start, RESOLUTIONS[res])),
+        "to": iso(end),
+        "timestamps": [iso(row.ts) for row in rows],
+        "series": series,
+    }
+
+
 def summarize(db: Session, node_id: str, range_name: str) -> dict[str, Any]:
     """Average and peak per series over a range (compact form for agents)."""
     data = history(db, node_id, range_name)

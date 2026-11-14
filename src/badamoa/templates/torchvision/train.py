@@ -134,7 +134,14 @@ def main() -> None:
     sizes = f"train {len(train.dataset)}장 · val {len(val_data)}장"
     print(f"{hp.model} · 클래스 {len(run.classes)}개 · {sizes} · 장치 {device}")
 
-    model = build(hp.model, len(run.classes), hp.pretrained, hp.imgsz).to(device)
+    model = build(hp.model, len(run.classes), hp.pretrained, hp.imgsz)
+    if run.init_weights:  # continue from a registered model: every layer whose shape still fits
+        state = torch.load(run.init_weights, map_location="cpu")
+        own = model.state_dict()
+        fitting = {k: v for k, v in state.items() if k in own and v.shape == own[k].shape}
+        model.load_state_dict(fitting, strict=False)
+        print(f"등록된 모델에서 시작: {len(fitting)}/{len(own)}개 층을 불러왔습니다.")
+    model = model.to(device)
     weights = [p for p in model.parameters() if p.requires_grad]
     if hp.optimizer == "AdamW":
         optimizer = torch.optim.AdamW(weights, lr=hp.lr, weight_decay=hp.weight_decay)

@@ -28,7 +28,9 @@ DATA_FORMATS = ("yolo", "imagefolder")  # coco and manifest come with the templa
 ENTRYPOINTS = ("train", "eval", "predict", "export")
 PARAM_TYPES = ("string", "integer", "number", "boolean", "object")
 # Set by BADAMOA for every run; a template may not use these as param names.
-RESERVED = {"classes", "unlabelled", "val_fraction", "gpus", "min_vram_mb", "model_name", "run_id", "release_id"}
+RESERVED = {
+    "classes", "unlabelled", "val_fraction", "gpus", "min_vram_mb", "model_name", "run_id", "release_id", "base_model",
+}  # fmt: skip
 MAX_BUNDLE_BYTES = 64 * 1024**2
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".vscode", "runs", "wandb"}
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")

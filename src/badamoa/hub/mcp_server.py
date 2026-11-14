@@ -331,8 +331,11 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         classes: list[int] | None = None,
         unlabelled: str = "exclude",
         gpus: int | None = None,
+        base_model_id: str = "",
     ) -> dict[str, Any]:
         """릴리스로 학습을 시작합니다. 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
+
+        base_model_id: 등록된 모델에서 이어서 학습할 때 그 모델의 id (비우면 사전학습 가중치에서 시작).
 
         template: 모델 템플릿 이름(list_model_templates로 확인, 비우면 프로젝트 기본값 — 보통 yolo).
         params: 그 템플릿의 설정. yolo라면 {"model": "yolo11n.pt", "epochs": 50, "imgsz": 640, "batch": 16}.
@@ -355,6 +358,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 classes=classes,
                 unlabelled=unlabelled,
                 gpus=gpus,
+                base_model_id=base_model_id,
                 via="mcp",
             )
             db.flush()

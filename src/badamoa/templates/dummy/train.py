@@ -29,6 +29,8 @@ def main(argv: list[str]) -> int:
     ceiling = float(params.get("ceiling", 0.6))  # where mAP50-95 levels off
     emit("info", trainer="dummy", device=cfg["device"])
     print(f"가짜 학습 {epochs} epoch · 데이터 {cfg['data']}")
+    if cfg.get("init_weights"):
+        print(f"이어서 학습: {Path(cfg['init_weights']).read_text(encoding='utf-8')[:60]}")
     metrics: dict[str, float] = {}
     for epoch in range(1, epochs + 1):
         progress = 1 - math.exp(-3 * epoch / epochs)

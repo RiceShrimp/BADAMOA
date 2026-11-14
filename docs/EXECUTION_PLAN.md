@@ -173,9 +173,9 @@ bm.finish({"map50_95": best})               # 최종 지표
 | 콘솔 출력 | 자동 수집 | — | 자동: `print`가 그대로 실시간 로그 | 0.5.0 |
 | 실행한 코드 버전 | Git 커밋 | Git 커밋 | 자동: 템플릿 버전과 코드 해시 | 0.6.0 |
 | 파일·이미지 기록 | `wandb.log({"img": wandb.Image})`, `log_artifact` | `log_artifact`, `log_image` | `bm.log_artifact(파일)` → 실행 화면의 "파일"(이미지는 미리보기). 분류 템플릿은 혼동 행렬을 자동 기록 | 0.8.0 |
-| 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 계획 (1.5) |
+| 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 0.10.0 |
 | 설치된 패키지 | 자동 (`requirements.txt`) | 자동 (환경 파일) | 자동: 실행 환경의 패키지 목록을 실행 기록에 | 0.8.0 |
-| 프레임워크 연동 | Lightning·HF 콜백, `wandb.watch` | `autolog()` | Ultralytics는 내장. Lightning·Hugging Face Trainer용 콜백을 도우미에 추가 | 계획 (1.5) |
+| 프레임워크 연동 | Lightning·HF 콜백, `wandb.watch` | `autolog()` | Ultralytics는 내장. `bm.lightning_callback()`, `bm.hf_callback()` | 0.10.0 |
 | 이미 W&B를 쓰는 코드 | — | — | `import badamoa_sdk as wandb`로 `init · log · finish`가 동작하는 호환 층 | 계획 (1.5) |
 | 실행 비교, 표·그래프 | 프로젝트 화면 | 실험 화면 | 학습 화면: 실행을 체크하면 지표를 겹쳐 비교 | 0.5.0 |
 

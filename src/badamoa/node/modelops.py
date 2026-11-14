@@ -150,7 +150,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         if outcome is None:
             raise RuntimeError("코드가 결과를 알리지 않았습니다. 끝날 때 finish를 호출해야 합니다.")
         outcome.pop("weights", None)
-        resp = client.post(f"{base}/finish", json=outcome)
+        resp = trainer.send(client.post, f"{base}/finish", json=outcome)
         if resp.status_code != 200:
             raise RuntimeError(f"Hub가 결과를 받지 않았습니다 ({resp.status_code}): {resp.text[:200]}")
     shutil.rmtree(work, ignore_errors=True)

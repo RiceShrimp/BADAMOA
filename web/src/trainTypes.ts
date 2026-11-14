@@ -87,6 +87,7 @@ export interface Run {
   release: { id: string; dataset: string; version: string } | null;
   metrics: Record<string, number>;
   model: { id: string; name: string; version: number; alias: string } | null;
+  base_model: { id: string; name: string; version: number } | null;
   source_run_id: string | null;
 }
 

@@ -160,7 +160,14 @@ def main() -> None:
     val = DataLoader(val_data, batch_size=hp.batch, num_workers=hp.workers)
     print(f"{hp.model} · 클래스 {classes}개 · train {len(train_data)}장 · val {len(val_data)}장 · 장치 {device}")
 
-    model = build(hp.model, classes, hp.pretrained, hp.freeze).to(device)
+    model = build(hp.model, classes, hp.pretrained, hp.freeze)
+    if run.init_weights:  # continue from a registered model: every layer whose shape still fits
+        state = torch.load(run.init_weights, map_location="cpu")
+        own = model.state_dict()
+        fitting = {k: v for k, v in state.items() if k in own and v.shape == own[k].shape}
+        model.load_state_dict(fitting, strict=False)
+        print(f"등록된 모델에서 시작: {len(fitting)}/{len(own)}개 층을 불러왔습니다.")
+    model = model.to(device)
     weights = [p for p in model.parameters() if p.requires_grad]
     if hp.optimizer == "SGD":
         optimizer = torch.optim.SGD(weights, lr=hp.lr, momentum=hp.momentum, weight_decay=hp.weight_decay)

@@ -1,13 +1,15 @@
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { LineChart } from "./Chart";
 import { EpochChart, type EpochSeries } from "./EpochChart";
 import { ProjectPicker, useProject } from "./ProjectPicker";
-import { type Job, type LogLine, api } from "./api";
+import { type Job, type LogLine, type MetricHistory, api } from "./api";
 import type { LabelClass, ReleaseInfo, TreeDataset } from "./catalogTypes";
 import {
   ACTIVE,
   type Environment,
   type ClassMetric,
   METRIC_LABEL,
+  type ModelInfo,
   type Run,
   type RunDetail,
   STAGE_LABEL,
@@ -554,6 +556,17 @@ function RunView({ runId }: { runId: string }) {
                 </dd>
               </>
             )}
+            {run.base_model && (
+              <>
+                <dt>시작 가중치</dt>
+                <dd>
+                  <a href={`#/models/${run.base_model.id}`}>
+                    {run.base_model.name} v{run.base_model.version}
+                  </a>
+                  에서 이어서
+                </dd>
+              </>
+            )}
             {run.source_run_id && (
               <>
                 <dt>원본 실행</dt>
@@ -624,6 +637,8 @@ function RunView({ runId }: { runId: string }) {
         </details>
       )}
 
+      {run.status !== "queued" && <SystemLoad runId={run.id} live={active} />}
+
       {run.job_id && <LogTail jobId={run.job_id} live={active} />}
     </>
   );
@@ -667,6 +682,56 @@ export function ClassTable({ rows }: { rows: ClassMetric[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** CPU, memory and GPU of the server while this run was on it (what W&B shows under "System"). */
+function SystemLoad({ runId, live }: { runId: string; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  const { data } = usePolling(
+    () => (open ? api<MetricHistory & { gpu_indices: number[] }>(`/runs/${runId}/system`) : Promise.resolve(null)),
+    live ? 30000 : 300000,
+    [runId, open],
+  );
+  const chart = (title: string, keys: [string, string][], subtitle?: string) =>
+    data &&
+    keys.some(([key]) => data.series[key]) && (
+      <LineChart
+        title={title}
+        subtitle={subtitle}
+        unit="%"
+        yMax={100}
+        timestamps={data.timestamps}
+        from={data.from}
+        to={data.to}
+        stepSeconds={data.step_s}
+        series={keys.filter(([key]) => data.series[key]).map(([key, label]) => ({ key, label, values: data.series[key].avg }))}
+      />
+    );
+  const gpus = data?.gpu_indices ?? [];
+  return (
+    <details className="card fold" onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary>
+        서버 자원 <span className="muted">(학습하는 동안의 CPU · 메모리 · GPU)</span>
+      </summary>
+      {!data ? (
+        <p className="muted">불러오는 중…</p>
+      ) : data.timestamps.length === 0 ? (
+        <p className="muted">
+          기록이 없습니다. 서버 자원은 1분 단위로 기록하므로 1분이 안 되는 학습에는 남지 않을 수 있습니다.
+        </p>
+      ) : (
+        <div className="chart-grid">
+          {chart("CPU · 메모리", [["cpu", "CPU"], ["mem", "메모리"]])}
+          {gpus.length > 0 &&
+            chart(
+              "GPU",
+              gpus.flatMap((i): [string, string][] => [[`gpu${i}_util`, `GPU ${i} 사용률`], [`gpu${i}_mem`, `GPU ${i} 메모리`]]),
+              "이 학습에 배정된 GPU",
+            )}
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -807,7 +872,8 @@ function NewRun({
   const [classes, setClasses] = useState<LabelClass[]>([]);
   const [chosen, setChosen] = useState<number[]>([]); // empty = all classes
   const [unlabelledCount, setUnlabelledCount] = useState(0);
-  const [extra, setExtra] = useState({ environment: "", gpus: "", unlabelled: "exclude", name: "", model_name: "" });
+  const [extra, setExtra] = useState({ environment: "", gpus: "", unlabelled: "exclude", name: "", model_name: "", base: "" });
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -824,6 +890,7 @@ function NewRun({
       setValues(initialValues(first));
     });
     void api<Environment[]>("/environments").then(setEnvironments);
+    void api<ModelInfo[]>(`/projects/${projectId}/models`).then(setModels);
   }, [projectId, task, defaultTemplate]);
 
   useEffect(() => {
@@ -849,7 +916,7 @@ function NewRun({
   const pickTemplate = (name: string) => {
     setTemplateName(name);
     setValues(initialValues(templates?.find((t) => t.name === name)));
-    setExtra((x) => ({ ...x, environment: "" }));
+    setExtra((x) => ({ ...x, environment: "", base: "" }));
   };
   const setExtraField = (key: keyof typeof extra) => (e: { target: { value: string } }) => setExtra({ ...extra, [key]: e.target.value });
   const toggleClass = (id: number) => setChosen(chosen.includes(id) ? chosen.filter((c) => c !== id) : [...chosen, id]);
@@ -880,6 +947,7 @@ function NewRun({
           classes: chosen,
           name: extra.name,
           model_name: extra.model_name,
+          base_model_id: extra.base,
         },
       });
       onStarted(run);
@@ -994,6 +1062,22 @@ function NewRun({
                   ))}
                 </div>
               </>
+            )}
+            {models.some((m) => m.template.name === templateName) && (
+              <label>
+                시작 가중치
+                <select value={extra.base} onChange={setExtraField("base")}>
+                  <option value="">사전학습 가중치 (기본)</option>
+                  {models
+                    .filter((m) => m.template.name === templateName)
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        등록된 모델 {m.name} v{m.version}
+                        {m.alias ? ` (${m.alias})` : ""}에서 이어서
+                      </option>
+                    ))}
+                </select>
+              </label>
             )}
             <div className="form-row">
               <label>

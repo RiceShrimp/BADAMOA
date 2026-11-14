@@ -45,6 +45,7 @@ class NewRun(BaseModel):
     val_fraction: float = 0.2
     gpus: int | None = None
     min_vram_mb: int = 0
+    base_model_id: str = ""  # continue from this registered model's weights
 
 
 @router.get("/projects/{project_id}/runs")
@@ -68,6 +69,11 @@ def get_run(
     run_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
     return training.run_view(db, hub.settings, training.get_run(db, run_id), detail=True)
+
+
+@router.get("/runs/{run_id}/system")
+def run_system(run_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    return training.system(db, training.get_run(db, run_id))
 
 
 @router.post("/runs/{run_id}/rerun")
@@ -150,6 +156,18 @@ def template_bundle(
     if not storage.has_blob(blob):
         raise HTTPException(status_code=404, detail="템플릿 묶음이 저장소에 없습니다.")
     return Response(storage.get_blob(blob), media_type="application/zip")
+
+
+@agent_router.get("/init-weights")
+def init_weights(
+    job_id: str, node: Node = Depends(current_node), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> Response:
+    """The weights of the registered model this run continues from."""
+    blob = training.init_weights(db, node, job_id)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if not storage.has_blob(blob):
+        raise HTTPException(status_code=404, detail="가중치 파일이 저장소에 없습니다.")
+    return Response(storage.get_blob(blob), media_type="application/octet-stream")
 
 
 @agent_router.post("/report")

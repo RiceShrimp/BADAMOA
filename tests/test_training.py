@@ -310,3 +310,67 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     missing = {"images": [{"name": "x.jpg", "blob": "0" * 64}]}
     assert hub.post(f"/api/models/{model_id}/predict", json=missing).status_code == 400
     assert [o["kind"] for o in hub.get(f"/api/models/{model_id}/ops").json()] == ["predict", "export", "eval"]
+
+
+def test_continue_from_a_registered_model_and_server_load(hub, release):
+    first, job = _train(hub, release, {"model": "yolo11n.pt"})
+    assert job["status"] == "succeeded", _logs(hub, job["id"])
+    model = hub.get(f"/api/runs/{first['id']}").json()["model"]
+
+    run, job = _train(hub, release, {"model": "yolo11n.pt", "epochs": 2}, base_model_id=model["id"])
+    logs = _logs(hub, job["id"])
+    assert job["status"] == "succeeded", logs
+    assert "등록된 모델의 가중치에서 시작합니다" in logs and '이어서 학습: {"dummy": true' in logs  # the code got the file
+    done = hub.get(f"/api/runs/{run['id']}").json()
+    assert done["base_model"] == {"id": model["id"], "name": "street-yolo11n", "version": 1}
+    assert done["model"]["version"] == 2 and "base_model" not in [s["name"] for s in done["settings"]]
+    again = hub.post(f"/api/runs/{run['id']}/rerun").json()  # repeating it starts from the same model
+    assert again["base_model"]["id"] == model["id"]
+    hub.post(f"/api/jobs/{again['job_id']}/cancel")
+    unknown = {"release_id": release["id"], "template": "dummy", "base_model_id": "nope"}
+    assert hub.post("/api/runs", json=unknown).status_code == 404
+
+    # ---- the server's load while the run was on it (minute buckets; a heartbeat arrived during the run)
+    system = hub.get(f"/api/runs/{run['id']}/system").json()
+    assert system["step_s"] == 60 and system["gpu_indices"] == []
+    assert len(system["timestamps"]) >= 1 and {"cpu", "mem"} <= set(system["series"])
+    assert 0 <= system["series"]["mem"]["avg"][0] <= 100
+
+
+def test_sdk_callbacks_for_lightning_and_hugging_face(monkeypatch, capsys):
+    import importlib
+    import json
+    import sys
+    import types
+
+    from badamoa import templates as shipped
+
+    lightning = types.ModuleType("lightning.pytorch.callbacks")
+    lightning.Callback = type("Callback", (), {})
+    transformers = types.ModuleType("transformers")
+    transformers.TrainerCallback = type("TrainerCallback", (), {})
+    for name, module in {
+        "lightning": types.ModuleType("lightning"),
+        "lightning.pytorch": types.ModuleType("lightning.pytorch"),
+        "lightning.pytorch.callbacks": lightning,
+        "transformers": transformers,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.syspath_prepend(str(shipped.SDK))
+    bm = importlib.import_module("badamoa_sdk")
+    bm.load_config([])
+    bm.init()
+
+    trainer = types.SimpleNamespace(sanity_checking=True, current_epoch=0, max_epochs=5, callback_metrics={"val_acc": 0.5})
+    callback = bm.lightning_callback()
+    callback.on_validation_epoch_end(trainer, None)  # Lightning's sanity check is not an epoch
+    trainer.sanity_checking = False
+    callback.on_validation_epoch_end(trainer, None)
+    state = types.SimpleNamespace(global_step=40, max_steps=100)
+    bm.hf_callback().on_log(None, state, None, logs={"loss": 1.5, "learning_rate": 0.0001})
+
+    events = [json.loads(line[10:]) for line in capsys.readouterr().out.splitlines() if line.startswith("@@badamoa ")]
+    assert events[1] == {"event": "epoch", "epoch": 1, "epochs": 5, "metrics": {"val_acc": 0.5}}
+    assert events[2] == {"event": "log", "step": 40, "metrics": {"loss": 1.5, "learning_rate": 0.0001}}
+    assert events[3] == {"event": "progress", "current": 40, "total": 100}
+    bm.load_config([])

@@ -37,6 +37,23 @@ PROGRESS_EVERY_S = 5.0
 MANIFEST_PAGE = 2000
 
 
+def send(call, *args: Any, **kwargs: Any) -> httpx.Response:
+    """A request to the Hub that survives a dropped connection.
+
+    Reports are minutes apart during training, and the Hub closes idle connections;
+    now and then a request goes out on one that has just been closed. Trying again
+    is safe because the Hub treats repeated reports as the same report.
+    """
+    for attempt in range(3):
+        try:
+            return call(*args, **kwargs)
+        except httpx.TransportError:
+            if attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 def _device() -> str:
     """The Hub exposes only the GPUs it reserved, so they are always numbered from 0 here."""
     visible = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
@@ -47,7 +64,7 @@ def manifest_stream(client: httpx.Client, base: str) -> tuple[dict[str, Any], It
     """The manifest header plus a lazy stream of its items (paged by item id)."""
 
     def page(after: int) -> dict[str, Any]:
-        resp = client.get(f"{base}/manifest", params={"after": after, "limit": MANIFEST_PAGE})
+        resp = send(client.get, f"{base}/manifest", params={"after": after, "limit": MANIFEST_PAGE})
         if resp.status_code != 200:
             raise RuntimeError(f"Hub가 거부했습니다 ({resp.status_code}): {resp.text[:300]}")
         return resp.json()
@@ -112,7 +129,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
 
         def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
-            resp = client.post(base + path, json=body)
+            resp = send(client.post, base + path, json=body)
             if resp.status_code != 200:
                 raise RuntimeError(f"Hub가 거부했습니다 ({resp.status_code}): {resp.text[:300]}")
             return resp.json()
@@ -174,6 +191,17 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             "classes": summary["classes"],
             "params": params.get("params") or {},
         }
+        if params.get("init_weights"):  # continue from a registered model instead of pretrained weights
+            start = params["init_weights"]
+            cached = node_home / "cache" / "models" / f"{start['blob']}{Path(start['file_name']).suffix}"
+            if not cached.is_file():
+                resp = client.get(f"{base}/init-weights", timeout=3600)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"시작할 모델의 가중치를 받지 못했습니다 ({resp.status_code}): {resp.text[:200]}")
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_bytes(resp.content)
+            config["init_weights"] = str(cached)
+            print(f"등록된 모델의 가중치에서 시작합니다: {cached.name}")
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         env = {
