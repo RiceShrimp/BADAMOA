@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, registry, resources, services, sweeps, training
+from . import catalog, lineage, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -514,6 +514,18 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
             view = training.model_view(db, hub.settings, training.get_model(db, model_id), detail=True)
             view.pop("download_url", None)  # a signed browser link, not useful to an agent
             return view
+
+    @mcp.tool(title="모델 계보", annotations=READ_ONLY)
+    @guarded
+    def get_model_lineage(model_id: str, ctx: Context) -> dict[str, Any]:
+        """모델이 어디서 왔고 무엇이 되었는지 (계보).
+
+        릴리스 → 학습 실행(이어서 학습한 모델, 이어서 실행한 실행, 탐색) → 모델 → 평가 · 내보내기 · 테스트,
+        그리고 이 모델에서 이어서 학습한 실행과 모델. nodes(kind, label, column)와 edges(from, to)로 반환합니다.
+        """
+        user_of(ctx)
+        with hub.db.session() as db:
+            return lineage.for_model(db, training.get_model(db, model_id))
 
     @mcp.tool(title="모델 alias 지정", annotations=WRITE)
     @guarded

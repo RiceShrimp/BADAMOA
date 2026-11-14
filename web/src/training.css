@@ -873,3 +873,63 @@ th.sortable:hover {
   gap: 10px;
   margin-top: 10px;
 }
+
+/* ---- lineage ---- */
+.lineage-graph {
+  overflow-x: auto;
+  margin: 4px 0 12px;
+}
+.lineage-graph svg {
+  display: block;
+}
+.lineage-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+.lineage-arrow {
+  fill: var(--border-strong);
+}
+.lineage-edge-label {
+  fill: var(--muted);
+  font-size: 10.5px;
+}
+.lineage-box {
+  fill: var(--surface);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.lineage-box.kind-release {
+  fill: var(--surface-2);
+}
+.lineage-box.kind-run,
+.lineage-box.kind-sweep {
+  fill: var(--accent-soft);
+  stroke: transparent;
+}
+.lineage-box.kind-model {
+  fill: var(--ok-soft);
+  stroke: transparent;
+}
+.lineage-box.current {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.lineage-graph a:hover .lineage-box {
+  stroke: var(--accent);
+}
+.lineage-kind {
+  fill: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.lineage-label {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.lineage-sub {
+  fill: var(--muted);
+  font-size: 11.5px;
+}

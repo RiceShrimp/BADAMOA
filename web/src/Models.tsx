@@ -1,3 +1,4 @@
+import { LineageGraph } from "./Lineage";
 import { AliasChip, AliasEditor, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
 import { useEffect, useState } from "react";
 import { ModelOps } from "./ModelOps";
@@ -16,7 +17,7 @@ import {
   keyMetrics,
   metric,
 } from "./trainTypes";
-import { Icon, Stat, timeAgo, usePolling } from "./ui";
+import { Stat, timeAgo, usePolling } from "./ui";
 
 export function Models({ modelId, isAdmin }: { modelId?: string; isAdmin: boolean }) {
   const { projects, projectId, choose } = useProject();
@@ -407,7 +408,6 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
   const classRows = [...model.class_metrics].sort((a, b) => classScore(b) - classScore(a));
   const info = model.info as { ultralytics?: string; torch?: string };
   const metricKeys = keyMetrics(model.task);
-  const items = model.export.items ?? {};
 
   return (
     <>
@@ -463,63 +463,7 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
 
       <section className="card">
         <h3>계보</h3>
-        <div className="lineage">
-          {model.release ? (
-            <a className="lineage-step" href={model.release.deleted ? undefined : `#/datasets/${model.release.id}`}>
-              <span className="eyebrow">
-                <Icon name="database" size={14} />
-                릴리스
-              </span>
-              <strong>
-                {model.release.dataset} {model.release.version}
-              </strong>
-              <small>
-                {model.export.items
-                  ? `train ${(items.train ?? 0).toLocaleString()} · val ${(items.val ?? 0).toLocaleString()}장으로 학습`
-                  : "학습 데이터"}
-                {model.release.deleted ? " · 삭제됨" : ""}
-              </small>
-            </a>
-          ) : (
-            <div className="lineage-step">
-              <span className="eyebrow">릴리스</span>
-              <strong>알 수 없음</strong>
-            </div>
-          )}
-          <Icon name="arrow" />
-          {model.run ? (
-            <a className="lineage-step" href={`#/training/${model.run.id}`}>
-              <span className="eyebrow">
-                <Icon name="chart" size={14} />
-                학습 실행
-              </span>
-              <strong>{model.run.name}</strong>
-              <small>
-                {model.template.title}
-                {model.template.version ? ` v${model.template.version}` : ""}
-                {model.config.epochs != null ? ` · epoch ${String(model.config.epochs)}` : ""}
-              </small>
-            </a>
-          ) : (
-            <div className="lineage-step">
-              <span className="eyebrow">학습 실행</span>
-              <strong>기록이 지워짐</strong>
-            </div>
-          )}
-          <Icon name="arrow" />
-          <div className="lineage-step current">
-            <span className="eyebrow">
-              <Icon name="box" size={14} />
-              모델
-            </span>
-            <strong>
-              {model.name} v{model.version}
-            </strong>
-            <small>
-              {model.file_name} · {bytesLabel(model.bytes)}
-            </small>
-          </div>
-        </div>
+        <LineageGraph path={`/models/${model.id}/lineage`} />
         <dl className="kv compact">
           <dt>sha256</dt>
           <dd className="mono small">{model.sha256}</dd>

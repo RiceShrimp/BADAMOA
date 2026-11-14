@@ -1,3 +1,4 @@
+import { LineageGraph } from "./Lineage";
 import { MediaPanel } from "./Media";
 import { SweepFields, SweepList, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
 import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
@@ -631,6 +632,11 @@ function RunView({ runId }: { runId: string }) {
           <FileList files={run.files} />
         </section>
       )}
+
+      <details className="card fold">
+        <summary>계보</summary>
+        <LineageGraph path={`/runs/${run.id}/lineage`} />
+      </details>
 
       {classRows.length > 0 && (
         <details className="card fold" open={classRows.length <= 12}>

@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
-from . import catalog, modelops, services, sweeps, training
+from . import catalog, lineage, modelops, services, sweeps, training
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -163,6 +163,16 @@ def update_run(
     run = training.update_run(db, user, run_id, **body.model_dump(), via="ui")
     db.commit()
     return training.run_view(db, hub.settings, run)
+
+
+@router.get("/runs/{run_id}/lineage")
+def run_lineage(run_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    return lineage.for_run(db, training.get_run(db, run_id))
+
+
+@router.get("/models/{model_id}/lineage")
+def model_lineage(model_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    return lineage.for_model(db, training.get_model(db, model_id))
 
 
 @router.get("/runs/{run_id}/system")

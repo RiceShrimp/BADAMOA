@@ -758,3 +758,37 @@ def test_storage_policy_and_cleanup(hub, release, settings, monkeypatch):
     assert weights.status_code == 200  # the model itself always stays
     assert httpx.get(base + view(aliased)["files"][0]["url"]).status_code == 200
     assert hub.get("/api/storage/cleanup").json()["removed"]["files"] == 0  # nothing left over
+
+
+def test_lineage_of_a_model_and_a_run(hub, release):
+    first, job = _train(hub, release, {"epochs": 2})
+    assert job["status"] == "succeeded"
+    model = hub.get(f"/api/runs/{first['id']}").json()["model"]
+    evaluation = hub.post(f"/api/models/{model['id']}/eval", json={"release_id": release["id"], "split": "val", "gpus": 0})
+    assert _wait(hub, evaluation.json()["job_id"])["status"] == "succeeded"
+    exported = hub.post(f"/api/models/{model['id']}/export", json={"format": "onnx"}).json()
+    assert _wait(hub, exported["job_id"])["status"] == "succeeded"
+    second, job = _train(hub, release, {"epochs": 2}, base_model_id=model["id"])
+    assert job["status"] == "succeeded"
+    grown = hub.get(f"/api/runs/{second['id']}").json()["model"]
+
+    graph = hub.get(f"/api/models/{model['id']}/lineage").json()
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    edges = {(e["from"], e["to"]): e["label"] for e in graph["edges"]}
+    release_node, run1, model1 = f"release:{release['id']}", f"run:{first['id']}", f"model:{model['id']}"
+    run2, model2 = f"run:{second['id']}", f"model:{grown['id']}"
+    assert {(release_node, run1), (run1, model1), (model1, run2), (run2, model2), (release_node, run2)} <= set(edges)
+    assert edges[(model1, run2)] == "이어서 학습"
+    kinds = sorted(n["kind"] for n in graph["nodes"])
+    assert kinds == ["eval", "export", "model", "model", "release", "run", "run"]
+    assert [n["id"] for n in graph["nodes"] if n["current"]] == [model1]
+    columns = {key: nodes[key]["column"] for key in (release_node, run1, model1, run2, model2)}
+    assert columns == {release_node: 0, run1: 1, model1: 2, run2: 3, model2: 4}
+    evaluation_node = next(n for n in graph["nodes"] if n["kind"] == "eval")
+    assert evaluation_node["label"] == "street v1 val" and evaluation_node["sub"] == "map50_95 0.400"
+    assert nodes[model1]["href"] == f"#/models/{model['id']}" and nodes[run2]["href"] == f"#/training/{second['id']}"
+
+    # seen from the second run: where it started and what it became
+    from_run = hub.get(f"/api/runs/{second['id']}/lineage").json()
+    assert [n["id"] for n in from_run["nodes"] if n["current"]] == [run2]
+    assert {(model1, run2), (run2, model2)} <= {(e["from"], e["to"]) for e in from_run["edges"]}
