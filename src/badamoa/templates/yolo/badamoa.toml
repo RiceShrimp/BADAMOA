@@ -1,6 +1,6 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "7"
+version = "8"
 description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
 task = "detect"
 data_format = "yolo"
@@ -108,6 +108,8 @@ default = 0.01
 minimum = 0
 advanced = true
 group = "최적화"
+help = "옵티마이저가 auto이면 쓰이지 않습니다."
+unused_when = { optimizer = ["auto"] }
 
 [params.lrf]
 type = "number"
@@ -126,6 +128,8 @@ minimum = 0
 maximum = 1
 advanced = true
 group = "최적화"
+help = "옵티마이저가 auto이면 쓰이지 않습니다."
+unused_when = { optimizer = ["auto"] }
 
 [params.weight_decay]
 type = "number"

@@ -568,3 +568,106 @@ def test_a_resumed_run_that_finishes_frees_the_checkpoints_it_came_from(hub, rel
     assert stopped["can_resume"] is False and stopped["checkpoint_epoch"] is None  # continued and done: nothing to keep
     assert [f["name"] for f in stopped["files"]] == ["epoch.txt"]  # what it had produced stays with it
     assert hub.get("/api/storage").json()["parts"]["checkpoints"] == 0
+
+
+def _sweep_done(hub, sweep_id, timeout=120):
+    deadline = time.monotonic() + timeout
+    view = hub.get(f"/api/sweeps/{sweep_id}").json()
+    while time.monotonic() < deadline and view["status"] == "running":
+        time.sleep(0.3)
+        view = hub.get(f"/api/sweeps/{sweep_id}").json()
+    return view
+
+
+def test_hyperparameter_search(hub, release):
+    project = release["project_id"]
+    body = {"release_id": release["id"], "template": "dummy", "gpus": 0, "params": {"epochs": 2, "sleep": 0.01}}
+
+    # ---- every combination, two at a time; the Hub starts the next as one ends
+    grid = hub.post(
+        "/api/sweeps",
+        json={**body, "space": {"ceiling": {"values": [0.3, 0.7, 0.5]}}, "parallel": 2, "tags": ["탐색"]},
+    )
+    assert grid.status_code == 200, grid.text
+    started = grid.json()
+    assert (started["total"], started["started"], started["metric"], started["goal"]) == (3, 2, "map50_95", "maximize")
+    done = _sweep_done(hub, started["id"])
+    assert done["status"] == "finished" and (done["started"], done["finished"], done["failed"]) == (3, 3, 0), done
+    assert [p["settings"] for p in done["points"]] == [{"ceiling": 0.3}, {"ceiling": 0.7}, {"ceiling": 0.5}]
+    assert done["best"]["settings"] == {"ceiling": 0.7} and done["best"]["name"] == f"{done['name']}-2"
+    runs = hub.get(f"/api/projects/{project}/runs", params={"sweep": done["id"]}).json()
+    assert len(runs) == 3 and all(r["sweep"]["id"] == done["id"] and r["tags"] == ["탐색"] for r in runs)
+    assert {r["model"]["name"] for r in runs} == {done["name"]}  # the search's models are a family of their own
+    assert [s["id"] for s in hub.get(f"/api/projects/{project}/sweeps").json()] == [done["id"]]
+
+    # ---- random draws: a listed value or a number in a range (log scale), the same draws every time
+    space = {
+        "ceiling": {"min": 0.2, "max": 0.8},
+        "epochs": {"values": [1, 2]},
+        "sleep": {"min": 0.001, "max": 0.01, "log": True},
+    }
+    drawn = hub.post("/api/sweeps", json={**body, "space": space, "method": "random", "max_runs": 3, "parallel": 3}).json()
+    drawn = _sweep_done(hub, drawn["id"])
+    assert drawn["status"] == "finished" and drawn["total"] == 3
+    for point in drawn["points"]:
+        settings = point["settings"]
+        assert 0.2 <= settings["ceiling"] <= 0.8 and settings["epochs"] in (1, 2) and 0.001 <= settings["sleep"] <= 0.01
+    assert len({p["settings"]["ceiling"] for p in drawn["points"]}) == 3
+
+    # ---- mistakes are refused before anything starts
+    refuse = lambda **extra: hub.post("/api/sweeps", json={**body, **extra})  # noqa: E731
+    assert "없는 설정" in refuse(space={"nope": {"values": [1]}}).json()["detail"]
+    assert "무작위" in refuse(space={"ceiling": {"min": 0.1, "max": 0.5}}).json()["detail"]  # a range needs random
+    assert refuse(space={"epochs": {"values": [0, 1]}}).status_code == 400  # below the template's minimum
+    too_many = {"ceiling": {"values": [i / 100 for i in range(11)]}, "epochs": {"values": list(range(1, 11))}}
+    assert "110개" in refuse(space=too_many).json()["detail"]
+    assert refuse(space={}).status_code == 400
+    # A setting the code ignores under the other settings would give identical runs.
+    yolo = {"template": "yolo", "params": {"epochs": 1}}
+    ignored = refuse(**yolo, space={"lr0": {"values": [0.01, 0.001]}})
+    assert ignored.status_code == 400 and "쓰이지 않아" in ignored.json()["detail"], ignored.text
+    still = refuse(**yolo, space={"lr0": {"values": [0.01, 0.001]}, "optimizer": {"values": ["auto"]}})
+    assert still.status_code == 400
+
+    # ---- stopping: nothing more starts, the running one is stopped, what finished stays
+    slow = hub.post(
+        "/api/sweeps",
+        json={**body, "params": {"epochs": 30, "sleep": 0.3}, "space": {"ceiling": {"values": [0.4, 0.5, 0.6]}}},
+    ).json()
+    assert slow["started"] == 1
+    stopped = hub.post(f"/api/sweeps/{slow['id']}/stop").json()
+    assert stopped["status"] == "stopped"
+    time.sleep(3)
+    after = hub.get(f"/api/sweeps/{slow['id']}").json()
+    assert after["started"] == 1 and after["active"] == 0 and after["status"] == "stopped"
+
+
+def test_a_search_goes_on_when_a_built_in_template_moves_to_a_new_version(hub, release, settings):
+    """A Hub upgrade replaces the built-in templates; a running search goes on with the new version."""
+    from badamoa.hub.db import Database, utcnow
+    from badamoa.hub.train_models import Template
+
+    body = {"release_id": release["id"], "template": "dummy", "gpus": 0, "params": {"epochs": 30, "sleep": 0.3}}
+    sweep = hub.post("/api/sweeps", json={**body, "space": {"ceiling": {"values": [0.4, 0.5]}}}).json()
+    first = hub.get(f"/api/projects/{release['project_id']}/runs", params={"sweep": sweep["id"]}).json()[0]
+    database = Database(settings.database_url)
+    with database.session() as db:
+        old = db.get(Template, first["template"]["id"])
+        old.deleted_at = utcnow()
+        db.add(
+            Template(
+                name=old.name, version="99", title=old.title, task=old.task, manifest=old.manifest, builtin=True, hidden=True
+            )
+        )
+    database.engine.dispose()
+    assert hub.get(f"/api/projects/{release['project_id']}/sweeps").status_code == 200  # still listed
+    hub.post(f"/api/jobs/{first['job_id']}/cancel")
+    deadline = time.monotonic() + 30
+    runs = []
+    while time.monotonic() < deadline and len(runs) < 2:
+        time.sleep(0.3)
+        runs = hub.get(f"/api/projects/{release['project_id']}/runs", params={"sweep": sweep["id"]}).json()
+    assert len(runs) == 2 and runs[0]["template"]["version"] == "99", runs
+    view = hub.post(f"/api/sweeps/{sweep['id']}/stop").json()
+    assert view["status"] == "stopped" and view["template"]["version"] == "2"  # what it was started with
+

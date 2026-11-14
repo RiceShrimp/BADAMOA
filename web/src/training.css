@@ -785,3 +785,40 @@ th.sortable:hover {
   justify-content: flex-end;
   margin: -4px 0 6px;
 }
+
+/* ---- hyperparameter search ---- */
+.sweep-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.sweep-row label {
+  margin: 0;
+}
+.sweep-row .field-error {
+  grid-column: 1 / -1;
+}
+.field-error {
+  color: var(--bad);
+  font-size: 12.5px;
+}
+.sweep-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.sweep-chart circle {
+  fill: var(--series-1);
+  fill-opacity: 0.75;
+}
+.sweep-chart circle.best {
+  fill: var(--ok);
+  fill-opacity: 1;
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+.sweep-chart a:hover circle {
+  fill-opacity: 1;
+}

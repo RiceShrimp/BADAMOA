@@ -74,6 +74,7 @@ def test_manifest_defaults_and_param_checks():
         (("default = 10", 'default = "many"'), "기본값"),
         (('variant = "backbone"', 'variant = "arch"'), "variant"),
         (('version = "1.0.0"', "version = 1.0"), "형식이 맞지 않습니다"),
+        (("advanced = true", 'advanced = true\nunused_when = { optimizer = ["auto"] }'), "optimizer라는 설정이 없습니다"),
     ],
 )
 def test_manifest_problems_are_reported_in_words(change, hint):
@@ -193,6 +194,7 @@ def test_yolo_hyperparameters_are_detailed_settings():
     assert (chosen["lr0"], chosen["optimizer"], chosen["mosaic"], chosen["momentum"]) == (0.002, "AdamW", 0.0, 0.937)
     with pytest.raises(fmt.TemplateError, match="옵티마이저"):
         fmt.resolve_params(manifest, {"optimizer": "Lion"})
+    assert manifest.params["lr0"].unused_when == {"optimizer": ["auto"]}  # Ultralytics picks it itself then
 
     # the torchvision template declares everything in code
     torchvision = fmt.load_manifest(shipped.builtin()["torchvision"])

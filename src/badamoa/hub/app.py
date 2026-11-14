@@ -22,6 +22,7 @@ from . import (
     registry_api,
     resources,
     services,
+    sweeps,
     training_api,
 )
 from .config import HubSettings
@@ -61,6 +62,20 @@ async def _sweeper(hub: Hub) -> None:
             log.exception("sweep failed")
 
 
+async def _searches(hub: Hub) -> None:
+    """Start the next runs of hyperparameter searches: soon after a training ends, else every 15 s."""
+    ticks = 0
+    while True:
+        await anyio.sleep(1.0)
+        ticks += 1
+        if not sweeps.pending() and ticks % 15:
+            continue
+        try:
+            await anyio.to_thread.run_sync(sweeps.advance_all, hub.db)
+        except Exception:  # keep the loop alive
+            log.exception("advancing searches failed")
+
+
 def create_app(settings: HubSettings) -> FastAPI:
     db = Database(settings.database_url or "")
     db.create_all()
@@ -73,6 +88,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     async def lifespan(_: FastAPI):
         async with mcp.session_manager.run(), anyio.create_task_group() as tg:
             tg.start_soon(_sweeper, hub)
+            tg.start_soon(_searches, hub)
             yield
             tg.cancel_scope.cancel()
 

@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, registry, resources, services, training
+from . import catalog, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -394,6 +394,70 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         user_of(ctx)
         with hub.db.session() as db:
             return training.list_runs(db, hub.settings, project_id, limit=limit, tag=tag, q=query)
+
+    @mcp.tool(title="하이퍼파라미터 탐색 시작", annotations=WRITE)
+    @guarded
+    def start_sweep(
+        release_id: str,
+        space: dict[str, Any],
+        ctx: Context,
+        template: str = "",
+        params: dict[str, Any] | None = None,
+        method: str = "grid",
+        metric: str = "",
+        goal: str = "",
+        max_runs: int = 10,
+        parallel: int = 1,
+        name: str = "",
+        gpus: int | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """여러 설정으로 학습을 돌려 가장 좋은 설정을 찾습니다 (W&B Sweeps).
+
+        space: 시험할 설정. 값 목록 {"lr0": {"values": [0.01, 0.001]}}
+        또는 범위 {"lr0": {"min": 0.0001, "max": 0.01, "log": true}}.
+        method: grid(값 목록의 모든 조합) 또는 random(max_runs번 무작위로 뽑음, 범위는 random에서만).
+        params: 모든 실행이 같이 쓰는 설정 (예: {"model": "yolo11n.pt", "epochs": 30}).
+        metric · goal: 무엇이 좋은지 (비우면 과제의 주 지표, 손실이면 minimize). parallel: 동시에 돌릴 실행 수.
+        실행은 Hub가 차례로 시작합니다. get_sweep으로 진행과 최고 설정을 확인하세요.
+        """
+        user = user_of(ctx)
+        with sweeps.lock, hub.db.session() as db:
+            sweep = sweeps.start_sweep(
+                db,
+                user,
+                release_id=release_id,
+                space=space,
+                template=template,
+                params=params,
+                method=method,
+                metric=metric,
+                goal=goal,
+                max_runs=max_runs,
+                parallel=parallel,
+                name=name,
+                gpus=gpus,
+                tags=tags,
+                via="mcp",
+            )
+            return sweeps.sweep_view(db, hub.settings, sweep)
+
+    @mcp.tool(title="하이퍼파라미터 탐색 조회", annotations=READ_ONLY)
+    @guarded
+    def get_sweep(sweep_id: str, ctx: Context) -> dict[str, Any]:
+        """탐색의 진행(시작 · 완료 · 실패 수), 가장 좋은 실행과 그 설정, 실행마다의 설정과 결과(points)를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return sweeps.sweep_view(db, hub.settings, sweeps.get_sweep(db, sweep_id), detail=True)
+
+    @mcp.tool(title="하이퍼파라미터 탐색 중단", annotations=WRITE)
+    @guarded
+    def stop_sweep(sweep_id: str, ctx: Context) -> dict[str, Any]:
+        """탐색을 멈춥니다: 더 시작하지 않고, 도는 실행은 중단합니다. 끝난 실행과 모델은 남습니다."""
+        user = user_of(ctx)
+        with sweeps.lock, hub.db.session() as db:
+            sweep = sweeps.stop_sweep(db, user, sweep_id, via="mcp")
+            return sweeps.sweep_view(db, hub.settings, sweep)
 
     @mcp.tool(title="학습 실행 메모 · 태그", annotations=WRITE)
     @guarded

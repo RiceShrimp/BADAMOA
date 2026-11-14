@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
-from . import catalog, modelops, services, training
+from . import catalog, modelops, services, sweeps, training
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -63,13 +63,72 @@ def list_runs(
     project_id: str,
     tag: str = "",
     q: str = "",
+    sweep: str = "",
     limit: int = 200,
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> list[dict[str, Any]]:
     """The project's runs, newest first; ``tag`` keeps one tag, ``q`` searches names, notes and tags."""
-    return training.list_runs(db, hub.settings, project_id, limit=limit, tag=tag, q=q)
+    return training.list_runs(db, hub.settings, project_id, limit=limit, tag=tag, q=q, sweep=sweep)
+
+
+# ---- sweeps (hyperparameter search) -----------------------------------------------------
+
+
+class NewSweep(BaseModel):
+    release_id: str
+    space: dict[str, Any]  # {"lr0": {"values": [0.01, 0.001]}, "momentum": {"min": 0.8, "max": 0.98}}
+    template: str = ""
+    environment: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)  # the settings every run shares
+    method: str = "grid"  # grid | random
+    metric: str = ""  # empty: the task's main metric
+    goal: str = ""  # maximize | minimize; empty: minimize for a loss, else maximize
+    max_runs: int = 10  # random: how many draws
+    parallel: int = 1
+    name: str = ""
+    classes: list[int] = Field(default_factory=list)
+    unlabelled: str = "exclude"
+    val_fraction: float = 0.2
+    gpus: int | None = None
+    min_vram_mb: int = 0
+    base_model_id: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+@router.post("/sweeps")
+def start_sweep(
+    body: NewSweep, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    with sweeps.lock:
+        sweep = sweeps.start_sweep(db, user, via="ui", **body.model_dump())
+        db.commit()
+    return sweeps.sweep_view(db, hub.settings, sweep)
+
+
+@router.get("/projects/{project_id}/sweeps")
+def list_sweeps(
+    project_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> list[dict[str, Any]]:
+    return sweeps.list_sweeps(db, hub.settings, project_id)
+
+
+@router.get("/sweeps/{sweep_id}")
+def get_sweep(
+    sweep_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    return sweeps.sweep_view(db, hub.settings, sweeps.get_sweep(db, sweep_id), detail=True)
+
+
+@router.post("/sweeps/{sweep_id}/stop")
+def stop_sweep(
+    sweep_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    with sweeps.lock:
+        sweep = sweeps.stop_sweep(db, user, sweep_id, via="ui")
+        db.commit()
+    return sweeps.sweep_view(db, hub.settings, sweep, detail=True)
 
 
 @router.get("/projects/{project_id}/tags")

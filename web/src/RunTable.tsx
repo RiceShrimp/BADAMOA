@@ -13,6 +13,7 @@ const HIDDEN_SETTINGS = new Set([
   "model_name",
   "base_model",
   "resumed_from",
+  "sweep",
   "extra",
 ]);
 
@@ -214,19 +215,23 @@ export function RunTable({
   projectId,
   task,
   filtered,
-  compared,
+  compared = [],
   onCompare,
   tools,
+  storageKey: ownKey,
+  defaults,
 }: {
   runs: Run[] | null;
   projectId: string;
   task: string;
   filtered: boolean;
-  compared: string[];
-  onCompare: (id: string) => void;
+  compared?: string[];
+  onCompare?: (id: string) => void; // without it there is no column of checkboxes
   tools?: ReactNode; // the search box and tag chips, on the same row
+  storageKey?: string; // where the chosen columns are remembered (default: per project)
+  defaults?: string[];
 }) {
-  const storageKey = `badamoa.runColumns.${projectId}`;
+  const storageKey = ownKey ?? `badamoa.runColumns.${projectId}`;
   const [shown, setShown] = useState<string[] | null>(() => readSaved(storageKey));
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   useEffect(() => {
@@ -235,7 +240,7 @@ export function RunTable({
   }, [storageKey]);
 
   const columns = useMemo(() => columnsFor(runs ?? [], task), [runs, task]);
-  const chosen = shown ?? defaultColumns(task);
+  const chosen = shown ?? defaults ?? defaultColumns(task);
   const visible = columns.filter((c) => chosen.includes(c.key));
   const choose = (keys: string[] | null) => {
     setShown(keys);
@@ -291,7 +296,7 @@ export function RunTable({
         <table className="runs">
           <thead>
             <tr>
-              <th aria-label="비교" />
+              {onCompare && <th aria-label="비교" />}
               {head("name", "실행")}
               {head("status", "상태")}
               {visible.map((c) => head(c.key, c.label, c.numeric))}
@@ -300,7 +305,7 @@ export function RunTable({
           <tbody>
             {runs?.length === 0 && (
               <tr>
-                <td colSpan={3 + visible.length} className="empty">
+                <td colSpan={(onCompare ? 3 : 2) + visible.length} className="empty">
                   {filtered ? "찾는 실행이 없습니다." : '아직 학습한 적이 없습니다. "새 학습"으로 릴리스를 골라 시작하세요.'}
                 </td>
               </tr>
@@ -309,23 +314,33 @@ export function RunTable({
               const slot = compared.indexOf(run.id) + 1;
               return (
                 <tr key={run.id} className="clickable" onClick={() => (window.location.hash = `#/training/${run.id}`)}>
-                  <td onClick={(e) => e.stopPropagation()} className="pick">
-                    <label title="지표 그래프에 겹쳐 보기">
-                      <input
-                        type="checkbox"
-                        checked={slot > 0}
-                        onChange={() => onCompare(run.id)}
-                        disabled={run.epoch === 0}
-                        aria-label={`${run.name} 지표 겹쳐 보기`}
-                      />
-                      {slot > 0 && <i style={{ background: `var(--series-${slot})` }} />}
-                    </label>
-                  </td>
+                  {onCompare && (
+                    <td onClick={(e) => e.stopPropagation()} className="pick">
+                      <label title="지표 그래프에 겹쳐 보기">
+                        <input
+                          type="checkbox"
+                          checked={slot > 0}
+                          onChange={() => onCompare(run.id)}
+                          disabled={run.epoch === 0}
+                          aria-label={`${run.name} 지표 겹쳐 보기`}
+                        />
+                        {slot > 0 && <i style={{ background: `var(--series-${slot})` }} />}
+                      </label>
+                    </td>
+                  )}
                   <td>
                     <strong>{run.name}</strong> <TagList tags={run.tags} />
                     <div className="muted small">
                       {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 릴리스"} ·{" "}
                       {run.template.variant || run.template.title}
+                      {run.sweep && (
+                        <>
+                          {" · "}
+                          <a href={`#/training/sweep/${run.sweep.id}`} onClick={(e) => e.stopPropagation()}>
+                            탐색 {run.sweep.name}
+                          </a>
+                        </>
+                      )}
                     </div>
                     {run.note && <div className="note-line">{run.note}</div>}
                   </td>

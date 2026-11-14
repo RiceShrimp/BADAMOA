@@ -93,6 +93,7 @@ def start_run(
     resume_run_id: str = "",
     tags: list[str] | None = None,
     note: str = "",
+    sweep: dict[str, Any] | None = None,
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
@@ -165,10 +166,12 @@ def start_run(
             "model_name": _slug(model_name),
             **({"base_model": {"id": base.id, "name": base.name, "version": base.version}} if base else {}),
             **({"resumed_from": {"id": interrupted.id, "name": interrupted.name}} if interrupted else {}),
+            **({"sweep": sweep} if sweep else {}),
         },
         epochs=int(epochs) if isinstance(epochs, int | float) else 0,
         source_run_id=source_run_id,
         note=note.strip()[:MAX_NOTE],
+        sweep_id=(sweep or {}).get("id"),
         created_by=user.id,
     )
     db.add(run)
@@ -620,6 +623,7 @@ def run_view(
         ),
         "base_model": run.config.get("base_model"),  # the registered model this run started from, if any
         "resumed_from": run.config.get("resumed_from"),  # the interrupted run this one continues
+        "sweep": run.config.get("sweep"),  # the search this run is part of: {"id", "name", "index"}
         "can_resume": _can_resume(db, run, status),
         "checkpoint_epoch": (run.checkpoint or {}).get("epoch"),  # how far a resumed run would start from
         "source_run_id": run.source_run_id,
@@ -670,10 +674,18 @@ def metrics_csv(db: Session, run: Run) -> str:
 
 
 def list_runs(
-    db: Session, settings: HubSettings, project_id: str, limit: int = 200, tag: str = "", q: str = ""
+    db: Session,
+    settings: HubSettings,
+    project_id: str,
+    limit: int = 200,
+    tag: str = "",
+    q: str = "",
+    sweep: str = "",
 ) -> list[dict[str, Any]]:
     catalog.get_project(db, project_id)
     query = select(Run).where(Run.project_id == project_id, Run.deleted_at.is_(None))
+    if sweep:
+        query = query.where(Run.sweep_id == sweep)
     query = _search(query, Run, "run", tag, q).order_by(Run.created_at.desc()).limit(max(1, min(limit, 500)))
     runs = db.scalars(query).all()
     names = services.node_name_map(db)

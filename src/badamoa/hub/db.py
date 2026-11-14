@@ -18,6 +18,7 @@ _ADDED_COLUMNS = [
     ("projects", "settings", "JSON DEFAULT '{}'"),
     ("runs", "note", "TEXT DEFAULT ''"),
     ("model_versions", "aliases", "JSON DEFAULT '[]'"),
+    ("runs", "sweep_id", "VARCHAR(32)"),
 ]
 
 

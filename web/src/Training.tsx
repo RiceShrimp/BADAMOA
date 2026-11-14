@@ -1,3 +1,4 @@
+import { SweepFields, SweepList, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
 import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
 import { FileList, fileSize } from "./Files";
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -56,6 +57,7 @@ export function Training({ runId, arg }: { runId?: string; arg?: string }) {
       </>
     );
   }
+  if (runId === "sweep" && arg) return <SweepView key={arg} sweepId={arg} />;
   if (runId && runId !== "new") return <RunView key={runId} runId={runId} />;
   return (
     <RunList
@@ -158,6 +160,8 @@ function RunList({
 
       {compared.length > 0 && <Comparison ids={compared} live={busy} task={task} />}
 
+      <SweepList projectId={projectId} />
+
       <RunTable
         runs={runs ?? null}
         projectId={projectId}
@@ -193,6 +197,10 @@ function RunList({
             setCreating(false);
             void refresh();
             window.location.hash = `#/training/${run.id}`;
+          }}
+          onSweep={(id) => {
+            setCreating(false);
+            window.location.hash = `#/training/sweep/${id}`;
           }}
         />
       )}
@@ -379,7 +387,14 @@ function RunView({ runId }: { runId: string }) {
             · {run.template.title}
             {run.template.variant && run.template.variant !== run.template.name ? ` ${run.template.variant}` : ""} ·{" "}
             {run.node_name ?? "서버 배정 대기"} ·{" "}
-            {VIA_LABEL[run.created_via] ?? run.created_via}에서 시작 · {timeAgo(run.created_at)}
+            {run.sweep ? (
+              <a href={`#/training/sweep/${run.sweep.id}`}>
+                탐색 {run.sweep.name}의 {run.sweep.index + 1}번째
+              </a>
+            ) : (
+              `${VIA_LABEL[run.created_via] ?? run.created_via}에서 시작`
+            )}{" "}
+            · {timeAgo(run.created_at)}
           </p>
         </div>
         <div className="head-actions">
@@ -843,6 +858,7 @@ function NewRun({
   releaseId,
   onClose,
   onStarted,
+  onSweep,
 }: {
   projectId: string;
   task: string;
@@ -850,6 +866,7 @@ function NewRun({
   releaseId?: string;
   onClose: () => void;
   onStarted: (run: Run) => void;
+  onSweep: (id: string) => void;
 }) {
   const [tree, setTree] = useState<TreeDataset[] | null>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
@@ -864,6 +881,12 @@ function NewRun({
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A search: the settings to try, and how.
+  const [trials, setTrials] = useState<Trial[]>([]);
+  const [method, setMethod] = useState<"grid" | "random">("grid");
+  const [drawCount, setDrawCount] = useState(10);
+  const [parallel, setParallel] = useState(1);
+  const [goalMetric, setGoalMetric] = useState(keyMetrics(task)[0]);
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -902,6 +925,7 @@ function NewRun({
     else groups.push([p.group, [p]]);
   }
   const pickTemplate = (name: string) => {
+    setTrials([]);
     setTemplateName(name);
     setValues(initialValues(templates?.find((t) => t.name === name)));
     setExtra((x) => ({ ...x, environment: "", base: "" }));
@@ -923,7 +947,41 @@ function NewRun({
       if (p.type === "boolean") params[p.name] = v === true;
       else if (v !== "" && v != null) params[p.name] = p.type === "string" ? String(v).trim() : Number(v);
     }
+    const space: Record<string, SweepSpec> = {};
+    for (const t of trials) {
+      const parsed = parseTrial(fields.find((p) => p.name === t.name), t.text);
+      if (typeof parsed === "string") {
+        setError(parsed);
+        setBusy(false);
+        return;
+      }
+      space[t.name] = parsed;
+      delete params[t.name];
+    }
+    const ranged = Object.values(space).some((s) => s.min !== undefined);
     try {
+      if (trials.length > 0) {
+        const sweep = await api<{ id: string }>("/sweeps", {
+          body: {
+            release_id: release,
+            template: template.id,
+            environment: extra.environment,
+            params,
+            space,
+            method: ranged ? "random" : method,
+            max_runs: drawCount,
+            parallel,
+            metric: goalMetric,
+            gpus: extra.gpus === "" ? null : Number(extra.gpus),
+            unlabelled: extra.unlabelled,
+            classes: chosen,
+            name: extra.name,
+            base_model_id: extra.base,
+          },
+        });
+        onSweep(sweep.id);
+        return;
+      }
       const run = await api<Run>("/runs", {
         body: {
           release_id: release,
@@ -1080,6 +1138,23 @@ function NewRun({
             </fieldset>
           </details>
 
+          {template && (
+            <SweepFields
+              params={fields}
+              task={task}
+              trials={trials}
+              onTrials={setTrials}
+              method={method}
+              onMethod={setMethod}
+              runs={drawCount}
+              onRuns={setDrawCount}
+              parallel={parallel}
+              onParallel={setParallel}
+              goalMetric={goalMetric}
+              onGoalMetric={setGoalMetric}
+            />
+          )}
+
           <p className="muted small">
             학습할 서버는 자동으로 정해집니다. 그 서버에서 처음 학습할 때는 환경을 준비하느라 몇 분 더 걸릴 수 있습니다.
             {template?.license ? ` ${template.title}은 ${template.license} 라이선스입니다 — 제품에 탑재하기 전에 확인하세요.` : ""}
@@ -1090,7 +1165,7 @@ function NewRun({
               취소
             </button>
             <button className="primary" disabled={busy || !release || !template}>
-              학습 시작
+              {trials.length > 0 ? "탐색 시작" : "학습 시작"}
             </button>
           </div>
         </form>

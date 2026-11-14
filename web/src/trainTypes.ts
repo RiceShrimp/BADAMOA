@@ -89,6 +89,7 @@ export interface Run {
   model: { id: string; name: string; version: number; alias: string; aliases: string[] } | null;
   base_model: { id: string; name: string; version: number } | null;
   resumed_from: { id: string; name: string } | null;
+  sweep: { id: string; name: string; index: number } | null;
   can_resume: boolean;
   source_run_id: string | null;
   note: string;

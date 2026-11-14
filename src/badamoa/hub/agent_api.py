@@ -22,7 +22,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import registry, services
+from . import registry, services, sweeps
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -96,4 +96,5 @@ def complete(
     job = services.complete_job(db, node, job_id, body)
     registry.on_job_finished(db, job)
     db.commit()
+    sweeps.on_job_finished(job)  # a search may start its next run
     return {"status": job.status}

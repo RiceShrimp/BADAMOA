@@ -178,7 +178,7 @@ bm.finish({"map50_95": best})               # 최종 지표
 | 메모·태그 | notes, tags | tags, description | 실행: 메모 · 태그 · 이름, 모델: 설명 · 태그. 목록에서 태그로 걸러 보고 글자로 찾음 | 0.15.0 |
 | 모델 alias | aliases (`best`, `production`) | aliases (`name@champion`) | 자유로운 이름, 한 버전에 여러 개, 같은 모델 안에서는 한 버전에만. 이름 + alias로 찾기 | 0.15.0 |
 | 실행 표, 내보내기 | Runs 표(열 고르기), CSV | `search_runs` → DataFrame | 학습 목록에서 지표 · 설정 열 고르기와 정렬, CSV로 받기. 실행별 단계 지표 CSV | 0.15.0 |
-| 하이퍼파라미터 탐색 | Sweeps | (Optuna 연동) | — | 계획 |
+| 하이퍼파라미터 탐색 | Sweeps (grid · random · bayes) | (Optuna 연동) | 새 학습 대화상자에서 시험할 값을 적으면 탐색. 모든 조합 · 무작위(범위 · 로그), Hub가 차례로 실행, 가장 좋은 설정과 설정별 지표 그림. 베이지안 · 일찍 멈추기는 계획 | 0.16.0 |
 | 단계별 이미지·표 | `wandb.Image`, Tables | `log_image(step=)`, `log_table` | — | 계획 |
 | 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 0.10.0 |
 | 설치된 패키지 | 자동 (`requirements.txt`) | 자동 (환경 파일) | 자동: 실행 환경의 패키지 목록을 실행 기록에 | 0.8.0 |

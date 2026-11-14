@@ -87,9 +87,35 @@ class Run(Base):
     class_metrics: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     source_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the run this one repeats
     note: Mapped[str] = mapped_column(Text, default="")  # what the person tried, in their words (W&B notes)
+    sweep_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # the search it is part of
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Sweep(Base):
+    """A hyperparameter search: many runs of one template on one release, settings picked by ``method``."""
+
+    __tablename__ = "sweeps"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    release_id: Mapped[str] = mapped_column(String(32))
+    method: Mapped[str] = mapped_column(String(16), default="grid")  # grid | random
+    metric: Mapped[str] = mapped_column(String(64))  # what "best" means
+    goal: Mapped[str] = mapped_column(String(8), default="maximize")  # maximize | minimize
+    # {"lr0": {"values": [0.01, 0.001]}, "momentum": {"min": 0.8, "max": 0.98, "log": false}}
+    space: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Everything else every run gets: template id, environment, fixed params, classes, tags …
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    max_runs: Mapped[int] = mapped_column(Integer, default=10)
+    parallel: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running | finished | stopped
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Tag(Base):

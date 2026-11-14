@@ -52,6 +52,9 @@ class ParamSpec(BaseModel):
     maximum: float | None = None
     advanced: bool = False  # folded under "세부 설정" in the dialog
     group: str = ""  # heading inside "세부 설정", e.g. "최적화"
+    # The code does not use this setting while another one has one of these values:
+    # ``unused_when = { optimizer = ["auto"] }`` (Ultralytics picks the learning rate itself then).
+    unused_when: dict[str, list[Any]] = Field(default_factory=dict)
 
 
 class EnvironmentSpec(BaseModel):
@@ -157,6 +160,10 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
         declared = params_from_code(code, entry_script(manifest.entrypoints.get("train", "")) or "train.py")
         # Code order first; what the file says about the same setting wins.
         manifest.params = {**declared, **manifest.params}
+    for name, spec in manifest.params.items():
+        for other in spec.unused_when:
+            if other not in manifest.params:
+                raise TemplateError(f"params.{name}.unused_when: {other}라는 설정이 없습니다.")
     if not _NAME_RE.match(manifest.name):
         raise TemplateError("name은 영문 소문자·숫자·`-`·`_`·`.`로 2~63자여야 합니다 (예: inhouse-rtdetr).")
     if not manifest.version.strip():
