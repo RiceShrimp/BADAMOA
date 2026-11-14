@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "4"
+__version__ = "5"
 
 
 # ---- 설정 선언 ---------------------------------------------------------------------------
@@ -148,8 +148,8 @@ class Run:
         self.classes: list[str] = cfg.get("classes", [])
         # 등록된 모델에서 이어서 학습할 때 그 모델의 가중치 파일 (아니면 None)
         self.init_weights = Path(cfg["init_weights"]) if cfg.get("init_weights") else None
-        # 중단된 실행을 이어 갈 때 그 실행이 쓰던 출력 폴더 (체크포인트를 여기서 찾습니다. 아니면 None)
-        self.resume_dir = Path(cfg["resume_dir"]) if cfg.get("resume_dir") else None
+        # 멈춘 실행을 이어 갈 때 그 실행이 마지막으로 남긴 체크포인트 파일 (아니면 None)
+        self.resume_checkpoint = Path(cfg["resume_checkpoint"]) if cfg.get("resume_checkpoint") else None
         # 평가·내보내기·테스트(eval · export · predict 진입점)에서만 채워지는 값
         self.weights = Path(cfg["weights"]) if cfg.get("weights") else None  # 다룰 모델의 가중치 파일
         self.train_params: dict[str, Any] = cfg.get("train_params", {})  # 그 모델을 학습할 때의 설정
@@ -278,6 +278,16 @@ def hf_callback() -> Any:
                 progress(state.global_step, state.max_steps or 0)
 
     return BadamoaCallback()
+
+
+def save_checkpoint(path: str | Path, epoch: int | None = None) -> None:
+    """이어서 실행할 수 있게 지금 상태를 저장한 파일을 알립니다 (보통 epoch마다 덮어쓰는 last.pt).
+
+    학습이 중단되거나 실패하면 BADAMOA가 이 파일을 보관하고, "이어서 실행"할 때
+    `run.resume_checkpoint`로 돌려줍니다. 선언 파일에 `resume = true`를 적어야 버튼이 나옵니다.
+    """
+    run = _current()
+    _emit("checkpoint", path=str(Path(path).resolve()), epoch=int(run._step if epoch is None else epoch))
 
 
 def log_artifact(path: str | Path, name: str | None = None) -> None:

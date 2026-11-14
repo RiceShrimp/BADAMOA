@@ -1,11 +1,12 @@
 name = "torchvision"
 title = "torchvision 검출"
-version = "2"
+version = "4"
 description = "torchvision의 검출 모델: Faster R-CNN · RetinaNet · FCOS (ResNet-50 백본), SSDlite (MobileNetV3)"
 task = "detect"
 data_format = "yolo"
 license = "BSD-3-Clause"
 variant = "model"
+resume = true
 
 [environment]
 requirements = ["torch", "torchvision", "torchmetrics", "pycocotools", "onnx", "onnxscript"]

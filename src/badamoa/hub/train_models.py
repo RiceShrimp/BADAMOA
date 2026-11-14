@@ -74,6 +74,9 @@ class Run(Base):
     template: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # id, name, title, version, sha256, variant
     environment: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # kind, name, requirements | path
     stage: Mapped[str] = mapped_column(String(16), default="")  # data | env | train | upload
+    # The latest checkpoint of an unfinished run, kept on the Hub so any server can pick the run up:
+    # {"blob", "bytes", "file_name", "epoch"}. Dropped when the run finishes.
+    checkpoint: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     # What the user asked for; enough to start the same run again.
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     epochs: Mapped[int] = mapped_column(Integer, default=0)

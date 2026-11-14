@@ -37,8 +37,8 @@ _TRAIN_PARAMS: dict[str, Any] = {
         "val_fraction": {"type": "number", "minimum": 0, "maximum": 0.9, "default": 0.2},
         # Start from a registered model's weights: {"blob", "file_name"}.
         "init_weights": {"type": "object"},
-        # Pick up an interrupted run: the job whose working folder holds the checkpoint.
-        "resume_job_id": {"type": "string"},
+        # Pick up an interrupted run: {"job_id", "blob", "file_name", "epoch"} of its last checkpoint.
+        "resume": {"type": "object"},
     },
 }
 

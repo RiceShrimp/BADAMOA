@@ -35,8 +35,8 @@ def main(argv: list[str]) -> int:
     out = Path(cfg["out"])
     out.mkdir(parents=True, exist_ok=True)
     first = 1
-    checkpoint = Path(cfg.get("resume_dir") or "") / "epoch.txt"
-    if cfg.get("resume_dir") and checkpoint.is_file():
+    checkpoint = Path(cfg.get("resume_checkpoint") or "")
+    if cfg.get("resume_checkpoint") and checkpoint.is_file():
         first = int(checkpoint.read_text()) + 1
         print(f"체크포인트에서 이어 갑니다: epoch {first}부터")
     for epoch in range(first, epochs + 1):
@@ -52,6 +52,7 @@ def main(argv: list[str]) -> int:
         emit("epoch", epoch=epoch, epochs=epochs, metrics=metrics)
         print(f"epoch {epoch}/{epochs} mAP50-95 {metrics['map50_95']}")
         (out / "epoch.txt").write_text(str(epoch))  # the checkpoint a resumed run starts after
+        emit("checkpoint", path=str(out / "epoch.txt"), epoch=epoch)
         time.sleep(pause)
 
     weights = out / "best.pt"

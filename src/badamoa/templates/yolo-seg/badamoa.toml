@@ -1,6 +1,6 @@
 name = "yolo-seg"
 title = "Ultralytics YOLO 분할"
-version = "2"
+version = "3"
 description = "Ultralytics YOLO 인스턴스 분할 (YOLO11-seg, YOLO26-seg)"
 task = "segment"
 data_format = "yolo-seg"

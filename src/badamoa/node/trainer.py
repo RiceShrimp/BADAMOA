@@ -34,6 +34,9 @@ EVENT_PREFIX = "@@badamoa "
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # colours and cursor moves; the job log is plain text
 PROGRESS = re.compile(r"\d+%\s*[━─╸]|\dit/s|s/it")  # one redraw of a progress bar
 PROGRESS_EVERY_S = 5.0
+# While a run is healthy its checkpoint goes to the Hub this often (protection against a crashed
+# server); when a run is stopped or fails, the Node Agent sends the newest one right away.
+CHECKPOINT_EVERY_S = 300.0
 MANIFEST_PAGE = 2000
 
 
@@ -52,6 +55,28 @@ def send(call, *args: Any, **kwargs: Any) -> httpx.Response:
                 raise
             time.sleep(0.5 * (attempt + 1))
     raise AssertionError("unreachable")
+
+
+def last_checkpoint(job_dir: Path) -> tuple[Path, int] | None:
+    """The newest checkpoint a training job recorded in its working folder, with its epoch."""
+    try:
+        info = json.loads((job_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        path = Path(info["path"])
+    except (OSError, ValueError, KeyError):
+        return None
+    return (path, int(info.get("epoch") or 0)) if path.is_file() else None
+
+
+def upload_checkpoint(client: httpx.Client, base: str, job_dir: Path) -> bool:
+    """Send a job's newest checkpoint to the Hub. True when the Hub now has it."""
+    found = last_checkpoint(job_dir)
+    if found is None:
+        return False
+    path, epoch = found
+    with path.open("rb") as stream:
+        query = {"name": path.name, "kind": "checkpoint", "epoch": epoch}
+        resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=3600)
+    return resp.status_code == 200
 
 
 def _device() -> str:
@@ -202,13 +227,22 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 cached.write_bytes(resp.content)
             config["init_weights"] = str(cached)
             print(f"등록된 모델의 가중치에서 시작합니다: {cached.name}")
-        previous = node_home / "runs" / str(params.get("resume_job_id") or "-") / "out"
-        if params.get("resume_job_id"):
-            if previous.is_dir():
-                config["resume_dir"] = str(previous)
-                print("중단된 실행의 체크포인트에서 이어 갑니다.")
+        resume = params.get("resume") or {}
+        previous = node_home / "runs" / str(resume.get("job_id") or "-")
+        if resume:
+            local = last_checkpoint(previous)
+            if local is not None:  # the interrupted run was on this server and its folder is still here
+                config["resume_checkpoint"] = str(local[0])
+                print(f"이 서버에 남아 있는 체크포인트(epoch {local[1]})에서 이어 갑니다.")
             else:
-                print("중단된 실행의 작업 폴더가 이 서버에 남아 있지 않아 처음부터 시작합니다.")
+                resp = send(client.get, f"{base}/checkpoint", timeout=3600)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"체크포인트를 받지 못했습니다 ({resp.status_code}): {resp.text[:200]}")
+                target = work / "resume" / Path(str(resume.get("file_name") or "checkpoint")).name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(resp.content)
+                config["resume_checkpoint"] = str(target)
+                print(f"Hub에 보관된 체크포인트(epoch {resume.get('epoch')})를 받아 이어 갑니다.")
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         env = {
@@ -278,6 +312,38 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             if resp.status_code != 200:
                 print(f"파일을 기록하지 못했습니다 ({path.name}): {resp.text[:200]}", flush=True)
 
+        sent_checkpoint = time.monotonic()
+
+        def note_checkpoint(event: dict[str, Any]) -> None:
+            """Remember where the newest checkpoint is; now and then put a copy on the Hub."""
+            nonlocal sent_checkpoint
+            path = Path(str(event.get("path", "")))
+            path = path if path.is_absolute() else code / path
+            if not path.is_file():
+                return
+            # Keep our own copy: the code overwrites its file every epoch, and a run stopped in the
+            # middle of that write would otherwise leave a broken checkpoint as the newest one.
+            stable = work / "checkpoint" / path.name
+            stable.parent.mkdir(parents=True, exist_ok=True)
+            partial = stable.with_name(stable.name + ".part")
+            try:
+                before = path.stat()
+                shutil.copyfile(path, partial)
+                after = path.stat()
+            except OSError:
+                return
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                return  # it changed while being copied: the previous copy stays the newest good one
+            partial.replace(stable)
+            marker = {"path": str(stable), "epoch": int(event.get("epoch") or 0)}
+            (work / "checkpoint.json").write_text(json.dumps(marker), encoding="utf-8")
+            if time.monotonic() - sent_checkpoint >= CHECKPOINT_EVERY_S:
+                sent_checkpoint = time.monotonic()
+                try:
+                    upload_checkpoint(client, base, work)
+                except httpx.HTTPError:
+                    pass  # the next one will do
+
         threading.Thread(target=flush_every_second, daemon=True).start()
         for raw in proc.stdout:
             line = ANSI.sub("", raw).rstrip()
@@ -308,6 +374,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 keep({"epoch": event.get("current"), "epochs": event.get("total")})
             elif kind == "artifact":
                 upload_file(event)
+            elif kind == "checkpoint":
+                note_checkpoint(event)
         ended.set()
         flush()
         if proc.wait() != 0:
@@ -333,8 +401,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         final = {"metrics": outcome.get("metrics") or {}, "classes": outcome.get("classes") or [], "weights": uploaded}
         result = post("/finish", final)
     shutil.rmtree(work, ignore_errors=True)  # the export is links and the weights are on the Hub now
-    if params.get("resume_job_id"):
-        shutil.rmtree(previous.parent, ignore_errors=True)  # the interrupted run's leftovers are no longer needed
+    if params.get("resume"):
+        shutil.rmtree(previous, ignore_errors=True)  # the interrupted run's leftovers are no longer needed
     if result.get("model"):
         print(f"완료: 모델 {result['model']['name']} v{result['model']['version']} 등록")
     else:

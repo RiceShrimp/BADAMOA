@@ -30,7 +30,8 @@ hp = bm.params(
     workers=bm.integer(2, min=0, max=32, label="데이터 로더 수", group="학습", advanced=True),
     pretrained=bm.boolean(True, label="사전학습 가중치에서 시작", group="학습", advanced=True),
     optimizer=bm.choice(["SGD", "AdamW"], label="옵티마이저", group="최적화", advanced=True),
-    lr=bm.number(0.01, min=0, label="학습률", group="최적화", advanced=True),
+    lr=bm.number(0.005, min=0, label="학습률", group="최적화", advanced=True),
+    clip=bm.number(10.0, min=0.1, label="기울기 자르기 (norm)", group="최적화", advanced=True),
     momentum=bm.number(0.9, min=0, max=1, label="모멘텀 (SGD)", group="최적화", advanced=True),
     weight_decay=bm.number(0.0001, min=0, label="weight decay", group="최적화", advanced=True),
     cos_lr=bm.boolean(True, label="코사인 학습률 스케줄", group="최적화", advanced=True),
@@ -151,7 +152,18 @@ def main() -> None:
 
     best, best_path = -1.0, run.out / "best.pt"
     best_metrics: dict[str, float] = {}
-    for epoch in range(1, hp.epochs + 1):
+    start = 1
+    if run.resume_checkpoint and run.resume_checkpoint.is_file():  # continue an interrupted run
+        state = torch.load(run.resume_checkpoint, map_location="cpu")
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        if scheduler and state.get("scheduler"):
+            scheduler.load_state_dict(state["scheduler"])
+        start, best, best_metrics = state["epoch"] + 1, state["best"], state["best_metrics"]
+        if state.get("best_model"):
+            torch.save(state["best_model"], best_path)
+        print(f"체크포인트에서 이어 갑니다: epoch {start}부터")
+    for epoch in range(start, hp.epochs + 1):
         started = time.monotonic()
         model.train()
         total, batches = 0.0, 0
@@ -163,8 +175,9 @@ def main() -> None:
                 raise SystemExit(f"loss가 발산했습니다 (epoch {epoch}). 학습률을 낮춰 보세요.")
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(weights, hp.clip)  # small batches make detectors blow up without it
             optimizer.step()
-            total, batches = total + float(loss), batches + 1
+            total, batches = total + float(loss.detach()), batches + 1
         rate = optimizer.param_groups[0]["lr"]
         if scheduler:
             scheduler.step()
@@ -185,6 +198,20 @@ def main() -> None:
         if metrics["map50_95"] > best:
             best, best_metrics = metrics["map50_95"], metrics
             torch.save(model.state_dict(), best_path)
+
+        # Everything needed to continue from here, should the run be interrupted.
+        checkpoint = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler else None,
+            "epoch": epoch,
+            "best": best,
+            "best_metrics": best_metrics,
+            "best_model": torch.load(best_path, map_location="cpu") if best_path.is_file() else None,
+        }
+        torch.save(checkpoint, run.out / "last.pt.part")
+        (run.out / "last.pt.part").replace(run.out / "last.pt")  # never a half-written file under the real name
+        bm.save_checkpoint(run.out / "last.pt", epoch)
 
     # Per-class numbers for the best weights.
     model.load_state_dict(torch.load(best_path, map_location=device))

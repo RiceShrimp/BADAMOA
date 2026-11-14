@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
+from badamoa.core.storage import Storage
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
 from . import catalog, registry, resources, services
@@ -183,7 +184,7 @@ def start_run(
             "unlabelled": unlabelled,
             "val_fraction": val_fraction,
             **({"init_weights": {"blob": base.blob, "file_name": base.file_name or "best.pt"}} if base else {}),
-            **({"resume_job_id": interrupted.job_id} if interrupted and interrupted.job_id else {}),
+            **({"resume": {"job_id": interrupted.job_id or "", **interrupted.checkpoint}} if interrupted else {}),
         },
         node.id,
         via=via,
@@ -229,8 +230,8 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
 
 
 def _can_resume(db: Session, run: Run, status: str) -> bool:
-    """An interrupted run whose template knows how to continue from its last checkpoint."""
-    if status not in ("failed", "canceled") or run.epoch < 1:
+    """An interrupted run with a checkpoint on the Hub, whose template knows how to continue from one."""
+    if status not in ("failed", "canceled") or not (run.checkpoint or {}).get("blob"):
         return False
     row = db.get(Template, (run.template or {}).get("id", ""))
     return bool(row and row.deleted_at is None and registry.manifest_of(row).resume)
@@ -388,6 +389,41 @@ def report(db: Session, node: Node, job_id: str, body: TrainReport) -> dict[str,
     return {"ok": True}
 
 
+def _drop_blob(db: Session, storage: Storage | None, blob: str) -> None:
+    """Remove a checkpoint from storage unless something else (a model, a recorded file) is the same bytes."""
+    if not blob or storage is None:
+        return
+    used = db.scalar(select(ModelVersion.id).where(ModelVersion.blob == blob).limit(1)) or db.scalar(
+        select(RunFile.id).where(RunFile.blob == blob).limit(1)
+    )
+    if used is None and storage.has_blob(blob):
+        try:
+            storage.delete(storage.blob_key(blob))
+        except OSError:
+            pass  # a leftover file is harmless
+
+
+def set_checkpoint(
+    db: Session, node: Node, job_id: str, name: str, blob: str, size: int, epoch: int, storage: Storage
+) -> dict[str, Any]:
+    """Keep the run's newest checkpoint (and only that one) so the run can be resumed from any server."""
+    _, run = _running(db, node, job_id)
+    previous = (run.checkpoint or {}).get("blob", "")
+    run.checkpoint = {"blob": blob, "bytes": size, "file_name": Path(name).name[:128], "epoch": int(epoch)}
+    if previous != blob:
+        _drop_blob(db, storage, previous)
+    return {"epoch": int(epoch)}
+
+
+def checkpoint_to_resume(db: Session, node: Node, job_id: str) -> str:
+    """The storage key of the checkpoint this job continues from."""
+    job, _ = _running(db, node, job_id)
+    blob = ((job.params or {}).get("resume") or {}).get("blob")
+    if not blob:
+        raise ServiceError(404, "이 실행은 이어서 실행하는 것이 아닙니다.")
+    return blob
+
+
 def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: int) -> dict[str, Any]:
     """Attach a file the code recorded to its run. Recording the same name again replaces it."""
     _, run = _running(db, node, job_id)
@@ -412,9 +448,15 @@ def get_file(db: Session, file_id: str) -> RunFile:
     return row
 
 
-def finish(db: Session, node: Node, job_id: str, body: TrainFinish) -> dict[str, Any]:
+def finish(
+    db: Session, node: Node, job_id: str, body: TrainFinish, storage: Storage | None = None
+) -> dict[str, Any]:
     """Record the final metrics and, when weights were uploaded, register them as a new model version."""
     job, run = _running(db, node, job_id)
+    if run.checkpoint:  # a finished run has nothing left to resume
+        spent, run.checkpoint = run.checkpoint.get("blob", ""), {}
+        db.flush()
+        _drop_blob(db, storage, spent)
     existing = db.scalar(select(ModelVersion).where(ModelVersion.run_id == run.id))
     if existing is not None:  # a retried call
         return {"run_id": run.id, "model": {"id": existing.id, "name": existing.name, "version": existing.version}}
@@ -535,6 +577,7 @@ def run_view(
         "base_model": run.config.get("base_model"),  # the registered model this run started from, if any
         "resumed_from": run.config.get("resumed_from"),  # the interrupted run this one continues
         "can_resume": _can_resume(db, run, status),
+        "checkpoint_epoch": (run.checkpoint or {}).get("epoch"),  # how far a resumed run would start from
         "source_run_id": run.source_run_id,
     }
     if detail:
@@ -567,7 +610,7 @@ def list_runs(db: Session, settings: HubSettings, project_id: str, limit: int = 
     return [run_view(db, settings, run, node_names=names) for run in runs]
 
 
-def delete_run(db: Session, user: User, run_id: str) -> None:
+def delete_run(db: Session, user: User, run_id: str, storage: Storage | None = None) -> None:
     run = get_run(db, run_id)
     job = db.get(Job, run.job_id) if run.job_id else None
     if job is not None and job.status not in TERMINAL_STATUSES:
@@ -575,6 +618,10 @@ def delete_run(db: Session, user: User, run_id: str) -> None:
     if user.role != "admin" and run.created_by != user.id:
         raise ServiceError(403, "자신이 시작한 학습만 지울 수 있습니다.")
     run.deleted_at = utcnow()
+    if run.checkpoint:  # nobody can resume a deleted run: its checkpoint goes too
+        spent, run.checkpoint = run.checkpoint.get("blob", ""), {}
+        db.flush()
+        _drop_blob(db, storage, spent)
     services.audit(db, user.id, "api", "run.delete", run.id, name=run.name)
 
 

@@ -178,7 +178,18 @@ def main() -> None:
     plain_loss = torch.nn.CrossEntropyLoss()
 
     best, best_path, best_scores = -1.0, run.out / "best.pt", {}
-    for epoch in range(1, hp.epochs + 1):
+    start = 1
+    if run.resume_checkpoint and run.resume_checkpoint.is_file():  # continue an interrupted run
+        state = torch.load(run.resume_checkpoint, map_location="cpu")
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        if scheduler and state.get("scheduler"):
+            scheduler.load_state_dict(state["scheduler"])
+        start, best, best_scores = state["epoch"] + 1, state["best"], state["best_metrics"]
+        if state.get("best_model"):
+            torch.save(state["best_model"], best_path)
+        print(f"체크포인트에서 이어 갑니다: epoch {start}부터")
+    for epoch in range(start, hp.epochs + 1):
         started = time.monotonic()
         model.train()
         total, seen = 0.0, 0
@@ -203,6 +214,20 @@ def main() -> None:
         if scores["top1"] > best:
             best, best_scores = scores["top1"], {k: v for k, v in metrics.items() if k != "lr"}
             torch.save(model.state_dict(), best_path)
+
+        # Everything needed to continue from here, should the run be interrupted.
+        checkpoint = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler else None,
+            "epoch": epoch,
+            "best": best,
+            "best_metrics": best_scores,
+            "best_model": torch.load(best_path, map_location="cpu") if best_path.is_file() else None,
+        }
+        torch.save(checkpoint, run.out / "last.pt.part")
+        (run.out / "last.pt.part").replace(run.out / "last.pt")  # never a half-written file under the real name
+        bm.save_checkpoint(run.out / "last.pt", epoch)
 
     # Per-class numbers and the confusion matrix of the best weights.
     model.load_state_dict(torch.load(best_path, map_location=device))

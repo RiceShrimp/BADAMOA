@@ -390,6 +390,8 @@ def test_resume_an_interrupted_run_from_its_checkpoint(hub, release):
     assert _wait(hub, started["job_id"])["status"] == "canceled"
     stopped = hub.get(f"/api/runs/{started['id']}").json()
     assert stopped["can_resume"] is True and stopped["epoch"] >= 3
+    assert stopped["checkpoint_epoch"] >= 3  # the node handed its last checkpoint to the Hub when it was stopped
+    assert "마지막 체크포인트를 Hub에 보관했습니다" in _logs(hub, started["job_id"])
 
     resp = hub.post(f"/api/runs/{started['id']}/resume")
     assert resp.status_code == 200, resp.text
@@ -403,8 +405,23 @@ def test_resume_an_interrupted_run_from_its_checkpoint(hub, release):
     hub.post(f"/api/jobs/{run['job_id']}/cancel")
     _wait(hub, run["job_id"])
     logs = _logs(hub, run["job_id"])
-    assert "중단된 실행의 체크포인트에서 이어 갑니다" in logs and "체크포인트에서 이어 갑니다: epoch" in logs, logs
+    assert "이 서버에 남아 있는 체크포인트" in logs and "체크포인트에서 이어 갑니다: epoch" in logs, logs
     assert view["history"]["steps"] and view["history"]["steps"][0] > 3  # it did not start over
+
+    # The server lost its working folders (or another server takes over): the Hub's copy is used.
+    import shutil
+
+    shutil.rmtree(hub.node_home / "runs", ignore_errors=True)
+    again = hub.post(f"/api/runs/{run['id']}/resume").json()
+    for _ in range(150):
+        view = hub.get(f"/api/runs/{again['id']}").json()
+        if view["history"]["steps"] or view["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.2)
+    hub.post(f"/api/jobs/{again['job_id']}/cancel")
+    _wait(hub, again["job_id"])
+    assert "Hub에 보관된 체크포인트" in _logs(hub, again["job_id"])
+    assert view["history"]["steps"][0] > run["config"].get("epochs", 0) - 40 and view["history"]["steps"][0] > 3
 
     done, job = _train(hub, release, {"epochs": 2})
     assert job["status"] == "succeeded"

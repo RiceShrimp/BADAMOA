@@ -74,8 +74,8 @@ def main(argv: list[str]) -> int:
         weights = cfg["init_weights"]  # continue from a registered model
     elif not params.get("pretrained", True):
         weights = Path(weights).stem + ".yaml"  # same architecture, random initialisation
-    last = Path(cfg.get("resume_dir") or "") / "train" / "weights" / "last.pt"
-    resuming = bool(cfg.get("resume_dir")) and last.is_file()
+    last = Path(cfg.get("resume_checkpoint") or "")
+    resuming = bool(cfg.get("resume_checkpoint")) and last.is_file()
     if resuming:
         weights = str(last)  # the interrupted run's checkpoint carries its epoch, optimizer state and settings
         print(f"체크포인트에서 이어 갑니다: {last}")
@@ -96,9 +96,13 @@ def main(argv: list[str]) -> int:
         metrics = {**trainer.label_loss_items(trainer.tloss, prefix="train"), **trainer.metrics, **trainer.lr}
         emit("epoch", epoch=epoch, epochs=trainer.epochs, metrics=clean(metrics))
 
+    def on_model_save(trainer) -> None:  # last.pt holds everything needed to continue: tell the node where it is
+        emit("checkpoint", path=str(trainer.last), epoch=trainer.epoch + 1)
+
+    model.add_callback("on_model_save", on_model_save)
     model.add_callback("on_train_epoch_start", on_train_epoch_start)
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-    results = model.train(resume=True) if resuming else model.train(
+    results = model.train(resume=True, data=cfg["data"], device=device) if resuming else model.train(
         data=cfg["data"],
         epochs=params["epochs"],
         imgsz=params.get("imgsz", 640),

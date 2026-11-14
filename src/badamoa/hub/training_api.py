@@ -95,8 +95,10 @@ def resume(
 
 
 @router.delete("/runs/{run_id}")
-def delete_run(run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
-    training.delete_run(db, user, run_id)
+def delete_run(
+    run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict:
+    training.delete_run(db, user, run_id, catalog.storage_for(str(hub.settings.storage_dir)))
     db.commit()
     return {"ok": True}
 
@@ -167,6 +169,18 @@ def template_bundle(
     return Response(storage.get_blob(blob), media_type="application/zip")
 
 
+@agent_router.get("/checkpoint")
+def checkpoint(
+    job_id: str, node: Node = Depends(current_node), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> Response:
+    """The checkpoint of the interrupted run this job continues."""
+    blob = training.checkpoint_to_resume(db, node, job_id)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if not storage.has_blob(blob):
+        raise HTTPException(status_code=404, detail="체크포인트가 저장소에 없습니다.")
+    return Response(storage.get_blob(blob), media_type="application/octet-stream")
+
+
 @agent_router.get("/init-weights")
 def init_weights(
     job_id: str, node: Node = Depends(current_node), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
@@ -190,14 +204,20 @@ def report(
 
 @agent_router.put("/artifact")
 async def artifact(
-    job_id: str, request: Request, name: str = "best.pt", kind: str = "weights", hub: Hub = Depends(get_hub)
+    job_id: str,
+    request: Request,
+    name: str = "best.pt",
+    kind: str = "weights",
+    epoch: int = 0,
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """Receive a file as a raw request body, streamed to disk, and store it by content hash.
 
-    ``kind=weights`` (the model, registered when the run finishes) or ``kind=file``
-    (something the code recorded with the run: a plot, sample predictions).
+    ``kind=weights`` (the model, registered when the run finishes), ``kind=file`` (something the
+    code recorded with the run: a plot, sample predictions) or ``kind=checkpoint`` (the state of
+    an unfinished run after ``epoch``, replacing the previous one).
     """
-    limit = MAX_WEIGHTS_BYTES if kind == "weights" else MAX_FILE_BYTES
+    limit = MAX_FILE_BYTES if kind == "file" else MAX_WEIGHTS_BYTES
     token = bearer_token(request)
 
     def check() -> None:
@@ -233,14 +253,26 @@ async def artifact(
                 return training.add_file(db, node, job_id, name, blob, size)
 
         return await anyio.to_thread.run_sync(record)
+    if kind == "checkpoint":
+
+        def keep() -> dict[str, Any]:
+            with hub.db.session() as db:
+                node = services.authenticate_node(db, token)
+                return training.set_checkpoint(db, node, job_id, name, blob, size, epoch, storage)
+
+        return await anyio.to_thread.run_sync(keep)
     return {"blob": blob, "bytes": size, "file_name": Path(name).name}
 
 
 @agent_router.post("/finish")
 def finish(
-    job_id: str, body: TrainFinish, node: Node = Depends(current_node), db: Session = Depends(db_session)
+    job_id: str,
+    body: TrainFinish,
+    node: Node = Depends(current_node),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    result = training.finish(db, node, job_id, body)
+    result = training.finish(db, node, job_id, body, catalog.storage_for(str(hub.settings.storage_dir)))
     db.commit()
     return result
 

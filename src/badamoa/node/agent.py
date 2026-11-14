@@ -285,6 +285,8 @@ class NodeAgent:
             error = f"{type(e).__name__}: {e}"
             emit(error, "system")
         finally:
+            if status != "succeeded" and job["type"].startswith("train."):
+                self._keep_checkpoint(job_id, emit)
             for _ in range(20):
                 flush()
                 if not buffer:
@@ -294,6 +296,20 @@ class NodeAgent:
             with self._lock:
                 self._running.pop(job_id, None)
             log.info("job %s %s", job_id, status)
+
+    def _keep_checkpoint(self, job_id: str, emit: Any) -> None:
+        """A training that was stopped or failed: put its last checkpoint on the Hub.
+
+        With the checkpoint on the Hub the run can be continued later from any server,
+        whether or not this one still has the working folder.
+        """
+        from badamoa.node import trainer
+
+        try:
+            if trainer.upload_checkpoint(self._client, f"/api/agent/jobs/{job_id}/train", self.home / "runs" / job_id):
+                emit("마지막 체크포인트를 Hub에 보관했습니다. 이어서 실행할 수 있습니다.", "system")
+        except (httpx.HTTPError, OSError) as e:
+            log.warning("job %s: 체크포인트를 Hub에 보관하지 못했습니다: %s", job_id, e)
 
     def _complete(self, job_id: str, status: str, result: Any, error: str | None) -> None:
         body = {"status": status, "result": result, "error": error}

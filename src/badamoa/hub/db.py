@@ -13,6 +13,7 @@ _ADDED_COLUMNS = [
     ("runs", "template", "JSON DEFAULT '{}'"),
     ("runs", "environment", "JSON DEFAULT '{}'"),
     ("runs", "stage", "VARCHAR(16) DEFAULT ''"),
+    ("runs", "checkpoint", "JSON DEFAULT '{}'"),
     ("model_versions", "template", "JSON DEFAULT '{}'"),
     ("projects", "settings", "JSON DEFAULT '{}'"),
 ]
