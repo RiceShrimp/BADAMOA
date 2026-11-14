@@ -64,11 +64,13 @@ claude mcp add --transport http badamoa http://localhost:8470/mcp --header "Auth
 웹 UI → **데이터셋** 에서 프로젝트를 만들고 **데이터셋 가져오기** 를 누른 뒤, 노드에 있는 YOLO 또는 COCO 형식 폴더의 경로를 넣습니다.
 이미지는 복사하지 않고 제자리에 둡니다.
 
-시험용 데이터가 필요하면 아래 명령으로 작은 YOLO 데이터셋(150장)을 만들 수 있습니다.
+시험해 볼 데이터가 필요하면 COCO128(COCO에서 뽑은 128장, 약 7 MB)을 받아 쓰면 됩니다. `.badamoa/data/coco128` 에 풀립니다.
 
 ```bash
-uv run python tests/sample_data.py .badamoa/sample-yolo
+uv run python scripts/fetch_coco128.py
 ```
+
+이 데이터가 있으면 `uv run pytest` 가 실데이터 확인 테스트(`tests/test_real_data.py`)도 함께 실행합니다.
 
 ## 개발
 

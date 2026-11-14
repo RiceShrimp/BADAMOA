@@ -133,15 +133,12 @@ def scan_yolo(root: Path) -> Scan:
                 split_dirs.append((key, candidate))
     if not split_dirs:
         images = root / "images" if (root / "images").is_dir() else root
-        named = [
-            (SPLIT_ALIASES[d.name.lower()], d)
-            for d in sorted(images.iterdir())
-            if d.is_dir() and d.name.lower() in SPLIT_ALIASES
-        ]
+        # Folder names decide the split; COCO-style names such as "train2017" count too.
+        named = [(_split_from_name(d.name), d) for d in sorted(images.iterdir()) if d.is_dir() and _split_from_name(d.name)]
         nested = [
-            (SPLIT_ALIASES[d.name.lower()], d / "images")
+            (_split_from_name(d.name), d / "images")
             for d in sorted(root.iterdir())
-            if d.is_dir() and d.name.lower() in SPLIT_ALIASES and (d / "images").is_dir()
+            if d.is_dir() and _split_from_name(d.name) and (d / "images").is_dir()
         ]
         split_dirs = named or nested or [("", images)]
 
