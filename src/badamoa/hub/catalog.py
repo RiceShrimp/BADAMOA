@@ -161,8 +161,8 @@ def start_import(
     dataset, version, path = dataset.strip(), version.strip(), path.strip()
     if not dataset or not version or not path:
         raise ServiceError(400, "데이터셋 이름, 버전, 경로는 비워 둘 수 없습니다.")
-    if fmt not in ("auto", "yolo", "coco"):
-        raise ServiceError(400, "형식은 auto, yolo, coco 중 하나여야 합니다.")
+    if fmt not in ("auto", "yolo", "coco", "imagefolder"):
+        raise ServiceError(400, "형식은 auto, yolo, coco, imagefolder 중 하나여야 합니다.")
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
     if existing and db.scalar(select(Release).where(Release.dataset_id == existing.id, Release.version == version)):
         raise ServiceError(409, f"{dataset} {version} 릴리스가 이미 있습니다. 다른 버전 이름을 쓰세요.")
@@ -212,6 +212,11 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
         return {"release_id": release.id}
     p = job.params
     project = get_project(db, p["project_id"])
+    found = "classify" if body.format == "imagefolder" else "detect"
+    if project.task != found and not (project.task == "segment" and found == "detect"):
+        kinds = {"detect": "객체 탐지", "classify": "분류", "segment": "분할"}
+        mismatch = f"이 폴더는 {kinds[found]} 데이터인데 프로젝트는 {kinds[project.task]}용입니다."
+        raise ServiceError(400, f"{mismatch} {kinds[found]} 프로젝트에 가져오세요.")
     location = db.scalar(
         select(StorageLocation).where(StorageLocation.node_id == node.id, StorageLocation.root == p["path"])
     )
@@ -316,7 +321,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     created: list[LabelRevision] = []
     for sha, data in incoming.items():
         item = items[sha]
-        boxes = [[int(b[0]), *b[1:5]] for b in data.boxes if len(b) >= 5 and int(b[0]) in class_ids]
+        # A box is [class, cx, cy, w, h]; a classification label is just [class].
+        boxes = [[int(b[0]), *b[1:5]] for b in data.boxes if len(b) in (1, 5) and int(b[0]) in class_ids]
         state = data.state if boxes or data.state != "labelled" else "background"
         digest = _digest(space.id, state, boxes)
         history = revisions.get(item.id, [])

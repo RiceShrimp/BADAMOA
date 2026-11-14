@@ -490,3 +490,43 @@ td .tag,
 .defaults[open] summary {
   margin-bottom: 10px;
 }
+
+/* files a run recorded */
+.run-pictures {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.run-pictures a {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.run-pictures img {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.run-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  text-decoration: none;
+  color: var(--text);
+}
+.run-file:hover {
+  color: var(--accent);
+}
+pre.packages {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+}

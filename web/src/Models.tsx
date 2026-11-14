@@ -3,7 +3,7 @@ import { ProjectPicker, useProject } from "./ProjectPicker";
 import { ClassTable } from "./Training";
 import { api } from "./api";
 import { bytesLabel } from "./catalogTypes";
-import { KEY_METRICS, METRIC_LABEL, type ModelDetail, type ModelInfo, delta, metric } from "./trainTypes";
+import { METRIC_LABEL, type ModelDetail, type ModelInfo, classScore, delta, keyMetrics, metric } from "./trainTypes";
 import { Icon, Stat, timeAgo, usePolling } from "./ui";
 
 export function Models({ modelId, isAdmin }: { modelId?: string; isAdmin: boolean }) {
@@ -31,11 +31,13 @@ function ModelList({
     [projectId],
   );
   const [picked, setPicked] = useState<string[]>([]);
+  const metricKeys = keyMetrics(projects?.find((p) => p.id === projectId)?.task);
+  const primary = metricKeys[0];
   useEffect(() => setPicked([]), [projectId]);
 
   const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].slice(-2));
   const families = new Set(models?.map((m) => m.name)).size;
-  const best = [...(models ?? [])].sort((a, b) => (b.metrics.map50_95 ?? 0) - (a.metrics.map50_95 ?? 0))[0];
+  const best = [...(models ?? [])].sort((a, b) => (b.metrics[primary] ?? 0) - (a.metrics[primary] ?? 0))[0];
   const champion = models?.find((m) => m.alias === "champion");
 
   return (
@@ -56,8 +58,8 @@ function ModelList({
         <Stat icon="box" label="모델 버전" value={models?.length ?? 0} sub={`모델 ${families}종`} />
         <Stat
           icon="chart"
-          label="최고 mAP50-95"
-          value={best ? metric(best.metrics.map50_95) : "–"}
+          label={`최고 ${METRIC_LABEL[primary]}`}
+          value={best ? metric(best.metrics[primary]) : "–"}
           sub={best ? `${best.name} v${best.version}` : "등록된 모델 없음"}
         />
         <Stat
@@ -76,7 +78,7 @@ function ModelList({
             <tr>
               <th aria-label="비교" />
               <th>모델</th>
-              {KEY_METRICS.map((k) => (
+              {metricKeys.map((k) => (
                 <th key={k} className="right">
                   {METRIC_LABEL[k]}
                 </th>
@@ -115,7 +117,7 @@ function ModelList({
                     {m.arch} · {m.class_count}개 클래스 · {m.imgsz}px
                   </div>
                 </td>
-                {KEY_METRICS.map((k) => (
+                {metricKeys.map((k) => (
                   <td key={k} className="num right">
                     {metric(m.metrics[k])}
                   </td>
@@ -150,11 +152,12 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
 
   if (!pair) return <div className="card muted">비교할 모델을 불러오는 중…</div>;
   const [a, b] = pair;
+  const metricKeys = keyMetrics(b.task);
   const label = (m: ModelDetail) => `${m.name} v${m.version}`;
   const byName = new Map(a.class_metrics.map((c) => [c.name, c]));
   const classRows = b.class_metrics
     .filter((c) => byName.has(c.name))
-    .map((c) => ({ name: c.name, a: byName.get(c.name)!.map50_95, b: c.map50_95 }))
+    .map((c) => ({ name: c.name, a: classScore(byName.get(c.name)!), b: classScore(c) }))
     .sort((x, y) => Math.abs(y.b - y.a) - Math.abs(x.b - x.a));
   const sameData = a.release?.id === b.release?.id;
 
@@ -183,7 +186,7 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
           </tr>
         </thead>
         <tbody>
-          {KEY_METRICS.map((k) => (
+          {metricKeys.map((k) => (
             <tr key={k}>
               <td>{METRIC_LABEL[k]}</td>
               <td className="num right">{metric(a.metrics[k])}</td>
@@ -212,7 +215,7 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
       {classRows.length > 0 && (
         <details className="fold inner">
           <summary>
-            클래스별 mAP50-95 차이 <span className="muted">(차이가 큰 순)</span>
+            클래스별 {b.task === "classify" ? "F1" : "mAP50-95"} 차이 <span className="muted">(차이가 큰 순)</span>
           </summary>
           <div className="table-wrap class-table">
             <table>
@@ -268,8 +271,9 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
     await api(`/models/${model.id}`, { method: "DELETE" });
     window.location.hash = "#/models";
   };
-  const classRows = [...model.class_metrics].sort((a, b) => b.map50_95 - a.map50_95);
+  const classRows = [...model.class_metrics].sort((a, b) => classScore(b) - classScore(a));
   const info = model.info as { ultralytics?: string; torch?: string };
+  const metricKeys = keyMetrics(model.task);
   const items = model.export.items ?? {};
 
   return (
@@ -284,7 +288,7 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
             <Alias alias={model.alias} />
           </h1>
           <p className="muted">
-            {model.arch} · 객체 검출 · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
+            {model.arch} · {model.task === "classify" ? "분류" : "객체 검출"} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
           </p>
         </div>
         <div className="head-actions">
@@ -309,7 +313,7 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
       {failure && <div className="error">{failure}</div>}
 
       <div className="stats metrics">
-        {KEY_METRICS.map((k) => (
+        {metricKeys.map((k) => (
           <Stat key={k} icon="chart" label={METRIC_LABEL[k]} value={metric(model.metrics[k])} sub="검증 데이터 기준" />
         ))}
       </div>

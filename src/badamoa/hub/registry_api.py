@@ -26,9 +26,9 @@ router = APIRouter(prefix="/api")
 
 @router.get("/templates")
 def list_templates(
-    hidden: bool = False, _: User = Depends(current_user), db: Session = Depends(db_session)
+    hidden: bool = False, task: str = "", _: User = Depends(current_user), db: Session = Depends(db_session)
 ) -> list[dict[str, Any]]:
-    return registry.list_templates(db, include_hidden=hidden)
+    return registry.list_templates(db, include_hidden=hidden, task=task)
 
 
 @router.get("/templates/{template_id}")

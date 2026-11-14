@@ -13,16 +13,21 @@ from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
 from . import catalog, registry, services
-from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Release, ReleaseItem, StorageLocation
+from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Project, Release, ReleaseItem, StorageLocation
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
-from .train_models import ModelVersion, Run, RunMetric, Template
+from .train_models import ModelVersion, Run, RunFile, RunMetric, Template
 
 ALIASES = ("champion", "challenger")
 STAGES = ("data", "env", "train", "upload")
 MANIFEST_MAX = 5000
+# The number a run is judged by: decides which step counts as "best so far".
+PRIMARY_METRIC = {"detect": "map50_95", "segment": "map50_95", "classify": "top1"}
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+MAX_FILES_PER_RUN = 500
+HISTORY_POINTS = 600  # more steps than this are thinned out when read
 _NAME_RE = re.compile(r"[^0-9A-Za-z가-힣._-]+")
 
 
@@ -87,7 +92,8 @@ def start_run(
         raise ServiceError(409, "아직 등록 중인 릴리스입니다.")
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
-    row = registry.get_template(db, template or (project.settings or {}).get("template") or registry.DEFAULT_TEMPLATE)
+    fallback = registry.DEFAULT_BY_TASK.get(project.task, registry.DEFAULT_TEMPLATE)
+    row = registry.get_template(db, template or (project.settings or {}).get("template") or fallback)
     manifest = registry.manifest_of(row)
     if manifest.task != project.task:
         raise ServiceError(400, f"{row.title}은 {manifest.task} 템플릿이고 이 프로젝트는 {project.task}입니다.")
@@ -281,23 +287,54 @@ def report(db: Session, node: Node, job_id: str, body: TrainReport) -> dict[str,
     elif body.event == "info":
         run.info = {**(run.info or {}), **data}
     elif body.event == "epoch":
-        # ``step`` is where the values go on the x axis; ``epoch`` / ``epochs`` only move the progress bar.
-        metrics = {k: v for k, v in (data.get("metrics") or {}).items() if isinstance(v, int | float)}
-        if data.get("epoch") is not None:
-            run.epoch = max(run.epoch, int(data["epoch"]))
-        if data.get("epochs"):
-            run.epochs = int(data["epochs"])
-        if metrics:
-            step = int(data.get("step", data.get("epoch", 0)) or 0)
-            row = db.get(RunMetric, (run.id, step))
+        primary = PRIMARY_METRIC.get(db.get(Project, run.project_id).task, "map50_95")
+        rows: dict[int, RunMetric] = {}
+        # One entry, or several the node gathered while the code logged faster than once a second.
+        for entry in data["batch"] if isinstance(data.get("batch"), list) else [data]:
+            # ``step`` is where the values go on the x axis; ``epoch`` / ``epochs`` only move the progress bar.
+            metrics = {k: v for k, v in (entry.get("metrics") or {}).items() if isinstance(v, int | float)}
+            if entry.get("epoch") is not None:
+                run.epoch = max(run.epoch, int(entry["epoch"]))
+            if entry.get("epochs"):
+                run.epochs = int(entry["epochs"])
+            if not metrics:
+                continue
+            step = int(entry.get("step", entry.get("epoch", 0)) or 0)
+            row = rows.get(step) or db.get(RunMetric, (run.id, step))
             if row is None:
-                db.add(RunMetric(run_id=run.id, step=step, data=metrics))
+                row = RunMetric(run_id=run.id, step=step, data=metrics)
+                db.add(row)
             else:
                 row.data = {**row.data, **metrics}  # several reports for one step add up
+            rows[step] = row
             # Until the run finishes, its summary is the best step so far.
-            if metrics.get("map50_95", 0.0) >= (run.summary or {}).get("map50_95", -1.0):
+            if metrics.get(primary, 0.0) >= (run.summary or {}).get(primary, -1.0):
                 run.summary = {**(run.summary or {}), **metrics}
     return {"ok": True}
+
+
+def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: int) -> dict[str, Any]:
+    """Attach a file the code recorded to its run. Recording the same name again replaces it."""
+    _, run = _running(db, node, job_id)
+    name = Path(name).name[:255] or "file"
+    existing = db.scalars(select(RunFile).where(RunFile.run_id == run.id)).all()
+    row = next((f for f in existing if f.name == name), None)
+    if row is None:
+        if len(existing) >= MAX_FILES_PER_RUN:
+            raise ServiceError(400, f"한 실행에 기록할 수 있는 파일은 {MAX_FILES_PER_RUN}개까지입니다.")
+        row = RunFile(run_id=run.id, name=name)
+        db.add(row)
+    row.blob, row.bytes = blob, size
+    row.kind = "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"
+    db.flush()
+    return {"id": row.id, "name": row.name}
+
+
+def get_file(db: Session, file_id: str) -> RunFile:
+    row = db.get(RunFile, file_id)
+    if row is None:
+        raise ServiceError(404, "파일을 찾을 수 없습니다.")
+    return row
 
 
 def finish(db: Session, node: Node, job_id: str, body: TrainFinish) -> dict[str, Any]:
@@ -314,6 +351,7 @@ def finish(db: Session, node: Node, job_id: str, body: TrainFinish) -> dict[str,
         return {"run_id": run.id, "model": None}
     release = db.get(Release, run.release_id)
     dataset = db.get(Dataset, release.dataset_id)
+    project = db.get(Project, run.project_id)
     variant = (run.template or {}).get("variant") or Path(str(run.config.get("model", ""))).stem or run.trainer
     name = run.config.get("model_name") or _slug(f"{dataset.name}-{variant}")
     latest = db.scalar(
@@ -326,6 +364,7 @@ def finish(db: Session, node: Node, job_id: str, body: TrainFinish) -> dict[str,
         version=(latest or 0) + 1,
         run_id=run.id,
         release_id=run.release_id,
+        task=project.task,
         arch=variant,
         trainer=run.trainer,
         template=run.template or {},
@@ -392,10 +431,12 @@ def run_view(
     job_data = services.job_view(db, settings, job, node_names) if job else None
     status = job_data["status"] if job_data else "failed"
     template = _template_of(run)
+    project = db.get(Project, run.project_id)
     view: dict[str, Any] = {
         "id": run.id,
         "name": run.name,
         "project_id": run.project_id,
+        "task": project.task if project else "detect",
         "template": {k: template.get(k, "") for k in ("id", "name", "title", "version", "variant")},
         "trainer_title": template.get("title") or run.trainer,
         "environment": {k: v for k, v in (run.environment or {"kind": "auto", "name": "자동 설치"}).items() if k != "path"},
@@ -420,10 +461,17 @@ def run_view(
     }
     if detail:
         rows = db.scalars(select(RunMetric).where(RunMetric.run_id == run.id).order_by(RunMetric.step)).all()
+        if len(rows) > 2 * HISTORY_POINTS:  # logged every iteration: a chart needs far fewer points
+            stride = -(-len(rows) // HISTORY_POINTS)
+            rows = [r for i, r in enumerate(rows) if i % stride == 0 or i == len(rows) - 1]
         keys = sorted({k for r in rows for k in r.data})
         view["history"] = {"steps": [r.step for r in rows], "series": {k: [r.data.get(k) for r in rows] for k in keys}}
         view["export"] = run.export or {}
         view["info"] = run.info or {}
+        view["files"] = [
+            {"id": f.id, "name": f.name, "kind": f.kind, "bytes": f.bytes, "url": catalog.media_url(settings, "file", f.id)}
+            for f in db.scalars(select(RunFile).where(RunFile.run_id == run.id).order_by(RunFile.created_at, RunFile.name))
+        ]
         view["class_metrics"] = run.class_metrics or []
         view["settings"] = _settings_of(db, run)
     return view

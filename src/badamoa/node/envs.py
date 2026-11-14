@@ -149,6 +149,21 @@ def resolve(home: Path, spec: dict[str, Any], log: Callable[[str], None] = print
     return ensure(home, list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")), log)
 
 
+_PACKAGES = (
+    "import importlib.metadata as m, json;"
+    "print(json.dumps(sorted({f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions() if d.metadata['Name']})))"
+)
+
+
+def packages(python: Path) -> list[str]:
+    """What is installed in an environment (``name==version``), for the run's record. Empty if it cannot be read."""
+    try:
+        done = subprocess.run([str(python), "-c", _PACKAGES], capture_output=True, text=True, timeout=60, check=False)
+        return list(json.loads(done.stdout.strip().splitlines()[-1]))[:1000] if done.returncode == 0 else []
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return []
+
+
 def check(path: str) -> dict[str, Any]:
     """Try an existing environment: does it start, and what is in it."""
     python = existing(path)

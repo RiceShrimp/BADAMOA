@@ -252,7 +252,7 @@ def test_training_through_mcp(hub, release):
         return res["structuredContent"]
 
     names = [t["name"] for t in call("list_model_templates", {})["result"]]
-    assert names == ["yolo", "torchvision"]  # the default first; the test helper template is not offered
+    assert names == ["yolo", "classify", "torchvision"]  # defaults first; the test helper template is not offered
     run = call("start_training", {"release_id": release["id"], "template": "dummy", "params": {"epochs": 3}, "gpus": 0})
     assert run["created_via"] == "mcp"
     assert call("wait_for_job", {"job_id": run["job_id"], "timeout_seconds": 120})["status"] == "succeeded"

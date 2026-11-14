@@ -68,6 +68,7 @@ export interface Run {
   id: string;
   name: string;
   project_id: string;
+  task: string;
   template: { id: string; name: string; title: string; version: string; variant: string };
   environment: { kind: string; name: string; id?: string };
   status: RunStatus;
@@ -89,13 +90,23 @@ export interface Run {
   source_run_id: string | null;
 }
 
+/** Detection templates report mAP per class; classification templates report precision, recall and F1. */
 export interface ClassMetric {
   id: number;
   name: string;
-  precision: number;
-  recall: number;
-  map50: number;
-  map50_95: number;
+  precision?: number;
+  recall?: number;
+  map50?: number;
+  map50_95?: number;
+  f1?: number;
+}
+
+export interface RunFile {
+  id: string;
+  name: string;
+  kind: "image" | "file";
+  bytes: number;
+  url: string;
 }
 
 export interface ExportSummary {
@@ -104,7 +115,7 @@ export interface ExportSummary {
   excluded?: Record<string, number>;
   as_background?: number;
   classes?: string[];
-  val_source?: "release" | "holdout" | "train";
+  val_source?: "release" | "holdout" | "test" | "train";
   files?: Record<string, number>;
 }
 
@@ -113,6 +124,7 @@ export interface RunDetail extends Run {
   export: ExportSummary;
   info: Record<string, unknown>;
   class_metrics: ClassMetric[];
+  files: RunFile[];
   settings: { name: string; label: string; value: unknown; group: string; advanced: boolean; changed: boolean }[];
 }
 
@@ -157,7 +169,28 @@ export const METRIC_LABEL: Record<string, string> = {
   val_cls_loss: "cls loss (val)",
   train_dfl_loss: "dfl loss (train)",
   val_dfl_loss: "dfl loss (val)",
+  top1: "Top-1",
+  top5: "Top-5",
+  f1: "F1",
+  train_loss: "loss (train)",
+  val_loss: "loss (val)",
+  lr: "학습률",
 };
+
+const TASK_METRICS: Record<string, string[]> = {
+  detect: ["map50_95", "map50", "precision", "recall"],
+  classify: ["top1", "top5", "f1", "val_loss"],
+};
+
+/** The four numbers shown in tables and tiles for a task; the first is the one runs are ranked by. */
+export function keyMetrics(task: string | undefined): string[] {
+  return TASK_METRICS[task ?? "detect"] ?? TASK_METRICS.detect;
+}
+
+/** How good a class is, whichever number its template reports. */
+export function classScore(c: ClassMetric): number {
+  return c.map50_95 ?? c.f1 ?? 0;
+}
 
 export const KEY_METRICS = ["map50_95", "map50", "precision", "recall"] as const;
 

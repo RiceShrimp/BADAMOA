@@ -152,7 +152,13 @@ export function Datasets({ releaseId, isAdmin }: { releaseId?: string; isAdmin: 
 
       <div className="catalog-main">
         {releaseId ? (
-          <ReleaseView key={releaseId} releaseId={releaseId} isAdmin={isAdmin} onDeleted={() => void refreshTree()} />
+          <ReleaseView
+            key={releaseId}
+            releaseId={releaseId}
+            isAdmin={isAdmin}
+            unit={project?.task === "classify" ? "라벨" : "박스"}
+            onDeleted={() => void refreshTree()}
+          />
         ) : (
           <div className="card empty-state">
             <Icon name="images" size={28} />
@@ -188,7 +194,17 @@ export function Datasets({ releaseId, isAdmin }: { releaseId?: string; isAdmin: 
   );
 }
 
-function ReleaseView({ releaseId, isAdmin, onDeleted }: { releaseId: string; isAdmin: boolean; onDeleted: () => void }) {
+function ReleaseView({
+  releaseId,
+  isAdmin,
+  unit,
+  onDeleted,
+}: {
+  releaseId: string;
+  isAdmin: boolean;
+  unit: string;
+  onDeleted: () => void;
+}) {
   const { data: release, error } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 10000, [releaseId]);
   const [split, setSplit] = useState("all");
   const [state, setState] = useState("");
@@ -280,7 +296,7 @@ function ReleaseView({ releaseId, isAdmin, onDeleted }: { releaseId: string; isA
 
       <details className="card fold">
         <summary>
-          클래스별 박스 수 <span className="muted">({(stats.boxes ?? 0).toLocaleString()})</span>
+          클래스별 {unit} 수 <span className="muted">({(stats.boxes ?? 0).toLocaleString()})</span>
         </summary>
         <div className="class-bars">
           {classRows.map((c) => (
@@ -392,7 +408,7 @@ function ReleaseView({ releaseId, isAdmin, onDeleted }: { releaseId: string; isA
             <span className="thumb-meta">
               <span className="tag">{SPLIT_LABEL[item.split] ?? item.split}</span>
               {item.state === "labelled" ? (
-                <span className="boxes">박스 {item.box_count}</span>
+                unit === "박스" && <span className="boxes">박스 {item.box_count}</span>
               ) : (
                 <span className="tag">{STATE_LABEL[item.state]}</span>
               )}
@@ -605,6 +621,7 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
                 <option value="auto">자동 감지</option>
                 <option value="yolo">YOLO</option>
                 <option value="coco">COCO</option>
+                <option value="imagefolder">분류 (클래스별 폴더)</option>
               </select>
             </label>
           </div>

@@ -8,7 +8,7 @@
 데이터 관리, 오토라벨링, 학습(일반 학습 + Teacher→Student 증류), 평가, 모델 관리, 배포를 한 곳에서 하고,
 원격 학습·데이터 서버를 한 줄 명령으로 붙이며, Claude Code 같은 에이전트가 MCP로 전부 조작할 수 있게 만드는 것이 목표입니다.
 
-지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), 학습(Ultralytics YOLO, torchvision Faster R-CNN·RetinaNet·FCOS — 하이퍼파라미터 세부 설정, 지표 곡선, 실행 비교)과 모델 등록, 사내 학습 코드를 SDK로 붙여 모델 템플릿으로 등록해 쓰기, MCP 서버, 웹 UI.
+지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), 객체 탐지 학습(Ultralytics YOLO, torchvision Faster R-CNN·RetinaNet·FCOS)과 이미지 분류 학습(ResNet·EfficientNet·ConvNeXt·ViT 등) — 하이퍼파라미터 세부 설정, 지표 곡선, 실행 비교, 그림·파일 기록 — 과 모델 등록, 사내 학습 코드를 SDK로 붙여 모델 템플릿으로 등록해 쓰기, MCP 서버, 웹 UI.
 바뀐 내용은 [CHANGELOG.md](CHANGELOG.md), 설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 일정은 [docs/ROADMAP.md](docs/ROADMAP.md), 다음 단계 계획(사내 학습 코드 등록 · 환경 선택 · 저장 위치)은 [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md), 화면 구성과 레퍼런스 분석은 [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md), 최초 구상은 [docs/PLANS.md](docs/PLANS.md).
 
 ## 실행 (개발 환경)
@@ -72,6 +72,12 @@ uv run python scripts/fetch_coco128.py
 
 이 데이터가 있으면 `uv run pytest` 가 실데이터 확인 테스트(`tests/test_real_data.py`)도 함께 실행합니다.
 
+분류는 클래스별 폴더로 된 데이터를 **분류** 프로젝트에 같은 방법으로 등록합니다. 시험용으로 MNIST160(숫자 160장, 약 70 KB)을 받을 수 있습니다.
+
+```bash
+uv run python scripts/fetch_mnist160.py
+```
+
 ## 학습해 보기
 
 웹 UI → **학습** → **새 학습** 에서 릴리스와 모델(예: yolo11n)을 고르면 됩니다. 릴리스 화면의 **이 릴리스로 학습** 버튼으로도 시작할 수 있습니다.
@@ -109,6 +115,7 @@ for epoch in range(1, hp.epochs + 1):
     ...
     bm.log({"train_loss": loss, "map50_95": score}, step=epoch)       # 화면의 그래프에 바로 반영
     bm.progress(epoch, hp.epochs)
+bm.log_artifact("confusion.png")                 # (선택) 그림·파일 → 실행 화면의 "파일"
 bm.log_model(run.out / "best.pt")                # 모델로 등록할 가중치
 bm.finish({"map50_95": best})
 ```
@@ -141,7 +148,7 @@ uv run ruff check .
 src/badamoa/core   공용 스키마 · storage · 시스템 정보
 src/badamoa/hub    Hub: REST · 노드 프로토콜 · MCP · 웹 UI 호스팅
 src/badamoa/node   Node Agent · 데이터 가져오기 · 학습용 변환 · 환경
-src/badamoa/templates  내장 모델 템플릿(YOLO, torchvision) · SDK(badamoa_sdk) · 새 템플릿의 뼈대
+src/badamoa/templates  내장 모델 템플릿(YOLO, torchvision 검출, torchvision 분류) · SDK(badamoa_sdk) · 새 템플릿의 뼈대
 web/               웹 UI (React + Vite)
 tests/             단위 · API · E2E
 ```

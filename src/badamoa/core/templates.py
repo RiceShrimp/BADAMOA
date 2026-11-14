@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 MANIFEST = "badamoa.toml"
 TASKS = ("detect", "segment", "classify")
-DATA_FORMATS = ("yolo",)  # coco, imagefolder and manifest come with the templates that need them
+DATA_FORMATS = ("yolo", "imagefolder")  # coco and manifest come with the templates that need them
 ENTRYPOINTS = ("train", "eval", "predict", "export")
 PARAM_TYPES = ("string", "integer", "number", "boolean", "object")
 # Set by BADAMOA for every run; a template may not use these as param names.

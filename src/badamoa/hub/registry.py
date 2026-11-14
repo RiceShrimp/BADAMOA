@@ -20,6 +20,8 @@ from .services import ServiceError
 from .train_models import Environment, ModelVersion, Template
 
 DEFAULT_TEMPLATE = "yolo"
+# What a project trains with when nobody chose: the built-in template for its task.
+DEFAULT_BY_TASK = {"detect": "yolo", "segment": "yolo", "classify": "classify"}
 AUTO = {"kind": "auto", "name": "자동 설치"}
 _ENV_NAME_RE = re.compile(r"^[A-Za-z0-9가-힣][A-Za-z0-9가-힣 ._-]{0,62}$")
 
@@ -114,8 +116,8 @@ def template_view(db: Session, row: Template, versions: int = 1, models: int = 0
     }
 
 
-def list_templates(db: Session, include_hidden: bool = False) -> list[dict[str, Any]]:
-    """The newest version of each template."""
+def list_templates(db: Session, include_hidden: bool = False, task: str = "") -> list[dict[str, Any]]:
+    """The newest version of each template, optionally only those for one task."""
     rows = db.scalars(
         select(Template).where(Template.deleted_at.is_(None)).order_by(Template.created_at.desc(), Template.id)
     ).all()
@@ -131,8 +133,9 @@ def list_templates(db: Session, include_hidden: bool = False) -> list[dict[str, 
             .group_by(ModelVersion.trainer)
         ).all()
     )
-    shown = [t for t in newest.values() if include_hidden or not t.hidden]
-    shown.sort(key=lambda t: (t.name != DEFAULT_TEMPLATE, not t.builtin, t.title.lower()))
+    shown = [t for t in newest.values() if (include_hidden or not t.hidden) and (not task or t.task == task)]
+    first = list(dict.fromkeys(DEFAULT_BY_TASK.values()))  # each task's default template leads, detection first
+    shown.sort(key=lambda t: (first.index(t.name) if t.name in first else len(first), not t.builtin, t.title.lower()))
     return [template_view(db, t, counts[t.name], models.get(t.name, 0)) for t in shown]
 
 

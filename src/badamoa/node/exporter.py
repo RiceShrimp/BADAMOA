@@ -1,4 +1,4 @@
-"""Write a release as a YOLO-format folder for a trainer.
+"""Write a release in the format a template's code reads: YOLO (detection) or one folder per class (classification).
 
 The release lives in the Hub's catalog (which images, which split, which label
 revision); the image files live on this node. The export links the images into
@@ -173,3 +173,89 @@ def build(
         "files": methods,
         "data_yaml": str(out / "data.yaml"),
     }
+
+
+def build_imagefolder(
+    items: Iterable[dict[str, Any]],
+    classes: list[dict[str, Any]],
+    locations: dict[str, str],
+    out: Path,
+    options: ExportOptions,
+) -> dict[str, Any]:
+    """Write ``out`` as ``<split>/<class>/<image>`` for classification (torchvision ``ImageFolder``).
+
+    Class folders are named ``0000_<name>``, ``0001_<name>`` … so that their alphabetical
+    order is the class order. A release without a val split is validated on its test
+    split when it has one (the usual shape of classification datasets), else on a
+    held-out share of train.
+    """
+    all_ids = [int(c["id"]) for c in classes]
+    chosen = [cid for cid in all_ids if cid in set(options.classes)] if options.classes else all_ids
+    if not chosen:
+        raise ValueError("학습할 클래스가 없습니다.")
+    keep = {cid: i for i, cid in enumerate(chosen)}
+    names = {int(c["id"]): str(c["name"]) for c in classes}
+    safe = {cid: "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in names[cid]) for cid in keep}
+    folders = {cid: f"{i:04d}_{safe[cid]}" for cid, i in keep.items()}
+
+    selected: list[tuple[dict[str, Any], str, int]] = []
+    excluded = {"unlabelled": 0, "partial": 0, "missing": 0}
+    for item in items:
+        label = int(item["boxes"][0][0]) if item["state"] == "labelled" and item.get("boxes") else None
+        if label is None:
+            excluded["unlabelled"] += 1  # nobody said which class it is
+        elif label in keep:
+            selected.append((item, item.get("split") if item.get("split") in SPLITS else "train", label))
+
+    val_source = "release"
+    if not any(split == "val" for _, split, _ in selected):
+        if any(split == "test" for _, split, _ in selected):
+            val_source = "test"
+            selected = [(item, "val" if split == "test" else split, label) for item, split, label in selected]
+        elif options.val_fraction > 0:
+            val_source = "holdout"
+            selected = [
+                (item, "val" if split == "train" and _held_out(item["sha256"], options.val_fraction) else split, label)
+                for item, split, label in selected
+            ]
+        if not any(split == "val" for _, split, _ in selected):
+            val_source = "train"
+
+    counts = {split: 0 for split in SPLITS}
+    methods: dict[str, int] = {}
+    for item, split, label in selected:
+        root = Path(locations.get(str(item.get("location_id")), "")).expanduser()
+        source = root / item["rel_path"]
+        try:
+            ok = source.is_file() and source.stat().st_size == item["bytes"]
+        except OSError:
+            ok = False
+        if not ok:
+            excluded["missing"] += 1
+            continue
+        target = out / split / folders[label] / f"{item['sha256']}{source.suffix.lower()}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        method = _place(source, target)
+        methods[method] = methods.get(method, 0) + 1
+        counts[split] += 1
+    if counts["train"] == 0:
+        raise ValueError("학습에 쓸 이미지가 없습니다. 릴리스의 라벨 상태와 파일 위치를 확인하세요.")
+    for split in ("train", "val"):  # every class folder exists in both, so class indices line up
+        if counts[split]:
+            for folder in folders.values():
+                (out / split / folder).mkdir(parents=True, exist_ok=True)
+
+    return {
+        "items": counts,
+        "boxes": sum(counts.values()),  # one label per image
+        "excluded": excluded,
+        "as_background": 0,
+        "classes": [names[cid] for cid in chosen],
+        "class_ids": chosen,
+        "val_source": val_source,
+        "files": methods,
+        "data_yaml": str(out),  # the dataset path handed to the code
+    }
+
+
+BUILDERS = {"yolo": build, "imagefolder": build_imagefolder}

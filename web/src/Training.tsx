@@ -6,20 +6,25 @@ import type { LabelClass, ReleaseInfo, TreeDataset } from "./catalogTypes";
 import {
   ACTIVE,
   type Environment,
-  KEY_METRICS,
+  type ClassMetric,
   METRIC_LABEL,
   type Run,
   type RunDetail,
   STAGE_LABEL,
   type Template,
   type TemplateParam,
+  classScore,
+  keyMetrics,
   metric,
 } from "./trainTypes";
 import { Badge, Icon, Modal, STATUS_LABEL, Stat, VIA_LABEL, duration, timeAgo, usePolling } from "./ui";
 
 const MAX_COMPARED = 8; // one palette slot per run
 const MAX_EXTRA_CHARTS = 12;
-const COMPARE_CHARTS = ["map50_95", "map50", "precision", "recall", "train_box_loss", "val_box_loss"];
+const COMPARE_CHARTS: Record<string, string[]> = {
+  detect: ["map50_95", "map50", "precision", "recall", "train_box_loss", "val_box_loss", "train_loss"],
+  classify: ["top1", "top5", "f1", "train_loss", "val_loss"],
+};
 
 export function Training({ runId, arg }: { runId?: string; arg?: string }) {
   const { projects, projectId, choose } = useProject();
@@ -76,6 +81,9 @@ function RunList({
   );
   const [picked, setPicked] = useState<string[] | null>(null); // null: follow the newest runs
   const [creating, setCreating] = useState(startWith !== undefined);
+  const task = projects?.find((p) => p.id === projectId)?.task ?? "detect";
+  const metricKeys = keyMetrics(task);
+  const primary = metricKeys[0];
 
   useEffect(() => setPicked(null), [projectId]);
   useEffect(() => setBusy(!!runs?.some((r) => ACTIVE.includes(r.status))), [runs]);
@@ -96,9 +104,7 @@ function RunList({
     queued: runs?.filter((r) => r.status === "queued").length ?? 0,
     done: runs?.filter((r) => r.status === "succeeded").length ?? 0,
   };
-  const best = (runs ?? [])
-    .filter((r) => r.metrics.map50_95 != null)
-    .sort((a, b) => b.metrics.map50_95 - a.metrics.map50_95)[0];
+  const best = (runs ?? []).filter((r) => r.metrics[primary] != null).sort((a, b) => b.metrics[primary] - a.metrics[primary])[0];
 
   return (
     <>
@@ -120,14 +126,14 @@ function RunList({
         <Stat icon="check" label="완료" value={counts.done} sub={`전체 ${runs?.length ?? 0}`} />
         <Stat
           icon="chart"
-          label="최고 mAP50-95"
-          value={best ? metric(best.metrics.map50_95) : "–"}
+          label={`최고 ${METRIC_LABEL[primary]}`}
+          value={best ? metric(best.metrics[primary]) : "–"}
           sub={best ? best.name : "완료한 학습 없음"}
         />
         <Stat icon="box" label="등록된 모델" value={runs?.filter((r) => r.model).length ?? 0} sub="학습이 끝나면 자동 등록" />
       </div>
 
-      {compared.length > 0 && <Comparison ids={compared} live={busy} />}
+      {compared.length > 0 && <Comparison ids={compared} live={busy} task={task} />}
 
       <div className="card flush table-wrap">
         <table className="runs">
@@ -136,7 +142,7 @@ function RunList({
               <th aria-label="비교" />
               <th>실행</th>
               <th>상태</th>
-              {KEY_METRICS.map((k) => (
+              {metricKeys.map((k) => (
                 <th key={k} className="right">
                   {METRIC_LABEL[k]}
                 </th>
@@ -188,7 +194,7 @@ function RunList({
                       ))}
                     {run.status === "queued" && run.wait_reason && <div className="wait-reason">{run.wait_reason}</div>}
                   </td>
-                  {KEY_METRICS.map((k) => (
+                  {metricKeys.map((k) => (
                     <td key={k} className="num right">
                       {metric(run.metrics[k])}
                     </td>
@@ -215,6 +221,7 @@ function RunList({
       {creating && (
         <NewRun
           projectId={projectId}
+          task={task}
           defaultTemplate={projects?.find((p) => p.id === projectId)?.settings?.template}
           releaseId={startWith}
           onClose={() => {
@@ -273,7 +280,7 @@ function Progress({ epoch, epochs }: { epoch: number; epochs: number }) {
 }
 
 /** The same metric of several runs in one small chart each; a run keeps its colour across charts. */
-function Comparison({ ids, live }: { ids: string[]; live: boolean }) {
+function Comparison({ ids, live, task }: { ids: string[]; live: boolean; task: string }) {
   const key = ids.join(",");
   const { data: details } = usePolling(
     () => Promise.all(ids.map((id) => api<RunDetail>(`/runs/${id}`).catch(() => null))),
@@ -291,7 +298,7 @@ function Comparison({ ids, live }: { ids: string[]; live: boolean }) {
         steps: d.history.steps,
         values: d.history.series[metricKey],
       }));
-  const charts = COMPARE_CHARTS.filter((k) => series(k).length > 0);
+  const charts = (COMPARE_CHARTS[task] ?? COMPARE_CHARTS.detect).filter((k) => series(k).length > 0).slice(0, 6);
 
   return (
     <section className="compare-runs">
@@ -300,7 +307,7 @@ function Comparison({ ids, live }: { ids: string[]; live: boolean }) {
           <a key={d.id} className="legend-item" href={`#/training/${d.id}`}>
             <i style={{ background: `var(--series-${ids.indexOf(d.id) + 1})` }} />
             {d.name}
-            <strong>{metric(d.metrics.map50_95)}</strong>
+            <strong>{metric(d.metrics[keyMetrics(task)[0]])}</strong>
           </a>
         ))}
         {!details && <span className="muted small">지표를 불러오는 중…</span>}
@@ -317,6 +324,8 @@ function Comparison({ ids, live }: { ids: string[]; live: boolean }) {
 // ---- one run ----------------------------------------------------------------------------
 
 const DETAIL_CHARTS: { title: string; keys: string[] }[] = [
+  { title: "정확도", keys: ["top1", "top5"] },
+  { title: "loss", keys: ["train_loss", "val_loss"] },
   { title: "mAP", keys: ["map50_95", "map50"] },
   { title: "Precision · Recall", keys: ["precision", "recall"] },
   { title: "box loss", keys: ["train_box_loss", "val_box_loss"] },
@@ -325,6 +334,7 @@ const DETAIL_CHARTS: { title: string; keys: string[] }[] = [
 ];
 const VAL_SOURCE: Record<string, string> = {
   release: "릴리스의 val split",
+  test: "릴리스의 test split",
   holdout: "train에서 떼어 냄",
   train: "train으로 검증 (지표가 높게 나옴)",
 };
@@ -340,6 +350,7 @@ function RunView({ runId }: { runId: string }) {
   if (!run) return <div className="muted">불러오는 중…</div>;
 
   const active = ACTIVE.includes(run.status);
+  const metricKeys = keyMetrics(run.task);
   const act = async (work: () => Promise<unknown>) => {
     setWorking(true);
     setFailure(null);
@@ -380,11 +391,13 @@ function RunView({ runId }: { runId: string }) {
   const items = run.export.items ?? {};
   const excluded = run.export.excluded ?? {};
   const leftOut = (excluded.unlabelled ?? 0) + (excluded.partial ?? 0) + (excluded.missing ?? 0);
-  const classRows = [...run.class_metrics].sort((a, b) => b.map50_95 - a.map50_95);
+  const classRows = [...run.class_metrics].sort((a, b) => classScore(b) - classScore(a));
   // Basic settings and anything the user changed; detailed settings left at their default are folded.
   const shownSettings = run.settings.filter((s) => !s.advanced || s.changed);
   const defaultSettings = run.settings.filter((s) => s.advanced && !s.changed);
-  const info = run.info as { ultralytics?: string; torch?: string; device?: string; gpus?: string[] };
+  const info = run.info as { ultralytics?: string; torch?: string; device?: string; gpus?: string[]; packages?: string[] };
+  const pictures = run.files.filter((f) => f.kind === "image");
+  const documents = run.files.filter((f) => f.kind !== "image");
 
   return (
     <>
@@ -434,7 +447,7 @@ function RunView({ runId }: { runId: string }) {
       {run.error && <div className="error">{run.error} 아래 로그에서 원인을 확인하세요.</div>}
 
       <div className="stats five metrics">
-        {KEY_METRICS.map((k) => (
+        {metricKeys.map((k) => (
           <Stat key={k} icon="chart" label={METRIC_LABEL[k]} value={metric(run.metrics[k])} sub={active ? "지금까지 최고" : "best 가중치"} />
         ))}
         <Stat
@@ -477,7 +490,7 @@ function RunView({ runId }: { runId: string }) {
                 train {(items.train ?? 0).toLocaleString()} · val {(items.val ?? 0).toLocaleString()}
                 {items.test ? ` · test ${items.test.toLocaleString()}` : ""}
               </dd>
-              <dt>박스</dt>
+              <dt>{run.task === "classify" ? "라벨" : "박스"}</dt>
               <dd>{(run.export.boxes ?? 0).toLocaleString()}</dd>
               <dt>클래스</dt>
               <dd>{run.export.classes?.length ?? 0}개</dd>
@@ -569,6 +582,30 @@ function RunView({ runId }: { runId: string }) {
         </section>
       </div>
 
+      {run.files.length > 0 && (
+        <section className="card">
+          <h3>
+            파일 <span className="muted">({run.files.length})</span>
+          </h3>
+          {pictures.length > 0 && (
+            <div className="run-pictures">
+              {pictures.map((f) => (
+                <a key={f.id} href={f.url} target="_blank" rel="noreferrer" title="새 창에서 크게 보기">
+                  <img src={f.url} alt={f.name} loading="lazy" />
+                  <span>{f.name}</span>
+                </a>
+              ))}
+            </div>
+          )}
+          {documents.map((f) => (
+            <a key={f.id} className="run-file" href={f.url} download>
+              <Icon name="copy" size={14} />
+              {f.name} <span className="muted small">{Math.max(1, Math.round(f.bytes / 1024)).toLocaleString()} KB</span>
+            </a>
+          ))}
+        </section>
+      )}
+
       {classRows.length > 0 && (
         <details className="card fold" open={classRows.length <= 12}>
           <summary>
@@ -578,37 +615,53 @@ function RunView({ runId }: { runId: string }) {
         </details>
       )}
 
+      {info.packages && info.packages.length > 0 && (
+        <details className="card fold">
+          <summary>
+            설치된 패키지 <span className="muted">({info.packages.length})</span>
+          </summary>
+          <pre className="json packages">{info.packages.join("\n")}</pre>
+        </details>
+      )}
+
       {run.job_id && <LogTail jobId={run.job_id} live={active} />}
     </>
   );
 }
 
-export function ClassTable({ rows }: { rows: RunDetail["class_metrics"] }) {
+export function ClassTable({ rows }: { rows: ClassMetric[] }) {
+  // Columns follow what the template reported: mAP for detection, F1 for classification.
+  const detection = rows.some((c) => c.map50_95 != null);
+  const columns: [keyof ClassMetric, string][] = detection
+    ? [["map50_95", "mAP50-95"], ["map50", "mAP50"], ["precision", "Precision"], ["recall", "Recall"]]
+    : [["f1", "F1"], ["precision", "Precision"], ["recall", "Recall"]];
   return (
     <div className="table-wrap class-table">
       <table>
         <thead>
           <tr>
             <th>클래스</th>
-            <th className="right">mAP50-95</th>
-            <th className="right">mAP50</th>
-            <th className="right">Precision</th>
-            <th className="right">Recall</th>
+            {columns.map(([key, label]) => (
+              <th key={key} className="right">
+                {label}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((c) => (
             <tr key={c.id}>
               <td>{c.name}</td>
-              <td className="num right">
-                <span className="cell-bar">
-                  <i style={{ width: `${Math.round(c.map50_95 * 100)}%` }} />
-                </span>
-                {metric(c.map50_95)}
-              </td>
-              <td className="num right">{metric(c.map50)}</td>
-              <td className="num right">{metric(c.precision)}</td>
-              <td className="num right">{metric(c.recall)}</td>
+              {columns.map(([key], i) => (
+                <td key={key} className="num right">
+                  {i === 0 && (
+                    <span className="cell-bar">
+                      <i style={{ width: `${Math.round(classScore(c) * 100)}%` }} />
+                    </span>
+                  )}
+                  {metric(c[key] as number | undefined)}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>
@@ -732,12 +785,14 @@ function ParamField({ spec, value, onChange }: { spec: TemplateParam; value: For
 
 function NewRun({
   projectId,
+  task,
   defaultTemplate,
   releaseId,
   onClose,
   onStarted,
 }: {
   projectId: string;
+  task: string;
   defaultTemplate?: string;
   releaseId?: string;
   onClose: () => void;
@@ -762,14 +817,14 @@ function NewRun({
       const ready = data.flatMap((d) => d.releases).filter((r) => r.status === "ready");
       setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
     });
-    void api<Template[]>("/templates").then((list) => {
+    void api<Template[]>(`/templates?task=${task}`).then((list) => {
       setTemplates(list);
       const first = list.find((t) => t.name === defaultTemplate) ?? list[0];
       setTemplateName(first?.name ?? "");
       setValues(initialValues(first));
     });
     void api<Environment[]>("/environments").then(setEnvironments);
-  }, [projectId, defaultTemplate]);
+  }, [projectId, task, defaultTemplate]);
 
   useEffect(() => {
     setChosen([]);

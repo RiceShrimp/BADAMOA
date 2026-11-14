@@ -1,8 +1,9 @@
 """Register a dataset that already sits on this node, without copying it.
 
-The node walks a YOLO or COCO dataset, hashes every image, makes a small
-thumbnail, and sends the *index* (hash, size, split, boxes, thumbnail) to the
-Hub in chunks. The images themselves stay where they are.
+The node walks a YOLO or COCO detection dataset, or a classification dataset laid
+out as one folder per class, hashes every image, makes a small thumbnail, and
+sends the *index* (hash, size, split, labels, thumbnail) to the Hub in chunks.
+The images themselves stay where they are.
 """
 
 from __future__ import annotations
@@ -225,9 +226,51 @@ def scan_coco(root: Path) -> Scan:
     return Scan(format="coco", classes=[categories[c] for c in class_ids], entries=entries)
 
 
+# ---- classification: one folder per class ----------------------------------------
+
+
+def _class_dirs(directory: Path) -> list[Path]:
+    """Sub-folders that hold images directly: the classes of an image-folder dataset."""
+    return [
+        d
+        for d in sorted(directory.iterdir())
+        if d.is_dir() and any(p.suffix.lower() in IMAGE_SUFFIXES for p in d.iterdir() if p.is_file())
+    ]
+
+
+def _imagefolder_splits(root: Path) -> list[tuple[str, Path]]:
+    """``train/<class>/…`` + ``val/<class>/…`` (split folders), or ``<class>/…`` right under the root."""
+    splits = [
+        (_split_from_name(d.name), d)
+        for d in sorted(root.iterdir())
+        if d.is_dir() and _split_from_name(d.name) and _class_dirs(d)
+    ]
+    if splits:
+        return splits
+    return [("", root)] if _class_dirs(root) else []
+
+
+def scan_imagefolder(root: Path) -> Scan:
+    """A classification dataset. Each image carries one label, written as ``[[class_id]]``."""
+    splits = _imagefolder_splits(root)
+    classes = sorted({d.name for _, base in splits for d in _class_dirs(base)})
+    index = {name: i for i, name in enumerate(classes)}
+    entries = [
+        Entry(path=image, split=split, state="labelled", boxes=[[index[folder.name]]])
+        for split, base in splits
+        for folder in _class_dirs(base)
+        for image in sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
+    ]
+    return Scan(format="imagefolder", classes=classes, entries=entries)
+
+
 def scan(root: Path, fmt: str = "auto") -> Scan:
     if not root.is_dir():
         raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {root}")
+    detection_layout = (root / "images").is_dir() or (root / "labels").is_dir() or list(root.glob("*.yaml"))
+    looks_like_classes = not detection_layout and not _coco_files(root) and _imagefolder_splits(root)
+    if fmt == "imagefolder" or (fmt == "auto" and looks_like_classes):
+        return scan_imagefolder(root)
     if fmt == "coco" or (fmt == "auto" and not list(root.glob("*.yaml")) and _coco_files(root)):
         result = scan_coco(root)
         if result.entries or fmt == "coco":

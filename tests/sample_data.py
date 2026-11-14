@@ -91,3 +91,17 @@ if __name__ == "__main__":  # python tests/sample_data.py <dir> [train] [val]
         target, int(sys.argv[2]) if len(sys.argv) > 2 else 120, int(sys.argv[3]) if len(sys.argv) > 3 else 30, (640, 480)
     )
     print(f"YOLO sample dataset written to {target}")
+
+
+def make_imagefolder(
+    root: Path, classes: tuple[str, ...] = ("cat", "dog", "bird"), train: int = 4, held: int = 2, held_split: str = "val"
+) -> Path:
+    """A classification dataset: ``train/<class>/*.jpg`` and ``<held_split>/<class>/*.jpg``, each class its own colour."""
+    for split, count in (("train", train), (held_split, held)):
+        for index, name in enumerate(classes):
+            for i in range(count):
+                path = root / split / name / f"{name}_{split}_{i:03d}.jpg"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shade = 60 + 20 * i + (0 if split == "train" else 7)
+                Image.new("RGB", (64, 48), (shade if index == 0 else 30, shade if index == 1 else 30, shade)).save(path)
+    return root

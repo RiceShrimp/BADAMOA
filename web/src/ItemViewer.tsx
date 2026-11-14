@@ -106,7 +106,8 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
                 {revision.boxes
                   .filter((b) => !hidden.has(b[0]))
                   .map((b, i) => {
-                    const [cls, cx, cy, bw, bh] = b;
+                    // A classification label has no geometry: it is drawn as a frame around the whole image.
+                    const [cls, cx = 0.5, cy = 0.5, bw = 1, bh = 1] = b;
                     const x = (cx - bw / 2) * w;
                     const y = (cy - bh / 2) * h;
                     const color = classColor(cls);

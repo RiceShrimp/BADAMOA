@@ -99,6 +99,20 @@ class RunMetric(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class RunFile(Base):
+    """A file the training code recorded with the run: a plot, sample predictions, a report."""
+
+    __tablename__ = "run_files"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(8), default="file")  # image | file
+    blob: Mapped[str] = mapped_column(String(64))
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class ModelVersion(Base):
     """One trained model. Versions of the same ``name`` form a family; an alias marks one of them."""
 

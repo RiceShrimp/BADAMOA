@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -129,14 +130,20 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             val_fraction=float(params.get("val_fraction", 0.2)),
         )
         shutil.rmtree(work, ignore_errors=True)
-        summary = exporter.build(items, header["classes"], header["locations"], work / "data", options)
+        data_format = template.get("data_format", "yolo")
+        build = exporter.BUILDERS.get(data_format)
+        if build is None:
+            raise RuntimeError(f"이 노드의 BADAMOA는 데이터 형식 {data_format}을 지원하지 않습니다. 노드를 업데이트하세요.")
+        summary = build(items, header["classes"], header["locations"], work / "data", options)
         counts, left_out = summary["items"], summary["excluded"]
         print(
             f"이미지 train {counts['train']:,} · val {counts['val']:,} · test {counts['test']:,} · "
-            f"박스 {summary['boxes']:,} · 클래스 {len(summary['classes'])}개"
+            f"{'라벨' if data_format == 'imagefolder' else '박스'} {summary['boxes']:,} · 클래스 {len(summary['classes'])}개"
         )
         if summary["val_source"] == "holdout":
             print(f"릴리스에 val split이 없어 train의 {options.val_fraction:.0%}를 검증용으로 떼었습니다.")
+        elif summary["val_source"] == "test":
+            print("릴리스에 val split이 없어 test split으로 검증합니다.")
         elif summary["val_source"] == "train":
             print("검증용으로 뗄 이미지가 부족해 train으로 검증합니다. 지표가 실제보다 높게 나옵니다.")
         if any(left_out.values()):
@@ -150,6 +157,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         stage("env")
         code = template_dir(client, base, node_home, template)
         python = envs.resolve(node_home, params.get("environment") or {})
+        installed = envs.packages(python)
+        if installed:
+            post("/report", {"event": "info", "data": {"packages": installed}})
 
         # 4. train
         cache = node_home / "cache" / "template-data" / template["name"]
@@ -196,6 +206,44 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         assert proc.stdout is not None
         outcome: dict[str, Any] | None = None
         last_progress = 0.0
+
+        # Metrics go to the Hub at most about once a second, however often the code logs.
+        pending: list[dict[str, Any]] = []
+        lock = threading.Lock()
+        ended = threading.Event()
+
+        def flush() -> None:
+            with lock:
+                batch = list(pending)
+                pending.clear()
+            if batch:
+                post("/report", {"event": "epoch", "data": {"batch": batch}})
+
+        def flush_every_second() -> None:
+            while not ended.wait(1.0):
+                try:
+                    flush()
+                except (RuntimeError, httpx.HTTPError):
+                    pass  # the next round, or the final flush, reports the problem
+
+        def keep(entry: dict[str, Any]) -> None:
+            with lock:
+                pending.append(entry)
+
+        def upload_file(event: dict[str, Any]) -> None:
+            """A file the code recorded (a plot, sample predictions): stored with the run, never fatal."""
+            path = Path(str(event.get("path", "")))
+            path = path if path.is_absolute() else code / path
+            if not path.is_file():
+                print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
+                return
+            query = {"name": str(event.get("name") or path.name), "kind": "file"}
+            with path.open("rb") as stream:
+                resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=600)
+            if resp.status_code != 200:
+                print(f"파일을 기록하지 못했습니다 ({path.name}): {resp.text[:200]}", flush=True)
+
+        threading.Thread(target=flush_every_second, daemon=True).start()
         for raw in proc.stdout:
             line = ANSI.sub("", raw).rstrip()
             if not line.startswith(EVENT_PREFIX):
@@ -218,11 +266,15 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             elif kind == "info":
                 post("/report", {"event": "info", "data": event})
             elif kind == "epoch":  # one epoch finished: metrics at that epoch, and progress
-                post("/report", {"event": "epoch", "data": event})
+                keep(event)
             elif kind == "log":  # metrics at any step, without touching progress
-                post("/report", {"event": "epoch", "data": {"step": event.get("step", 0), "metrics": event.get("metrics")}})
+                keep({"step": event.get("step", 0), "metrics": event.get("metrics")})
             elif kind == "progress":
-                post("/report", {"event": "epoch", "data": {"epoch": event.get("current"), "epochs": event.get("total")}})
+                keep({"epoch": event.get("current"), "epochs": event.get("total")})
+            elif kind == "artifact":
+                upload_file(event)
+        ended.set()
+        flush()
         if proc.wait() != 0:
             raise RuntimeError(f"학습 프로세스가 종료 코드 {proc.returncode}로 끝났습니다.")
         if outcome is None:

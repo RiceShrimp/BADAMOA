@@ -21,6 +21,7 @@ BADAMOA가 코드를 실행할 때는 이 모듈을 자동으로 import할 수 �
         bm.log({"train_loss": loss, "map50_95": score}, step=epoch)   # 3. 지표 → 화면의 그래프
         bm.progress(epoch, hp.epochs)                                  #    진행률
 
+    bm.log_artifact("confusion.png")      # (선택) 그림·파일 → 실행 화면의 "파일"
     bm.log_model(run.out / "best.pt")     # 4. 모델로 등록할 가중치
     bm.finish({"map50_95": best})         # 5. 최종 지표와 함께 끝냄
 
@@ -40,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "1"
+__version__ = "2"
 
 
 # ---- 설정 선언 ---------------------------------------------------------------------------
@@ -233,6 +234,19 @@ def log_model(weights: str | Path, classes: list[dict[str, Any]] | None = None) 
     run = _current()
     run._weights = str(weights)
     run._class_metrics = classes or []
+
+
+def log_artifact(path: str | Path, name: str | None = None) -> None:
+    """파일을 실행에 기록합니다 (혼동 행렬 그림, 예측 예시, 보고서 …). 실행 화면의 "파일"에 바로 나옵니다.
+
+    이미지(png · jpg · gif · webp)는 화면에서 미리보기로 보이고, 그 밖의 파일은 내려받을 수 있습니다.
+    같은 이름으로 다시 기록하면 새 파일로 바뀝니다 (epoch마다 갱신하는 그림에 씁니다).
+    """
+    _current()
+    _emit("artifact", path=str(Path(path).resolve()), name=name or Path(path).name)
+
+
+log_image = log_artifact  # 이미지도 같은 방식으로 기록합니다
 
 
 def finish(metrics: dict[str, Any] | None = None) -> None:

@@ -22,7 +22,15 @@ function niceMax(value: number): number {
 
 function tick(value: number): string {
   if (value === 0) return "0";
-  return Math.abs(value) >= 10 ? value.toFixed(0) : Math.abs(value) >= 1 ? value.toFixed(1) : value.toFixed(2);
+  const size = Math.abs(value);
+  if (size < 0.01) return value.toExponential(0); // learning rates and the like
+  return size >= 10 ? value.toFixed(0) : size >= 1 ? value.toFixed(1) : value.toFixed(2);
+}
+
+/** A value in a legend or tooltip: three decimals, or scientific notation when that would show only zeros. */
+function shown(value: number | null | undefined): string {
+  if (value == null) return "–";
+  return value !== 0 && Math.abs(value) < 0.001 ? value.toExponential(2) : value.toFixed(3);
 }
 
 /** A small line chart over epochs. Several of these side by side compare runs metric by metric. */
@@ -58,7 +66,7 @@ export function EpochChart({ title, series, legend = false }: { title: string; s
             <span key={s.key} className="legend-item">
               <i style={{ background: `var(--series-${s.slot})` }} />
               {s.label}
-              <strong>{at(s, hover ?? s.steps[s.steps.length - 1])?.toFixed(3) ?? "–"}</strong>
+              <strong>{shown(at(s, hover ?? s.steps[s.steps.length - 1]))}</strong>
             </span>
           ))}
         </div>
@@ -124,7 +132,7 @@ export function EpochChart({ title, series, legend = false }: { title: string; s
                 <div key={s.key} className="tip-row">
                   <i style={{ background: `var(--series-${s.slot})` }} />
                   {s.label}
-                  <strong>{at(s, hover) == null ? "–" : (at(s, hover) as number).toFixed(3)}</strong>
+                  <strong>{shown(at(s, hover))}</strong>
                 </div>
               ))}
             </div>

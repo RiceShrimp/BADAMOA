@@ -362,11 +362,15 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
     @mcp.tool(title="모델 템플릿 목록", annotations=READ_ONLY)
     @guarded
-    def list_model_templates(ctx: Context) -> list[dict[str, Any]]:
-        """학습에 쓸 수 있는 모델 템플릿(내장 YOLO와 사내에서 등록한 것)과 각 템플릿의 설정 항목(params)을 반환합니다."""
+    def list_model_templates(ctx: Context, task: str = "") -> list[dict[str, Any]]:
+        """학습에 쓸 수 있는 모델 템플릿과 각 템플릿의 설정 항목(params)을 반환합니다.
+
+        기본 제공: yolo · torchvision(검출), classify(분류: ResNet 등). 사내에서 등록한 것도 함께 나옵니다.
+        task로 detect 또는 classify만 볼 수 있습니다. 프로젝트의 task와 같은 템플릿만 그 프로젝트에서 쓸 수 있습니다.
+        """
         user_of(ctx)
         with hub.db.session() as db:
-            return registry.list_templates(db)
+            return registry.list_templates(db, task=task)
 
     @mcp.tool(title="학습 실행 목록", annotations=READ_ONLY)
     @guarded

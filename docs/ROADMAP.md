@@ -133,9 +133,24 @@
   - [x] 실행 화면: 기본 설정과 바꾼 설정을 먼저 보여 주고, 기본값 그대로 둔 것은 접어 둠
   - [x] 기본 제공 템플릿 `torchvision`: Faster R-CNN · RetinaNet · FCOS(ResNet-50), Faster R-CNN · SSDlite(MobileNetV3). SDK로 작성
   - [x] 테스트 63개, 실데이터 확인(Windows, CPU, COCO128): Faster R-CNN MobileNetV3 2 epoch(42초), Faster R-CNN ResNet-50 1 epoch(64초), YOLO11n을 AdamW·학습률 0.002로 학습해 로그에서 적용 확인
-- [ ] **1.3 분류**: 분류 데이터 가져오기(폴더 이름 = 클래스), 이미지당 클래스 라벨, ImageFolder 형식 변환, top-1 · F1 지표, 분류 템플릿(ResNet · EfficientNet · ConvNeXt · ViT — torchvision / timm)
+- [x] **1.3 분류** (0.8.0)
+  - [x] 분류 데이터 가져오기: 클래스별 폴더(`train/<클래스>/…` 또는 `<클래스>/…`)를 자동 인식. 라벨은 위치 없는 `[클래스]`로 저장해 필터·통계·비교·개정이 그대로 동작
+  - [x] 탐지 데이터와 분류 프로젝트가 섞이지 않게 막고 이유를 알려 줌
+  - [x] 릴리스 → `<split>/<클래스>/` 폴더 변환(`node/exporter.py`). val이 없으면 test로, 그것도 없으면 train에서 떼어 검증
+  - [x] 기본 제공 템플릿 `classify`: ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin, 하이퍼파라미터 13개, 혼동 행렬 그림 기록
+  - [x] 태스크별 지표: 분류는 Top-1 · Top-5 · F1 · loss. "가장 좋은 step"도 태스크의 대표 지표로 판단. 클래스별 Precision · Recall · F1
+  - [x] 태스크에 맞는 템플릿만 대화상자에, 태스크별 기본 템플릿
+  - [x] 실데이터 확인(Windows, CPU, MNIST160): ResNet-18 4 epoch(19초, Top-1 0.76), EfficientNet-B0, ConvNeXt-Tiny
+  - [ ] 분류 전용 항목 보기(지금은 이미지 전체를 감싼 테두리로 표시), 한 이미지에 여러 라벨(multi-label)
+  - [ ] timm 템플릿 (지금은 torchvision의 모델만)
   - [ ] Git 주소로 템플릿 등록
-- [ ] **1.5 추적 확장** — W&B·MLflow에서 익숙한 나머지: 파일·이미지 기록(`log_artifact`, 실행 화면의 "파일" 탭), 학습 중 서버 자원(GPU·메모리) 그래프, 설치된 패키지 목록 자동 기록, step이 많은 지표의 간추림, Lightning·Hugging Face Trainer용 콜백, 기존 `wandb.log` 코드를 거의 그대로 쓰는 호환 층
+- [ ] **1.5 추적 확장** (일부 0.8.0)
+  - [x] 파일·이미지 기록: `bm.log_artifact` → 실행 화면의 "파일"(이미지 미리보기, 그 밖은 내려받기). 같은 이름은 덮어씀
+  - [x] 설치된 패키지 목록을 실행 기록에 자동으로
+  - [x] 잦은 기록: 노드가 약 1초 단위로 묶어 보내고, step이 많은 지표는 읽을 때 간추림
+  - [x] 테스트 66개 — 분류 프로젝트 전체 흐름, 파일 기록과 내려받기, 묶어 보낸 40 step이 모두 도착하는지
+  - [ ] 학습 중 서버 자원(GPU·메모리) 그래프
+  - [ ] Lightning · Hugging Face Trainer용 콜백, 기존 `wandb.log` 코드를 거의 그대로 쓰는 호환 층
 - [ ] **2. 평가**: `eval` 진입점, 평가 작업, 모델의 평가 기록, 같은 릴리스로 평가한 모델끼리 비교
 - [ ] **3. 저장 위치의 틀과 NAS**: 학습 노드의 위치 찾기 단계, 이미지당 여러 위치, 공유 마운트 등록과 서버별 경로, 학습 노드 선택(자동 · 지정)
 - [ ] **4. 서버 간 동기화**: 노드 캐시(해시 기준 · 용량 한도), Hub 경유 전송, 받아 올 양 미리 표시

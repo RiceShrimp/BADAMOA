@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import tempfile
 from pathlib import Path
@@ -25,6 +26,7 @@ agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/train")
 media_router = APIRouter(prefix="/media")
 
 MAX_WEIGHTS_BYTES = 8 * 1024**3
+MAX_FILE_BYTES = 256 * 1024**2
 _CHUNK = 1024 * 1024
 
 
@@ -157,8 +159,15 @@ def report(
 
 
 @agent_router.put("/artifact")
-async def artifact(job_id: str, request: Request, name: str = "best.pt", hub: Hub = Depends(get_hub)) -> dict[str, Any]:
-    """Receive the weights as a raw request body, streamed to disk, and store them by content hash."""
+async def artifact(
+    job_id: str, request: Request, name: str = "best.pt", kind: str = "weights", hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Receive a file as a raw request body, streamed to disk, and store it by content hash.
+
+    ``kind=weights`` (the model, registered when the run finishes) or ``kind=file``
+    (something the code recorded with the run: a plot, sample predictions).
+    """
+    limit = MAX_WEIGHTS_BYTES if kind == "weights" else MAX_FILE_BYTES
     token = bearer_token(request)
 
     def check() -> None:
@@ -177,8 +186,8 @@ async def artifact(job_id: str, request: Request, name: str = "best.pt", hub: Hu
         with os.fdopen(handle, "wb") as out:
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > MAX_WEIGHTS_BYTES:
-                    raise HTTPException(status_code=413, detail="가중치 파일이 너무 큽니다.")
+                if size > limit:
+                    raise HTTPException(status_code=413, detail="파일이 너무 큽니다.")
                 out.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="빈 파일입니다.")
@@ -186,6 +195,14 @@ async def artifact(job_id: str, request: Request, name: str = "best.pt", hub: Hu
         blob = await anyio.to_thread.run_sync(storage.put_blob_file, temp)
     finally:
         Path(temp).unlink(missing_ok=True)
+    if kind == "file":
+
+        def record() -> dict[str, Any]:
+            with hub.db.session() as db:
+                node = services.authenticate_node(db, token)
+                return training.add_file(db, node, job_id, name, blob, size)
+
+        return await anyio.to_thread.run_sync(record)
     return {"blob": blob, "bytes": size, "file_name": Path(name).name}
 
 
@@ -196,6 +213,28 @@ def finish(
     result = training.finish(db, node, job_id, body)
     db.commit()
     return result
+
+
+# ---- files a run recorded (signed URL, like images) -------------------------------------
+
+
+@media_router.get("/file/{file_id}")
+def run_file(file_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Session = Depends(db_session)) -> Response:
+    if not catalog.verify_media(hub.settings, "file", file_id, exp, sig):
+        raise HTTPException(status_code=403, detail="링크가 만료되었거나 올바르지 않습니다.")
+    row = training.get_file(db, file_id)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if not storage.has_blob(row.blob):
+        raise HTTPException(status_code=404, detail="파일이 저장소에 없습니다.")
+    kind = mimetypes.guess_type(row.name)[0] or "application/octet-stream"
+    # Only images are shown in place; anything else is offered as a download, whatever it contains.
+    inline = row.kind == "image" and kind.startswith("image/") and kind != "image/svg+xml"
+    headers = {
+        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(row.name)}",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=3600",
+    }
+    return Response(storage.get_blob(row.blob), media_type=kind if inline else "application/octet-stream", headers=headers)
 
 
 # ---- weights download (signed URL, like images) ---------------------------------------
