@@ -1,6 +1,6 @@
 name = "dummy"
 title = "테스트 학습"
-version = "1"
+version = "2"
 description = "실제 학습 없이 가짜 지표와 가중치 파일을 만듭니다. PyTorch 없이 학습 흐름을 확인하는 용도."
 task = "detect"
 data_format = "yolo"

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import mimetypes
 import os
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,13 +16,14 @@ from sqlalchemy.orm import Session
 from . import catalog, modelops, services
 from .deps import Hub, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
+from .training_api import blob_response
 
 router = APIRouter(prefix="/api")
 agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/model")
 media_router = APIRouter(prefix="/media")
 
 MAX_UPLOAD_BYTES = 30 * 1024**2
-MAX_FILE_BYTES = 2 * 1024**3  # an exported model can be large
+MAX_FILE_BYTES = 8 * 1024**3  # an exported model can be large
 
 
 def _storage(hub: Hub):
@@ -190,12 +189,4 @@ def op_file(key: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Sessi
     storage = _storage(hub)
     if not storage.has_blob(entry["blob"]):
         raise HTTPException(status_code=404, detail="파일이 저장소에 없습니다.")
-    kind = mimetypes.guess_type(entry["name"])[0] or "application/octet-stream"
-    inline = entry["kind"] == "image" and kind.startswith("image/") and kind != "image/svg+xml"
-    headers = {
-        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(entry['name'])}",
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "private, max-age=3600",
-    }
-    media_type = kind if inline else "application/octet-stream"
-    return Response(storage.get_blob(entry["blob"]), media_type=media_type, headers=headers)
+    return blob_response(storage, entry["blob"], entry["name"], entry["kind"] == "image")

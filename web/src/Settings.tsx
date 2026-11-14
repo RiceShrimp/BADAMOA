@@ -1,4 +1,5 @@
 import { type FormEvent, useRef, useState } from "react";
+import { fileSize } from "./Files";
 import { type NodeInfo, api, apiUpload } from "./api";
 import type { Project } from "./catalogTypes";
 import type { Environment, EnvironmentNode, Template } from "./trainTypes";
@@ -26,7 +27,72 @@ export function Settings({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo
       <Templates isAdmin={isAdmin} />
       <Environments isAdmin={isAdmin} nodes={nodes ?? []} />
       {isAdmin && <ProjectDefaults />}
+      <StorageUsage />
     </>
+  );
+}
+
+// ---- where everything is kept ----------------------------------------------------------
+
+interface Usage {
+  path: string | null; // admins only
+  bytes: number;
+  files: number;
+  free: number;
+  disk: number;
+  parts: { models: number; outputs: number; checkpoints: number; other: number };
+}
+
+const PART_LABEL: [keyof Usage["parts"], string, string][] = [
+  ["models", "모델", "등록된 모델의 가중치"],
+  ["outputs", "산출물", "학습 · 평가 · 내보내기 · 테스트가 남긴 파일"],
+  ["checkpoints", "체크포인트", "끝나지 않은 실행을 이어 가기 위한 것"],
+  ["other", "그 밖", "썸네일, 모델 종류의 코드, 기록(DB)"],
+];
+
+function StorageUsage() {
+  const { data: usage } = usePolling(() => api<Usage>("/storage"), 60000);
+  if (!usage) return null;
+  const used = usage.disk > 0 ? ((usage.disk - usage.free) / usage.disk) * 100 : 0;
+  return (
+    <section className="card">
+      <div className="card-head">
+        <div>
+          <h3>저장 공간</h3>
+          <div className="muted small">
+            모델과 지표, 로그, 학습 · 평가가 남긴 파일은 모두 BADAMOA가 설치된 이 서버에 보관합니다. 학습 서버에는 캐시만
+            남습니다.
+          </div>
+        </div>
+        <div className="storage-total">
+          <strong>{fileSize(usage.bytes)}</strong>
+          <span className="muted small">파일 {usage.files.toLocaleString()}개</span>
+        </div>
+      </div>
+      {usage.path && (
+        <div className="storage-path">
+          <span className="muted small">위치</span> <code>{usage.path}</code>
+        </div>
+      )}
+      <div className="env-list">
+        {PART_LABEL.map(([key, label, help]) => (
+          <div className="storage-part" key={key}>
+            <span>
+              {label} <span className="muted small">{help}</span>
+            </span>
+            <span className="num">{usage.parts[key] > 0 ? fileSize(usage.parts[key]) : "–"}</span>
+          </div>
+        ))}
+      </div>
+      <div className="storage-disk">
+        <div className="meter">
+          <div className={used > 90 ? "meter-fill warn" : "meter-fill"} style={{ width: `${Math.min(100, used).toFixed(1)}%` }} />
+        </div>
+        <span className={used > 90 ? "small warn-text" : "muted small"}>
+          디스크 여유 {fileSize(usage.free)} / 전체 {fileSize(usage.disk)}
+        </span>
+      </div>
+    </section>
   );
 }
 

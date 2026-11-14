@@ -22,7 +22,7 @@ def evaluate(run, model) -> None:
         project=str(run.out),
         name="val",
         exist_ok=True,
-        plots=False,
+        plots=True,  # confusion matrix, PR curves, sample predictions: kept with the evaluation
     )
     per_class = []
     box = getattr(results, "box", None)
@@ -49,6 +49,7 @@ def export(run, model_path: Path) -> None:
     shutil.copy(run.weights, local)
     target = run.config.get("format", "onnx")
     exported = Path(YOLO(str(local)).export(format=target, imgsz=run.train_params.get("imgsz", 640)))
+    local.unlink(missing_ok=True)  # the copy of the weights is not a result
     print(f"내보낸 파일: {exported.name} ({exported.stat().st_size / 1024**2:.1f} MB)")
     bm.log_artifact(exported)
     bm.finish(file=exported.name, bytes=exported.stat().st_size)

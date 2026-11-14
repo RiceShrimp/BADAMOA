@@ -1,3 +1,4 @@
+import { FileList, fileSize } from "./Files";
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LineChart } from "./Chart";
 import { EpochChart, type EpochSeries } from "./EpochChart";
@@ -406,8 +407,6 @@ function RunView({ runId }: { runId: string }) {
   const shownSettings = run.settings.filter((s) => !s.advanced || s.changed);
   const defaultSettings = run.settings.filter((s) => s.advanced && !s.changed);
   const info = run.info as { ultralytics?: string; torch?: string; device?: string; gpus?: string[]; packages?: string[] };
-  const pictures = run.files.filter((f) => f.kind === "image");
-  const documents = run.files.filter((f) => f.kind !== "image");
 
   return (
     <>
@@ -618,25 +617,23 @@ function RunView({ runId }: { runId: string }) {
 
       {run.files.length > 0 && (
         <section className="card">
-          <h3>
-            파일 <span className="muted">({run.files.length})</span>
-          </h3>
-          {pictures.length > 0 && (
-            <div className="run-pictures">
-              {pictures.map((f) => (
-                <a key={f.id} href={f.url} target="_blank" rel="noreferrer" title="새 창에서 크게 보기">
-                  <img src={f.url} alt={f.name} loading="lazy" />
-                  <span>{f.name}</span>
-                </a>
-              ))}
+          <div className="card-head">
+            <div>
+              <h3>
+                산출물 <span className="muted">({run.files.length})</span>
+              </h3>
+              <div className="muted small">
+                이 실행이 남긴 파일 전부입니다. 학습한 서버가 아니라 BADAMOA가 보관합니다 ·{" "}
+                {fileSize(run.files.reduce((sum, f) => sum + f.bytes, 0))}
+              </div>
             </div>
-          )}
-          {documents.map((f) => (
-            <a key={f.id} className="run-file" href={f.url} download>
-              <Icon name="copy" size={14} />
-              {f.name} <span className="muted small">{Math.max(1, Math.round(f.bytes / 1024)).toLocaleString()} KB</span>
-            </a>
-          ))}
+            {run.files_url && (
+              <a className="btn" href={run.files_url} download>
+                전체 내려받기
+              </a>
+            )}
+          </div>
+          <FileList files={run.files} />
         </section>
       )}
 

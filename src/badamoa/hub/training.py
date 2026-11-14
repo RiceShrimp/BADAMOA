@@ -424,10 +424,19 @@ def checkpoint_to_resume(db: Session, node: Node, job_id: str) -> str:
     return blob
 
 
+def clean_file_name(name: str) -> str:
+    """``weights\\last.pt`` → ``weights/last.pt``: a name may carry folders, never a way out of them."""
+    parts = [part for part in re.split(r"[\\/]+", name.strip()) if part and part not in (".", "..")]
+    return "/".join(parts)[-255:].lstrip("/") or "file"
+
+
 def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: int) -> dict[str, Any]:
-    """Attach a file the code recorded to its run. Recording the same name again replaces it."""
+    """Attach a file to its run: one the code recorded, or one the node found in the output folder.
+
+    Recording the same name again replaces it.
+    """
     _, run = _running(db, node, job_id)
-    name = Path(name).name[:255] or "file"
+    name = clean_file_name(name)
     existing = db.scalars(select(RunFile).where(RunFile.run_id == run.id)).all()
     row = next((f for f in existing if f.name == name), None)
     if row is None:
@@ -439,6 +448,11 @@ def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: i
     row.kind = "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"
     db.flush()
     return {"id": row.id, "name": row.name}
+
+
+def files_of(db: Session, run_id: str) -> list[RunFile]:
+    get_run(db, run_id)
+    return list(db.scalars(select(RunFile).where(RunFile.run_id == run_id).order_by(RunFile.name)))
 
 
 def get_file(db: Session, file_id: str) -> RunFile:
@@ -453,10 +467,15 @@ def finish(
 ) -> dict[str, Any]:
     """Record the final metrics and, when weights were uploaded, register them as a new model version."""
     job, run = _running(db, node, job_id)
-    if run.checkpoint:  # a finished run has nothing left to resume
-        spent, run.checkpoint = run.checkpoint.get("blob", ""), {}
-        db.flush()
-        _drop_blob(db, storage, spent)
+    # A finished run has nothing left to resume, and neither have the interrupted runs it continued.
+    done, seen = run, set()
+    while done is not None and done.id not in seen:
+        seen.add(done.id)
+        if done.checkpoint:
+            spent, done.checkpoint = done.checkpoint.get("blob", ""), {}
+            db.flush()
+            _drop_blob(db, storage, spent)
+        done = db.get(Run, ((done.config or {}).get("resumed_from") or {}).get("id") or "")
     existing = db.scalar(select(ModelVersion).where(ModelVersion.run_id == run.id))
     if existing is not None:  # a retried call
         return {"run_id": run.id, "model": {"id": existing.id, "name": existing.name, "version": existing.version}}
@@ -593,6 +612,7 @@ def run_view(
             {"id": f.id, "name": f.name, "kind": f.kind, "bytes": f.bytes, "url": catalog.media_url(settings, "file", f.id)}
             for f in db.scalars(select(RunFile).where(RunFile.run_id == run.id).order_by(RunFile.created_at, RunFile.name))
         ]
+        view["files_url"] = catalog.media_url(settings, "run-files", run.id) if view["files"] else None
         view["class_metrics"] = run.class_metrics or []
         view["settings"] = _settings_of(db, run)
     return view

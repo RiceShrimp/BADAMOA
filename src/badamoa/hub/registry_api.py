@@ -129,6 +129,14 @@ def delete_environment(env_id: str, user: User = Depends(admin_user), db: Sessio
 # ---- project defaults ----------------------------------------------------------------
 
 
+@router.get("/storage")
+def storage(
+    user: User = Depends(current_user), hub: Hub = Depends(get_hub), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """What the Hub keeps and how much room is left. The folder itself is shown to admins only."""
+    return registry.storage_usage(db, hub.settings, user)
+
+
 class ProjectSettings(BaseModel):
     template: str = ""  # the model template the training dialog opens with
 

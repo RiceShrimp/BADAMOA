@@ -217,7 +217,7 @@ def blob_for(db: Session, node: Node, job_id: str, what: str, index: int = 0) ->
 
 def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: int) -> dict[str, Any]:
     op, _ = _running(db, node, job_id)
-    name = Path(name).name[:255] or "file"
+    name = training.clean_file_name(name)
     entry = {"name": name, "blob": blob, "bytes": size, "kind": "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"}
     files = [f for f in (op.files or []) if f["name"] != name]
     if len(files) >= MAX_RESULT_ITEMS:

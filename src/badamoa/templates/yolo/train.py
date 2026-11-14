@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -49,6 +50,37 @@ def clean(metrics: dict) -> dict[str, float]:
     return out
 
 
+def continue_here(checkpoint: Path, out: Path) -> Path:
+    """A copy of the checkpoint that writes into this run's folder.
+
+    An Ultralytics checkpoint remembers the folder it was written in and a resumed run goes on
+    writing there: a folder of another job, possibly on another server. The copy points at ``out``.
+    """
+    import torch
+
+    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    settings = state.get("train_args") or {}
+    before = Path(str(settings.get("save_dir") or ""))
+    target = out / "train"
+    settings.update(project=str(out), name="train", save_dir=str(target))
+    state["train_args"] = settings
+    # What the stopped run left, when its folder is still on this server: the table of its epochs and its best weights.
+    (target / "weights").mkdir(parents=True, exist_ok=True)
+    if before != target and (before / "weights" / "best.pt").is_file():
+        shutil.copyfile(before / "weights" / "best.pt", target / "weights" / "best.pt")
+    if before != target and (before / "results.csv").is_file():
+        done = int(state.get("epoch", -1)) + 1  # epochs the checkpoint holds; a later row would be written twice
+        rows = (before / "results.csv").read_text(encoding="utf-8").splitlines()
+        kept = rows[:1] + [row for row in rows[1:] if row.split(",")[0].strip().isdigit() and int(row.split(",")[0]) <= done]
+        (target / "results.csv").write_text("\n".join(kept) + "\n", encoding="utf-8")
+    if not (target / "weights" / "best.pt").is_file():
+        # The best weights so far are gone with that folder: the best of the epochs trained from here on counts.
+        state["best_fitness"] = None
+    moved = out.parent / "resume.pt"
+    torch.save(state, moved)
+    return moved
+
+
 def main(argv: list[str]) -> int:
     cfg = json.loads(Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8"))
     params = cfg["params"]
@@ -77,8 +109,9 @@ def main(argv: list[str]) -> int:
     last = Path(cfg.get("resume_checkpoint") or "")
     resuming = bool(cfg.get("resume_checkpoint")) and last.is_file()
     if resuming:
-        weights = str(last)  # the interrupted run's checkpoint carries its epoch, optimizer state and settings
         print(f"체크포인트에서 이어 갑니다: {last}")
+        # The interrupted run's checkpoint carries its epoch, optimizer state and settings.
+        weights = str(continue_here(last, Path(cfg["out"])))
     model = YOLO(weights)
 
     training_epoch = False
@@ -112,7 +145,7 @@ def main(argv: list[str]) -> int:
         project=cfg["out"],
         name="train",
         exist_ok=True,
-        plots=False,
+        plots=True,  # curves, confusion matrix, sample batches: the node keeps the whole folder with the run
         **{name: params[name] for name in HYPERPARAMETERS if name in params},
         **(params.get("extra") or {}),
     )

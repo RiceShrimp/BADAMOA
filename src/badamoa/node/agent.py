@@ -298,18 +298,23 @@ class NodeAgent:
             log.info("job %s %s", job_id, status)
 
     def _keep_checkpoint(self, job_id: str, emit: Any) -> None:
-        """A training that was stopped or failed: put its last checkpoint on the Hub.
+        """A training that was stopped or failed: put its last checkpoint and what it had produced on the Hub.
 
         With the checkpoint on the Hub the run can be continued later from any server,
-        whether or not this one still has the working folder.
+        whether or not this one still has the working folder. The plots, tables and weights
+        written so far are kept with the run like those of a finished one.
         """
         from badamoa.node import trainer
 
+        base, job_dir = f"/api/agent/jobs/{job_id}/train", self.home / "runs" / job_id
         try:
-            if trainer.upload_checkpoint(self._client, f"/api/agent/jobs/{job_id}/train", self.home / "runs" / job_id):
+            if trainer.upload_checkpoint(self._client, base, job_dir):
                 emit("마지막 체크포인트를 Hub에 보관했습니다. 이어서 실행할 수 있습니다.", "system")
         except (httpx.HTTPError, OSError) as e:
             log.warning("job %s: 체크포인트를 Hub에 보관하지 못했습니다: %s", job_id, e)
+        kept, size = trainer.keep_outputs(job_dir, lambda path, name: trainer.put_run_file(self._client, base, path, name))
+        if kept:
+            emit(f"그때까지의 산출물 {kept:,}개 ({size / 1024**2:.1f} MB)를 Hub에 보관했습니다.", "system")
 
     def _complete(self, job_id: str, status: str, result: Any, error: str | None) -> None:
         body = {"status": status, "result": result, "error": error}

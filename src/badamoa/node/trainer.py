@@ -5,6 +5,9 @@
     3. get the environment's Python (built on first use, or an existing one)
     4. run the template's train command, forwarding its log and metrics as they come
     5. upload the weights and register the model
+    6. put whatever else the code left in its output folder on the Hub, then remove the folder
+
+Nothing a run produced stays only on the server that ran it: the Hub keeps the record.
 
 The template's code knows nothing about BADAMOA (see ``badamoa.templates``).
 """
@@ -19,7 +22,8 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+import zipfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +42,9 @@ PROGRESS_EVERY_S = 5.0
 # server); when a run is stopped or fails, the Node Agent sends the newest one right away.
 CHECKPOINT_EVERY_S = 300.0
 MANIFEST_PAGE = 2000
+# Output files are kept one by one up to this many; a job that leaves more gets the rest as one archive.
+KEEP_SEPARATELY = 150
+UPLOADED = "uploaded.txt"  # the files of a job's working folder that are on the Hub already
 
 
 def send(call, *args: Any, **kwargs: Any) -> httpx.Response:
@@ -76,6 +83,62 @@ def upload_checkpoint(client: httpx.Client, base: str, job_dir: Path) -> bool:
     with path.open("rb") as stream:
         query = {"name": path.name, "kind": "checkpoint", "epoch": epoch}
         resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=3600)
+    return resp.status_code == 200
+
+
+def note_uploaded(job_dir: Path, path: Path) -> None:
+    with (job_dir / UPLOADED).open("a", encoding="utf-8") as f:
+        f.write(f"{path.resolve()}\n")
+
+
+def output_files(job_dir: Path) -> list[tuple[Path, str]]:
+    """What the code left in its output folder and is not on the Hub yet, with the name to keep each under."""
+    out = job_dir / "out"
+    if not out.is_dir():
+        return []
+    try:
+        sent = set((job_dir / UPLOADED).read_text(encoding="utf-8").splitlines())
+    except OSError:
+        sent = set()
+    everything = [p for p in out.rglob("*") if p.is_file()]
+    # One folder holding everything (Ultralytics writes into "train") is not part of the names.
+    tops = {p.relative_to(out).parts[0] for p in everything}
+    root = out / next(iter(tops)) if len(tops) == 1 and (out / next(iter(tops))).is_dir() else out
+    left = [
+        (p, p.relative_to(root).as_posix())
+        for p in everything
+        if not p.name.endswith(".part") and p.stat().st_size > 0 and str(p.resolve()) not in sent
+    ]
+    return sorted(left, key=lambda entry: (entry[1].count("/"), entry[1]))
+
+
+def keep_outputs(job_dir: Path, put: Callable[[Path, str], bool]) -> tuple[int, int]:
+    """Put the rest of a job's output folder on the Hub: (files kept, their bytes). Never raises."""
+    kept = size = 0
+    try:
+        files = output_files(job_dir)
+        for path, name in files[:KEEP_SEPARATELY]:
+            if put(path, name):
+                kept, size = kept + 1, size + path.stat().st_size
+        rest = files[KEEP_SEPARATELY:]
+        if rest:
+            archive = job_dir / "outputs.zip"
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as bundle:
+                for path, name in rest:
+                    bundle.write(path, name)
+            if put(archive, archive.name):
+                kept, size = kept + len(rest), size + archive.stat().st_size
+    except (OSError, httpx.HTTPError) as e:
+        print(f"산출물 일부를 Hub에 보관하지 못했습니다: {e}", flush=True)
+    return kept, size
+
+
+def put_run_file(client: httpx.Client, base: str, path: Path, name: str) -> bool:
+    """Store a file with the training run of this job. False (and a line in the log) when the Hub refused it."""
+    with path.open("rb") as stream:
+        resp = client.put(f"{base}/artifact", params={"name": name, "kind": "file"}, content=stream, timeout=3600)
+    if resp.status_code != 200:
+        print(f"파일을 기록하지 못했습니다 ({name}): {resp.text[:200]}", flush=True)
     return resp.status_code == 200
 
 
@@ -306,11 +369,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             if not path.is_file():
                 print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
                 return
-            query = {"name": str(event.get("name") or path.name), "kind": "file"}
-            with path.open("rb") as stream:
-                resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=600)
-            if resp.status_code != 200:
-                print(f"파일을 기록하지 못했습니다 ({path.name}): {resp.text[:200]}", flush=True)
+            if put_run_file(client, base, path, str(event.get("name") or path.name)):
+                note_uploaded(work, path)
 
         sent_checkpoint = time.monotonic()
 
@@ -396,11 +456,16 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             if resp.status_code != 200:
                 raise RuntimeError(f"가중치 업로드 실패 ({resp.status_code}): {resp.text[:300]}")
             uploaded = resp.json()
+            note_uploaded(work, weights)
         elif weights is not None:
             raise RuntimeError(f"학습 코드가 알린 가중치 파일이 없습니다: {weights}")
+        # 6. everything else the code wrote (plots, tables, the last weights): the Hub keeps the whole record
+        kept, size = keep_outputs(work, lambda path, name: put_run_file(client, base, path, name))
+        if kept:
+            print(f"나머지 산출물 {kept:,}개 ({size / 1024**2:.1f} MB)를 Hub에 보관했습니다.", flush=True)
         final = {"metrics": outcome.get("metrics") or {}, "classes": outcome.get("classes") or [], "weights": uploaded}
         result = post("/finish", final)
-    shutil.rmtree(work, ignore_errors=True)  # the export is links and the weights are on the Hub now
+    shutil.rmtree(work, ignore_errors=True)  # the export is links, and everything the run produced is on the Hub now
     if params.get("resume"):
         shutil.rmtree(previous, ignore_errors=True)  # the interrupted run's leftovers are no longer needed
     if result.get("model"):

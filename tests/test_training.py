@@ -8,8 +8,10 @@ The real YOLO check lives in ``test_real_data.py`` and is opt-in.
 from __future__ import annotations
 
 import hashlib
+import io
 import threading
 import time
+import zipfile
 
 import httpx
 import pytest
@@ -128,7 +130,7 @@ def test_job_params_accept_lists_numbers_and_objects():
 
 
 @pytest.fixture
-def hub(live_hub, tmp_path, monkeypatch):
+def hub(live_hub, settings, tmp_path, monkeypatch):
     monkeypatch.setattr(node_agent, "HEARTBEAT_INTERVAL_S", 1.0)
     token = httpx.post(f"{live_hub}/api/setup", json=ADMIN).json()["token"]
     with httpx.Client(base_url=live_hub, headers={"Authorization": f"Bearer {token}"}, timeout=60) as client:
@@ -139,6 +141,7 @@ def hub(live_hub, tmp_path, monkeypatch):
         threading.Thread(target=runner.run_forever, daemon=True).start()
         client.node_id = runner.config.node_id
         client.node_home = home
+        client.hub_home = settings.home
         yield client
         runner.stop()
 
@@ -190,12 +193,30 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     assert [c["name"] for c in done["class_metrics"]] == CLASSES
     assert not (hub.node_home / "runs" / job["id"]).exists()  # the working folder is cleaned up
 
+    # ---- nothing stays only on the server: what the code left in its output folder is on the Hub,
+    # with the folders it was written in (the weights are the model, not listed twice)
+    base = str(hub.base_url).rstrip("/")
+    files = {f["name"]: f for f in done["files"]}
+    assert sorted(files) == ["epoch.txt", "logs/history.csv"], files
+    assert "나머지 산출물 2개" in _logs(hub, job["id"])
+    table = httpx.get(base + files["logs/history.csv"]["url"])
+    assert table.text.startswith("epoch,map50_95\n5,") and "history.csv" in table.headers["content-disposition"]
+    assert "logs" not in table.headers["content-disposition"]
+    bundle = httpx.get(base + done["files_url"])
+    assert bundle.status_code == 200 and "street-v1-yolo11n.zip" in bundle.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
+        assert sorted(archive.namelist()) == ["epoch.txt", "logs/history.csv"] and archive.read("epoch.txt") == b"5"
+    usage = hub.get("/api/storage").json()
+    assert usage["path"] == str(hub.hub_home.resolve()) and usage["free"] > 0
+    assert usage["parts"]["models"] > 0 and usage["parts"]["outputs"] == sum(f["bytes"] for f in done["files"])
+    assert usage["bytes"] >= usage["parts"]["models"] + usage["parts"]["outputs"]
+
     # ---- the model, and the way back from it
     model = hub.get(f"/api/models/{done['model']['id']}").json()
     assert (model["name"], model["version"], model["arch"]) == ("street-yolo11n", 1, "yolo11n")
     assert model["classes"] == CLASSES and model["metrics"]["map50_95"] == curve[-1]
     assert model["run"]["id"] == run["id"] and model["release"]["id"] == release["id"]
-    assert model["config"]["epochs"] == 5 and model["template"] == {"name": "dummy", "title": "테스트 학습", "version": "1"}
+    assert model["config"]["epochs"] == 5 and model["template"] == {"name": "dummy", "title": "테스트 학습", "version": "2"}
     weights = httpx.get(str(hub.base_url).rstrip("/") + model["download_url"])
     assert weights.status_code == 200 and len(weights.content) == model["bytes"] and b'"dummy": true' in weights.content
     assert "street-yolo11n-v1.pt" in weights.headers["content-disposition"]
@@ -392,6 +413,9 @@ def test_resume_an_interrupted_run_from_its_checkpoint(hub, release):
     assert stopped["can_resume"] is True and stopped["epoch"] >= 3
     assert stopped["checkpoint_epoch"] >= 3  # the node handed its last checkpoint to the Hub when it was stopped
     assert "마지막 체크포인트를 Hub에 보관했습니다" in _logs(hub, started["job_id"])
+    # What it had written so far is kept with the stopped run as well.
+    assert [f["name"] for f in stopped["files"]] == ["epoch.txt"]
+    assert "그때까지의 산출물 1개" in _logs(hub, started["job_id"])
 
     resp = hub.post(f"/api/runs/{started['id']}/resume")
     assert resp.status_code == 200, resp.text
@@ -426,3 +450,25 @@ def test_resume_an_interrupted_run_from_its_checkpoint(hub, release):
     done, job = _train(hub, release, {"epochs": 2})
     assert job["status"] == "succeeded"
     assert hub.post(f"/api/runs/{done['id']}/resume").status_code == 400  # a finished run has nothing to resume
+
+
+def test_a_resumed_run_that_finishes_frees_the_checkpoints_it_came_from(hub, release):
+    body = {"release_id": release["id"], "template": "dummy", "params": {"epochs": 14, "sleep": 0.5}, "gpus": 0}
+    first = hub.post("/api/runs", json=body).json()
+    for _ in range(200):
+        if hub.get(f"/api/runs/{first['id']}").json()["epoch"] >= 2:
+            break
+        time.sleep(0.1)
+    hub.post(f"/api/jobs/{first['job_id']}/cancel")
+    assert _wait(hub, first["job_id"])["status"] == "canceled"
+    assert hub.get(f"/api/runs/{first['id']}").json()["can_resume"] is True
+
+    second = hub.post(f"/api/runs/{first['id']}/resume").json()
+    assert _wait(hub, second["job_id"])["status"] == "succeeded", _logs(hub, second["job_id"])
+    finished = hub.get(f"/api/runs/{second['id']}").json()
+    assert finished["epoch"] == 14 and finished["model"] and finished["checkpoint_epoch"] is None
+    assert sorted(f["name"] for f in finished["files"]) == ["epoch.txt", "logs/history.csv"]
+    stopped = hub.get(f"/api/runs/{first['id']}").json()
+    assert stopped["can_resume"] is False and stopped["checkpoint_epoch"] is None  # continued and done: nothing to keep
+    assert [f["name"] for f in stopped["files"]] == ["epoch.txt"]  # what it had produced stays with it
+    assert hub.get("/api/storage").json()["parts"]["checkpoints"] == 0

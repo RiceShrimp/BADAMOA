@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from typing import Any
 
 from sqlalchemy import func, select
@@ -17,7 +19,7 @@ from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
-from .train_models import Environment, ModelVersion, Template
+from .train_models import Environment, ModelJob, ModelVersion, Run, RunFile, Template
 
 DEFAULT_TEMPLATE = "yolo"
 # What a project trains with when nobody chose: the built-in template for its task.
@@ -288,3 +290,39 @@ def environment_for_run(db: Session, manifest: TemplateManifest, wanted: str, no
         where = f"'{env.name}' 환경이 {node.name} 서버에"
         raise ServiceError(400, f"{where} 준비되어 있지 않습니다. 관리자에게 설정 → 환경에서 등록을 요청하세요.")
     return {"kind": env.kind, "id": env.id, "name": env.name, "path": entry["path"]}
+
+
+# ---- where everything is kept ---------------------------------------------------------
+
+
+def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, Any]:
+    """How much the Hub keeps and of what. The Hub's folder holds every record: nodes keep only caches."""
+    stored = files = 0
+    for folder, _, names in os.walk(settings.storage_dir):
+        for name in names:
+            try:
+                stored += os.path.getsize(os.path.join(folder, name))
+                files += 1
+            except OSError:
+                pass  # removed meanwhile
+    database = sum(p.stat().st_size for p in settings.home.glob("hub.db*") if p.is_file())
+    kept = ModelVersion.deleted_at.is_(None)
+    models = int(db.scalar(select(func.coalesce(func.sum(ModelVersion.bytes), 0)).where(kept)) or 0)
+    outputs = int(db.scalar(select(func.coalesce(func.sum(RunFile.bytes), 0))) or 0)
+    outputs += sum(int(f.get("bytes") or 0) for op in db.scalars(select(ModelJob)) for f in op.files or [])
+    checkpoints = sum(int((c or {}).get("bytes") or 0) for c in db.scalars(select(Run.checkpoint)))
+    disk = shutil.disk_usage(settings.home)
+    return {
+        "path": str(settings.home.resolve()) if user.role == "admin" else None,
+        "bytes": stored + database,
+        "files": files,
+        "free": disk.free,
+        "disk": disk.total,
+        # The same bytes recorded twice are stored once, so the parts can add up to more than the whole.
+        "parts": {
+            "models": models,
+            "outputs": outputs,
+            "checkpoints": checkpoints,
+            "other": max(0, stored - models - outputs - checkpoints) + database,
+        },
+    }

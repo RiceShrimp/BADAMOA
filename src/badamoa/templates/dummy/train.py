@@ -55,6 +55,9 @@ def main(argv: list[str]) -> int:
         emit("checkpoint", path=str(out / "epoch.txt"), epoch=epoch)
         time.sleep(pause)
 
+    # Written but never reported: the node keeps whatever is left in the output folder.
+    (out / "logs").mkdir(exist_ok=True)
+    (out / "logs" / "history.csv").write_bytes(f"epoch,map50_95\n{epochs},{metrics.get('map50_95', 0)}\n".encode())
     weights = out / "best.pt"
     content = {"dummy": True, "model": params.get("model"), "classes": cfg["classes"]}
     weights.write_text(json.dumps(content), encoding="utf-8")

@@ -1,4 +1,5 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { FileList } from "./Files";
+import { type FormEvent, Fragment, useEffect, useState } from "react";
 import { api, apiUpload } from "./api";
 import type { ReleaseInfo, TreeDataset } from "./catalogTypes";
 import { METRIC_LABEL, type ModelDetail, type ModelOp, keyMetrics, metric } from "./trainTypes";
@@ -20,6 +21,7 @@ export function ModelOps({ model }: { model: ModelDetail }) {
     setBusy(true);
     void refresh();
   };
+  const [shown, setShown] = useState<string | null>(null); // the evaluation whose files are open
   const evals = ops?.filter((o) => o.kind === "eval") ?? [];
   const exports = ops?.filter((o) => o.kind === "export") ?? [];
   const tests = ops?.filter((o) => o.kind === "predict") ?? [];
@@ -63,26 +65,45 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                       </th>
                     ))}
                     <th>상태</th>
+                    <th>산출물</th>
                     <th className="right">언제</th>
                   </tr>
                 </thead>
                 <tbody>
                   {evals.map((op) => (
-                    <tr key={op.id}>
-                      <td>
-                        {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 릴리스"} ·{" "}
-                        {SPLIT_LABEL[String(op.params.split)] ?? String(op.params.split)}
-                      </td>
-                      {metricKeys.map((k) => (
-                        <td key={k} className="num right">
-                          {metric(op.result.metrics?.[k])}
+                    <Fragment key={op.id}>
+                      <tr>
+                        <td>
+                          {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 릴리스"} ·{" "}
+                          {SPLIT_LABEL[String(op.params.split)] ?? String(op.params.split)}
                         </td>
-                      ))}
-                      <td>
-                        <OpStatus op={op} />
-                      </td>
-                      <td className="muted right">{timeAgo(op.created_at)}</td>
-                    </tr>
+                        {metricKeys.map((k) => (
+                          <td key={k} className="num right">
+                            {metric(op.result.metrics?.[k])}
+                          </td>
+                        ))}
+                        <td>
+                          <OpStatus op={op} />
+                        </td>
+                        <td>
+                          {op.files.length > 0 ? (
+                            <button className="link" onClick={() => setShown(shown === op.id ? null : op.id)}>
+                              {shown === op.id ? "접기" : `파일 ${op.files.length}개`}
+                            </button>
+                          ) : (
+                            <span className="muted">–</span>
+                          )}
+                        </td>
+                        <td className="muted right">{timeAgo(op.created_at)}</td>
+                      </tr>
+                      {shown === op.id && (
+                        <tr className="op-files">
+                          <td colSpan={metricKeys.length + 4}>
+                            <FileList files={op.files} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

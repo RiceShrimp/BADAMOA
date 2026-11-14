@@ -5,15 +5,17 @@ from __future__ import annotations
 import mimetypes
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
@@ -26,7 +28,7 @@ agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/train")
 media_router = APIRouter(prefix="/media")
 
 MAX_WEIGHTS_BYTES = 8 * 1024**3
-MAX_FILE_BYTES = 256 * 1024**2
+MAX_FILE_BYTES = MAX_WEIGHTS_BYTES  # the last weights of a run are one of its files
 _CHUNK = 1024 * 1024
 
 
@@ -288,15 +290,56 @@ def run_file(file_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: 
     storage = catalog.storage_for(str(hub.settings.storage_dir))
     if not storage.has_blob(row.blob):
         raise HTTPException(status_code=404, detail="파일이 저장소에 없습니다.")
-    kind = mimetypes.guess_type(row.name)[0] or "application/octet-stream"
+    return blob_response(storage, row.blob, row.name, row.kind == "image")
+
+
+def blob_response(storage, blob: str, name: str, image: bool) -> StreamingResponse:
+    """A stored file as a response: streamed (weights are large), shown in place only when it is an image."""
+    kind = mimetypes.guess_type(name)[0] or "application/octet-stream"
     # Only images are shown in place; anything else is offered as a download, whatever it contains.
-    inline = row.kind == "image" and kind.startswith("image/") and kind != "image/svg+xml"
+    inline = image and kind.startswith("image/") and kind != "image/svg+xml"
+
+    def stream():
+        with storage.open(storage.blob_key(blob)) as source:
+            while chunk := source.read(_CHUNK):
+                yield chunk
+
     headers = {
-        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(row.name)}",
+        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(Path(name).name)}",
+        "Content-Length": str(storage.blob_size(blob)),
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, max-age=3600",
     }
-    return Response(storage.get_blob(row.blob), media_type=kind if inline else "application/octet-stream", headers=headers)
+    return StreamingResponse(stream(), media_type=kind if inline else "application/octet-stream", headers=headers)
+
+
+@media_router.get("/run-files/{run_id}")
+def run_files(
+    run_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Session = Depends(db_session)
+) -> FileResponse:
+    """Everything a run recorded, as one zip with the folders the files were written in."""
+    if not catalog.verify_media(hub.settings, "run-files", run_id, exp, sig):
+        raise HTTPException(status_code=403, detail="링크가 만료되었거나 올바르지 않습니다.")
+    run = training.get_run(db, run_id)
+    rows = training.files_of(db, run_id)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    incoming = hub.settings.storage_dir / "incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    handle, temp = tempfile.mkstemp(dir=incoming, suffix=".zip")
+    with os.fdopen(handle, "wb") as out, zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as bundle:
+        for row in rows:
+            if not storage.has_blob(row.blob):
+                continue
+            with storage.open(storage.blob_key(row.blob)) as source, bundle.open(row.name, "w", force_zip64=True) as target:
+                while chunk := source.read(_CHUNK):
+                    target.write(chunk)
+    file_name = quote(f"{run.name or run.id}.zip")
+    return FileResponse(
+        temp,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"run.zip\"; filename*=UTF-8''{file_name}"},
+        background=BackgroundTask(lambda: Path(temp).unlink(missing_ok=True)),
+    )
 
 
 # ---- weights download (signed URL, like images) ---------------------------------------

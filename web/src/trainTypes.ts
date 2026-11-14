@@ -128,6 +128,7 @@ export interface RunDetail extends Run {
   info: Record<string, unknown>;
   class_metrics: ClassMetric[];
   files: RunFile[];
+  files_url: string | null; // everything below as one zip
   settings: { name: string; label: string; value: unknown; group: string; advanced: boolean; changed: boolean }[];
 }
 

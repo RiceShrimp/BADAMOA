@@ -172,7 +172,12 @@ bm.finish({"map50_95": best})               # 최종 지표
 | 끝내기, 최종 지표 | `wandb.finish()`, `run.summary` | `end_run()` | `bm.finish({...})` | 0.6.0 |
 | 콘솔 출력 | 자동 수집 | — | 자동: `print`가 그대로 실시간 로그 | 0.5.0 |
 | 실행한 코드 버전 | Git 커밋 | Git 커밋 | 자동: 템플릿 버전과 코드 해시 | 0.6.0 |
-| 파일·이미지 기록 | `wandb.log({"img": wandb.Image})`, `log_artifact` | `log_artifact`, `log_image` | `bm.log_artifact(파일)` → 실행 화면의 "파일"(이미지는 미리보기). 분류 템플릿은 혼동 행렬을 자동 기록 | 0.8.0 |
+| 파일·이미지 기록 | `wandb.log({"img": wandb.Image})`, `log_artifact` | `log_artifact`, `log_image` | `bm.log_artifact(파일)` → 실행 화면의 "산출물"(이미지는 미리보기). 분류 템플릿은 혼동 행렬을 자동 기록 | 0.8.0 |
+| 산출물 전체 보관 | `wandb.save`, `log_artifact(폴더)` | `log_artifacts(폴더)`, autolog | 자동: 출력 폴더(`run.out`)에 남긴 파일은 부르지 않아도 전부 Hub로. 폴더 구조 그대로 보고 한 번에 내려받음. 평가·내보내기·테스트, 중단된 실행도 같음 | 0.14.0 |
+| 보관 위치와 사용량 | 프로젝트 저장 용량 | artifact store | 설정의 "저장 공간": Hub의 폴더 하나에 모두, 종류별 크기와 디스크 여유 | 0.14.0 |
+| 메모·태그 | notes, tags | tags, description | — | 계획 |
+| 하이퍼파라미터 탐색 | Sweeps | (Optuna 연동) | — | 계획 |
+| 단계별 이미지·표 | `wandb.Image`, Tables | `log_image(step=)`, `log_table` | — | 계획 |
 | 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 0.10.0 |
 | 설치된 패키지 | 자동 (`requirements.txt`) | 자동 (환경 파일) | 자동: 실행 환경의 패키지 목록을 실행 기록에 | 0.8.0 |
 | 프레임워크 연동 | Lightning·HF 콜백, `wandb.watch` | `autolog()` | Ultralytics는 내장. `bm.lightning_callback()`, `bm.hf_callback()` | 0.10.0 |

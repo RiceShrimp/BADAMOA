@@ -143,6 +143,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                         sent = client.put(f"{base}/file", params=query, content=stream, timeout=3600)
                     if sent.status_code != 200:
                         raise RuntimeError(f"결과 파일을 올리지 못했습니다 ({path.name}): {sent.text[:200]}")
+                    trainer.note_uploaded(work, path)
                 else:
                     print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
         if proc.wait() != 0:
@@ -150,6 +151,14 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         if outcome is None:
             raise RuntimeError("코드가 결과를 알리지 않았습니다. 끝날 때 finish를 호출해야 합니다.")
         outcome.pop("weights", None)
+
+        def put(path: Path, name: str) -> bool:
+            with path.open("rb") as stream:
+                return client.put(f"{base}/file", params={"name": name}, content=stream, timeout=3600).status_code == 200
+
+        kept, size = trainer.keep_outputs(work, put)  # plots and tables the code wrote without recording them
+        if kept:
+            print(f"나머지 산출물 {kept:,}개 ({size / 1024**2:.1f} MB)를 Hub에 보관했습니다.", flush=True)
         resp = trainer.send(client.post, f"{base}/finish", json=outcome)
         if resp.status_code != 200:
             raise RuntimeError(f"Hub가 결과를 받지 않았습니다 ({resp.status_code}): {resp.text[:200]}")

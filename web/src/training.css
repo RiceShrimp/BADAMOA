@@ -552,3 +552,67 @@ pre.packages {
 .op-test:first-of-type {
   border-top: 0;
 }
+
+/* ---- files with their folders, the storage card ---- */
+.file-folder {
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
+}
+.file-folder summary {
+  cursor: pointer;
+  padding: 3px 0;
+  font-size: 13.5px;
+}
+.file-folder[open] summary {
+  margin-bottom: 8px;
+}
+tr.op-files td {
+  padding: 10px 12px 14px;
+  background: var(--surface-2);
+}
+.storage-total {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.storage-total strong {
+  font-size: 20px;
+}
+.storage-path {
+  margin: 4px 0 10px;
+  overflow-wrap: anywhere;
+}
+.storage-part {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.storage-part:first-child {
+  border-top: 0;
+}
+.storage-disk {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.storage-disk .meter {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+.storage-disk .meter-fill {
+  height: 100%;
+  background: var(--accent);
+}
+.storage-disk .meter-fill.warn {
+  background: var(--bad);
+}
+.warn-text {
+  color: var(--bad);
+}
