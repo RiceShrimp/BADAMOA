@@ -24,6 +24,11 @@ NAMES = {
     "metrics/recall(B)": "recall",
     "metrics/mAP50(B)": "map50",
     "metrics/mAP50-95(B)": "map50_95",
+    # segmentation models report the same four for their masks
+    "metrics/precision(M)": "mask_precision",
+    "metrics/recall(M)": "mask_recall",
+    "metrics/mAP50(M)": "mask_map50",
+    "metrics/mAP50-95(M)": "mask_map50_95",
 }
 
 
@@ -122,6 +127,9 @@ def main(argv: list[str]) -> int:
                     "map50_95": round(float(box.ap[i]), 6),
                 }
             )
+            masks = getattr(results, "seg", None)
+            if masks is not None and i < len(getattr(masks, "ap", [])):
+                classes[-1]["mask_map50_95"] = round(float(masks.ap[i]), 6)
     summary = clean(getattr(results, "results_dict", {}) or {})
     emit("result", weights=str(best), metrics=summary, classes=classes)
     return 0

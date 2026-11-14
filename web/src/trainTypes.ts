@@ -198,11 +198,18 @@ export const METRIC_LABEL: Record<string, string> = {
   train_loss: "loss (train)",
   val_loss: "loss (val)",
   lr: "학습률",
+  mask_map50_95: "mask mAP50-95",
+  mask_map50: "mask mAP50",
+  mask_precision: "mask Precision",
+  mask_recall: "mask Recall",
+  train_seg_loss: "seg loss (train)",
+  val_seg_loss: "seg loss (val)",
 };
 
 const TASK_METRICS: Record<string, string[]> = {
   detect: ["map50_95", "map50", "precision", "recall"],
   classify: ["top1", "top5", "f1", "val_loss"],
+  segment: ["mask_map50_95", "mask_map50", "map50_95", "map50"],
 };
 
 /** The four numbers shown in tables and tiles for a task; the first is the one runs are ranked by. */

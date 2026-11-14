@@ -1,6 +1,6 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "3"
+version = "4"
 description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
 task = "detect"
 data_format = "yolo"

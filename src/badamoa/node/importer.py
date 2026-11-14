@@ -110,10 +110,16 @@ def _read_yolo_label(path: Path) -> tuple[str, list[list[float]]]:
             continue
         try:
             cls = int(float(parts[0]))
-            cx, cy, w, h = (round(min(1.0, max(0.0, float(v))), 5) for v in parts[1:5])
+            values = [round(min(1.0, max(0.0, float(v))), 5) for v in parts[1:]]
         except ValueError:
             continue
-        boxes.append([cls, cx, cy, w, h])
+        if len(values) >= 6 and len(values) % 2 == 0:
+            # A segmentation label: the outline as x1 y1 x2 y2 …. Stored as its box followed by the outline.
+            xs, ys = values[0::2], values[1::2]
+            box = [(min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, max(xs) - min(xs), max(ys) - min(ys)]
+            boxes.append([cls, *(round(v, 5) for v in box), *values])
+        else:
+            boxes.append([cls, *values[:4]])
     return ("labelled" if boxes else "background"), boxes
 
 

@@ -112,14 +112,28 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
                     const y = (cy - bh / 2) * h;
                     const color = classColor(cls);
                     const label = names[cls] ?? String(cls);
+                    // A segmentation label carries its outline after the box: x1, y1, x2, y2, …
+                    const outline = b.slice(5);
+                    const points = outline.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ");
                     return (
                       <g key={i}>
+                        {outline.length >= 6 && (
+                          <polygon
+                            points={points}
+                            fill={color}
+                            fillOpacity={fill ? 0.4 : 0.18}
+                            stroke={color}
+                            strokeWidth="2"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                         <rect
                           x={x}
                           y={y}
                           width={bw * w}
                           height={bh * h}
-                          fill={fill ? color : "none"}
+                          strokeDasharray={outline.length >= 6 ? "4 3" : undefined}
+                          fill={fill && outline.length < 6 ? color : "none"}
                           fillOpacity={0.25}
                           stroke={color}
                           strokeWidth="2"

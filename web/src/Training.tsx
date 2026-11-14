@@ -26,6 +26,7 @@ const MAX_EXTRA_CHARTS = 12;
 const COMPARE_CHARTS: Record<string, string[]> = {
   detect: ["map50_95", "map50", "precision", "recall", "train_box_loss", "val_box_loss", "train_loss"],
   classify: ["top1", "top5", "f1", "train_loss", "val_loss"],
+  segment: ["mask_map50_95", "mask_map50", "map50_95", "map50", "train_seg_loss", "val_seg_loss"],
 };
 
 export function Training({ runId, arg }: { runId?: string; arg?: string }) {
@@ -328,7 +329,9 @@ function Comparison({ ids, live, task }: { ids: string[]; live: boolean; task: s
 const DETAIL_CHARTS: { title: string; keys: string[] }[] = [
   { title: "정확도", keys: ["top1", "top5"] },
   { title: "loss", keys: ["train_loss", "val_loss"] },
+  { title: "mask mAP", keys: ["mask_map50_95", "mask_map50"] },
   { title: "mAP", keys: ["map50_95", "map50"] },
+  { title: "seg loss", keys: ["train_seg_loss", "val_seg_loss"] },
   { title: "Precision · Recall", keys: ["precision", "recall"] },
   { title: "box loss", keys: ["train_box_loss", "val_box_loss"] },
   { title: "cls loss", keys: ["train_cls_loss", "val_cls_loss"] },

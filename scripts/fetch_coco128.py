@@ -30,15 +30,17 @@ def coco_names() -> list[str]:
     return [name.strip() for name in COCO_NAMES.split(",")]
 
 
-def fetch(target: Path) -> Path:
-    root = target / "coco128"
+def fetch(target: Path, name: str = "coco128") -> Path:
+    """``name`` is ``coco128`` (boxes) or ``coco128-seg`` (the same images with outlines)."""
+    root = target / name
     if (root / "images").is_dir():
         print(f"이미 있습니다: {root}")
     else:
         target.mkdir(parents=True, exist_ok=True)
-        archive = target / "coco128.zip"
-        print(f"내려받는 중: {URL}")
-        urllib.request.urlretrieve(URL, archive)  # noqa: S310 - fixed https URL
+        archive = target / f"{name}.zip"
+        url = URL.replace("coco128.zip", f"{name}.zip")
+        print(f"내려받는 중: {url}")
+        urllib.request.urlretrieve(url, archive)  # noqa: S310 - fixed https URL
         with zipfile.ZipFile(archive) as zf:
             base = target.resolve()
             for member in zf.namelist():  # refuse paths that would escape the target directory
@@ -56,4 +58,5 @@ def fetch(target: Path) -> Path:
 
 
 if __name__ == "__main__":
-    fetch(Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".badamoa/data"))
+    arguments = [a for a in sys.argv[1:] if a != "--seg"]
+    fetch(Path(arguments[0]) if arguments else Path(".badamoa/data"), "coco128-seg" if "--seg" in sys.argv else "coco128")

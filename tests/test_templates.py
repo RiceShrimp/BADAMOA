@@ -83,7 +83,7 @@ def test_manifest_problems_are_reported_in_words(change, hint):
 
 def test_shipped_templates_are_valid_and_the_command_uses_the_environment_python(tmp_path):
     names = set(shipped.builtin())
-    assert names == {"yolo", "torchvision", "classify", "dummy"}  # folders starting with _ are not templates
+    assert names == {"yolo", "yolo-seg", "torchvision", "classify", "dummy"}  # folders starting with _ are not templates
     for folder in shipped.builtin().values():
         manifest = fmt.load_manifest(folder)
         assert (folder / "train.py").is_file() and "train" in manifest.entrypoints
@@ -260,7 +260,8 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     assert pushed.exit_code == 0 and "my-detector 0.1.0" in pushed.output, pushed.output
     assert _push(hub, folder).exit_code == 0  # the same content again is fine
     listed = {t["name"]: t for t in hub.get("/api/templates").json()}
-    assert set(listed) == {"yolo", "classify", "torchvision", "my-detector"} and listed["yolo"]["builtin"] is True
+    assert set(listed) == {"yolo", "yolo-seg", "classify", "torchvision", "my-detector"}
+    assert listed["yolo"]["builtin"] is True
     mine = listed["my-detector"]
     assert (mine["title"], mine["versions"], mine["entrypoints"]) == ("My Detector", 1, ["train"])
     # the settings come from bm.params(...) in train.py, read without running it
@@ -310,10 +311,10 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     login = httpx.post(f"{hub.url}/api/auth/login", json={"username": "member", "password": "member-test-pw"}).json()
     member = {"Authorization": f"Bearer {login['token']}"}
     assert httpx.post(f"{hub.url}/api/templates", content=fmt.bundle(folder), headers=member).status_code == 403
-    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 4  # but everyone can pick one
+    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 5  # but everyone can pick one
     assert hub.delete(f"/api/templates/{listed['yolo']['id']}").status_code == 400
     assert hub.delete(f"/api/templates/{latest['id']}").status_code == 200
-    assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "classify", "torchvision"]
+    assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "yolo-seg", "classify", "torchvision"]
     assert hub.get(f"/api/runs/{run['id']}").json()["template"]["title"] == "My Detector"  # the record stays
 
 

@@ -1,0 +1,253 @@
+name = "yolo-seg"
+title = "Ultralytics YOLO 분할"
+version = "1"
+description = "Ultralytics YOLO 인스턴스 분할 (YOLO11-seg, YOLO26-seg)"
+task = "segment"
+data_format = "yolo-seg"
+license = "AGPL-3.0"
+variant = "model"
+
+[environment]
+requirements = ["ultralytics>=8.3,<9", "onnx>=1.12", "onnxslim", "onnxruntime"]
+python = "3.12"
+torch = true
+
+[entrypoints]
+train = "python train.py --config {config}"
+eval = "python ops.py --config {config}"
+export = "python ops.py --config {config}"
+predict = "python ops.py --config {config}"
+
+[params.model]
+type = "string"
+label = "모델"
+default = "yolo11n-seg.pt"
+choices = [
+    "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt", "yolo11x-seg.pt",
+    "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt", "yolo26x-seg.pt",
+]
+custom = true
+help = "n이 가장 작고 빠르며 x가 가장 큽니다. 목록에 없는 가중치 이름이나 노드의 파일 경로도 쓸 수 있습니다."
+
+[params.epochs]
+type = "integer"
+label = "epoch"
+default = 50
+minimum = 1
+maximum = 100000
+
+# ---- 세부 설정: 학습 ----
+[params.imgsz]
+type = "integer"
+label = "이미지 크기"
+default = 640
+minimum = 32
+maximum = 4096
+advanced = true
+group = "학습"
+
+[params.batch]
+type = "integer"
+label = "배치"
+default = 16
+minimum = -1
+maximum = 4096
+advanced = true
+group = "학습"
+help = "-1이면 GPU 메모리에 맞춰 자동으로 정합니다."
+
+[params.patience]
+type = "integer"
+label = "조기 종료 (epoch)"
+default = 100
+minimum = 0
+advanced = true
+group = "학습"
+help = "이만큼의 epoch 동안 나아지지 않으면 멈춥니다."
+
+[params.workers]
+type = "integer"
+label = "데이터 로더 수"
+default = 4
+minimum = 0
+maximum = 64
+advanced = true
+group = "학습"
+
+[params.seed]
+type = "integer"
+label = "시드"
+default = 0
+minimum = 0
+advanced = true
+group = "학습"
+
+[params.pretrained]
+type = "boolean"
+label = "사전학습 가중치에서 시작"
+default = true
+advanced = true
+group = "학습"
+help = "끄면 같은 구조를 처음부터 학습합니다."
+
+# ---- 세부 설정: 최적화 ----
+[params.optimizer]
+type = "string"
+label = "옵티마이저"
+default = "auto"
+choices = ["auto", "SGD", "Adam", "AdamW", "NAdam", "RAdam", "RMSProp"]
+advanced = true
+group = "최적화"
+help = "auto는 데이터 크기에 맞춰 옵티마이저와 학습률을 정하며, 이때 아래의 학습률·모멘텀은 쓰이지 않습니다."
+
+[params.lr0]
+type = "number"
+label = "초기 학습률"
+default = 0.01
+minimum = 0
+advanced = true
+group = "최적화"
+
+[params.lrf]
+type = "number"
+label = "최종 학습률 비율"
+default = 0.01
+minimum = 0
+advanced = true
+group = "최적화"
+help = "마지막 학습률 = 초기 학습률 × 이 값"
+
+[params.momentum]
+type = "number"
+label = "모멘텀"
+default = 0.937
+minimum = 0
+maximum = 1
+advanced = true
+group = "최적화"
+
+[params.weight_decay]
+type = "number"
+label = "weight decay"
+default = 0.0005
+minimum = 0
+advanced = true
+group = "최적화"
+
+[params.warmup_epochs]
+type = "number"
+label = "워밍업 (epoch)"
+default = 3.0
+minimum = 0
+advanced = true
+group = "최적화"
+
+[params.cos_lr]
+type = "boolean"
+label = "코사인 학습률 스케줄"
+default = false
+advanced = true
+group = "최적화"
+
+# ---- 세부 설정: 증강 ----
+[params.mosaic]
+type = "number"
+label = "mosaic 확률"
+default = 1.0
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.close_mosaic]
+type = "integer"
+label = "mosaic 끄는 마지막 epoch 수"
+default = 10
+minimum = 0
+advanced = true
+group = "증강"
+
+[params.mixup]
+type = "number"
+label = "mixup 확률"
+default = 0.0
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.fliplr]
+type = "number"
+label = "좌우 뒤집기 확률"
+default = 0.5
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.flipud]
+type = "number"
+label = "상하 뒤집기 확률"
+default = 0.0
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.degrees]
+type = "number"
+label = "회전 (도)"
+default = 0.0
+minimum = 0
+maximum = 180
+advanced = true
+group = "증강"
+
+[params.translate]
+type = "number"
+label = "이동 비율"
+default = 0.1
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.scale]
+type = "number"
+label = "크기 변화 비율"
+default = 0.5
+minimum = 0
+advanced = true
+group = "증강"
+
+[params.hsv_h]
+type = "number"
+label = "색조 변화"
+default = 0.015
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.hsv_s]
+type = "number"
+label = "채도 변화"
+default = 0.7
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.hsv_v]
+type = "number"
+label = "밝기 변화"
+default = 0.4
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+
+[params.extra]
+type = "object"
+advanced = true
+help = "Ultralytics 학습 인자를 그대로 넘깁니다 (API·에이전트용)."

@@ -235,3 +235,48 @@ def test_classification_project_from_import_to_model_with_files(hub, tmp_path):
     default = hub.post("/api/runs", json={"release_id": release["id"], "gpus": 0}).json()
     assert default["template"]["name"] == "classify"
     hub.post(f"/api/jobs/{default['job_id']}/cancel")
+
+
+# ---- segmentation: outlines travel with the boxes -------------------------------------------
+
+
+def _make_seg(root):
+    """A YOLO dataset whose first training image is labelled with an outline instead of a box."""
+    make_yolo(root)
+    label = root / "labels" / "train" / "train_0000.txt"
+    label.write_text("2 0.1 0.2 0.5 0.2 0.5 0.6 0.1 0.6\n1 0.7 0.7 0.2 0.2\n", encoding="utf-8")
+    return root
+
+
+def test_segmentation_labels_keep_their_outline_from_import_to_export(tmp_path):
+    root = _make_seg(tmp_path / "ds")
+    found = importer.scan(root)
+    first = next(e for e in found.entries if e.path.name == "train_0000.jpg")
+    assert first.boxes[0] == [2, 0.3, 0.4, 0.4, 0.4, 0.1, 0.2, 0.5, 0.2, 0.5, 0.6, 0.1, 0.6]  # box, then the outline
+    assert first.boxes[1] == [1, 0.7, 0.7, 0.2, 0.2]
+
+    items, classes, locations = _manifest_items(root, found.entries, found.classes)
+    seg = exporter.BUILDERS["yolo-seg"](items, classes, locations, tmp_path / "seg", exporter.ExportOptions())
+    name = next(i["sha256"] for i in items if i["rel_path"].endswith("train_0000.jpg"))
+    lines = (tmp_path / "seg" / "labels" / "train" / f"{name}.txt").read_text().splitlines()
+    assert lines[0] == "2 0.100000 0.200000 0.500000 0.200000 0.500000 0.600000 0.100000 0.600000"  # the outline
+    assert lines[1] == "1 0.700000 0.700000 0.200000 0.200000" and seg["boxes"] > 2
+    boxes = exporter.BUILDERS["yolo"](items, classes, locations, tmp_path / "det", exporter.ExportOptions())
+    det = (tmp_path / "det" / "labels" / "train" / f"{name}.txt").read_text().splitlines()
+    assert det[0] == "2 0.300000 0.400000 0.400000 0.400000" and boxes["boxes"] == seg["boxes"]  # a detector gets the box
+
+
+def test_outlines_are_kept_in_segmentation_projects_only(hub, tmp_path):
+    root = _make_seg(tmp_path / "ds")
+    stored = {}
+    for name, task in (("분할", "segment"), ("검출", "detect")):
+        project = hub.post("/api/projects", json={"name": name, "task": task}).json()
+        job = _import(hub, project["id"], root)
+        assert job["status"] == "succeeded", _logs(hub, job["id"])
+        release = job["result"]["release_id"]
+        item = hub.get(f"/api/releases/{release}/items", params={"q": "train_0000"}).json()["items"][0]
+        stored[task] = hub.get(f"/api/releases/{release}/items/{item['id']}").json()["revisions"][0]["boxes"]
+    assert stored["segment"][0] == [2, 0.3, 0.4, 0.4, 0.4, 0.1, 0.2, 0.5, 0.2, 0.5, 0.6, 0.1, 0.6]
+    assert stored["detect"] == [[2, 0.3, 0.4, 0.4, 0.4], [1, 0.7, 0.7, 0.2, 0.2]]
+    offered = [t["name"] for t in hub.get("/api/templates", params={"task": "segment"}).json()]
+    assert offered == ["yolo-seg"]

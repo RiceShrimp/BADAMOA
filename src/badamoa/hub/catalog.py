@@ -276,6 +276,7 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     project_id = job.params["project_id"]
     site, camera = job.params.get("site", ""), job.params.get("camera", "")
     class_ids = [c["id"] for c in space.classes]
+    segment = get_project(db, project_id).task == "segment"
     incoming = {item.sha256: item for item in chunk.items}  # a file listed twice counts once
 
     items = {
@@ -321,8 +322,13 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     created: list[LabelRevision] = []
     for sha, data in incoming.items():
         item = items[sha]
-        # A box is [class, cx, cy, w, h]; a classification label is just [class].
-        boxes = [[int(b[0]), *b[1:5]] for b in data.boxes if len(b) in (1, 5) and int(b[0]) in class_ids]
+        # A box is [class, cx, cy, w, h]; a classification label is just [class]; a segmentation
+        # label is a box followed by its outline (x1, y1, x2, y2, …), kept only in segmentation projects.
+        boxes = [
+            [int(b[0]), *(b[1:] if segment else b[1:5])]
+            for b in data.boxes
+            if (len(b) == 1 or len(b) >= 5) and int(b[0]) in class_ids
+        ]
         state = data.state if boxes or data.state != "labelled" else "background"
         digest = _digest(space.id, state, boxes)
         history = revisions.get(item.id, [])

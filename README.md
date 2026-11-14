@@ -8,7 +8,7 @@
 데이터 관리, 오토라벨링, 학습(일반 학습 + Teacher→Student 증류), 평가, 모델 관리, 배포를 한 곳에서 하고,
 원격 학습·데이터 서버를 한 줄 명령으로 붙이며, Claude Code 같은 에이전트가 MCP로 전부 조작할 수 있게 만드는 것이 목표입니다.
 
-지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), 객체 탐지 학습(Ultralytics YOLO, torchvision Faster R-CNN·RetinaNet·FCOS)과 이미지 분류 학습(ResNet·EfficientNet·ConvNeXt·ViT 등) — 하이퍼파라미터 세부 설정, 지표 곡선, 실행 비교, 그림·파일 기록 — 과 모델 등록 · 평가 · ONNX 내보내기 · 이미지 테스트, 사내 학습 코드를 SDK로 붙여 모델 템플릿으로 등록해 쓰기, MCP 서버, 웹 UI.
+지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), 객체 탐지 학습(Ultralytics YOLO, torchvision Faster R-CNN·RetinaNet·FCOS)· 인스턴스 분할 학습(YOLO-seg)과 이미지 분류 학습(ResNet·EfficientNet·ConvNeXt·ViT 등) — 하이퍼파라미터 세부 설정, 지표 곡선, 실행 비교, 그림·파일 기록 — 과 모델 등록 · 평가 · ONNX 내보내기 · 이미지 테스트, 사내 학습 코드를 SDK로 붙여 모델 템플릿으로 등록해 쓰기, MCP 서버, 웹 UI.
 바뀐 내용은 [CHANGELOG.md](CHANGELOG.md), 설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 일정은 [docs/ROADMAP.md](docs/ROADMAP.md), 다음 단계 계획(사내 학습 코드 등록 · 환경 선택 · 저장 위치)은 [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md), 화면 구성과 레퍼런스 분석은 [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md), 최초 구상은 [docs/PLANS.md](docs/PLANS.md).
 
 ## 실행 (개발 환경)

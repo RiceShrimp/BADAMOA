@@ -197,7 +197,7 @@ W&B나 MLflow에 **함께** 기록하고 싶으면 코드에서 그것을 그대
 | `torchvision` | Faster R-CNN · RetinaNet · FCOS (ResNet-50 백본), Faster R-CNN · SSDlite (MobileNetV3) | 검출 | 0.7.0. SDK로 작성한 참고 예시이기도 하다 |
 | `classify` | ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin (torchvision) | 분류 | 0.8.0. 혼동 행렬 그림을 실행에 기록 |
 | 그 밖의 검출 | RT-DETR, D-FINE, RF-DETR | 검출 | 계획 (Phase 4) |
-| 분할 | YOLO-seg, Mask R-CNN | 분할 | 계획 (Phase 4, 마스크 라벨 가져오기가 먼저) |
+| `yolo-seg` | Ultralytics YOLO11-seg · YOLO26-seg | 분할 | 0.11.0. Mask R-CNN 등은 계획 |
 
 **분류(ResNet 등)**는 0.8.0에 들어갔다. 모델보다 데이터 쪽 일이 많았다: 카탈로그가 박스 라벨만 알았기 때문이다.
 분류 템플릿을 넣는 데 ① 분류 데이터 가져오기(폴더 이름 = 클래스) ② 이미지당 클래스 라벨을 개정으로 저장하고 화면에 표시

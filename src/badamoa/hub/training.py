@@ -24,7 +24,7 @@ ALIASES = ("champion", "challenger")
 STAGES = ("data", "env", "train", "upload")
 MANIFEST_MAX = 5000
 # The number a run is judged by: decides which step counts as "best so far".
-PRIMARY_METRIC = {"detect": "map50_95", "segment": "map50_95", "classify": "top1"}
+PRIMARY_METRIC = {"detect": "map50_95", "segment": "mask_map50_95", "classify": "top1"}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
 MAX_FILES_PER_RUN = 500
 HISTORY_POINTS = 600  # more steps than this are thinned out when read

@@ -21,7 +21,7 @@ from .train_models import Environment, ModelVersion, Template
 
 DEFAULT_TEMPLATE = "yolo"
 # What a project trains with when nobody chose: the built-in template for its task.
-DEFAULT_BY_TASK = {"detect": "yolo", "segment": "yolo", "classify": "classify"}
+DEFAULT_BY_TASK = {"detect": "yolo", "segment": "yolo-seg", "classify": "classify"}
 AUTO = {"kind": "auto", "name": "자동 설치"}
 _ENV_NAME_RE = re.compile(r"^[A-Za-z0-9가-힣][A-Za-z0-9가-힣 ._-]{0,62}$")
 

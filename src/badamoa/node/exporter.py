@@ -27,6 +27,7 @@ class ExportOptions:
     val_fraction: float = 0.2  # held out of train when the release has no val split
     # Evaluation wants the release's splits exactly as they are: no stand-in for a missing val split.
     keep_splits: bool = False
+    masks: bool = False  # write outlines (segmentation) instead of boxes where a label has one
 
 
 def select_boxes(item: dict[str, Any], keep: dict[int, int], options: ExportOptions) -> tuple[list[list[float]] | None, str]:
@@ -36,7 +37,7 @@ def select_boxes(item: dict[str, Any], keep: dict[int, int], options: ExportOpti
     (nobody labelled it) or ``partial`` (labelled, but not for every class being trained).
     """
     state = item["state"]
-    boxes = [[keep[int(b[0])], *b[1:5]] for b in item.get("boxes", []) if int(b[0]) in keep]
+    boxes = [[keep[int(b[0])], *(b[1:] if options.masks else b[1:5])] for b in item.get("boxes", []) if int(b[0]) in keep]
     if state == "background":
         return [], ""
     if state == "unlabelled":
@@ -83,6 +84,12 @@ def _place(source: Path, target: Path) -> str:
             continue
     shutil.copy2(source, target)
     return "copy"
+
+
+def _label_line(row: list[float], masks: bool) -> str:
+    """One YOLO label line: the box, or for segmentation the outline that follows it in the stored label."""
+    values = row[5:] if masks and len(row) > 5 else row[1:5]
+    return f"{int(row[0])} " + " ".join(f"{v:.6f}" for v in values) + "\n"
 
 
 def build(
@@ -148,8 +155,7 @@ def build(
         label.parent.mkdir(parents=True, exist_ok=True)
         method = _place(source, image)
         methods[method] = methods.get(method, 0) + 1
-        rows = (f"{int(c)} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n" for c, cx, cy, w, h in boxes)
-        label.write_text("".join(rows), encoding="utf-8")
+        label.write_text("".join(_label_line(row, options.masks) for row in boxes), encoding="utf-8")
         counts[split] += 1
         box_total += len(boxes)
 
@@ -260,4 +266,16 @@ def build_imagefolder(
     }
 
 
-BUILDERS = {"yolo": build, "imagefolder": build_imagefolder}
+def build_segmentation(
+    items: Iterable[dict[str, Any]],
+    classes: list[dict[str, Any]],
+    locations: dict[str, str],
+    out: Path,
+    options: ExportOptions,
+) -> dict[str, Any]:
+    """The YOLO layout with outlines instead of boxes (YOLO segmentation format)."""
+    options.masks = True
+    return build(items, classes, locations, out, options)
+
+
+BUILDERS = {"yolo": build, "yolo-seg": build_segmentation, "imagefolder": build_imagefolder}
