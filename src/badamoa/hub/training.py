@@ -35,7 +35,7 @@ MANIFEST_MAX = 5000
 # The number a run is judged by: decides which step counts as "best so far".
 PRIMARY_METRIC = {"detect": "map50_95", "segment": "mask_map50_95", "classify": "top1"}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
-MAX_FILES_PER_RUN = 500
+MAX_FILES_PER_RUN = 5000  # per-step images add up: 16 pictures × 100 epochs
 HISTORY_POINTS = 600  # more steps than this are thinned out when read
 _NAME_RE = re.compile(r"[^0-9A-Za-z가-힣._-]+")
 
@@ -449,10 +449,21 @@ def clean_file_name(name: str) -> str:
     return "/".join(parts)[-255:].lstrip("/") or "file"
 
 
-def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: int) -> dict[str, Any]:
+def add_file(
+    db: Session,
+    node: Node,
+    job_id: str,
+    name: str,
+    blob: str,
+    size: int,
+    key: str = "",
+    step: int | None = None,
+    caption: str = "",
+    media: str = "",
+) -> dict[str, Any]:
     """Attach a file to its run: one the code recorded, or one the node found in the output folder.
 
-    Recording the same name again replaces it.
+    With a ``key`` it is a per-step image or (``media="table"``) table. Recording the same name again replaces it.
     """
     _, run = _running(db, node, job_id)
     name = clean_file_name(name)
@@ -464,7 +475,8 @@ def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: i
         row = RunFile(run_id=run.id, name=name)
         db.add(row)
     row.blob, row.bytes = blob, size
-    row.kind = "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"
+    row.kind = "table" if media == "table" else "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"
+    row.key, row.step, row.caption = key.strip()[:64], step, caption.strip()[:255]
     db.flush()
     return {"id": row.id, "name": row.name}
 
@@ -639,9 +651,20 @@ def run_view(
         view["history"] = {"steps": [r.step for r in rows], "series": {k: [r.data.get(k) for r in rows] for k in keys}}
         view["export"] = run.export or {}
         view["info"] = run.info or {}
+        stored = db.scalars(select(RunFile).where(RunFile.run_id == run.id).order_by(RunFile.created_at, RunFile.name)).all()
+        url = {f.id: catalog.media_url(settings, "file", f.id) for f in stored}
         view["files"] = [
-            {"id": f.id, "name": f.name, "kind": f.kind, "bytes": f.bytes, "url": catalog.media_url(settings, "file", f.id)}
-            for f in db.scalars(select(RunFile).where(RunFile.run_id == run.id).order_by(RunFile.created_at, RunFile.name))
+            {"id": f.id, "name": f.name, "kind": f.kind, "bytes": f.bytes, "url": url[f.id]} for f in stored if not f.key
+        ]
+        # Per-step images and tables, by key and step (W&B media panels, MLflow logged images and tables).
+        media: dict[str, dict[int, list[dict[str, Any]]]] = {}
+        for f in sorted((f for f in stored if f.key), key=lambda f: (f.step or 0, f.name)):
+            media.setdefault(f.key, {}).setdefault(f.step or 0, []).append(
+                {"name": f.name, "kind": f.kind, "caption": f.caption, "url": url[f.id]}
+            )
+        view["media"] = [
+            {"key": key, "steps": [{"step": step, "files": files} for step, files in steps.items()]}
+            for key, steps in media.items()
         ]
         view["files_url"] = catalog.media_url(settings, "run-files", run.id) if view["files"] else None
         view["metrics_csv_url"] = catalog.media_url(settings, "run-metrics", run.id) if rows else None

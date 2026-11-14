@@ -19,6 +19,9 @@ _ADDED_COLUMNS = [
     ("runs", "note", "TEXT DEFAULT ''"),
     ("model_versions", "aliases", "JSON DEFAULT '[]'"),
     ("runs", "sweep_id", "VARCHAR(32)"),
+    ("run_files", "key", "VARCHAR(64) DEFAULT ''"),
+    ("run_files", "step", "INTEGER"),
+    ("run_files", "caption", "VARCHAR(255) DEFAULT ''"),
 ]
 
 

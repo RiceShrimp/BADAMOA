@@ -84,7 +84,7 @@ class TemplateManifest(BaseModel):
 # ---- settings declared in the code itself (``badamoa_sdk.params(...)``) ---------------
 
 _DECLARATIONS = {"choice": "string", "text": "string", "integer": "integer", "number": "number", "boolean": "boolean"}
-_OPTIONS = {"label", "help", "group", "advanced", "custom"}
+_OPTIONS = {"label", "help", "group", "advanced", "custom", "unused_when"}
 
 
 def entry_script(command: str) -> str:

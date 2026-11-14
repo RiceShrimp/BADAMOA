@@ -40,7 +40,9 @@ hp = bm.params(
     ),
     optimizer=bm.choice(["AdamW", "SGD"], label="옵티마이저", group="최적화", advanced=True),
     lr=bm.number(0.001, min=0, label="학습률", group="최적화", advanced=True),
-    momentum=bm.number(0.9, min=0, max=1, label="모멘텀 (SGD)", group="최적화", advanced=True),
+    momentum=bm.number(
+        0.9, min=0, max=1, label="모멘텀 (SGD)", group="최적화", advanced=True, unused_when={"optimizer": ["AdamW"]}
+    ),
     weight_decay=bm.number(0.01, min=0, label="weight decay", group="최적화", advanced=True),
     label_smoothing=bm.number(0.0, min=0, max=0.5, label="label smoothing", group="최적화", advanced=True),
     cos_lr=bm.boolean(True, label="코사인 학습률 스케줄", group="최적화", advanced=True),
@@ -128,6 +130,36 @@ def save_confusion(confusion, names: list[str], path) -> None:
                 draw.text((box[0] + 4, box[1] + cell // 2 - 5), str(int(confusion[r, c])), fill="black")
     draw.text((margin, 4), "columns: predicted   rows: truth", fill="black")
     picture.save(path)
+
+
+SAMPLES = 48  # validation images shown with their predictions
+
+
+def log_samples(model, data, transform, device, run) -> None:
+    """A table of validation images with the truth and the prediction of the best weights, wrong ones first."""
+    import torch
+    from PIL import Image
+
+    if len(data) == 0:
+        return
+    picked = [data.samples[i] for i in range(0, len(data), max(1, len(data) // SAMPLES))][:SAMPLES]
+    folder = run.out / "samples"
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = []
+    model.eval()
+    with torch.no_grad():
+        for path, truth in picked:
+            image = Image.open(path).convert("RGB")
+            probabilities = torch.softmax(model(transform(image).unsqueeze(0).to(device)), dim=1)[0]
+            score, guess = (float(v) for v in probabilities.max(0))
+            thumb = folder / f"{len(rows):03d}.jpg"
+            image.thumbnail((128, 128))
+            image.save(thumb, quality=85)
+            truth_name, guess_name = run.classes[truth], run.classes[int(guess)]
+            name = bm.log_image(thumb, key="val_samples", caption=f"{truth_name} → {guess_name}")
+            rows.append([name, truth_name, guess_name, round(score, 4), "O" if int(guess) == truth else "X"])
+    rows.sort(key=lambda row: (row[4] == "O", -row[3]))
+    bm.log_table("val_predictions", ["image", "truth", "prediction", "confidence", "correct"], rows)
 
 
 def main() -> None:
@@ -240,6 +272,7 @@ def main() -> None:
         picture = run.out / "confusion_matrix.png"
         save_confusion(confusion, run.classes, picture)
         bm.log_artifact(picture)
+    log_samples(model, val_data, plain, device, run)
     bm.log_model(best_path, classes=per_class)
     bm.finish(best_scores)
 

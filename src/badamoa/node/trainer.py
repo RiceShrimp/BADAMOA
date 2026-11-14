@@ -133,10 +133,14 @@ def keep_outputs(job_dir: Path, put: Callable[[Path, str], bool]) -> tuple[int, 
     return kept, size
 
 
-def put_run_file(client: httpx.Client, base: str, path: Path, name: str) -> bool:
-    """Store a file with the training run of this job. False (and a line in the log) when the Hub refused it."""
+def put_run_file(client: httpx.Client, base: str, path: Path, name: str, **media: Any) -> bool:
+    """Store a file with the training run of this job. False (and a line in the log) when the Hub refused it.
+
+    ``media``: ``key``, ``step``, ``caption`` and ``media`` ("table") of a per-step image or table.
+    """
+    query = {"name": name, "kind": "file", **{k: v for k, v in media.items() if v not in (None, "")}}
     with path.open("rb") as stream:
-        resp = client.put(f"{base}/artifact", params={"name": name, "kind": "file"}, content=stream, timeout=3600)
+        resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=3600)
     if resp.status_code != 200:
         print(f"파일을 기록하지 못했습니다 ({name}): {resp.text[:200]}", flush=True)
     return resp.status_code == 200
@@ -369,7 +373,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             if not path.is_file():
                 print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
                 return
-            if put_run_file(client, base, path, str(event.get("name") or path.name)):
+            media = {k: event.get(k) for k in ("key", "step", "caption", "media")}
+            if put_run_file(client, base, path, str(event.get("name") or path.name), **media):
                 note_uploaded(work, path)
 
         sent_checkpoint = time.monotonic()

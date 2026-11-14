@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -184,6 +185,38 @@ def test_sdk_gives_chosen_values_and_defaults(tmp_path, capsys, monkeypatch):
     bm.load_config([])
 
 
+def test_sdk_records_images_and_tables_by_step(tmp_path, capsys, monkeypatch):
+    import importlib
+    import json
+
+    monkeypatch.syspath_prepend(str(shipped.SDK))
+    bm = importlib.import_module("badamoa_sdk")
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"params": {}, "out": str(tmp_path / "o")}))
+    bm.load_config(["train.py", "--config", str(config)])
+    run = bm.init()
+    picture = run.out / "pred.jpg"
+    picture.write_bytes(b"jpg")
+    bm.log({"loss": 1.0}, step=3)
+    name = bm.log_image(picture, key="예측/val", caption="고양이")  # the step of the last log
+    plain = bm.log_image(picture)  # without a key: an ordinary file
+    bm.log_table("val preds", ["image", "score"], [[name, 0.91234567], [None, float("nan")]], step=4)
+    events = [json.loads(line[10:]) for line in capsys.readouterr().out.splitlines() if line.startswith("@@badamoa ")]
+    image, artifact, table = [e for e in events if e["event"] == "artifact"]
+    assert name == "예측-val/000003-pred.jpg" and plain == "pred.jpg"
+    assert (image["key"], image["step"], image["caption"], image["name"]) == ("예측-val", 3, "고양이", name)
+    assert "key" not in artifact and artifact["name"] == "pred.jpg"
+    assert (table["key"], table["step"], table["media"], table["name"]) == (
+        "val preds",
+        4,
+        "table",
+        "val preds/000004.table.json",
+    )
+    stored = json.loads(Path(table["path"]).read_text(encoding="utf-8"))
+    assert stored == {"columns": ["image", "score"], "rows": [[name, 0.912346], [None, None]]}
+    bm.load_config([])
+
+
 def test_yolo_hyperparameters_are_detailed_settings():
     manifest = fmt.load_manifest(shipped.builtin()["yolo"])
     basic = [name for name, spec in manifest.params.items() if not spec.advanced]
@@ -195,6 +228,8 @@ def test_yolo_hyperparameters_are_detailed_settings():
     with pytest.raises(fmt.TemplateError, match="옵티마이저"):
         fmt.resolve_params(manifest, {"optimizer": "Lion"})
     assert manifest.params["lr0"].unused_when == {"optimizer": ["auto"]}  # Ultralytics picks it itself then
+    classify = fmt.load_manifest(shipped.builtin()["classify"])  # declared in code, read without running it
+    assert classify.params["momentum"].unused_when == {"optimizer": ["AdamW"]}
 
     # the torchvision template declares everything in code
     torchvision = fmt.load_manifest(shipped.builtin()["torchvision"])

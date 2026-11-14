@@ -1,3 +1,4 @@
+import { MediaPanel } from "./Media";
 import { SweepFields, SweepList, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
 import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
 import { FileList, fileSize } from "./Files";
@@ -478,6 +479,15 @@ function RunView({ runId }: { runId: string }) {
           ))}
         </div>
       )}
+
+      <MediaPanel
+        media={run.media}
+        images={Object.fromEntries(
+          [...run.files, ...run.media.flatMap((m) => m.steps.flatMap((s) => s.files))]
+            .filter((f) => f.kind === "image")
+            .map((f) => [f.name, f.url]),
+        )}
+      />
 
       <div className="two-col">
         <section className="card">

@@ -21,7 +21,9 @@ BADAMOA가 코드를 실행할 때는 이 모듈을 자동으로 import할 수 �
         bm.log({"train_loss": loss, "map50_95": score}, step=epoch)   # 3. 지표 → 화면의 그래프
         bm.progress(epoch, hp.epochs)                                  #    진행률
 
-    bm.log_artifact("confusion.png")      # (선택) 그림·파일 → 실행 화면의 "파일"
+    bm.log_artifact("confusion.png")      # (선택) 그림·파일 → 실행 화면의 "산출물"
+    bm.log_image("pred.jpg", key="예측", step=epoch)   # (선택) 단계별 그림 → step을 넘기며 봄
+    bm.log_table("val", ["image", "pred"], rows)       # (선택) 표 → 정렬·검색되는 표
     bm.log_model(run.out / "best.pt")     # 4. 모델로 등록할 가중치
     bm.finish({"map50_95": best})         # 5. 최종 지표와 함께 끝냄
 
@@ -41,7 +43,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "5"
+__version__ = "6"
 
 
 # ---- 설정 선언 ---------------------------------------------------------------------------
@@ -61,6 +63,7 @@ def choice(
     group: str = "",
     advanced: bool = False,
     custom: bool = False,
+    unused_when: dict[str, list[Any]] | None = None,
 ) -> Any:
     """목록에서 하나를 고르는 설정. custom=True 면 목록에 없는 값도 직접 입력할 수 있습니다."""
     return _Spec(options[0] if default is None else default)
@@ -75,6 +78,7 @@ def integer(
     help: str = "",
     group: str = "",
     advanced: bool = False,
+    unused_when: dict[str, list[Any]] | None = None,
 ) -> Any:
     """정수 설정 (epoch, 배치 크기 …)."""
     return _Spec(default)
@@ -89,17 +93,38 @@ def number(
     help: str = "",
     group: str = "",
     advanced: bool = False,
+    unused_when: dict[str, list[Any]] | None = None,
 ) -> Any:
-    """실수 설정 (학습률, weight decay …)."""
+    """실수 설정 (학습률, weight decay …).
+
+    unused_when: 다른 설정이 이 값들일 때 코드가 이 설정을 쓰지 않음 (예: {"optimizer": ["AdamW"]}).
+    하이퍼파라미터 탐색이 아무 차이 없는 실행을 만들지 않게 합니다.
+    """
     return _Spec(default)
 
 
-def boolean(default: bool, *, label: str = "", help: str = "", group: str = "", advanced: bool = False) -> Any:
+def boolean(
+    default: bool,
+    *,
+    label: str = "",
+    help: str = "",
+    group: str = "",
+    advanced: bool = False,
+    unused_when: dict[str, list[Any]] | None = None,
+) -> Any:
     """켜고 끄는 설정."""
     return _Spec(default)
 
 
-def text(default: str = "", *, label: str = "", help: str = "", group: str = "", advanced: bool = False) -> Any:
+def text(
+    default: str = "",
+    *,
+    label: str = "",
+    help: str = "",
+    group: str = "",
+    advanced: bool = False,
+    unused_when: dict[str, list[Any]] | None = None,
+) -> Any:
     """글자로 적는 설정 (가중치 경로 등)."""
     return _Spec(default)
 
@@ -300,7 +325,58 @@ def log_artifact(path: str | Path, name: str | None = None) -> None:
     _emit("artifact", path=str(Path(path).resolve()), name=name or Path(path).name)
 
 
-log_image = log_artifact  # 이미지도 같은 방식으로 기록합니다
+MAX_TABLE_ROWS = 10000
+
+
+def _key(key: str) -> str:
+    """A key as a folder name: no separators, no surprises."""
+    cleaned = "".join(c if c.isalnum() or c in "-_ ." else "-" for c in str(key)).strip(" .")
+    return cleaned[:60] or "media"
+
+
+def log_image(path: str | Path, key: str | None = None, step: int | None = None, caption: str = "") -> str:
+    """이미지를 기록합니다. 기록된 이름을 돌려줍니다 (log_table의 칸에 넣으면 표에서 그림으로 보입니다).
+
+    key를 주면 단계별 기록이 됩니다: 같은 key의 이미지를 실행 화면에서 step을 넘기며 봅니다
+    (W&B의 `wandb.log({key: wandb.Image(...)})`, MLflow의 `log_image(key=, step=)`).
+    step을 비우면 마지막으로 log한 step입니다. key 없이 부르면 log_artifact와 같습니다.
+    """
+    run = _current()
+    source = Path(path)
+    if key is None:
+        log_artifact(source)
+        return source.name
+    at = run._step if step is None else int(step)
+    name = f"{_key(key)}/{at:06d}-{source.name}"
+    _emit("artifact", path=str(source.resolve()), name=name, key=_key(key), step=at, caption=str(caption)[:200])
+    return name
+
+
+def _cell(value: Any) -> Any:
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    try:
+        number_value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return round(number_value, 6) if number_value == number_value and abs(number_value) != float("inf") else None
+
+
+def log_table(key: str, columns: list[str], rows: list[list[Any]], step: int | None = None) -> None:
+    """표를 기록합니다 — 샘플별 예측, 클래스별 결과처럼 행이 많은 결과 (W&B Tables, MLflow log_table).
+
+    칸에는 숫자·글자를 넣고, 이 실행에 log_image로 기록한 이미지의 이름을 넣으면 화면에서 그림으로 보입니다.
+    같은 key로 step마다 기록하면 실행 화면에서 step을 넘기며 봅니다. 행은 최대 10,000개까지 남습니다.
+    """
+    run = _current()
+    at = run._step if step is None else int(step)
+    data = {"columns": [str(c) for c in columns], "rows": [[_cell(v) for v in row] for row in rows[:MAX_TABLE_ROWS]]}
+    folder = run.out / ".badamoa"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{_key(key)}-{at:06d}.table.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    name = f"{_key(key)}/{at:06d}.table.json"
+    _emit("artifact", path=str(path.resolve()), name=name, key=_key(key), step=at, media="table")
 
 
 def finish(metrics: dict[str, Any] | None = None, **extra: Any) -> None:

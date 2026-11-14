@@ -822,3 +822,34 @@ th.sortable:hover {
 .sweep-chart a:hover circle {
   fill-opacity: 1;
 }
+
+/* ---- per-step pictures and tables ---- */
+.media-card .card-head {
+  align-items: baseline;
+}
+.step-slider {
+  width: 100%;
+  margin: 0 0 12px;
+}
+.logged-table input[type="search"] {
+  width: min(280px, 100%);
+  margin: 0 0 8px;
+}
+.logged-table .table-wrap {
+  max-height: 520px;
+  overflow: auto;
+}
+.logged-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+.cell-img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+}

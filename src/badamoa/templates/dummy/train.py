@@ -7,11 +7,15 @@ check a new node. Standard library only; see ``badamoa.templates`` for the contr
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import sys
 import time
 from pathlib import Path
+
+# A 1×1 PNG: enough to exercise per-step images without an imaging library.
+PIXEL = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 
 def emit(event: str, **data) -> None:
@@ -53,6 +57,28 @@ def main(argv: list[str]) -> int:
         print(f"epoch {epoch}/{epochs} mAP50-95 {metrics['map50_95']}")
         (out / "epoch.txt").write_text(str(epoch))  # the checkpoint a resumed run starts after
         emit("checkpoint", path=str(out / "epoch.txt"), epoch=epoch)
+        if params.get("media"):  # a per-step picture and table, as bm.log_image / bm.log_table record them
+            (out / "media").mkdir(exist_ok=True)
+            (out / "media" / "sample.png").write_bytes(PIXEL)
+            emit(
+                "artifact",
+                path=str(out / "media" / "sample.png"),
+                name=f"samples/{epoch:06d}-sample.png",
+                key="samples",
+                step=epoch,
+                caption=f"epoch {epoch}",
+            )
+            table = out / "media" / f"table-{epoch}.json"
+            rows = [[f"samples/{epoch:06d}-sample.png", "car", round(0.5 + epoch / 100, 3)]]
+            table.write_text(json.dumps({"columns": ["image", "prediction", "score"], "rows": rows}), encoding="utf-8")
+            emit(
+                "artifact",
+                path=str(table),
+                name=f"predictions/{epoch:06d}.table.json",
+                key="predictions",
+                step=epoch,
+                media="table",
+            )
         time.sleep(pause)
 
     # Written but never reported: the node keeps whatever is left in the output folder.

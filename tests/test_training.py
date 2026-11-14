@@ -220,7 +220,7 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     assert (model["name"], model["version"], model["arch"]) == ("street-yolo11n", 1, "yolo11n")
     assert model["classes"] == CLASSES and model["metrics"]["map50_95"] == curve[-1]
     assert model["run"]["id"] == run["id"] and model["release"]["id"] == release["id"]
-    assert model["config"]["epochs"] == 5 and model["template"] == {"name": "dummy", "title": "테스트 학습", "version": "2"}
+    assert model["config"]["epochs"] == 5 and model["template"] == {"name": "dummy", "title": "테스트 학습", "version": "3"}
     weights = httpx.get(str(hub.base_url).rstrip("/") + model["download_url"])
     assert weights.status_code == 200 and len(weights.content) == model["bytes"] and b'"dummy": true' in weights.content
     assert "street-yolo11n-v1.pt" in weights.headers["content-disposition"]
@@ -304,6 +304,27 @@ def test_training_through_mcp(hub, release):
     ]
     left = call("set_model_alias", {"model_id": model["id"], "alias": "challenger", "remove": True})
     assert left["aliases"] == ["production"] and left["alias"] == "production"
+
+
+def test_images_and_tables_by_step(hub, release):
+    run, job = _train(hub, release, {"epochs": 3, "media": True})
+    assert job["status"] == "succeeded", _logs(hub, job["id"])
+    done = hub.get(f"/api/runs/{run['id']}").json()
+    media = {m["key"]: m for m in done["media"]}
+    assert sorted(media) == ["predictions", "samples"]
+    assert [s["step"] for s in media["samples"]["steps"]] == [1, 2, 3]
+    picture = media["samples"]["steps"][2]["files"][0]
+    assert (picture["kind"], picture["caption"], picture["name"]) == ("image", "epoch 3", "samples/000003-sample.png")
+    shown = httpx.get(str(hub.base_url).rstrip("/") + picture["url"])
+    assert shown.headers["content-type"] == "image/png" and shown.content[:4] == b"\x89PNG"
+    table = media["predictions"]["steps"][0]["files"][0]
+    assert table["kind"] == "table"
+    rows = httpx.get(str(hub.base_url).rstrip("/") + table["url"]).json()
+    assert rows == {"columns": ["image", "prediction", "score"], "rows": [["samples/000001-sample.png", "car", 0.51]]}
+    # The per-step records are not repeated among the outputs, but the whole-run download has them.
+    assert not any(f["name"].startswith(("samples/", "predictions/")) for f in done["files"])
+    with zipfile.ZipFile(io.BytesIO(httpx.get(str(hub.base_url).rstrip("/") + done["files_url"]).content)) as archive:
+        assert "samples/000002-sample.png" in archive.namelist() and "predictions/000003.table.json" in archive.namelist()
 
 
 def test_notes_tags_and_aliases(hub, release):
@@ -669,5 +690,5 @@ def test_a_search_goes_on_when_a_built_in_template_moves_to_a_new_version(hub, r
         runs = hub.get(f"/api/projects/{release['project_id']}/runs", params={"sweep": sweep["id"]}).json()
     assert len(runs) == 2 and runs[0]["template"]["version"] == "99", runs
     view = hub.post(f"/api/sweeps/{sweep['id']}/stop").json()
-    assert view["status"] == "stopped" and view["template"]["version"] == "2"  # what it was started with
+    assert view["status"] == "stopped" and view["template"]["version"] == "3"  # what it was started with
 

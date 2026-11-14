@@ -1,6 +1,6 @@
 name = "dummy"
 title = "테스트 학습"
-version = "2"
+version = "3"
 description = "실제 학습 없이 가짜 지표와 가중치 파일을 만듭니다. PyTorch 없이 학습 흐름을 확인하는 용도."
 task = "detect"
 data_format = "yolo"
@@ -41,6 +41,12 @@ advanced = true
 type = "number"
 label = "mAP50-95 상한"
 default = 0.6
+advanced = true
+
+[params.media]
+type = "boolean"
+label = "단계별 그림 · 표 기록"
+default = false
 advanced = true
 
 [params.fail]

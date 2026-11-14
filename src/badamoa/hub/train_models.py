@@ -167,9 +167,13 @@ class RunFile(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(255))
-    kind: Mapped[str] = mapped_column(String(8), default="file")  # image | file
+    kind: Mapped[str] = mapped_column(String(8), default="file")  # image | table | file
     blob: Mapped[str] = mapped_column(String(64))
     bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # A per-step record (``bm.log_image(…, key=, step=)``, ``bm.log_table``): shown by key, step by step.
+    key: Mapped[str] = mapped_column(String(64), default="")
+    step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    caption: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

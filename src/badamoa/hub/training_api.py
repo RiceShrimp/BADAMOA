@@ -347,6 +347,10 @@ async def artifact(
     name: str = "best.pt",
     kind: str = "weights",
     epoch: int = 0,
+    key: str = "",
+    step: int | None = None,
+    caption: str = "",
+    media: str = "",
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """Receive a file as a raw request body, streamed to disk, and store it by content hash.
@@ -388,7 +392,7 @@ async def artifact(
         def record() -> dict[str, Any]:
             with hub.db.session() as db:
                 node = services.authenticate_node(db, token)
-                return training.add_file(db, node, job_id, name, blob, size)
+                return training.add_file(db, node, job_id, name, blob, size, key, step, caption, media)
 
         return await anyio.to_thread.run_sync(record)
     if kind == "checkpoint":

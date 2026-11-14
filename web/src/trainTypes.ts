@@ -1,3 +1,5 @@
+import type { RunMedia } from "./Media";
+
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 
 export interface TemplateParam {
@@ -138,6 +140,7 @@ export interface RunDetail extends Run {
   files: RunFile[];
   files_url: string | null; // everything below as one zip
   metrics_csv_url: string | null; // every logged step, not thinned out
+  media: RunMedia[]; // per-step pictures and tables, by key
   settings: { name: string; label: string; value: unknown; group: string; advanced: boolean; changed: boolean }[];
 }
 
