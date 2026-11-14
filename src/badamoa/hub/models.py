@@ -137,3 +137,13 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(64))
     target: Mapped[str] = mapped_column(String(128), default="")
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class HubSetting(Base):
+    """A Hub-wide setting an admin changes in the screen (e.g. how long outputs are kept)."""
+
+    __tablename__ = "hub_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+

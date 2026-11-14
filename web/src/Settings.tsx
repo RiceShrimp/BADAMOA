@@ -27,7 +27,7 @@ export function Settings({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo
       <Templates isAdmin={isAdmin} />
       <Environments isAdmin={isAdmin} nodes={nodes ?? []} />
       {isAdmin && <ProjectDefaults />}
-      <StorageUsage />
+      <StorageUsage isAdmin={isAdmin} />
     </>
   );
 }
@@ -41,6 +41,20 @@ interface Usage {
   free: number;
   disk: number;
   parts: { models: number; outputs: number; checkpoints: number; other: number };
+  policy: Policy;
+  projects: { id: string; name: string; models: number; outputs: number; checkpoints: number; total: number }[];
+}
+
+interface Policy {
+  outputs_days: number;
+  checkpoint_days: number;
+}
+
+interface CleanupReport {
+  policy: Policy;
+  outputs: { files: number; bytes: number };
+  checkpoints: { runs: number; bytes: number };
+  removed: { files: number; bytes: number; partial_uploads: number };
 }
 
 const PART_LABEL: [keyof Usage["parts"], string, string][] = [
@@ -50,8 +64,8 @@ const PART_LABEL: [keyof Usage["parts"], string, string][] = [
   ["other", "그 밖", "썸네일, 모델 종류의 코드, 기록(DB)"],
 ];
 
-function StorageUsage() {
-  const { data: usage } = usePolling(() => api<Usage>("/storage"), 60000);
+function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
+  const { data: usage, refresh } = usePolling(() => api<Usage>("/storage"), 60000);
   if (!usage) return null;
   const used = usage.disk > 0 ? ((usage.disk - usage.free) / usage.disk) * 100 : 0;
   return (
@@ -92,7 +106,135 @@ function StorageUsage() {
           디스크 여유 {fileSize(usage.free)} / 전체 {fileSize(usage.disk)}
         </span>
       </div>
+      {usage.projects.length > 0 && (
+        <details className="fold inner">
+          <summary>
+            프로젝트별 <span className="muted">({usage.projects.length})</span>
+          </summary>
+          <div className="table-wrap">
+            <table className="plain">
+              <thead>
+                <tr>
+                  <th>프로젝트</th>
+                  <th className="right">모델</th>
+                  <th className="right">산출물</th>
+                  <th className="right">체크포인트</th>
+                  <th className="right">합계</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usage.projects.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    {(["models", "outputs", "checkpoints", "total"] as const).map((k) => (
+                      <td key={k} className="num right">
+                        {p[k] > 0 ? fileSize(p[k]) : "–"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+      {isAdmin && <Retention policy={usage.policy} onChanged={refresh} />}
     </section>
+  );
+}
+
+/** How long outputs and checkpoints are kept, and cleaning up now (after seeing what would go). */
+function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Promise<unknown> }) {
+  const [draft, setDraft] = useState({ outputs: String(policy.outputs_days), checkpoints: String(policy.checkpoint_days) });
+  const [preview, setPreview] = useState<CleanupReport | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const changed = draft.outputs !== String(policy.outputs_days) || draft.checkpoints !== String(policy.checkpoint_days);
+
+  const act = async (work: () => Promise<void>) => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await work();
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const save = () =>
+    act(async () => {
+      await api("/storage/policy", {
+        method: "PUT",
+        body: { outputs_days: Number(draft.outputs) || 0, checkpoint_days: Number(draft.checkpoints) || 0 },
+      });
+      setPreview(null);
+      await onChanged();
+      setMessage({ kind: "ok", text: "보관 기간을 저장했습니다. BADAMOA가 몇 시간마다 이 기준으로 정리합니다." });
+    });
+  const look = () => act(async () => setPreview(await api<CleanupReport>("/storage/cleanup")));
+  const clean = () =>
+    act(async () => {
+      const done = await api<CleanupReport>("/storage/cleanup", { method: "POST" });
+      setPreview(null);
+      await onChanged();
+      setMessage({ kind: "ok", text: `${fileSize(done.removed.bytes)}를 비웠습니다 (파일 ${done.removed.files.toLocaleString()}개).` });
+    });
+  const days = (v: string) => (Number(v) > 0 ? `${v}일` : "계속 보관");
+
+  return (
+    <div className="retention">
+      <div className="eyebrow">보관 기간</div>
+      <div className="form-row">
+        <label>
+          실행 · 평가의 산출물 <span className="muted small">{days(draft.outputs)}</span>
+          <input type="number" min={0} max={3650} value={draft.outputs} onChange={(e) => setDraft({ ...draft, outputs: e.target.value })} />
+        </label>
+        <label>
+          중단된 실행의 체크포인트 <span className="muted small">{days(draft.checkpoints)}</span>
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={draft.checkpoints}
+            onChange={(e) => setDraft({ ...draft, checkpoints: e.target.value })}
+          />
+        </label>
+      </div>
+      <p className="muted small">
+        0이면 계속 보관합니다. 모델(가중치), 지표, 로그는 기간과 상관없이 남습니다. alias가 붙은 모델의 실행과 "보관" 태그를 붙인
+        실행의 산출물도 남습니다. 지운 실행 · 모델의 파일은 하루가 지나면 정리됩니다.
+      </p>
+      <div className="head-actions">
+        <button onClick={save} disabled={busy || !changed}>
+          저장
+        </button>
+        <button onClick={look} disabled={busy}>
+          지금 정리하면…
+        </button>
+      </div>
+      {preview && preview.removed.files + preview.outputs.files + preview.checkpoints.runs === 0 && (
+        <div className="notice">지금 정리할 것이 없습니다.</div>
+      )}
+      {preview && preview.removed.files + preview.outputs.files + preview.checkpoints.runs > 0 && (
+        <div className="notice cleanup-preview">
+          <div>
+            지금 정리하면 <strong>{fileSize(preview.removed.bytes)}</strong>가 비워집니다: 오래된 산출물 기록{" "}
+            {preview.outputs.files.toLocaleString()}개, 체크포인트 {preview.checkpoints.runs}개, 쓰이지 않는 파일 포함 저장소 파일{" "}
+            {preview.removed.files.toLocaleString()}개. 되돌릴 수 없습니다.
+          </div>
+          <div className="head-actions">
+            <button onClick={() => setPreview(null)} disabled={busy}>
+              취소
+            </button>
+            <button className="danger" onClick={clean} disabled={busy}>
+              정리
+            </button>
+          </div>
+        </div>
+      )}
+      {message && <div className={message.kind === "ok" ? "notice" : "error"}>{message.text}</div>}
+    </div>
   );
 }
 

@@ -16,6 +16,7 @@ from . import (
     agent_api,
     api,
     catalog_api,
+    cleanup,
     install,
     modelops_api,
     registry,
@@ -49,6 +50,11 @@ async def _sweeper(hub: Hub) -> None:
     while True:
         await anyio.sleep(_SWEEP_INTERVAL_S)
         ticks += 1
+        if ticks % int(cleanup.EVERY_S // _SWEEP_INTERVAL_S) == 0:
+            try:
+                await anyio.to_thread.run_sync(cleanup.scheduled, hub.db, hub.settings)
+            except Exception:
+                log.exception("storage cleanup failed")
         if ticks % 40 == 0:  # about every 10 minutes
             try:
                 await anyio.to_thread.run_sync(prune)

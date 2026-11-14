@@ -853,3 +853,23 @@ th.sortable:hover {
   border: 1px solid var(--border);
   background: #fff;
 }
+
+/* ---- retention ---- */
+.retention {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.retention .form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cleanup-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}

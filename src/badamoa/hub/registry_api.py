@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.templates import MAX_BUNDLE_BYTES
 
-from . import catalog, registry, services
+from . import catalog, cleanup, registry, services
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .models import User
 
@@ -135,6 +135,38 @@ def storage(
 ) -> dict[str, Any]:
     """What the Hub keeps and how much room is left. The folder itself is shown to admins only."""
     return registry.storage_usage(db, hub.settings, user)
+
+
+class StoragePolicy(BaseModel):
+    outputs_days: int = 0  # 0: keep for ever
+    checkpoint_days: int = 0
+
+
+@router.put("/storage/policy")
+def storage_policy(
+    body: StoragePolicy, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    policy = cleanup.set_policy(db, user, body.outputs_days, body.checkpoint_days)
+    db.commit()
+    return policy
+
+
+@router.get("/storage/cleanup")
+def storage_cleanup_preview(
+    _: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """What a cleanup would remove now under the saved policy (nothing is removed)."""
+    return cleanup.cleanup(db, hub.settings, apply=False)
+
+
+@router.post("/storage/cleanup")
+def storage_cleanup(
+    user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    with cleanup.lock:
+        report = cleanup.cleanup(db, hub.settings, apply=True, user=user)
+        db.commit()
+    return report
 
 
 class ProjectSettings(BaseModel):

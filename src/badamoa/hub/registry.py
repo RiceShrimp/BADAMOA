@@ -14,7 +14,8 @@ from badamoa import templates as shipped
 from badamoa.core.storage import Storage
 from badamoa.core.templates import TemplateError, TemplateManifest, load_manifest, read_bundle
 
-from . import services
+from . import cleanup, services
+from .catalog_models import Project
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
@@ -313,6 +314,8 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
     checkpoints = sum(int((c or {}).get("bytes") or 0) for c in db.scalars(select(Run.checkpoint)))
     disk = shutil.disk_usage(settings.home)
     return {
+        "policy": cleanup.get_policy(db),
+        "projects": project_usage(db),
         "path": str(settings.home.resolve()) if user.role == "admin" else None,
         "bytes": stored + database,
         "files": files,
@@ -326,3 +329,31 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
             "other": max(0, stored - models - outputs - checkpoints) + database,
         },
     }
+
+
+def project_usage(db: Session) -> list[dict[str, Any]]:
+    """How much each project keeps: its models, its runs' and model jobs' outputs, its checkpoints."""
+    usage: dict[str, dict[str, Any]] = {
+        p.id: {"id": p.id, "name": p.name, "models": 0, "outputs": 0, "checkpoints": 0}
+        for p in db.scalars(select(Project).where(Project.deleted_at.is_(None)))
+    }
+    model_project: dict[str, str] = {}
+    for model in db.scalars(select(ModelVersion).where(ModelVersion.deleted_at.is_(None))):
+        model_project[model.id] = model.project_id
+        if model.project_id in usage:
+            usage[model.project_id]["models"] += model.bytes or 0
+    run_project = {r.id: r.project_id for r in db.scalars(select(Run).where(Run.deleted_at.is_(None)))}
+    for run_id, size in db.execute(select(RunFile.run_id, RunFile.bytes)):
+        project = run_project.get(run_id)
+        if project in usage:
+            usage[project]["outputs"] += size or 0
+    for op in db.scalars(select(ModelJob)):
+        project = model_project.get(op.model_id)
+        if project in usage:
+            usage[project]["outputs"] += sum(int(f.get("bytes") or 0) for f in op.files or [])
+    for run in db.scalars(select(Run).where(Run.deleted_at.is_(None))):
+        if run.project_id in usage:
+            usage[run.project_id]["checkpoints"] += int((run.checkpoint or {}).get("bytes") or 0)
+    rows = [{**u, "total": u["models"] + u["outputs"] + u["checkpoints"]} for u in usage.values()]
+    return sorted(rows, key=lambda u: -u["total"])
+

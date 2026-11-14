@@ -692,3 +692,69 @@ def test_a_search_goes_on_when_a_built_in_template_moves_to_a_new_version(hub, r
     view = hub.post(f"/api/sweeps/{sweep['id']}/stop").json()
     assert view["status"] == "stopped" and view["template"]["version"] == "3"  # what it was started with
 
+
+def test_storage_policy_and_cleanup(hub, release, settings, monkeypatch):
+    """Old outputs and checkpoints go under the policy; what is protected or still used stays."""
+    from datetime import timedelta
+
+    from badamoa.hub import cleanup
+    from badamoa.hub.db import Database, utcnow
+    from badamoa.hub.train_models import Run
+
+    monkeypatch.setattr(cleanup, "GRACE_S", 0)  # files written seconds ago count as old in this test
+    base = str(hub.base_url).rstrip("/")
+    project = release["project_id"]
+    plain, _ = _train(hub, release, {"epochs": 2})
+    aliased, _ = _train(hub, release, {"epochs": 2})
+    kept, _ = _train(hub, release, {"epochs": 2})
+    gone, _ = _train(hub, release, {"epochs": 2, "ceiling": 0.3})
+    stopped = hub.post(
+        "/api/runs",
+        json={"release_id": release["id"], "template": "dummy", "params": {"epochs": 40, "sleep": 0.3}, "gpus": 0},
+    ).json()
+    for _ in range(100):
+        if hub.get(f"/api/runs/{stopped['id']}").json()["epoch"] >= 2:
+            break
+        time.sleep(0.1)
+    hub.post(f"/api/jobs/{stopped['job_id']}/cancel")
+    _wait(hub, stopped["job_id"])
+    view = lambda run: hub.get(f"/api/runs/{run['id']}").json()  # noqa: E731
+    assert view(stopped)["can_resume"] is True
+    hub.post(f"/api/models/{view(aliased)['model']['id']}/alias", json={"alias": "production"})
+    hub.patch(f"/api/runs/{kept['id']}", json={"tags": ["보관"]})
+    gone_files = view(gone)["files"]
+    assert hub.delete(f"/api/runs/{gone['id']}").status_code == 200
+
+    database = Database(settings.database_url)
+    with database.session() as db:  # these runs are now ten days old
+        for run in db.query(Run).filter(Run.project_id == project):
+            run.created_at = utcnow() - timedelta(days=10)
+    database.engine.dispose()
+
+    usage = hub.get("/api/storage").json()
+    assert usage["policy"] == {"outputs_days": 0, "checkpoint_days": 0}
+    row = next(p for p in usage["projects"] if p["id"] == project)
+    assert row["outputs"] > 0 and row["models"] > 0 and row["checkpoints"] > 0
+
+    # Keep for ever: only what nothing uses can go (the deleted run's files).
+    preview = hub.get("/api/storage/cleanup").json()
+    assert preview["outputs"]["files"] == 0 and preview["checkpoints"]["runs"] == 0
+    # Its history.csv goes; its epoch.txt holds the same bytes as the other runs' (stored once) and stays.
+    assert {f["name"] for f in gone_files} == {"epoch.txt", "logs/history.csv"} and preview["removed"]["files"] == 1
+
+    assert hub.put("/api/storage/policy", json={"outputs_days": 7, "checkpoint_days": 7}).json()["outputs_days"] == 7
+    assert hub.put("/api/storage/policy", json={"outputs_days": -1, "checkpoint_days": 0}).status_code == 400
+    preview = hub.get("/api/storage/cleanup").json()
+    # plain and the stopped run lose their outputs; the aliased and the kept ones do not
+    assert preview["outputs"]["files"] == len(view(plain)["files"]) + len(view(stopped)["files"])
+    assert preview["checkpoints"]["runs"] == 1
+    assert len(view(plain)["files"]) > 0  # a preview removes nothing
+
+    done = hub.post("/api/storage/cleanup").json()
+    assert done["removed"] == preview["removed"] and done["removed"]["bytes"] > 0  # the preview was exact
+    assert view(plain)["files"] == [] and view(stopped)["can_resume"] is False
+    assert view(aliased)["files"] and view(kept)["files"]
+    weights = httpx.get(base + hub.get(f"/api/models/{view(plain)['model']['id']}").json()["download_url"])
+    assert weights.status_code == 200  # the model itself always stays
+    assert httpx.get(base + view(aliased)["files"][0]["url"]).status_code == 200
+    assert hub.get("/api/storage/cleanup").json()["removed"]["files"] == 0  # nothing left over
