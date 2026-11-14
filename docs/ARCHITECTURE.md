@@ -100,6 +100,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **Service** (온라인): 텍스트 검색용 임베딩, 검수 화면의 SAM 클릭 보조, 샘플 테스트, RTSP 실시간 추론처럼 **즉시 응답**이 필요한 것. 노드가 모델을 띄워 두고, 노드↔Hub 사이 WebSocket 터널로 요청을 중계한다(브라우저가 노드에 직접 닿을 필요 없음). 첫 대화형 기능이 필요한 Phase 2에서 도입.
 - **플러그인**: Trainer / Labeler / Generator / Exporter / Curator. 각자 `manifest`(지원 OS, 최소 VRAM, CUDA, 의존성 lock)와 독립 venv를 가진다. 스케줄러는 매니페스트에 맞는 노드에만 배정한다.
   - 구현(0.5.0): 선언은 `core/plugins.py`, 환경은 노드가 처음 쓸 때 `<노드 홈>/envs/<플러그인>-<해시>`에 uv로 만든다(`node/envs.py`). 플러그인 스크립트(`badamoa/plugins/*.py`)는 그 환경의 Python으로 실행되고 BADAMOA를 import하지 않는다. 노드 쪽 래퍼(`node/trainer.py`)가 데이터 준비·Hub 보고·가중치 업로드를 맡고, 스크립트와는 표준 출력으로만 주고받는다(`@@badamoa {JSON}` 한 줄이 이벤트).
+  - 다음 단계(계획): 사내 코드를 **모델 템플릿**으로 등록하고, 환경을 자동 설치 · Docker 이미지 · 서버의 기존 환경 중에서 고른다 — [EXECUTION_PLAN.md](EXECUTION_PLAN.md) 2~3장.
   - 실행 방식 두 가지: **로컬 venv**(노드에서 직접) / **원격 엔드포인트**(이미 떠 있는 추론 서버·NIM을 호출). Cosmos Transfer나 대형 VLM은 12GB급 GPU에서 못 돌리므로 후자가 필요하다.
 
 ### 4.3 저장 위치
@@ -114,6 +115,8 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 | 노드 로컬 폴더 | 특정 서버에 이미 있는 데이터를 복사 없이 등록 | 그 데이터를 쓰는 Job은 **그 노드에 배정** (필요하면 "노드로 동기화" Job) |
 
 이미지는 content hash로 식별하므로 캐시와 중복 제거가 단순하다. 구현은 `badamoa.core.storage`(fsspec).
+
+> 0.5.0까지 구현된 것은 **노드 로컬 폴더** 하나다(등록한 노드에서만 학습). 공유 마운트 · 서버 간 동기화 · S3를 등록과 학습 양쪽에 넣는 계획은 [EXECUTION_PLAN.md](EXECUTION_PLAN.md) 4장.
 
 ### 4.4 데이터 모델
 
