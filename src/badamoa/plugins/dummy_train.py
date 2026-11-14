@@ -1,0 +1,60 @@
+"""A trainer that trains nothing: fake curves and a small weights file.
+
+It exercises everything around training (dataset export, metric reporting,
+weights upload, model registration) without torch — used by the tests and to
+check a new node. Standard library only; see ``badamoa.plugins`` for the contract.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+import time
+from pathlib import Path
+
+
+def emit(event: str, **data) -> None:
+    print("@@badamoa " + json.dumps({"event": event, **data}), flush=True)
+
+
+def main(config_path: str) -> int:
+    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    extra = cfg.get("extra", {})
+    if extra.get("fail"):
+        print("extra.fail 로 요청된 의도적 실패", file=sys.stderr)
+        return 1
+    epochs = int(cfg["epochs"])
+    pause = float(extra.get("sleep", 0.02))
+    ceiling = float(extra.get("ceiling", 0.6))  # where mAP50-95 levels off
+    emit("info", trainer="dummy", device=cfg["device"])
+    print(f"가짜 학습 {epochs} epoch · 데이터 {cfg['data']}")
+    metrics: dict[str, float] = {}
+    for epoch in range(1, epochs + 1):
+        progress = 1 - math.exp(-3 * epoch / epochs)
+        metrics = {
+            "map50_95": round(ceiling * progress, 4),
+            "map50": round(min(0.99, ceiling * 1.4) * progress, 4),
+            "precision": round(0.9 * progress, 4),
+            "recall": round(0.8 * progress, 4),
+            "train_box_loss": round(1.6 * (1 - progress) + 0.4, 4),
+            "val_box_loss": round(1.7 * (1 - progress) + 0.5, 4),
+        }
+        emit("epoch", epoch=epoch, epochs=epochs, metrics=metrics)
+        print(f"epoch {epoch}/{epochs} mAP50-95 {metrics['map50_95']}")
+        time.sleep(pause)
+
+    out = Path(cfg["out"])
+    out.mkdir(parents=True, exist_ok=True)
+    weights = out / "best.pt"
+    weights.write_text(json.dumps({"dummy": True, "model": cfg["model"], "classes": cfg["classes"]}), encoding="utf-8")
+    classes = [
+        {"id": i, "name": name, "precision": 0.9, "recall": 0.8, "map50": metrics["map50"], "map50_95": metrics["map50_95"]}
+        for i, name in enumerate(cfg["classes"])
+    ]
+    emit("result", weights=str(weights), metrics=metrics, classes=classes)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1]))

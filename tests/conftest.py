@@ -61,4 +61,5 @@ def live_hub(settings) -> Iterator[str]:
         raise RuntimeError("hub did not start")
     yield url
     server.should_exit = True
-    thread.join(timeout=10)
+    # A node's long-poll keeps the server open for up to 20 s; the thread is a daemon on its own port, so move on.
+    thread.join(timeout=1)

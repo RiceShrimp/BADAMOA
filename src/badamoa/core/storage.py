@@ -87,6 +87,19 @@ class Storage:
             self.put_bytes(key, data)
         return digest
 
+    def put_blob_file(self, path: str | Path) -> str:
+        """Store a local file by its sha256 without loading it into memory (model weights)."""
+        digest = sha256_file(path)
+        key = self.blob_key(digest)
+        if not self.exists(key):
+            target = self._path(key)
+            self.fs.makedirs(posixpath.dirname(target), exist_ok=True)
+            self.fs.put_file(str(path), target)
+        return digest
+
+    def blob_size(self, digest: str) -> int:
+        return int(self.fs.size(self._path(self.blob_key(digest))))
+
     def get_blob(self, digest: str) -> bytes:
         return self.get_bytes(self.blob_key(digest))
 

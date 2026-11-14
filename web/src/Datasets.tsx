@@ -255,11 +255,18 @@ function ReleaseView({ releaseId, isAdmin, onDeleted }: { releaseId: string; isA
             )}
           </p>
         </div>
-        {isAdmin && (
-          <button className="danger" onClick={remove}>
-            삭제
-          </button>
-        )}
+        <div className="head-actions">
+          {release.status === "ready" && (
+            <a className="btn primary-link" href={`#/training/new/${release.id}`}>
+              이 릴리스로 학습
+            </a>
+          )}
+          {isAdmin && (
+            <button className="danger" onClick={remove}>
+              삭제
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="stats five">

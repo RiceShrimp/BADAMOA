@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, resources, services
+from . import catalog, resources, services, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -38,6 +38,8 @@ BADAMOA는 설치형 비전 MLOps 플랫폼입니다. 이 서버로 Hub에 연�
 - 먼저 list_nodes로 온라인 노드를 확인하세요.
 - run_job은 작업을 큐에 넣고 즉시 반환합니다. wait_for_job으로 완료를 기다린 뒤 get_job_logs로 로그를 봅니다.
 - 실패한 작업은 get_job의 error와 로그 끝부분을 함께 확인하세요.
+- 학습: list_projects → list_datasets로 릴리스를 고르고 start_training으로 시작합니다. 반환된 job_id를
+  wait_for_job으로 기다린 뒤 get_training_run(지표 이력)과 list_models(등록된 모델)로 결과를 봅니다.
 """
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
@@ -312,6 +314,102 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 via="mcp",
             )
             return services.job_view(db, hub.settings, job)
+
+    # ---- tools: training and models --------------------------------------------
+
+    @mcp.tool(title="학습 시작", annotations=WRITE)
+    @guarded
+    def start_training(
+        release_id: str,
+        ctx: Context,
+        model: str = "yolo11n.pt",
+        epochs: int = 50,
+        imgsz: int = 640,
+        batch: int = 16,
+        name: str = "",
+        model_name: str = "",
+        classes: list[int] | None = None,
+        unlabelled: str = "exclude",
+        gpus: int | None = None,
+        trainer: str = "yolo",
+    ) -> dict[str, Any]:
+        """릴리스로 YOLO 학습을 시작합니다. 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
+
+        model: 시작 가중치(yolo11n.pt, yolo11s.pt …). classes: 학습할 클래스 id(비우면 전체).
+        unlabelled: 라벨 안 된 이미지를 exclude(제외) 또는 background(배경으로 사용).
+        gpus: 쓸 GPU 수(비우면 노드에 GPU가 있을 때 1, 0이면 CPU). GPU가 모두 사용 중이면 대기합니다.
+        반환값의 job_id로 wait_for_job / get_job_logs를 쓰고, get_training_run으로 지표를 확인하세요.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            run = training.start_run(
+                db,
+                user,
+                release_id=release_id,
+                trainer=trainer,
+                name=name,
+                model_name=model_name,
+                model=model,
+                epochs=epochs,
+                imgsz=imgsz,
+                batch=batch,
+                classes=classes,
+                unlabelled=unlabelled,
+                gpus=gpus,
+                via="mcp",
+            )
+            db.flush()
+            return training.run_view(db, hub.settings, run)
+
+    @mcp.tool(title="학습 실행 목록", annotations=READ_ONLY)
+    @guarded
+    def list_training_runs(project_id: str, ctx: Context, limit: int = 30) -> list[dict[str, Any]]:
+        """프로젝트의 학습 실행을 최신순으로 반환합니다: 상태, 진행 epoch, 지표(mAP 등), 쓴 릴리스, 만들어진 모델."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return training.list_runs(db, hub.settings, project_id, limit=limit)
+
+    @mcp.tool(title="학습 실행 조회", annotations=READ_ONLY)
+    @guarded
+    def get_training_run(run_id: str, ctx: Context) -> dict[str, Any]:
+        """학습 실행 하나의 설정, epoch별 지표 이력(history), 클래스별 지표를 반환합니다.
+
+        export에는 학습에 쓴 이미지 수와 제외된 이미지 수가 들어 있습니다.
+        진행 중이면 그때까지의 이력을 반환하므로 학습 곡선을 중간에 확인할 수 있습니다.
+        """
+        user_of(ctx)
+        with hub.db.session() as db:
+            return training.run_view(db, hub.settings, training.get_run(db, run_id), detail=True)
+
+    @mcp.tool(title="모델 목록", annotations=READ_ONLY)
+    @guarded
+    def list_models(project_id: str, ctx: Context) -> list[dict[str, Any]]:
+        """프로젝트에 등록된 모델 버전과 지표, alias(champion/challenger), 계보(학습 실행·릴리스)를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return training.list_models(db, hub.settings, project_id)
+
+    @mcp.tool(title="모델 조회", annotations=READ_ONLY)
+    @guarded
+    def get_model(model_id: str, ctx: Context) -> dict[str, Any]:
+        """모델 버전 하나의 지표, 클래스별 지표, 학습 설정, 계보를 반환합니다. 두 모델을 비교하려면 각각 조회하세요."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            view = training.model_view(db, hub.settings, training.get_model(db, model_id), detail=True)
+            view.pop("download_url", None)  # a signed browser link, not useful to an agent
+            return view
+
+    @mcp.tool(title="모델 alias 지정", annotations=WRITE)
+    @guarded
+    def set_model_alias(model_id: str, alias: str, ctx: Context) -> dict[str, Any]:
+        """모델 버전에 alias를 붙입니다: champion | challenger | ""(해제).
+
+        같은 이름의 다른 버전에 있던 같은 alias는 이 버전으로 옮겨집니다.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            model = training.set_alias(db, user, model_id, alias, via="mcp")
+            return training.model_view(db, hub.settings, model)
 
     # ---- resources -----------------------------------------------------------
 

@@ -11,6 +11,7 @@
       "name": "badamoa-hub-check",
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/check", "--port", "8471", "--host", "127.0.0.1"],
+      "env": { "BADAMOA_TORCH_BACKEND": "cpu" },
       "port": 8471
     }
   ]

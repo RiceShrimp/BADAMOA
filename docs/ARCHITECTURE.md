@@ -99,6 +99,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **노드 자원 이력**: Node Agent가 CPU·메모리·GPU(사용률·메모리·온도·전력·점유자)·디스크·사용자별 사용량을 보내고, Hub가 1분 → 10분 → 1시간으로 줄여 30일 보관한다.
 - **Service** (온라인): 텍스트 검색용 임베딩, 검수 화면의 SAM 클릭 보조, 샘플 테스트, RTSP 실시간 추론처럼 **즉시 응답**이 필요한 것. 노드가 모델을 띄워 두고, 노드↔Hub 사이 WebSocket 터널로 요청을 중계한다(브라우저가 노드에 직접 닿을 필요 없음). 첫 대화형 기능이 필요한 Phase 2에서 도입.
 - **플러그인**: Trainer / Labeler / Generator / Exporter / Curator. 각자 `manifest`(지원 OS, 최소 VRAM, CUDA, 의존성 lock)와 독립 venv를 가진다. 스케줄러는 매니페스트에 맞는 노드에만 배정한다.
+  - 구현(0.5.0): 선언은 `core/plugins.py`, 환경은 노드가 처음 쓸 때 `<노드 홈>/envs/<플러그인>-<해시>`에 uv로 만든다(`node/envs.py`). 플러그인 스크립트(`badamoa/plugins/*.py`)는 그 환경의 Python으로 실행되고 BADAMOA를 import하지 않는다. 노드 쪽 래퍼(`node/trainer.py`)가 데이터 준비·Hub 보고·가중치 업로드를 맡고, 스크립트와는 표준 출력으로만 주고받는다(`@@badamoa {JSON}` 한 줄이 이벤트).
   - 실행 방식 두 가지: **로컬 venv**(노드에서 직접) / **원격 엔드포인트**(이미 떠 있는 추론 서버·NIM을 호출). Cosmos Transfer나 대형 VLM은 12GB급 GPU에서 못 돌리므로 후자가 필요하다.
 
 ### 4.3 저장 위치
@@ -126,6 +127,8 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **카탈로그 (SQLite, 0.4.0에 구현)**: `projects, label_spaces, storage_locations, batches, items(sha256, 크기, 사이트, 카메라, 위치), label_revisions(rev, 상태, boxes JSON, 빠짐없이 라벨한 클래스), revision_classes(클래스 필터용), datasets, releases(통계), release_items(split, 가리키는 개정)`. 코드: `hub/catalog_models.py`, `hub/catalog.py`
 - **가져오기는 노드가 한다.** 데이터가 있는 노드가 `data.import` 작업으로 폴더를 읽어 해시·크기·라벨·썸네일만 Hub에 묶음 단위로 올린다(`node/importer.py`). 이미지 파일은 옮기지 않는다.
 - **이미지 URL은 서명된다.** `<img>`는 인증 헤더를 못 보내므로 썸네일·원본 URL에 만료 시각과 서명을 붙인다. 원본은 Hub 머신에서 읽을 수 있는 경로일 때만 제공한다.
+- **학습 (SQLite, 0.5.0에 구현)**: `runs(릴리스, 설정, 진행 epoch, 학습에 쓴 데이터 요약, 최종 지표)`, `run_metrics(epoch별 지표)`, `model_versions(이름, 버전, alias, 가중치 해시, 지표, 클래스)`. 실행의 상태는 그 실행을 돌리는 Job의 상태다. 코드: `hub/train_models.py`, `hub/training.py`
+- **학습 데이터는 릴리스에서 만든다.** 노드가 Hub에서 릴리스의 목록(항목 · split · 가리키는 라벨 개정)을 받아 YOLO 형식 폴더를 만든다(`node/exporter.py`). 이미지는 링크하고 라벨은 릴리스가 기록한 개정으로 쓰므로, 이미지 옆의 라벨 파일이 나중에 바뀌어도 같은 릴리스는 같은 학습 데이터가 된다.
 - **임베딩 (Lance, Phase 2)**: `embeddings(item_id, vector)` — 텍스트·이미지 검색과 큐레이션용
 - **Folder → Project.** 폴더는 프로젝트를 묶는 선택적 1단 분류다. **Project** = 하나의 태스크 범위로, 온톨로지를 공유하는 데이터셋 여러 개·Run·모델·승인 요청을 묶는다.
 - **Batch** = 가져오기 한 번(이름 · 태그 · 출처 · 시각). 모든 샘플은 자신이 들어온 배치를 기억한다 — 가져오기 취소, 배치 단위 오토라벨·검수 배정, 출처 필터에 쓴다.
@@ -214,10 +217,11 @@ src/badamoa/
   core/     스키마 · Job 유형 · storage(fsspec) · 시스템 정보 · 경로
   hub/      FastAPI 앱 · services · REST(api) · 노드 프로토콜(agent_api) · MCP(mcp_server)
             설치 스크립트/wheel 인덱스(install) · static/ (빌드된 웹 UI)
-  node/     Node Agent · 내장 Job · 부팅 서비스 등록
+  node/     Node Agent · 내장 Job · 데이터 가져오기 · 학습용 변환 · 플러그인 환경 · 부팅 서비스 등록
+  plugins/  플러그인 환경에서 실행되는 스크립트 (YOLO 학습, 테스트 학습)
   cli.py    `badamoa hub …` / `badamoa node …`
 web/        React + Vite (빌드 결과는 src/badamoa/hub/static 으로)
-plugins/    (Phase 1~) trainers/ labelers/ generators/ exporters/ curators/ — 각자 manifest + lock
+plugins/    (Phase 3~) 저장소 밖에서 추가하는 플러그인 — labelers/ generators/ exporters/ curators/
 agents/     (Phase 6) 서브에이전트 정의
 tests/      단위 · Hub API · 실제 Hub+노드+MCP E2E
 docs/

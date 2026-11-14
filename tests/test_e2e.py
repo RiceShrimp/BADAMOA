@@ -60,7 +60,7 @@ def test_agent_reports_failure_with_logs(hub, node):
     done = _wait(hub, job["id"])
     assert done["status"] == "failed" and "종료 코드" in done["error"]
     logs = "\n".join(line["text"] for line in hub.get(f"/api/jobs/{job['id']}/logs").json())
-    assert "tick 1/1" in logs and "RuntimeError" in logs
+    assert "tick 1/1" in logs and "의도적 실패" in logs
 
 
 def test_agent_cancels_running_job(hub, node):

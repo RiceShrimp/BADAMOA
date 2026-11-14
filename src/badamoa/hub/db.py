@@ -52,7 +52,7 @@ class Database:
         self.Session = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_all(self) -> None:
-        from . import catalog_models, models  # noqa: F401  (register tables)
+        from . import catalog_models, models, train_models  # noqa: F401  (register tables)
 
         Base.metadata.create_all(self.engine)
         self._add_missing_columns()

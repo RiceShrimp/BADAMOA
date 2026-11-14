@@ -66,11 +66,22 @@ def data_import(params: dict[str, Any]) -> dict[str, Any]:
     return importer.run(params)
 
 
+def train(job_type: str):
+    def handler(params: dict[str, Any]) -> dict[str, Any]:
+        from badamoa.node import trainer
+
+        return trainer.run(job_type, params)
+
+    return handler
+
+
 HANDLERS = {
     "system.info": system_info,
     "system.gpu": system_gpu,
     "debug.sleep": debug_sleep,
     "data.import": data_import,
+    "train.yolo": train("train.yolo"),
+    "train.dummy": train("train.dummy"),
 }
 
 
@@ -81,7 +92,11 @@ def main(argv: list[str]) -> int:
         print(f"이 노드는 작업 유형 {job_type!r} 을 지원하지 않습니다.", file=sys.stderr)
         return 2
     params = json.loads(Path(params_path).read_text(encoding="utf-8"))
-    result = handler(params)
+    try:
+        result = handler(params)
+    except (RuntimeError, ValueError, FileNotFoundError) as e:  # anticipated: one clear line, no traceback
+        print(f"실패: {e}", file=sys.stderr)
+        return 1
     Path(result_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     return 0
 

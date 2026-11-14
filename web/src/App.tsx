@@ -4,12 +4,14 @@ import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./a
 import { Datasets } from "./Datasets";
 import { Home } from "./Home";
 import { Jobs } from "./Jobs";
+import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
 import { ReleaseNotes, hasUnseenRelease } from "./ReleaseNotes";
+import { Training } from "./Training";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "nodes" | "jobs" | "agents";
+type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents";
 
 interface NavItem {
   label: string;
@@ -41,8 +43,8 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     group: "Develop",
     hint: "모델",
     items: [
-      { label: "학습", icon: "chart", phase: 1 },
-      { label: "모델", icon: "box", phase: 1 },
+      { label: "학습", icon: "chart", page: "training" },
+      { label: "모델", icon: "box", page: "models" },
     ],
   },
   {
@@ -123,8 +125,8 @@ export function App() {
     setState("login");
   };
 
-  const sub = hash.split("/")[2] || undefined; // #/<page>/<id>
-  return <Shell user={user} version={version} page={page} sub={sub} onLogout={logout} />;
+  const [, , sub, arg] = hash.split("/"); // #/<page>/<id>/<extra>
+  return <Shell user={user} version={version} page={page} sub={sub || undefined} arg={arg || undefined} onLogout={logout} />;
 }
 
 function Shell({
@@ -132,12 +134,14 @@ function Shell({
   version,
   page,
   sub,
+  arg,
   onLogout,
 }: {
   user: User;
   version: string;
   page: Page;
   sub?: string;
+  arg?: string;
   onLogout: () => void;
 }) {
   const [theme, toggleTheme] = useTheme();
@@ -236,6 +240,8 @@ function Shell({
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
           {page === "datasets" && <Datasets releaseId={sub} isAdmin={isAdmin} />}
+          {page === "training" && <Training runId={sub} arg={arg} />}
+          {page === "models" && <Models modelId={sub} isAdmin={isAdmin} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}

@@ -222,6 +222,9 @@ def test_agent_runs_gpu_job_on_reserved_gpu(live_hub, settings, tmp_path, monkey
             logs = "\n".join(line["text"] for line in hub.get(f"/api/jobs/{job['id']}/logs").json())
             assert "CUDA_VISIBLE_DEVICES=0" in logs
             node = hub.get("/api/nodes").json()[0]
+            while not node["metrics"].get("gpus") and time.monotonic() < deadline:  # the first heartbeat may be on its way
+                time.sleep(0.3)
+                node = hub.get("/api/nodes").json()[0]
             assert node["metrics"]["gpus"][0]["power_w"] is not None and node["gpu_states"][0]["state"] == "free"
         finally:
             runner.stop()

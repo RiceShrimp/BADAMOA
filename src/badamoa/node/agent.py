@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 
 from badamoa import __version__
 from badamoa.core import sysinfo
@@ -89,10 +90,36 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _terminate_tree(proc: subprocess.Popen) -> None:
+    """Stop a job and everything it started (a trainer and its dataloader workers).
+
+    Terminating only the job process would orphan its children, which keep the GPU busy.
+    """
+    try:
+        family = psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        family = []
+    proc.terminate()
+    for child in family:
+        try:
+            child.terminate()
+        except psutil.Error:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    for child in psutil.wait_procs(family, timeout=5)[1]:
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+
+
 class NodeAgent:
     def __init__(self, config: NodeConfig, home: Path, max_jobs: int | None = None) -> None:
         self.config = config
-        self.home = home
+        self.home = Path(home).resolve()  # jobs run in their own working directory
         # GPU jobs are limited by the GPUs the Hub hands out; this caps everything else.
         self.max_jobs = max_jobs or max(4, len(sysinfo.gpus()))
         self.stop_event = threading.Event()
@@ -211,11 +238,12 @@ class NodeAgent:
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
                     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
-                if job["type"].startswith("data."):
-                    # Built-in data jobs upload their results to the Hub themselves, in chunks.
+                if job["type"].startswith(("data.", "train.")):
+                    # These jobs exchange data with the Hub themselves (import chunks, metrics, weights).
                     env["BADAMOA_HUB_URL"] = self.config.hub_url
                     env["BADAMOA_NODE_TOKEN"] = self.config.node_token
                     env["BADAMOA_JOB_ID"] = job_id
+                    env["BADAMOA_NODE_HOME"] = str(self.home)
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "badamoa.node.builtin", job["type"], str(params_path), str(result_path)],
                     stdout=subprocess.PIPE,
@@ -238,11 +266,7 @@ class NodeAgent:
                 while proc.poll() is None:
                     if cancel.is_set() or self.stop_event.is_set():
                         canceled = True
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
+                        _terminate_tree(proc)
                         break
                     flush()
                     time.sleep(LOG_FLUSH_INTERVAL_S if buffer else 0.2)

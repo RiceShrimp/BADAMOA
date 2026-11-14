@@ -99,6 +99,21 @@ class ImportChunk(BaseModel):
     items: list[ImportItem]
 
 
+class TrainReport(BaseModel):
+    """Progress of a training job: ``export`` (dataset written), ``info`` (environment), ``epoch`` (metrics)."""
+
+    event: Literal["export", "info", "epoch"]
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainFinish(BaseModel):
+    metrics: dict[str, float] = Field(default_factory=dict)
+    # Per class: {"id", "name", "precision", "recall", "map50", "map50_95"}
+    classes: list[dict[str, Any]] = Field(default_factory=list)
+    # The uploaded weights: {"blob", "bytes", "file_name"}
+    weights: dict[str, Any] = Field(default_factory=dict)
+
+
 class CompleteRequest(BaseModel):
     status: Literal["succeeded", "failed", "canceled"]
     result: dict[str, Any] | None = None
