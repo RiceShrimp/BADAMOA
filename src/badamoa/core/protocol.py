@@ -100,9 +100,10 @@ class ImportChunk(BaseModel):
 
 
 class TrainReport(BaseModel):
-    """Progress of a training job: ``export`` (dataset written), ``info`` (environment), ``epoch`` (metrics)."""
+    """Progress of a training job: ``stage`` (what it is doing now), ``export`` (dataset written),
+    ``info`` (library versions, device), ``epoch`` (metrics)."""
 
-    event: Literal["export", "info", "epoch"]
+    event: Literal["stage", "export", "info", "epoch"]
     data: dict[str, Any] = Field(default_factory=dict)
 
 

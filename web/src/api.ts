@@ -49,6 +49,25 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   return (await resp.json()) as T;
 }
 
+/** Send a file as the raw request body (template bundles). */
+export async function apiUpload<T>(path: string, file: Blob): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/zip" };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const resp = await fetch(`/api${path}`, { method: "POST", headers, body: file });
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try {
+      const data = await resp.json();
+      if (typeof data.detail === "string") detail = data.detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(resp.status, detail);
+  }
+  return (await resp.json()) as T;
+}
+
 export interface User {
   id: string;
   username: string;

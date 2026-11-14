@@ -2,7 +2,7 @@
 
 It exercises everything around training (dataset export, metric reporting,
 weights upload, model registration) without torch — used by the tests and to
-check a new node. Standard library only; see ``badamoa.plugins`` for the contract.
+check a new node. Standard library only; see ``badamoa.templates`` for the contract.
 """
 
 from __future__ import annotations
@@ -18,15 +18,15 @@ def emit(event: str, **data) -> None:
     print("@@badamoa " + json.dumps({"event": event, **data}), flush=True)
 
 
-def main(config_path: str) -> int:
-    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    extra = cfg.get("extra", {})
-    if extra.get("fail"):
-        print("extra.fail 로 요청된 의도적 실패", file=sys.stderr)
+def main(argv: list[str]) -> int:
+    cfg = json.loads(Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8"))
+    params = cfg["params"]
+    if params.get("fail"):
+        print("fail 설정으로 요청된 의도적 실패", file=sys.stderr)
         return 1
-    epochs = int(cfg["epochs"])
-    pause = float(extra.get("sleep", 0.02))
-    ceiling = float(extra.get("ceiling", 0.6))  # where mAP50-95 levels off
+    epochs = int(params.get("epochs", 5))
+    pause = float(params.get("sleep", 0.02))
+    ceiling = float(params.get("ceiling", 0.6))  # where mAP50-95 levels off
     emit("info", trainer="dummy", device=cfg["device"])
     print(f"가짜 학습 {epochs} epoch · 데이터 {cfg['data']}")
     metrics: dict[str, float] = {}
@@ -47,7 +47,8 @@ def main(config_path: str) -> int:
     out = Path(cfg["out"])
     out.mkdir(parents=True, exist_ok=True)
     weights = out / "best.pt"
-    weights.write_text(json.dumps({"dummy": True, "model": cfg["model"], "classes": cfg["classes"]}), encoding="utf-8")
+    content = {"dummy": True, "model": params.get("model"), "classes": cfg["classes"]}
+    weights.write_text(json.dumps(content), encoding="utf-8")
     classes = [
         {"id": i, "name": name, "precision": 0.9, "recall": 0.8, "map50": metrics["map50"], "map50_95": metrics["map50_95"]}
         for i, name in enumerate(cfg["classes"])
@@ -57,4 +58,4 @@ def main(config_path: str) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv))

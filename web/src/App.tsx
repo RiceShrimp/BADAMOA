@@ -8,10 +8,11 @@ import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
 import { ReleaseNotes, hasUnseenRelease } from "./ReleaseNotes";
+import { Settings } from "./Settings";
 import { Training } from "./Training";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents";
+type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings";
 
 interface NavItem {
   label: string;
@@ -62,6 +63,7 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
       { label: "노드", icon: "server", page: "nodes" },
       { label: "작업", icon: "activity", page: "jobs" },
       { label: "에이전트", icon: "bot", page: "agents" },
+      { label: "설정", icon: "settings", page: "settings" },
     ],
   },
 ];
@@ -245,6 +247,7 @@ function Shell({
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}
+          {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} />}
         </main>
         {notesOpen && <ReleaseNotes version={version} onClose={() => setNotesOpen(false)} />}
       </div>

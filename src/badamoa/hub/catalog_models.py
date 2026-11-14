@@ -32,6 +32,7 @@ class Project(Base):
     task: Mapped[str] = mapped_column(String(16), default="detect")  # detect | segment | classify
     folder: Mapped[str] = mapped_column(String(128), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # dialog defaults, e.g. {"template": "yolo"}
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

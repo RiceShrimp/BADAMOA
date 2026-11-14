@@ -1,27 +1,76 @@
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 
+export interface TemplateParam {
+  name: string;
+  type: "string" | "integer" | "number" | "boolean" | "object";
+  default: unknown;
+  label: string;
+  help: string;
+  choices: unknown[];
+  custom: boolean;
+  minimum: number | null;
+  maximum: number | null;
+  advanced: boolean;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  title: string;
+  version: string;
+  versions: number;
+  task: string;
+  description: string;
+  license: string;
+  builtin: boolean;
+  data_format: string;
+  entrypoints: string[];
+  params: TemplateParam[];
+  environment: { default: string; requirements: string[] };
+  bytes: number;
+  models: number;
+  created_at: string;
+}
+
+export interface EnvironmentNode {
+  node_id: string;
+  node_name: string;
+  path?: string;
+  ok: boolean | null;
+  detail: { python?: string; packages?: Record<string, string>; cuda?: boolean; gpus?: string[]; error?: string };
+  checked_at: string | null;
+}
+
+export interface Environment {
+  id: string;
+  name: string;
+  kind: string;
+  description: string;
+  nodes: EnvironmentNode[];
+}
+
+/** A run's settings: the template's own params plus what BADAMOA adds. */
 export interface RunConfig {
-  model: string;
-  epochs: number;
-  imgsz: number;
-  batch: number;
-  workers?: number;
-  pretrained?: boolean;
+  [param: string]: unknown;
+  model?: string;
+  epochs?: number;
+  imgsz?: number;
+  batch?: number;
   classes?: number[];
   unlabelled?: string;
   val_fraction?: number;
   gpus?: number;
   model_name?: string;
-  extra?: Record<string, unknown>;
 }
 
 export interface Run {
   id: string;
   name: string;
   project_id: string;
-  trainer: string;
-  trainer_title: string;
+  template: { id: string; name: string; title: string; version: string; variant: string };
+  environment: { kind: string; name: string; id?: string };
   status: RunStatus;
+  stage: "" | "data" | "env" | "train" | "upload";
   job_id: string | null;
   node_name: string | null;
   wait_reason: string | null;
@@ -63,6 +112,7 @@ export interface RunDetail extends Run {
   export: ExportSummary;
   info: Record<string, unknown>;
   class_metrics: ClassMetric[];
+  settings: { name: string; label: string; value: unknown }[];
 }
 
 export interface ModelInfo {
@@ -73,7 +123,7 @@ export interface ModelInfo {
   alias: string;
   task: string;
   arch: string;
-  trainer: string;
+  template: { name: string; title: string; version: string };
   bytes: number;
   imgsz: number;
   class_count: number;
@@ -124,3 +174,11 @@ export function delta(a: number | undefined, b: number | undefined, digits = 3):
 }
 
 export const ACTIVE: RunStatus[] = ["queued", "running"];
+
+export const STAGE_LABEL: Record<string, string> = {
+  queued: "대기",
+  data: "데이터 준비",
+  env: "환경 준비",
+  train: "학습",
+  upload: "모델 등록",
+};

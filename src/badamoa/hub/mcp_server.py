@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, resources, services, training
+from . import catalog, registry, resources, services, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -38,7 +38,8 @@ BADAMOA는 설치형 비전 MLOps 플랫폼입니다. 이 서버로 Hub에 연�
 - 먼저 list_nodes로 온라인 노드를 확인하세요.
 - run_job은 작업을 큐에 넣고 즉시 반환합니다. wait_for_job으로 완료를 기다린 뒤 get_job_logs로 로그를 봅니다.
 - 실패한 작업은 get_job의 error와 로그 끝부분을 함께 확인하세요.
-- 학습: list_projects → list_datasets로 릴리스를 고르고 start_training으로 시작합니다. 반환된 job_id를
+- 학습: list_projects → list_datasets로 릴리스를 고르고 start_training으로 시작합니다.
+  어떤 모델로 학습할지는 list_model_templates의 템플릿 이름과 설정 항목에서 고릅니다. 반환된 job_id를
   wait_for_job으로 기다린 뒤 get_training_run(지표 이력)과 list_models(등록된 모델)로 결과를 봅니다.
 """
 
@@ -322,21 +323,21 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
     def start_training(
         release_id: str,
         ctx: Context,
-        model: str = "yolo11n.pt",
-        epochs: int = 50,
-        imgsz: int = 640,
-        batch: int = 16,
+        template: str = "",
+        params: dict[str, Any] | None = None,
+        environment: str = "",
         name: str = "",
         model_name: str = "",
         classes: list[int] | None = None,
         unlabelled: str = "exclude",
         gpus: int | None = None,
-        trainer: str = "yolo",
     ) -> dict[str, Any]:
-        """릴리스로 YOLO 학습을 시작합니다. 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
+        """릴리스로 학습을 시작합니다. 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
 
-        model: 시작 가중치(yolo11n.pt, yolo11s.pt …). classes: 학습할 클래스 id(비우면 전체).
-        unlabelled: 라벨 안 된 이미지를 exclude(제외) 또는 background(배경으로 사용).
+        template: 모델 템플릿 이름(list_model_templates로 확인, 비우면 프로젝트 기본값 — 보통 yolo).
+        params: 그 템플릿의 설정. yolo라면 {"model": "yolo11n.pt", "epochs": 50, "imgsz": 640, "batch": 16}.
+        environment: 등록된 환경 이름(비우면 템플릿의 기본 환경, 없으면 자동 설치).
+        classes: 학습할 클래스 id(비우면 전체). unlabelled: 라벨 안 된 이미지를 exclude(제외) 또는 background(배경).
         gpus: 쓸 GPU 수(비우면 노드에 GPU가 있을 때 1, 0이면 CPU). GPU가 모두 사용 중이면 대기합니다.
         반환값의 job_id로 wait_for_job / get_job_logs를 쓰고, get_training_run으로 지표를 확인하세요.
         """
@@ -346,13 +347,11 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 db,
                 user,
                 release_id=release_id,
-                trainer=trainer,
+                template=template,
+                environment=environment,
+                params=params,
                 name=name,
                 model_name=model_name,
-                model=model,
-                epochs=epochs,
-                imgsz=imgsz,
-                batch=batch,
                 classes=classes,
                 unlabelled=unlabelled,
                 gpus=gpus,
@@ -360,6 +359,14 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
             )
             db.flush()
             return training.run_view(db, hub.settings, run)
+
+    @mcp.tool(title="모델 템플릿 목록", annotations=READ_ONLY)
+    @guarded
+    def list_model_templates(ctx: Context) -> list[dict[str, Any]]:
+        """학습에 쓸 수 있는 모델 템플릿(내장 YOLO와 사내에서 등록한 것)과 각 템플릿의 설정 항목(params)을 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return registry.list_templates(db)
 
     @mcp.tool(title="학습 실행 목록", annotations=READ_ONLY)
     @guarded

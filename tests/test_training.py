@@ -1,6 +1,6 @@
 """Training: dataset export, the run → metrics → model flow with a real Node Agent, the registry, MCP.
 
-These use the ``dummy`` trainer, which goes through the same path as a real one
+These use the built-in ``dummy`` template, which goes through the same path as a real one
 (export, metric reports, weights upload, model registration) without torch.
 The real YOLO check lives in ``test_real_data.py`` and is opt-in.
 """
@@ -116,12 +116,12 @@ def test_export_never_links_a_file_the_trainer_would_rewrite(tmp_path):
 
 
 def test_job_params_accept_lists_numbers_and_objects():
-    params = validate_params("train.dummy", {"classes": [0, 2], "val_fraction": "0.1", "extra": {"sleep": 0}})
-    assert params["classes"] == [0, 2] and params["val_fraction"] == 0.1 and params["epochs"] == 50
+    params = validate_params("train.run", {"classes": [0, 2], "val_fraction": "0.1", "params": {"sleep": 0}})
+    assert params["classes"] == [0, 2] and params["val_fraction"] == 0.1 and params["params"] == {"sleep": 0}
     with pytest.raises(ValueError):
-        validate_params("train.dummy", {"classes": "0,2"})
+        validate_params("train.run", {"classes": "0,2"})
     with pytest.raises(ValueError):
-        validate_params("train.dummy", {"val_fraction": 2})
+        validate_params("train.run", {"val_fraction": 2})
 
 
 # ---- runs and models with a real node -------------------------------------------------
@@ -165,8 +165,8 @@ def release(hub, tmp_path):
     return {"project_id": project["id"], "id": job["result"]["release_id"]}
 
 
-def _train(hub, release, **settings):
-    body = {"release_id": release["id"], "trainer": "dummy", "epochs": 5, "gpus": 0, **settings}
+def _train(hub, release, params=None, **settings):
+    body = {"release_id": release["id"], "template": "dummy", "params": params or {}, "gpus": 0, **settings}
     resp = hub.post("/api/runs", json=body)
     assert resp.status_code == 200, resp.text
     run = resp.json()
@@ -175,7 +175,7 @@ def _train(hub, release, **settings):
 
 
 def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
-    run, job = _train(hub, release, model="yolo11n.pt", extra={"ceiling": 0.5})
+    run, job = _train(hub, release, {"model": "yolo11n.pt", "ceiling": 0.5})
     assert job["status"] == "succeeded", _logs(hub, job["id"])
     assert run["name"] == "street-v1-yolo11n" and run["status"] in ("queued", "running")
 
@@ -195,7 +195,7 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     assert (model["name"], model["version"], model["arch"]) == ("street-yolo11n", 1, "yolo11n")
     assert model["classes"] == CLASSES and model["metrics"]["map50_95"] == curve[-1]
     assert model["run"]["id"] == run["id"] and model["release"]["id"] == release["id"]
-    assert model["config"]["epochs"] == 5
+    assert model["config"]["epochs"] == 5 and model["template"] == {"name": "dummy", "title": "테스트 학습", "version": "1"}
     weights = httpx.get(str(hub.base_url).rstrip("/") + model["download_url"])
     assert weights.status_code == 200 and len(weights.content) == model["bytes"] and b'"dummy": true' in weights.content
     assert "street-yolo11n-v1.pt" in weights.headers["content-disposition"]
@@ -228,14 +228,18 @@ def test_class_subset_and_failed_run(hub, release):
     assert done["export"]["classes"] == ["car"] and done["export"]["items"]["train"] == 6
     assert (done["model"]["name"], done["model"]["version"]) == ("cars", 1)
 
-    failed, job = _train(hub, release, extra={"fail": True})
+    failed, job = _train(hub, release, {"fail": True})
     assert job["status"] == "failed" and "의도적 실패" in _logs(hub, job["id"])
     view = hub.get(f"/api/runs/{failed['id']}").json()
     assert view["status"] == "failed" and view["model"] is None and "종료 코드" in view["error"]
 
     assert hub.post("/api/runs", json={"release_id": release["id"], "classes": [9]}).status_code == 400
     assert hub.post("/api/runs", json={"release_id": "nope"}).status_code == 404
-    assert hub.post("/api/runs", json={"release_id": release["id"], "trainer": "sklearn"}).status_code == 400
+    assert hub.post("/api/runs", json={"release_id": release["id"], "template": "sklearn"}).status_code == 404
+    unknown = hub.post("/api/runs", json={"release_id": release["id"], "template": "dummy", "params": {"lr": 1}})
+    assert unknown.status_code == 400 and "lr" in unknown.json()["detail"]
+    low = hub.post("/api/runs", json={"release_id": release["id"], "template": "dummy", "params": {"epochs": 0}})
+    assert low.status_code == 400 and "1 이상" in low.json()["detail"]
 
 
 def test_training_through_mcp(hub, release):
@@ -247,7 +251,9 @@ def test_training_through_mcp(hub, release):
         assert not res.get("isError"), res
         return res["structuredContent"]
 
-    run = call("start_training", {"release_id": release["id"], "trainer": "dummy", "epochs": 3, "gpus": 0})
+    names = [t["name"] for t in call("list_model_templates", {})["result"]]
+    assert names == ["yolo"]  # the test helper template is not offered
+    run = call("start_training", {"release_id": release["id"], "template": "dummy", "params": {"epochs": 3}, "gpus": 0})
     assert run["created_via"] == "mcp"
     assert call("wait_for_job", {"job_id": run["job_id"], "timeout_seconds": 120})["status"] == "succeeded"
     detail = call("get_training_run", {"run_id": run["id"]})

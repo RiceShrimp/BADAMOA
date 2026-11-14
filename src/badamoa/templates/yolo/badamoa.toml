@@ -1,0 +1,71 @@
+name = "yolo"
+title = "Ultralytics YOLO"
+version = "1"
+description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
+task = "detect"
+data_format = "yolo"
+license = "AGPL-3.0"
+variant = "model"
+
+[environment]
+requirements = ["ultralytics>=8.3,<9"]
+python = "3.12"
+torch = true
+
+[entrypoints]
+train = "python train.py --config {config}"
+
+[params.model]
+type = "string"
+label = "모델"
+default = "yolo11n.pt"
+choices = [
+    "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt",
+    "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt",
+]
+custom = true
+help = "n이 가장 작고 빠르며 x가 가장 큽니다. 목록에 없는 가중치 이름이나 노드의 파일 경로도 쓸 수 있습니다."
+
+[params.epochs]
+type = "integer"
+label = "epoch"
+default = 50
+minimum = 1
+maximum = 100000
+
+[params.imgsz]
+type = "integer"
+label = "이미지 크기"
+default = 640
+minimum = 32
+maximum = 4096
+advanced = true
+
+[params.batch]
+type = "integer"
+label = "배치"
+default = 16
+minimum = -1
+maximum = 4096
+advanced = true
+help = "-1이면 GPU 메모리에 맞춰 자동으로 정합니다."
+
+[params.workers]
+type = "integer"
+label = "데이터 로더 수"
+default = 4
+minimum = 0
+maximum = 64
+advanced = true
+
+[params.pretrained]
+type = "boolean"
+label = "사전학습 가중치에서 시작"
+default = true
+advanced = true
+help = "끄면 같은 구조를 처음부터 학습합니다."
+
+[params.extra]
+type = "object"
+advanced = true
+help = "Ultralytics 학습 인자를 그대로 넘깁니다 (API·에이전트용)."

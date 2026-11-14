@@ -8,7 +8,7 @@
 데이터 관리, 오토라벨링, 학습(일반 학습 + Teacher→Student 증류), 평가, 모델 관리, 배포를 한 곳에서 하고,
 원격 학습·데이터 서버를 한 줄 명령으로 붙이며, Claude Code 같은 에이전트가 MCP로 전부 조작할 수 있게 만드는 것이 목표입니다.
 
-지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), YOLO 학습(지표 곡선, 실행 비교)과 모델 등록, MCP 서버, 웹 UI.
+지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), YOLO 학습(지표 곡선, 실행 비교)과 모델 등록, 사내 학습 코드를 모델 템플릿으로 등록해 쓰기, MCP 서버, 웹 UI.
 바뀐 내용은 [CHANGELOG.md](CHANGELOG.md), 설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 일정은 [docs/ROADMAP.md](docs/ROADMAP.md), 다음 단계 계획(사내 학습 코드 등록 · 환경 선택 · 저장 위치)은 [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md), 화면 구성과 레퍼런스 분석은 [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md), 최초 구상은 [docs/PLANS.md](docs/PLANS.md).
 
 ## 실행 (개발 환경)
@@ -86,6 +86,40 @@ COCO128이 있으면 실제 YOLO 학습(1 epoch, CPU)까지 확인하는 테스�
 BADAMOA_TEST_YOLO=1 uv run pytest tests/test_real_data.py -k yolo
 ```
 
+## 사내 학습 코드 등록하기 (모델 템플릿)
+
+학습 코드를 폴더 하나로 묶고 선언 파일(`badamoa.toml`)을 더하면, 학습 대화상자의 "모델 종류"에 나옵니다.
+
+```bash
+badamoa template init my-model
+```
+
+`my-model/train.py`의 표시한 부분을 자신의 코드로 바꿉니다. 진행 상황은 W&B·MLflow와 비슷한 모양의 도우미(`badamoa_report.py`, 뼈대에 들어 있음)로 알립니다.
+
+```python
+import badamoa_report as report
+
+run = report.init()                              # 설정을 읽음: run.config, run.data, run.out, run.device …
+for epoch in range(1, epochs + 1):
+    ...
+    report.log({"train_loss": loss, "map50_95": score}, step=epoch)   # 화면의 그래프에 바로 반영
+    report.progress(epoch, epochs)
+report.log_model(run.out / "best.pt")            # 모델로 등록할 가중치
+report.finish({"map50_95": best})
+```
+
+```bash
+badamoa template check my-model
+```
+
+```bash
+badamoa template push my-model --hub http://<hub>:8470 --token <관리자 API 토큰>
+```
+
+- 필요한 패키지는 `badamoa.toml`의 `[environment] requirements`에 적으면 서버가 자동으로 설치합니다. 서버에 이미 있는 conda·venv 환경을 쓰려면 웹 UI → **설정** → **환경**에서 등록하고 그 이름을 `default`에 적습니다.
+- `[params]`에 적은 항목이 학습 대화상자의 입력 칸이 됩니다.
+- 코드를 바꿔 다시 올릴 때는 `version`을 올립니다. 학습 실행은 쓴 버전을 기록하므로 "다시 실행"은 같은 코드로 돕니다.
+
 ## 개발
 
 ```bash
@@ -101,8 +135,8 @@ uv run ruff check .
 ```
 src/badamoa/core   공용 스키마 · storage · 시스템 정보
 src/badamoa/hub    Hub: REST · 노드 프로토콜 · MCP · 웹 UI 호스팅
-src/badamoa/node   Node Agent · 데이터 가져오기 · 학습용 변환 · 플러그인 환경
-src/badamoa/plugins  플러그인 환경에서 도는 학습 스크립트
+src/badamoa/node   Node Agent · 데이터 가져오기 · 학습용 변환 · 환경
+src/badamoa/templates  내장 모델 템플릿(YOLO)과 새 템플릿의 뼈대
 web/               웹 UI (React + Vite)
 tests/             단위 · API · E2E
 ```

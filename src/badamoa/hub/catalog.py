@@ -88,12 +88,22 @@ def list_projects(db: Session) -> list[dict[str, Any]]:
             "task": p.task,
             "folder": p.folder,
             "description": p.description,
+            "settings": p.settings or {},
             "created_at": iso(p.created_at),
             "releases": counts.get(p.id, 0),
             "items": items.get(p.id, 0),
         }
         for p in projects
     ]
+
+
+def update_project_settings(db: Session, user: User, project_id: str, settings: dict[str, Any]) -> Project:
+    """Per-project defaults an admin sets once so dialogs open already filled in."""
+    services.require_admin(user)
+    project = get_project(db, project_id)
+    project.settings = {**(project.settings or {}), **settings}
+    services.audit(db, user.id, "api", "project.settings", project.id, **settings)
+    return project
 
 
 def tree(db: Session, project_id: str, include_deleted: bool = False) -> list[dict[str, Any]]:

@@ -116,8 +116,9 @@ def test_train_yolo_on_coco128(live_hub, tmp_path, monkeypatch):
             imported = wait(hub.post(f"/api/projects/{project['id']}/imports", json=body).json()["id"], 180)
             assert imported["status"] == "succeeded", imported
 
-            settings = {"model": "yolo11n.pt", "epochs": 1, "imgsz": 160, "batch": 16, "gpus": 0, "workers": 0}
-            run = hub.post("/api/runs", json={"release_id": imported["result"]["release_id"], **settings}).json()
+            params = {"model": "yolo11n.pt", "epochs": 1, "imgsz": 160, "batch": 16, "workers": 0}
+            body = {"release_id": imported["result"]["release_id"], "template": "yolo", "params": params, "gpus": 0}
+            run = hub.post("/api/runs", json=body).json()
             job = wait(run["job_id"], 1800)
             logs = "\n".join(line["text"] for line in hub.get(f"/api/jobs/{job['id']}/logs?limit=5000").json())
             assert job["status"] == "succeeded", logs[-3000:]

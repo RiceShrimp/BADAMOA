@@ -1,14 +1,15 @@
-"""Ultralytics YOLO trainer. Runs inside the ``yolo`` plugin environment:
+"""Ultralytics YOLO trainer, the ``train`` entry point of the built-in ``yolo`` template:
 
-    python yolo_train.py config.json
+    python train.py --config config.json
 
-See ``badamoa.plugins`` for the stdout contract.
+See ``badamoa.templates`` for the contract.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -37,8 +38,10 @@ def clean(metrics: dict) -> dict[str, float]:
     return out
 
 
-def main(config_path: str) -> int:
-    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+def main(argv: list[str]) -> int:
+    cfg = json.loads(Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8"))
+    params = cfg["params"]
+    os.chdir(cfg["cache"])  # pretrained weights download into the working directory: keep them between runs
 
     import torch
     import ultralytics
@@ -55,8 +58,8 @@ def main(config_path: str) -> int:
     gpus = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if device != "cpu" else []
     emit("info", ultralytics=ultralytics.__version__, torch=torch.__version__, device=device, gpus=gpus)
 
-    weights = cfg["model"]
-    if not cfg.get("pretrained", True):
+    weights = params["model"]
+    if not params.get("pretrained", True):
         weights = Path(weights).stem + ".yaml"  # same architecture, random initialisation
     model = YOLO(weights)
 
@@ -79,16 +82,16 @@ def main(config_path: str) -> int:
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
     results = model.train(
         data=cfg["data"],
-        epochs=cfg["epochs"],
-        imgsz=cfg["imgsz"],
-        batch=cfg["batch"],
-        workers=cfg.get("workers", 4),
+        epochs=params["epochs"],
+        imgsz=params.get("imgsz", 640),
+        batch=params.get("batch", 16),
+        workers=params.get("workers", 4),
         device=device,
         project=cfg["out"],
         name="train",
         exist_ok=True,
         plots=False,
-        **cfg.get("extra", {}),
+        **(params.get("extra") or {}),
     )
 
     trainer = model.trainer
@@ -116,4 +119,4 @@ def main(config_path: str) -> int:
 
 
 if __name__ == "__main__":  # required: dataloader workers re-import this file on Windows
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv))

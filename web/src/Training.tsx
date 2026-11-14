@@ -1,19 +1,25 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { EpochChart, type EpochSeries } from "./EpochChart";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { type Job, type LogLine, api } from "./api";
 import type { LabelClass, ReleaseInfo, TreeDataset } from "./catalogTypes";
-import { ACTIVE, KEY_METRICS, METRIC_LABEL, type Run, type RunDetail, metric } from "./trainTypes";
+import {
+  ACTIVE,
+  type Environment,
+  KEY_METRICS,
+  METRIC_LABEL,
+  type Run,
+  type RunDetail,
+  STAGE_LABEL,
+  type Template,
+  type TemplateParam,
+  metric,
+} from "./trainTypes";
 import { Badge, Icon, Modal, STATUS_LABEL, Stat, VIA_LABEL, duration, timeAgo, usePolling } from "./ui";
 
 const MAX_COMPARED = 8; // one palette slot per run
+const MAX_EXTRA_CHARTS = 12;
 const COMPARE_CHARTS = ["map50_95", "map50", "precision", "recall", "train_box_loss", "val_box_loss"];
-const MODEL_FAMILIES: { label: string; prefix: string }[] = [
-  { label: "YOLO11", prefix: "yolo11" },
-  { label: "YOLO26", prefix: "yolo26" },
-];
-const SIZES = ["n", "s", "m", "l", "x"];
-const DEFAULT_MODEL = "yolo11n.pt";
 
 export function Training({ runId, arg }: { runId?: string; arg?: string }) {
   const { projects, projectId, choose } = useProject();
@@ -168,12 +174,18 @@ function RunList({
                   <td>
                     <strong>{run.name}</strong>
                     <div className="muted small">
-                      {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 릴리스"} · {run.config.model}
+                      {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 릴리스"} ·{" "}
+                      {run.template.variant || run.template.title}
                     </div>
                   </td>
                   <td>
                     <Badge kind={run.status}>{STATUS_LABEL[run.status]}</Badge>
-                    {run.status === "running" && <Progress epoch={run.epoch} epochs={run.epochs} />}
+                    {run.status === "running" &&
+                      (run.stage === "train" && run.epochs > 0 ? (
+                        <Progress epoch={run.epoch} epochs={run.epochs} />
+                      ) : (
+                        <div className="wait-reason">{STAGE_LABEL[run.stage] ?? "준비"} 중</div>
+                      ))}
                     {run.status === "queued" && run.wait_reason && <div className="wait-reason">{run.wait_reason}</div>}
                   </td>
                   {KEY_METRICS.map((k) => (
@@ -203,6 +215,7 @@ function RunList({
       {creating && (
         <NewRun
           projectId={projectId}
+          defaultTemplate={projects?.find((p) => p.id === projectId)?.settings?.template}
           releaseId={startWith}
           onClose={() => {
             setCreating(false);
@@ -216,6 +229,28 @@ function RunList({
         />
       )}
     </>
+  );
+}
+
+/** Where a waiting or running job is: one line, in plain words. */
+function Stages({ run }: { run: RunDetail }) {
+  const order = ["queued", "data", "env", "train", "upload"];
+  const current = run.status === "queued" ? "queued" : run.stage || "data";
+  const at = order.indexOf(current);
+  return (
+    <ol className="stages" aria-label="진행 단계">
+      {order.map((key, i) => (
+        <li key={key} className={i < at ? "done" : i === at ? "now" : ""} aria-current={i === at ? "step" : undefined}>
+          <i />
+          {STAGE_LABEL[key]}
+          {key === "train" && i === at && run.epochs > 0 && (
+            <span className="num">
+              {run.epoch}/{run.epochs}
+            </span>
+          )}
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -332,6 +367,12 @@ function RunView({ runId }: { runId: string }) {
       .filter((k) => run.history.series[k])
       .map((k, i) => ({ key: k, label: METRIC_LABEL[k] ?? k, slot: i + 1, steps: run.history.steps, values: run.history.series[k] })),
   })).filter((c) => c.series.length > 0);
+  // Anything else the code logged gets its own small chart, so custom metrics show up without any setup.
+  const grouped = new Set(DETAIL_CHARTS.flatMap((c) => c.keys));
+  for (const key of Object.keys(run.history.series).filter((k) => !grouped.has(k)).slice(0, MAX_EXTRA_CHARTS)) {
+    const series = [{ key, label: METRIC_LABEL[key] ?? key, slot: 1, steps: run.history.steps, values: run.history.series[key] }];
+    charts.push({ title: METRIC_LABEL[key] ?? key, series });
+  }
   const items = run.export.items ?? {};
   const excluded = run.export.excluded ?? {};
   const leftOut = (excluded.unlabelled ?? 0) + (excluded.partial ?? 0) + (excluded.missing ?? 0);
@@ -357,7 +398,9 @@ function RunView({ runId }: { runId: string }) {
             ) : (
               "삭제된 릴리스"
             )}{" "}
-            · {run.trainer_title} · {run.config.model} · {run.node_name ?? "노드 배정 대기"} ·{" "}
+            · {run.template.title}
+            {run.template.variant && run.template.variant !== run.template.name ? ` ${run.template.variant}` : ""} ·{" "}
+            {run.node_name ?? "서버 배정 대기"} ·{" "}
             {VIA_LABEL[run.created_via] ?? run.created_via}에서 시작 · {timeAgo(run.created_at)}
           </p>
         </div>
@@ -379,6 +422,7 @@ function RunView({ runId }: { runId: string }) {
       </div>
 
       {failure && <div className="error">{failure}</div>}
+      {active && <Stages run={run} />}
       {run.status === "queued" && run.wait_reason && <div className="notice">{run.wait_reason}</div>}
       {run.error && <div className="error">{run.error} 아래 로그에서 원인을 확인하세요.</div>}
 
@@ -458,15 +502,18 @@ function RunView({ runId }: { runId: string }) {
         <section className="card">
           <h3>설정</h3>
           <dl className="kv">
-            <dt>시작 가중치</dt>
+            <dt>모델 종류</dt>
             <dd>
-              {run.config.model}
-              {run.config.pretrained === false ? " (구조만, 처음부터 학습)" : ""}
+              {run.template.title} {run.template.version && <span className="muted">v{run.template.version}</span>}
             </dd>
-            <dt>epoch · 이미지 크기 · 배치</dt>
-            <dd>
-              {run.config.epochs} · {run.config.imgsz} · {run.config.batch}
-            </dd>
+            {run.settings.map((item) => (
+              <Fragment key={item.name}>
+                <dt>{item.label}</dt>
+                <dd>{typeof item.value === "boolean" ? (item.value ? "예" : "아니오") : String(item.value)}</dd>
+              </Fragment>
+            ))}
+            <dt>환경</dt>
+            <dd>{run.environment.kind === "auto" ? "자동 설치" : run.environment.name}</dd>
             <dt>장치</dt>
             <dd>
               {info.device
@@ -481,7 +528,7 @@ function RunView({ runId }: { runId: string }) {
             <dd>{run.config.unlabelled === "background" ? "배경으로 사용" : "제외"}</dd>
             {info.ultralytics && (
               <>
-                <dt>환경</dt>
+                <dt>라이브러리</dt>
                 <dd className="mono small">
                   ultralytics {info.ultralytics} · torch {info.torch}
                 </dd>
@@ -596,34 +643,93 @@ function LogTail({ jobId, live }: { jobId: string; live: boolean }) {
 
 // ---- start a run -------------------------------------------------------------------------
 
+type FormValue = string | boolean;
+
+function initialValues(template: Template | undefined): Record<string, FormValue> {
+  const values: Record<string, FormValue> = {};
+  for (const p of template?.params ?? []) {
+    if (p.type === "object") continue;
+    values[p.name] = p.type === "boolean" ? p.default === true : p.default == null ? "" : String(p.default);
+  }
+  return values;
+}
+
+/** One input of the form a template declares in its [params]. */
+function ParamField({ spec, value, onChange }: { spec: TemplateParam; value: FormValue; onChange: (v: FormValue) => void }) {
+  const label = spec.label || spec.name;
+  const [typing, setTyping] = useState(false); // "직접 입력" on a list that allows other values
+  if (spec.type === "boolean") {
+    return (
+      <label className="check" title={spec.help}>
+        <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} /> {label}
+        {spec.help && <span className="muted"> — {spec.help}</span>}
+      </label>
+    );
+  }
+  const text = String(value);
+  const listed = spec.choices.map(String);
+  if (listed.length > 0 && !(typing || (spec.custom && text !== "" && !listed.includes(text)))) {
+    return (
+      <label title={spec.help}>
+        {label}
+        <select
+          value={text}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") setTyping(true);
+            else onChange(e.target.value);
+          }}
+        >
+          {listed.map((c) => (
+            <option key={c} value={c}>
+              {c.replace(/\.pt$/, "")}
+            </option>
+          ))}
+          {spec.custom && <option value={"__custom__"}>직접 입력…</option>}
+        </select>
+      </label>
+    );
+  }
+  const numeric = spec.type === "integer" || spec.type === "number";
+  return (
+    <label title={spec.help}>
+      {label}
+      <input
+        type={numeric ? "number" : "text"}
+        value={text}
+        min={spec.minimum ?? undefined}
+        max={spec.maximum ?? undefined}
+        step={spec.type === "number" ? "any" : undefined}
+        onChange={(e) => onChange(e.target.value)}
+        className={numeric ? undefined : "mono"}
+        autoFocus={typing}
+      />
+    </label>
+  );
+}
+
 function NewRun({
   projectId,
+  defaultTemplate,
   releaseId,
   onClose,
   onStarted,
 }: {
   projectId: string;
+  defaultTemplate?: string;
   releaseId?: string;
   onClose: () => void;
   onStarted: (run: Run) => void;
 }) {
   const [tree, setTree] = useState<TreeDataset[] | null>(null);
+  const [templates, setTemplates] = useState<Template[] | null>(null);
+  const [environments, setEnvironments] = useState<Environment[]>([]);
   const [release, setRelease] = useState(releaseId ?? "");
+  const [templateName, setTemplateName] = useState("");
+  const [values, setValues] = useState<Record<string, FormValue>>({});
   const [classes, setClasses] = useState<LabelClass[]>([]);
   const [chosen, setChosen] = useState<number[]>([]); // empty = all classes
   const [unlabelledCount, setUnlabelledCount] = useState(0);
-  const [form, setForm] = useState({
-    model: DEFAULT_MODEL,
-    customModel: "",
-    epochs: "50",
-    imgsz: "640",
-    batch: "16",
-    gpus: "",
-    unlabelled: "exclude",
-    name: "",
-    model_name: "",
-    pretrained: true,
-  });
+  const [extra, setExtra] = useState({ environment: "", gpus: "", unlabelled: "exclude", name: "", model_name: "" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -633,7 +739,14 @@ function NewRun({
       const ready = data.flatMap((d) => d.releases).filter((r) => r.status === "ready");
       setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
     });
-  }, [projectId]);
+    void api<Template[]>("/templates").then((list) => {
+      setTemplates(list);
+      const first = list.find((t) => t.name === defaultTemplate) ?? list[0];
+      setTemplateName(first?.name ?? "");
+      setValues(initialValues(first));
+    });
+    void api<Environment[]>("/environments").then(setEnvironments);
+  }, [projectId, defaultTemplate]);
 
   useEffect(() => {
     setChosen([]);
@@ -644,27 +757,44 @@ function NewRun({
     });
   }, [release]);
 
-  const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
+  const template = templates?.find((t) => t.name === templateName);
+  const fields = (template?.params ?? []).filter((p) => p.type !== "object");
+  const basic = fields.filter((p) => !p.advanced);
+  const advanced = fields.filter((p) => p.advanced);
+  const pickTemplate = (name: string) => {
+    setTemplateName(name);
+    setValues(initialValues(templates?.find((t) => t.name === name)));
+    setExtra((x) => ({ ...x, environment: "" }));
+  };
+  const setExtraField = (key: keyof typeof extra) => (e: { target: { value: string } }) => setExtra({ ...extra, [key]: e.target.value });
   const toggleClass = (id: number) => setChosen(chosen.includes(id) ? chosen.filter((c) => c !== id) : [...chosen, id]);
+  const field = (p: TemplateParam) => (
+    <ParamField key={`${templateName}.${p.name}`} spec={p} value={values[p.name] ?? ""} onChange={(v) => setValues({ ...values, [p.name]: v })} />
+  );
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!template) return;
     setBusy(true);
     setError(null);
+    const params: Record<string, unknown> = {};
+    for (const p of fields) {
+      const v = values[p.name];
+      if (p.type === "boolean") params[p.name] = v === true;
+      else if (v !== "" && v != null) params[p.name] = p.type === "string" ? String(v).trim() : Number(v);
+    }
     try {
       const run = await api<Run>("/runs", {
         body: {
           release_id: release,
-          model: form.model === "custom" ? form.customModel.trim() : form.model,
-          epochs: Number(form.epochs),
-          imgsz: Number(form.imgsz),
-          batch: Number(form.batch),
-          gpus: form.gpus === "" ? null : Number(form.gpus),
-          unlabelled: form.unlabelled,
+          template: template.id,
+          environment: extra.environment,
+          params,
+          gpus: extra.gpus === "" ? null : Number(extra.gpus),
+          unlabelled: extra.unlabelled,
           classes: chosen,
-          name: form.name,
-          model_name: form.model_name,
-          pretrained: form.pretrained,
+          name: extra.name,
+          model_name: extra.model_name,
         },
       });
       onStarted(run);
@@ -675,6 +805,7 @@ function NewRun({
   };
 
   const none = tree != null && !tree.some((d) => d.releases.some((r) => r.status === "ready"));
+  const defaultEnv = template?.environment.default && environments.some((e) => e.name === template.environment.default);
 
   return (
     <Modal title="새 학습" onClose={onClose}>
@@ -689,10 +820,6 @@ function NewRun({
         </>
       ) : (
         <form onSubmit={submit}>
-          <p className="muted">
-            학습은 릴리스의 이미지가 있는 노드에서 실행됩니다. 그 노드에서 처음 학습할 때는 YOLO 환경을 설치하느라 몇 분 더
-            걸립니다.
-          </p>
           <label>
             릴리스
             <select value={release} onChange={(e) => setRelease(e.target.value)} required>
@@ -709,64 +836,50 @@ function NewRun({
               ))}
             </select>
           </label>
-          <div className="form-row">
+          {templates && templates.length > 1 && (
             <label>
-              모델
-              <select value={form.model} onChange={set("model")}>
-                {MODEL_FAMILIES.map((family) => (
-                  <optgroup key={family.prefix} label={family.label}>
-                    {SIZES.map((size) => (
-                      <option key={size} value={`${family.prefix}${size}.pt`}>
-                        {family.prefix}
-                        {size}
-                      </option>
-                    ))}
-                  </optgroup>
+              모델 종류
+              <select value={templateName} onChange={(e) => pickTemplate(e.target.value)}>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.title}
+                  </option>
                 ))}
-                <option value="custom">직접 입력…</option>
               </select>
-            </label>
-            <label>
-              epoch
-              <input type="number" min={1} value={form.epochs} onChange={set("epochs")} required />
-            </label>
-            <label>
-              이미지 크기
-              <input type="number" min={32} step={32} value={form.imgsz} onChange={set("imgsz")} required />
-            </label>
-            <label>
-              배치
-              <input type="number" min={-1} value={form.batch} onChange={set("batch")} required />
-            </label>
-          </div>
-          {form.model === "custom" && (
-            <label>
-              가중치 이름 (Ultralytics가 내려받을 수 있는 이름 또는 노드의 파일 경로)
-              <input value={form.customModel} onChange={set("customModel")} required className="mono" placeholder="yolo11n.pt" />
             </label>
           )}
-          <div className="form-row">
-            <label>
-              GPU 수
-              <input type="number" min={0} max={16} value={form.gpus} onChange={set("gpus")} placeholder="자동" />
-            </label>
-            <label>
-              라벨 없는 이미지{unlabelledCount > 0 ? ` (${unlabelledCount.toLocaleString()}장)` : ""}
-              <select value={form.unlabelled} onChange={set("unlabelled")}>
-                <option value="exclude">제외</option>
-                <option value="background">배경으로 사용</option>
-              </select>
-            </label>
-          </div>
-          <p className="muted small">
-            GPU 수를 비우면 노드에 GPU가 있을 때 1개를 씁니다. 0이면 CPU로 학습합니다. 빈 GPU가 없으면 생길 때까지
-            기다립니다.
-          </p>
+          {template?.description && templates && templates.length > 1 && <p className="muted small">{template.description}</p>}
+          {basic.length > 0 && <div className="form-row">{basic.map(field)}</div>}
 
           <details className="advanced">
             <summary>
-              세부 설정 <span className="muted">(클래스 선택 · 이름)</span>
+              세부 설정 <span className="muted">(비워 두면 자동)</span>
             </summary>
+            {advanced.length > 0 && <div className="param-grid">{advanced.map(field)}</div>}
+            <div className="form-row">
+              <label>
+                환경
+                <select value={extra.environment} onChange={setExtraField("environment")}>
+                  <option value="">자동{defaultEnv ? ` (${template?.environment.default})` : ""}</option>
+                  {environments.map((env) => (
+                    <option key={env.id} value={env.id}>
+                      {env.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                GPU 수
+                <input type="number" min={0} max={16} value={extra.gpus} onChange={setExtraField("gpus")} placeholder="자동" />
+              </label>
+              <label>
+                라벨 없는 이미지{unlabelledCount > 0 ? ` (${unlabelledCount.toLocaleString()}장)` : ""}
+                <select value={extra.unlabelled} onChange={setExtraField("unlabelled")}>
+                  <option value="exclude">제외</option>
+                  <option value="background">배경으로 사용</option>
+                </select>
+              </label>
+            </div>
             {classes.length > 0 && (
               <>
                 <div className="eyebrow">
@@ -785,32 +898,30 @@ function NewRun({
                     </button>
                   ))}
                 </div>
-                <p className="muted small">아무것도 고르지 않으면 전체 클래스로 학습합니다.</p>
               </>
             )}
             <div className="form-row">
               <label>
-                실행 이름 (선택)
-                <input value={form.name} onChange={set("name")} placeholder="자동: 데이터셋-버전-모델" />
+                실행 이름
+                <input value={extra.name} onChange={setExtraField("name")} placeholder="자동" />
               </label>
               <label>
-                모델 이름 (선택)
-                <input value={form.model_name} onChange={set("model_name")} placeholder="자동: 데이터셋-모델" />
+                모델 이름
+                <input value={extra.model_name} onChange={setExtraField("model_name")} placeholder="자동" />
               </label>
             </div>
-            <label className="check">
-              <input type="checkbox" checked={form.pretrained} onChange={(e) => setForm({ ...form, pretrained: e.target.checked })} />{" "}
-              사전학습 가중치에서 시작 (끄면 같은 구조를 처음부터 학습)
-            </label>
           </details>
 
-          <p className="muted small">Ultralytics YOLO는 AGPL-3.0 라이선스입니다. 학습한 모델을 제품에 탑재하기 전에 라이선스를 확인하세요.</p>
+          <p className="muted small">
+            학습할 서버는 자동으로 정해집니다. 그 서버에서 처음 학습할 때는 환경을 준비하느라 몇 분 더 걸릴 수 있습니다.
+            {template?.license ? ` ${template.title}은 ${template.license} 라이선스입니다 — 제품에 탑재하기 전에 확인하세요.` : ""}
+          </p>
           {error && <div className="error">{error}</div>}
           <div className="modal-actions">
             <button type="button" onClick={onClose}>
               취소
             </button>
-            <button className="primary" disabled={busy || !release}>
+            <button className="primary" disabled={busy || !release || !template}>
               학습 시작
             </button>
           </div>

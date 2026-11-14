@@ -22,7 +22,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import services
+from . import registry, services
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -94,5 +94,6 @@ def complete(
     job_id: str, body: CompleteRequest, node: Node = Depends(current_node), db: Session = Depends(db_session)
 ) -> dict[str, Any]:
     job = services.complete_job(db, node, job_id, body)
+    registry.on_job_finished(db, job)
     db.commit()
     return {"status": job.status}

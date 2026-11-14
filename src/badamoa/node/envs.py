@@ -1,9 +1,13 @@
-"""Plugin environments on a node: one virtual environment per plugin, built on first use.
+"""Environments on a node: where a template's code runs.
 
-``uv`` creates the environment and installs the plugin's requirements. For
-plugins that need PyTorch, uv picks the build matching the node's GPU driver
-(``--torch-backend auto``; the CPU build when there is no GPU). Set
-``BADAMOA_TORCH_BACKEND`` on the node to force one, e.g. ``cpu`` or ``cu128``.
+- **auto**: a virtual environment built on first use from the template's
+  requirements. ``uv`` creates it; for PyTorch it picks the build matching the
+  node's GPU driver (``--torch-backend auto``; the CPU build when there is no
+  GPU). Set ``BADAMOA_TORCH_BACKEND`` on the node to force one (``cpu``, ``cu128``).
+  Environments are shared by content: two templates with the same requirements
+  use the same one.
+- **python**: an interpreter that already exists on the node (a conda or venv
+  environment the team maintains). BADAMOA only runs it.
 """
 
 from __future__ import annotations
@@ -17,18 +21,36 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-
-from badamoa.core.plugins import PluginSpec
+from typing import Any
 
 LOCK_STALE_S = 3600.0
 LOCK_WAIT_S = 3600.0
+
+# Run by ``check`` inside the environment being examined: nothing but the standard library.
+_PROBE = """
+import json, sys
+found = {"python": sys.version.split()[0], "executable": sys.executable, "packages": {}}
+for name in ("torch", "torchvision", "ultralytics", "numpy"):
+    try:
+        module = __import__(name)
+        found["packages"][name] = getattr(module, "__version__", "?")
+    except Exception:
+        pass
+try:
+    import torch
+    found["cuda"] = bool(torch.cuda.is_available())
+    found["gpus"] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if found["cuda"] else []
+except Exception:
+    pass
+print(json.dumps(found))
+"""
 
 
 def find_uv() -> str:
     found = os.environ.get("BADAMOA_UV") or shutil.which("uv")
     if not found:
         raise RuntimeError(
-            "uv를 찾을 수 없습니다. 플러그인 환경을 만들려면 이 노드에 uv가 필요합니다 "
+            "uv를 찾을 수 없습니다. 환경을 자동으로 만들려면 이 노드에 uv가 필요합니다 "
             "(https://docs.astral.sh/uv/). 설치한 뒤 Node Agent를 다시 시작하세요."
         )
     return found
@@ -38,11 +60,10 @@ def torch_backend() -> str:
     return os.environ.get("BADAMOA_TORCH_BACKEND", "").strip() or "auto"
 
 
-def env_dir(home: Path, plugin: PluginSpec) -> Path:
+def env_dir(home: Path, requirements: list[str], python: str, torch: bool) -> Path:
     """The directory changes whenever anything that defines the environment does."""
-    identity = [plugin.version, plugin.python, plugin.requirements, torch_backend() if plugin.torch else ""]
-    digest = hashlib.sha1(json.dumps(identity).encode()).hexdigest()[:10]
-    return home / "envs" / f"{plugin.name}-{digest}"
+    identity = [python, sorted(requirements), torch_backend() if torch else ""]
+    return home / "envs" / hashlib.sha1(json.dumps(identity).encode()).hexdigest()[:12]
 
 
 def python_of(env: Path) -> Path:
@@ -61,12 +82,16 @@ def _run(command: list[str], log: Callable[[str], None]) -> None:
         raise RuntimeError(f"환경 설치 실패 (종료 코드 {proc.returncode}): {' '.join(command[:3])} …")
 
 
-def ensure(home: Path, plugin: PluginSpec, log: Callable[[str], None] = print) -> Path:
-    """Return the plugin environment's Python, building the environment if it is not there yet."""
-    platform = "windows" if os.name == "nt" else sys.platform
-    if not any(platform.startswith(p) for p in plugin.platforms):
-        raise RuntimeError(f"{plugin.title} 플러그인은 이 OS({platform})를 지원하지 않습니다.")
-    env = env_dir(home, plugin)
+def ensure(
+    home: Path, requirements: list[str], python: str = "3.12", torch: bool = False, log: Callable[[str], None] = print
+) -> Path:
+    """Return the Python of the automatically installed environment, building it if it is not there yet.
+
+    Code that needs nothing beyond the standard library runs with the node's own Python.
+    """
+    if not requirements:
+        return Path(sys.executable)
+    env = env_dir(home, requirements, python, torch)
     ready = env / "badamoa-env.json"
     if ready.is_file():
         return python_of(env)
@@ -83,9 +108,9 @@ def ensure(home: Path, plugin: PluginSpec, log: Callable[[str], None] = print) -
                 shutil.rmtree(lock, ignore_errors=True)
                 continue
             if waited == 0:
-                log(f"다른 작업이 {plugin.title} 환경을 만드는 중입니다. 기다립니다…")
+                log("다른 작업이 같은 환경을 만드는 중입니다. 기다립니다…")
             if waited >= LOCK_WAIT_S:
-                raise RuntimeError("플러그인 환경이 준비되기를 기다리다 시간이 초과되었습니다.") from None
+                raise RuntimeError("환경이 준비되기를 기다리다 시간이 초과되었습니다.") from None
             time.sleep(2)
             waited += 2
     try:
@@ -93,18 +118,44 @@ def ensure(home: Path, plugin: PluginSpec, log: Callable[[str], None] = print) -
             return python_of(env)
         uv = find_uv()
         started = time.monotonic()
-        log(f"{plugin.title} 환경을 처음 만듭니다 (한 번만 필요, 몇 분 걸릴 수 있습니다): {env}")
+        log(f"학습 환경을 처음 만듭니다 (이 서버에서 한 번만 필요, 몇 분 걸릴 수 있습니다): {env}")
         shutil.rmtree(env, ignore_errors=True)  # leftovers of an interrupted build
-        _run([uv, "venv", "--color", "never", "--python", plugin.python, str(env)], log)
+        _run([uv, "venv", "--color", "never", "--python", python, str(env)], log)
         install = [uv, "pip", "install", "--color", "never", "--python", str(python_of(env))]
-        if plugin.torch:
+        if torch:
             install += ["--torch-backend", torch_backend()]
-        _run(install + plugin.requirements, log)
-        ready.write_text(
-            json.dumps({"plugin": plugin.name, "version": plugin.version, "requirements": plugin.requirements}),
-            encoding="utf-8",
-        )
+        _run(install + requirements, log)
+        ready.write_text(json.dumps({"requirements": requirements, "python": python}), encoding="utf-8")
         log(f"환경 준비 완료 ({time.monotonic() - started:.0f}초)")
         return python_of(env)
     finally:
         shutil.rmtree(lock, ignore_errors=True)
+
+
+def existing(path: str) -> Path:
+    """An interpreter the admin registered for this node."""
+    python = Path(path).expanduser()
+    if python.is_dir():  # the environment's folder was given: find its interpreter
+        python = python_of(python)
+    if not python.is_file():
+        raise RuntimeError(f"등록된 환경의 Python을 찾을 수 없습니다: {path}. 설정 → 환경에서 이 서버의 경로를 확인하세요.")
+    return python
+
+
+def resolve(home: Path, spec: dict[str, Any], log: Callable[[str], None] = print) -> Path:
+    """The Python a run should use, from the environment snapshot the Hub sent."""
+    if spec.get("kind") == "python":
+        return existing(str(spec.get("path", "")))
+    return ensure(home, list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")), log)
+
+
+def check(path: str) -> dict[str, Any]:
+    """Try an existing environment: does it start, and what is in it."""
+    python = existing(path)
+    try:
+        done = subprocess.run([str(python), "-c", _PROBE], capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"환경의 Python을 실행하지 못했습니다: {e}") from e
+    if done.returncode != 0:
+        raise RuntimeError(f"환경의 Python이 오류로 끝났습니다: {done.stderr.strip()[-400:]}")
+    return {"ok": True, **json.loads(done.stdout.strip().splitlines()[-1])}

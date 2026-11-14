@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
-from . import agent_api, api, catalog_api, install, resources, services, training_api
+from . import agent_api, api, catalog_api, install, registry, registry_api, resources, services, training_api
 from .config import HubSettings
 from .db import Database
 from .deps import Hub
@@ -54,6 +54,8 @@ def create_app(settings: HubSettings) -> FastAPI:
     db = Database(settings.database_url or "")
     db.create_all()
     hub = Hub(settings=settings, db=db)
+    with db.session() as session:
+        registry.sync_builtin(session)
     mcp, mcp_endpoint = build_mcp(hub)
 
     @asynccontextmanager
@@ -86,6 +88,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(training_api.router)
     app.include_router(training_api.agent_router)
     app.include_router(training_api.media_router)
+    app.include_router(registry_api.router)
     app.router.routes.append(Route("/mcp", endpoint=mcp_endpoint))
 
     web_dir = settings.web_dir or STATIC_DIR

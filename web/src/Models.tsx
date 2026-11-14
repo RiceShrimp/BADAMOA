@@ -200,10 +200,10 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
           <tr>
             <td>구조 · epoch · 이미지 크기</td>
             <td className="right">
-              {a.arch} · {a.config.epochs ?? "–"} · {a.imgsz}
+              {a.arch} · {String(a.config.epochs ?? "–")} · {a.imgsz || "–"}
             </td>
             <td className="right">
-              {b.arch} · {b.config.epochs ?? "–"} · {b.imgsz}
+              {b.arch} · {String(b.config.epochs ?? "–")} · {b.imgsz || "–"}
             </td>
             <td />
           </tr>
@@ -348,7 +348,9 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
               </span>
               <strong>{model.run.name}</strong>
               <small>
-                {model.config.model} · epoch {model.config.epochs} · batch {model.config.batch}
+                {model.template.title}
+                {model.template.version ? ` v${model.template.version}` : ""}
+                {model.config.epochs != null ? ` · epoch ${String(model.config.epochs)}` : ""}
               </small>
             </a>
           ) : (

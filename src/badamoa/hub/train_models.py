@@ -1,8 +1,9 @@
-"""Training tables: runs, their metric history, and the model versions they produce.
+"""Training tables: templates and environments, runs with their metric history, model versions.
 
-A run pins everything needed to repeat it (release, trainer, settings) and
-points at the job that executes it; its status is the job's status. A model
-version points back at its run, so lineage is model → run → release → items.
+A run pins everything needed to repeat it (release, template version, environment,
+settings) and points at the job that executes it; its status is the job's status.
+A model version points back at its run, so lineage is model → run → (release,
+template version, environment).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base, utcnow
@@ -19,6 +20,45 @@ from .db import Base, utcnow
 
 def _uuid() -> str:
     return uuid.uuid4().hex
+
+
+class Template(Base):
+    """One version of a model template (``badamoa.core.templates``). Built-in ones have no bundle."""
+
+    __tablename__ = "templates"
+    __table_args__ = (UniqueConstraint("name", "version"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(128), default="")
+    task: Mapped[str] = mapped_column(String(16), default="detect")
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    blob: Mapped[str | None] = mapped_column(String(64), nullable=True)  # sha256 of the zip in Hub storage
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Environment(Base):
+    """A named environment an admin prepared on the servers, e.g. an existing conda environment.
+
+    ``nodes`` maps a node id to ``{"path", "ok", "detail", "checked_at", "job_id"}``.
+    The automatically installed environment needs no row: it is derived from the template.
+    """
+
+    __tablename__ = "environments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    kind: Mapped[str] = mapped_column(String(16), default="python")  # python (docker comes later)
+    description: Mapped[str] = mapped_column(Text, default="")
+    nodes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Run(Base):
@@ -29,7 +69,11 @@ class Run(Base):
     name: Mapped[str] = mapped_column(String(160))
     release_id: Mapped[str] = mapped_column(String(32), index=True)
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    trainer: Mapped[str] = mapped_column(String(32))  # yolo | dummy
+    trainer: Mapped[str] = mapped_column(String(64))  # template name
+    # Snapshots, so the run stays readable after a template or environment is changed or removed.
+    template: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # id, name, title, version, sha256, variant
+    environment: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # kind, name, requirements | path
+    stage: Mapped[str] = mapped_column(String(16), default="")  # data | env | train | upload
     # What the user asked for; enough to start the same run again.
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     epochs: Mapped[int] = mapped_column(Integer, default=0)
@@ -70,7 +114,8 @@ class ModelVersion(Base):
     release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task: Mapped[str] = mapped_column(String(16), default="detect")
     arch: Mapped[str] = mapped_column(String(64), default="")  # e.g. yolo11n
-    trainer: Mapped[str] = mapped_column(String(32), default="")
+    trainer: Mapped[str] = mapped_column(String(64), default="")
+    template: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # the template version that made it
     blob: Mapped[str] = mapped_column(String(64))  # sha256 of the weights in Hub storage
     bytes: Mapped[int] = mapped_column(Integer, default=0)
     file_name: Mapped[str] = mapped_column(String(128), default="")

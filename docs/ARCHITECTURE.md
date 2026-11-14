@@ -99,8 +99,8 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **노드 자원 이력**: Node Agent가 CPU·메모리·GPU(사용률·메모리·온도·전력·점유자)·디스크·사용자별 사용량을 보내고, Hub가 1분 → 10분 → 1시간으로 줄여 30일 보관한다.
 - **Service** (온라인): 텍스트 검색용 임베딩, 검수 화면의 SAM 클릭 보조, 샘플 테스트, RTSP 실시간 추론처럼 **즉시 응답**이 필요한 것. 노드가 모델을 띄워 두고, 노드↔Hub 사이 WebSocket 터널로 요청을 중계한다(브라우저가 노드에 직접 닿을 필요 없음). 첫 대화형 기능이 필요한 Phase 2에서 도입.
 - **플러그인**: Trainer / Labeler / Generator / Exporter / Curator. 각자 `manifest`(지원 OS, 최소 VRAM, CUDA, 의존성 lock)와 독립 venv를 가진다. 스케줄러는 매니페스트에 맞는 노드에만 배정한다.
-  - 구현(0.5.0): 선언은 `core/plugins.py`, 환경은 노드가 처음 쓸 때 `<노드 홈>/envs/<플러그인>-<해시>`에 uv로 만든다(`node/envs.py`). 플러그인 스크립트(`badamoa/plugins/*.py`)는 그 환경의 Python으로 실행되고 BADAMOA를 import하지 않는다. 노드 쪽 래퍼(`node/trainer.py`)가 데이터 준비·Hub 보고·가중치 업로드를 맡고, 스크립트와는 표준 출력으로만 주고받는다(`@@badamoa {JSON}` 한 줄이 이벤트).
-  - 다음 단계(계획): 사내 코드를 **모델 템플릿**으로 등록하고, 환경을 자동 설치 · Docker 이미지 · 서버의 기존 환경 중에서 고른다 — [EXECUTION_PLAN.md](EXECUTION_PLAN.md) 2~3장.
+  - 구현(0.6.0): 학습 코드는 **모델 템플릿**이다 — 폴더 하나에 선언 파일 `badamoa.toml`(진입점 · 설정 항목 · 데이터 형식 · 기본 환경)과 코드. 내장 YOLO도 같은 형식(`badamoa/templates/yolo`)이고, 사내 코드는 `badamoa template push`로 Hub에 올리면 노드가 받아 해시로 캐시한다. **환경**은 자동 설치(`<노드 홈>/envs/<해시>`에 uv로, 같은 요구사항이면 공유) 또는 서버에 이미 있는 Python이다(`node/envs.py`). 코드는 BADAMOA를 import하지 않고, 노드 쪽 래퍼(`node/trainer.py`)와 표준 출력으로만 주고받는다(`@@badamoa {JSON}` 한 줄이 이벤트). 형식은 `core/templates.py`, 등록은 `hub/registry.py`.
+  - 다음 단계(계획): Docker 이미지 환경, 평가·추론 진입점, 지표 외 기록(파일·이미지·시스템 지표) — [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
   - 실행 방식 두 가지: **로컬 venv**(노드에서 직접) / **원격 엔드포인트**(이미 떠 있는 추론 서버·NIM을 호출). Cosmos Transfer나 대형 VLM은 12GB급 GPU에서 못 돌리므로 후자가 필요하다.
 
 ### 4.3 저장 위치
@@ -220,8 +220,8 @@ src/badamoa/
   core/     스키마 · Job 유형 · storage(fsspec) · 시스템 정보 · 경로
   hub/      FastAPI 앱 · services · REST(api) · 노드 프로토콜(agent_api) · MCP(mcp_server)
             설치 스크립트/wheel 인덱스(install) · static/ (빌드된 웹 UI)
-  node/     Node Agent · 내장 Job · 데이터 가져오기 · 학습용 변환 · 플러그인 환경 · 부팅 서비스 등록
-  plugins/  플러그인 환경에서 실행되는 스크립트 (YOLO 학습, 테스트 학습)
+  node/     Node Agent · 내장 Job · 데이터 가져오기 · 학습용 변환 · 환경 · 부팅 서비스 등록
+  templates/  내장 모델 템플릿(yolo, dummy)과 새 템플릿의 뼈대(_scaffold)
   cli.py    `badamoa hub …` / `badamoa node …`
 web/        React + Vite (빌드 결과는 src/badamoa/hub/static 으로)
 plugins/    (Phase 3~) 저장소 밖에서 추가하는 플러그인 — labelers/ generators/ exporters/ curators/

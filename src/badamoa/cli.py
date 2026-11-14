@@ -17,8 +17,10 @@ from badamoa.core.paths import component_home
 app = typer.Typer(help="BADAMOA — 설치형 비전 MLOps 플랫폼", no_args_is_help=True, add_completion=False)
 hub_app = typer.Typer(help="Hub(제어 서버) 실행·관리", no_args_is_help=True)
 node_app = typer.Typer(help="Node Agent(학습/저장/추론 서버) 실행·관리", no_args_is_help=True)
+template_app = typer.Typer(help="모델 템플릿(사내 학습 코드) 만들기·확인·올리기", no_args_is_help=True)
 app.add_typer(hub_app, name="hub")
 app.add_typer(node_app, name="node")
+app.add_typer(template_app, name="template")
 
 HomeOpt = Annotated[Path | None, typer.Option("--home", help="데이터 디렉터리 (기본: OS별 표준 위치)")]
 
@@ -216,3 +218,98 @@ def node_uninstall_service() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+# ---- template ----------------------------------------------------------------
+
+
+def _fail(message: str) -> typer.Exit:
+    typer.secho(message, fg="red", err=True)
+    return typer.Exit(1)
+
+
+@template_app.command("init")
+def template_init(
+    folder: Annotated[Path, typer.Argument(help="만들 폴더")],
+    name: Annotated[str | None, typer.Option(help="템플릿 이름 (기본: 폴더 이름)")] = None,
+    task: Annotated[str, typer.Option(help="detect | segment | classify")] = "detect",
+) -> None:
+    """새 모델 템플릿의 뼈대를 만듭니다: 선언 파일, 학습 코드 예시, 보고 도우미."""
+    import re
+
+    from badamoa import templates
+    from badamoa.core.templates import MANIFEST, TASKS
+
+    if task not in TASKS:
+        raise _fail(f"task는 {', '.join(TASKS)} 중 하나여야 합니다.")
+    if folder.exists() and any(folder.iterdir()):
+        raise _fail(f"{folder} 폴더가 비어 있지 않습니다.")
+    title = name or folder.resolve().name
+    slug = re.sub(r"[^a-z0-9._-]+", "-", title.lower()).strip("-._") or "my-model"
+    folder.mkdir(parents=True, exist_ok=True)
+    for source in templates.SCAFFOLD.iterdir():
+        if not source.is_file():
+            continue
+        text = source.read_text(encoding="utf-8")
+        if source.name == MANIFEST:
+            text = text.replace("__NAME__", slug).replace("__TITLE__", title).replace("__TASK__", task)
+        (folder / source.name).write_text(text, encoding="utf-8", newline="\n")
+    typer.echo(f"템플릿 뼈대를 만들었습니다: {folder}")
+    typer.echo("  1. train.py의 표시한 부분을 학습 코드로 바꿉니다")
+    typer.echo(f"  2. badamoa template check {folder}")
+    typer.echo(f"  3. badamoa template push {folder} --hub http://<hub>:8470 --token <API 토큰>")
+
+
+@template_app.command("check")
+def template_check(folder: Annotated[Path, typer.Argument(help="템플릿 폴더")] = Path(".")) -> None:
+    """선언 파일(badamoa.toml)이 올바른지 확인합니다."""
+    from badamoa.core.templates import TemplateError, bundle, load_manifest
+
+    try:
+        manifest = load_manifest(folder)
+        size = len(bundle(folder))
+    except TemplateError as e:
+        raise _fail(str(e)) from e
+    typer.echo(f"{manifest.title} ({manifest.name} {manifest.version})")
+    typer.echo(f"  태스크 : {manifest.task} · 데이터 형식 {manifest.data_format}")
+    typer.echo(f"  진입점 : {', '.join(manifest.entrypoints)}")
+    typer.echo(f"  설정   : {', '.join(manifest.params) or '(없음)'}")
+    environment = manifest.environment.default or ("자동 설치" if manifest.environment.requirements else "노드의 Python")
+    typer.echo(f"  환경   : {environment}")
+    typer.echo(f"  묶음   : {size / 1024:.0f} KB")
+
+
+@template_app.command("push")
+def template_push(
+    folder: Annotated[Path, typer.Argument(help="템플릿 폴더")] = Path("."),
+    hub: Annotated[str, typer.Option(envvar="BADAMOA_HUB_URL", help="Hub 주소")] = "http://localhost:8470",
+    token: Annotated[str, typer.Option(envvar="BADAMOA_TOKEN", help="관리자의 API 토큰 (웹 UI → 에이전트 연결)")] = "",
+) -> None:
+    """템플릿을 Hub에 올립니다. 코드를 바꿔 다시 올릴 때는 badamoa.toml의 version을 올리세요."""
+    import httpx
+
+    from badamoa.core.templates import TemplateError, bundle
+
+    if not token:
+        raise _fail("API 토큰이 필요합니다: --token 또는 환경 변수 BADAMOA_TOKEN")
+    try:
+        data = bundle(folder)
+    except TemplateError as e:
+        raise _fail(str(e)) from e
+    try:
+        resp = httpx.post(
+            f"{hub.rstrip('/')}/api/templates",
+            content=data,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/zip"},
+            timeout=120,
+        )
+    except httpx.HTTPError as e:
+        raise _fail(f"Hub에 연결하지 못했습니다 ({hub}): {e}") from e
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except ValueError:
+            detail = resp.text
+        raise _fail(f"등록 실패 ({resp.status_code}): {detail}")
+    registered = resp.json()
+    typer.echo(f"등록됨: {registered['title']} ({registered['name']} {registered['version']})")

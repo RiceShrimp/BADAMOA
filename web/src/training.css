@@ -308,3 +308,156 @@ table.runs td.num,
 table.runs td.right {
   white-space: nowrap;
 }
+
+/* progress in plain words: 대기 → 데이터 준비 → 환경 준비 → 학습 → 모델 등록 */
+.stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 4px;
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+.stages li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--idle-soft);
+}
+.stages li i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.stages li.done {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+.stages li.done i {
+  background: var(--ok);
+}
+.stages li.now {
+  color: var(--text);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.stages li.now i {
+  background: var(--accent);
+  animation: stage-pulse 1.4s ease-in-out infinite;
+}
+.stages li .num {
+  font-weight: 400;
+  color: var(--muted);
+}
+@keyframes stage-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stages li.now i {
+    animation: none;
+  }
+}
+
+/* generated settings form */
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 10px;
+  align-items: end;
+}
+.param-grid .check {
+  grid-column: 1 / -1;
+  margin-bottom: 10px;
+}
+@media (max-width: 640px) {
+  .param-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* settings screen */
+.notice.ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+table.plain th {
+  background: transparent;
+  padding-left: 0;
+}
+table.plain td {
+  padding-left: 0;
+}
+td .tag,
+.env-head .tag {
+  margin-right: 4px;
+}
+.env-list {
+  display: flex;
+  flex-direction: column;
+}
+.env {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.env:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.env:last-child {
+  padding-bottom: 0;
+}
+.env-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.env-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+.env-node {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 7px;
+}
+.env-node-name {
+  min-width: 150px;
+  font-weight: 500;
+}
+.env-path {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-weight: 400;
+}
+.env-list .env-path {
+  padding: 8px 0;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+.env-list .env-path:first-child {
+  border-top: 0;
+}
+.env-path input,
+.env-path select {
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .env-path {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}

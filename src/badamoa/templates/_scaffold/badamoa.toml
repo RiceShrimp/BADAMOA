@@ -1,0 +1,42 @@
+# BADAMOA 모델 템플릿 선언. 고친 뒤 `badamoa template check .` 로 확인하고 `badamoa template push .` 로 올립니다.
+
+name    = "__NAME__"          # 영문 소문자·숫자·-·_ (Hub에서 이 템플릿을 가리키는 이름)
+title   = "__TITLE__"         # 화면에 보이는 이름
+version = "0.1.0"             # 코드를 바꿔 다시 올릴 때마다 올립니다
+description = ""
+task    = "__TASK__"          # detect | segment | classify
+data_format = "yolo"          # BADAMOA가 릴리스를 이 형식으로 풀어 줍니다
+variant = "model"             # 모델 종류를 정하는 설정 이름 (모델 이름을 지을 때 씁니다). 없으면 지우세요
+
+[environment]
+# 비워 두면 아래 requirements로 노드가 가상환경을 자동으로 만듭니다.
+# Hub의 설정 → 환경에 등록한 이름을 적으면 그 환경(서버에 이미 있는 Python 등)을 기본으로 씁니다.
+default = ""
+requirements = []             # 예: ["torch", "torchvision", "pycocotools"]
+python = "3.12"
+torch = false                 # true면 노드의 GPU 드라이버에 맞는 PyTorch 빌드를 고릅니다
+
+[entrypoints]
+# {config} 자리에 설정 JSON 파일 경로가 들어갑니다. python은 선택된 환경의 Python으로 실행됩니다.
+train = "python train.py --config {config}"
+# eval    = "python eval.py --config {config}"
+# predict = "python predict.py --config {config}"
+
+# [params.*] 는 학습 대화상자의 입력 항목이 됩니다. advanced = true 면 "세부 설정"에 접혀 들어갑니다.
+[params.model]
+type = "string"
+label = "모델"
+default = "small"
+choices = ["small", "large"]
+
+[params.epochs]
+type = "integer"
+label = "epoch"
+default = 10
+minimum = 1
+
+[params.lr]
+type = "number"
+label = "학습률"
+default = 0.001
+advanced = true

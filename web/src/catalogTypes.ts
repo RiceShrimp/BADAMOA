@@ -3,6 +3,7 @@ export interface Project {
   name: string;
   task: string;
   folder: string;
+  settings: { template?: string };
   releases: number;
   items: number;
 }

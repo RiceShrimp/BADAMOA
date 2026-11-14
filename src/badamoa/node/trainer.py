@@ -1,11 +1,12 @@
-"""Training jobs (``train.*``): export the release, run the trainer, report to the Hub.
+"""Training jobs (``train.run``): export the release, run the template's code, report to the Hub.
 
-    1. fetch the release's manifest from the Hub and write it as a YOLO dataset
-    2. make sure the plugin environment exists (first use builds it)
-    3. run the trainer script in that environment, forwarding its log and metrics
-    4. upload the weights and register the model
+    1. fetch the release's manifest from the Hub and write it in the template's data format
+    2. get the template's code (built-in, or downloaded from the Hub and cached by hash)
+    3. get the environment's Python (built on first use, or an existing one)
+    4. run the template's train command, forwarding its log and metrics as they come
+    5. upload the weights and register the model
 
-The trainer script itself knows nothing about BADAMOA (see ``badamoa.plugins``).
+The template's code knows nothing about BADAMOA (see ``badamoa.templates``).
 """
 
 from __future__ import annotations
@@ -13,9 +14,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -23,9 +24,8 @@ from typing import Any
 
 import httpx
 
-from badamoa import plugins
-from badamoa.core.jobs import BUILTIN_JOB_TYPES
-from badamoa.core.plugins import PLUGINS
+from badamoa import templates as shipped
+from badamoa.core import templates as template_format
 
 from . import envs, exporter
 
@@ -33,7 +33,6 @@ EVENT_PREFIX = "@@badamoa "
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # colours and cursor moves; the job log is plain text
 PROGRESS = re.compile(r"\d+%\s*[━─╸]|\dit/s|s/it")  # one redraw of a progress bar
 PROGRESS_EVERY_S = 5.0
-SCRIPTS = {"train.yolo": "yolo_train.py", "train.dummy": "dummy_train.py"}
 MANIFEST_PAGE = 2000
 
 
@@ -65,7 +64,40 @@ def _manifest(client: httpx.Client, base: str) -> tuple[dict[str, Any], Iterator
     return first, items()
 
 
-def run(job_type: str, params: dict[str, Any]) -> dict[str, Any]:
+def template_dir(client: httpx.Client, base: str, node_home: Path, template: dict[str, Any]) -> Path:
+    """The folder holding the template's code on this node."""
+    if template.get("builtin"):
+        folder = shipped.builtin().get(template["name"])
+        if folder is None:
+            raise RuntimeError(f"이 노드의 BADAMOA에는 내장 템플릿 {template['name']}이 없습니다. 노드를 업데이트하세요.")
+        return folder
+    digest = template["sha256"]
+    folder = node_home / "cache" / "templates" / digest
+    if (folder / template_format.MANIFEST).is_file():
+        return folder
+    resp = client.get(f"{base}/template", timeout=300)
+    if resp.status_code != 200:
+        raise RuntimeError(f"템플릿을 받지 못했습니다 ({resp.status_code}): {resp.text[:300]}")
+    staging = folder.with_name(f"{digest}.{os.getpid()}.part")
+    shutil.rmtree(staging, ignore_errors=True)
+    template_format.unpack(resp.content, staging)
+    try:
+        staging.rename(folder)
+    except OSError:  # another job unpacked it first
+        shutil.rmtree(staging, ignore_errors=True)
+    return folder
+
+
+def command_for(entrypoint: str, python: Path, config_path: Path) -> list[str]:
+    """``python train.py --config {config}`` → the environment's Python and the real config path."""
+    parts = shlex.split(entrypoint, posix=os.name != "nt")
+    parts = [part.strip('"') for part in parts]
+    if parts and parts[0] in ("python", "python3"):
+        parts[0] = str(python)
+    return [part.replace("{config}", str(config_path)) for part in parts]
+
+
+def run(params: dict[str, Any]) -> dict[str, Any]:
     hub, token, job_id, home = (
         os.environ.get(k) for k in ("BADAMOA_HUB_URL", "BADAMOA_NODE_TOKEN", "BADAMOA_JOB_ID", "BADAMOA_NODE_HOME")
     )
@@ -74,6 +106,7 @@ def run(job_type: str, params: dict[str, Any]) -> dict[str, Any]:
     node_home = Path(home).resolve()
     work = node_home / "runs" / job_id
     base = f"/api/agent/jobs/{job_id}/train"
+    template = params["template"]
 
     with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
 
@@ -83,7 +116,11 @@ def run(job_type: str, params: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(f"Hub가 거부했습니다 ({resp.status_code}): {resp.text[:300]}")
             return resp.json()
 
+        def stage(name: str) -> None:
+            post("/report", {"event": "stage", "data": {"stage": name}})
+
         # 1. dataset
+        stage("data")
         header, items = _manifest(client, base)
         print(f"릴리스 {header['dataset']} {header['version']} 를 학습 형식으로 준비합니다: {work / 'data'}")
         options = exporter.ExportOptions(
@@ -109,43 +146,51 @@ def run(job_type: str, params: dict[str, Any]) -> dict[str, Any]:
             )
         post("/report", {"event": "export", "data": {k: v for k, v in summary.items() if k != "data_yaml"}})
 
-        # 2. environment
-        spec = BUILTIN_JOB_TYPES[job_type]
-        python = str(envs.ensure(node_home, PLUGINS[spec.plugin])) if spec.plugin else sys.executable
+        # 2–3. code and environment
+        stage("env")
+        code = template_dir(client, base, node_home, template)
+        python = envs.resolve(node_home, params.get("environment") or {})
 
-        # 3. train
+        # 4. train
+        cache = node_home / "cache" / "template-data" / template["name"]
+        cache.mkdir(parents=True, exist_ok=True)
+        (node_home / "cache" / "ultralytics").mkdir(parents=True, exist_ok=True)
         config = {
             "data": summary["data_yaml"],
+            "data_dir": str(work / "data"),
             "out": str(work / "out"),
+            "cache": str(cache),
             "device": _device(),
             "classes": summary["classes"],
-            **{k: params[k] for k in ("model", "epochs", "imgsz", "batch", "workers", "pretrained", "extra") if k in params},
+            "params": params.get("params") or {},
         }
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-        cache = node_home / "cache"
-        (cache / "weights").mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
             "PYTHONUNBUFFERED": "1",
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",
             "NO_COLOR": "1",  # the log is plain text
-            "YOLO_CONFIG_DIR": str(cache / "ultralytics"),  # keep the user's own Ultralytics settings untouched
+            # Ultralytics keeps its settings here instead of touching the user's own.
+            "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
         }
-        (cache / "ultralytics").mkdir(parents=True, exist_ok=True)
-        script = Path(plugins.__file__).parent / SCRIPTS[job_type]
-        print(f"학습 시작: {params.get('model')} · epoch {params.get('epochs')} · 장치 {config['device']}", flush=True)
-        proc = subprocess.Popen(
-            [python, str(script), str(config_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            cwd=cache / "weights",  # pretrained weights download here once and are reused
-        )
+        command = command_for(template["entrypoint"], python, config_path)
+        print(f"학습 시작: {template['name']} {template['version']} · 장치 {config['device']}", flush=True)
+        stage("train")
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                cwd=code,
+            )
+        except OSError as e:
+            raise RuntimeError(f"학습 명령을 실행하지 못했습니다 ({command[0]}): {e}") from e
         assert proc.stdout is not None
         outcome: dict[str, Any] | None = None
         last_progress = 0.0
@@ -168,23 +213,40 @@ def run(job_type: str, params: dict[str, Any]) -> dict[str, Any]:
             kind = event.pop("event", "")
             if kind == "result":
                 outcome = event
-            elif kind in ("info", "epoch"):
-                post("/report", {"event": kind, "data": event})
+            elif kind == "info":
+                post("/report", {"event": "info", "data": event})
+            elif kind == "epoch":  # one epoch finished: metrics at that epoch, and progress
+                post("/report", {"event": "epoch", "data": event})
+            elif kind == "log":  # metrics at any step, without touching progress
+                post("/report", {"event": "epoch", "data": {"step": event.get("step", 0), "metrics": event.get("metrics")}})
+            elif kind == "progress":
+                post("/report", {"event": "epoch", "data": {"epoch": event.get("current"), "epochs": event.get("total")}})
         if proc.wait() != 0:
             raise RuntimeError(f"학습 프로세스가 종료 코드 {proc.returncode}로 끝났습니다.")
         if outcome is None:
-            raise RuntimeError("학습 프로세스가 결과를 남기지 않았습니다.")
+            raise RuntimeError("학습 코드가 결과를 알리지 않았습니다. 끝날 때 result(또는 finish)를 호출해야 합니다.")
 
-        # 4. weights → Hub, then register the model
-        weights = Path(outcome["weights"])
-        print(f"가중치 업로드: {weights.name} ({weights.stat().st_size / 1024**2:.1f} MB)", flush=True)
-        with weights.open("rb") as stream:
-            resp = client.put(f"{base}/artifact", params={"name": weights.name}, content=stream, timeout=3600)
-        if resp.status_code != 200:
-            raise RuntimeError(f"가중치 업로드 실패 ({resp.status_code}): {resp.text[:300]}")
-        result = post(
-            "/finish", {"metrics": outcome.get("metrics", {}), "classes": outcome.get("classes", []), "weights": resp.json()}
-        )
+        # 5. weights → Hub, then register the model
+        stage("upload")
+        uploaded: dict[str, Any] = {}
+        weights = Path(outcome["weights"]) if outcome.get("weights") else None
+        if weights is not None and not weights.is_absolute():
+            weights = code / weights
+        if weights is not None and weights.is_file():
+            print(f"가중치 업로드: {weights.name} ({weights.stat().st_size / 1024**2:.1f} MB)", flush=True)
+            with weights.open("rb") as stream:
+                resp = client.put(f"{base}/artifact", params={"name": weights.name}, content=stream, timeout=3600)
+            if resp.status_code != 200:
+                raise RuntimeError(f"가중치 업로드 실패 ({resp.status_code}): {resp.text[:300]}")
+            uploaded = resp.json()
+        elif weights is not None:
+            raise RuntimeError(f"학습 코드가 알린 가중치 파일이 없습니다: {weights}")
+        final = {"metrics": outcome.get("metrics") or {}, "classes": outcome.get("classes") or [], "weights": uploaded}
+        result = post("/finish", final)
     shutil.rmtree(work, ignore_errors=True)  # the export is links and the weights are on the Hub now
-    print(f"완료: 모델 {result['model']['name']} v{result['model']['version']} 등록")
+    if result.get("model"):
+        print(f"완료: 모델 {result['model']['name']} v{result['model']['version']} 등록")
+    else:
+        print("완료: 지표를 기록했습니다. 가중치를 알리지 않아 모델은 등록하지 않았습니다.")
     return result
+

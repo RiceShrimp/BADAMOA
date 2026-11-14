@@ -1,0 +1,46 @@
+name = "dummy"
+title = "테스트 학습"
+version = "1"
+description = "실제 학습 없이 가짜 지표와 가중치 파일을 만듭니다. PyTorch 없이 학습 흐름을 확인하는 용도."
+task = "detect"
+data_format = "yolo"
+hidden = true
+variant = "model"
+
+[entrypoints]
+train = "python train.py --config {config}"
+
+[params.model]
+type = "string"
+label = "모델"
+default = "dummy"
+
+[params.epochs]
+type = "integer"
+label = "epoch"
+default = 5
+minimum = 1
+
+[params.imgsz]
+type = "integer"
+label = "이미지 크기"
+default = 640
+advanced = true
+
+[params.sleep]
+type = "number"
+label = "epoch당 대기(초)"
+default = 0.02
+advanced = true
+
+[params.ceiling]
+type = "number"
+label = "mAP50-95 상한"
+default = 0.6
+advanced = true
+
+[params.fail]
+type = "boolean"
+label = "일부러 실패"
+default = false
+advanced = true

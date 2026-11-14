@@ -1,7 +1,7 @@
 """Built-in job types shared by Hub (validation, UI, MCP) and Node (execution).
 
-A job type with ``plugin`` set runs its ML code in that plugin's environment
-on the node; the others need nothing beyond the base install.
+Training runs the code of a model template in that template's environment
+(``badamoa.core.templates``); the other types need nothing beyond the base install.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ class JobTypeSpec(BaseModel):
     params_schema: dict[str, Any] = Field(default_factory=dict)
     gpus: int = 0  # GPUs the job needs by default
     hidden: bool = False  # started from its own screen, not the generic job dialog
-    plugin: str | None = None  # runs in this plugin's environment (badamoa.core.plugins)
 
 
 _TRAIN_PARAMS: dict[str, Any] = {
@@ -26,19 +25,16 @@ _TRAIN_PARAMS: dict[str, Any] = {
     "properties": {
         "run_id": {"type": "string"},
         "release_id": {"type": "string"},
-        "model": {"type": "string", "default": "yolo11n.pt"},
-        "epochs": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 50},
-        "imgsz": {"type": "integer", "minimum": 32, "maximum": 4096, "default": 640},
-        "batch": {"type": "integer", "minimum": -1, "maximum": 4096, "default": 16},
-        "workers": {"type": "integer", "minimum": 0, "maximum": 64, "default": 4},
-        "pretrained": {"type": "boolean", "default": True},
+        # Snapshots taken when the run was created, so the node needs nothing else to start:
+        "template": {"type": "object"},  # id, name, version, builtin, sha256, entrypoint, data_format
+        "environment": {"type": "object"},  # kind=auto: requirements, python, torch · kind=python: path
+        "params": {"type": "object", "default": {}},  # the template's own settings
         # Class ids of the release's label space to train on; empty means all of them.
         "classes": {"type": "array", "default": []},
         # Images nobody labelled: leave them out, or feed them as background (the YOLO convention).
         "unlabelled": {"type": "string", "default": "exclude"},
         # Used only when the release has no val split: this share of train is held out.
         "val_fraction": {"type": "number", "minimum": 0, "maximum": 0.9, "default": 0.2},
-        "extra": {"type": "object", "default": {}},  # passed to the trainer as-is
     },
 }
 
@@ -80,20 +76,22 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             },
         ),
         JobTypeSpec(
-            type="train.yolo",
-            title="YOLO 학습",
-            description="릴리스를 YOLO 형식으로 풀어 Ultralytics YOLO로 학습하고, 지표와 모델을 Hub에 기록합니다.",
+            type="train.run",
+            title="학습",
+            description="릴리스를 학습 형식으로 풀고 모델 템플릿의 학습 코드를 실행해 지표와 모델을 Hub에 기록합니다.",
             hidden=True,
             gpus=1,
-            plugin="yolo",
             params_schema=_TRAIN_PARAMS,
         ),
         JobTypeSpec(
-            type="train.dummy",
-            title="테스트 학습",
-            description="실제 학습 없이 가짜 지표와 가중치 파일을 만듭니다. torch 설치 없이 학습 흐름을 확인하는 용도.",
+            type="env.check",
+            title="환경 확인",
+            description="노드에 있는 Python 환경이 실행되는지, 어떤 라이브러리가 들어 있는지 확인합니다.",
             hidden=True,
-            params_schema=_TRAIN_PARAMS,
+            params_schema={
+                "type": "object",
+                "properties": {"environment_id": {"type": "string"}, "python": {"type": "string"}},
+            },
         ),
         JobTypeSpec(
             type="debug.sleep",

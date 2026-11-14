@@ -66,13 +66,23 @@ def data_import(params: dict[str, Any]) -> dict[str, Any]:
     return importer.run(params)
 
 
-def train(job_type: str):
-    def handler(params: dict[str, Any]) -> dict[str, Any]:
-        from badamoa.node import trainer
+def train_run(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import trainer
 
-        return trainer.run(job_type, params)
+    return trainer.run(params)
 
-    return handler
+
+def env_check(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import envs
+
+    found = envs.check(str(params.get("python", "")))
+    print(f"python  : {found.get('python')} ({found.get('executable')})")
+    for name, version in found.get("packages", {}).items():
+        print(f"{name:<8}: {version}")
+    if "cuda" in found:
+        gpus = ", ".join(found.get("gpus") or []) if found["cuda"] else "PyTorch가 GPU를 쓰지 못합니다 (CPU만)"
+        print(f"GPU     : {gpus}")
+    return found
 
 
 HANDLERS = {
@@ -80,8 +90,8 @@ HANDLERS = {
     "system.gpu": system_gpu,
     "debug.sleep": debug_sleep,
     "data.import": data_import,
-    "train.yolo": train("train.yolo"),
-    "train.dummy": train("train.dummy"),
+    "train.run": train_run,
+    "env.check": env_check,
 }
 
 

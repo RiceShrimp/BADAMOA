@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -33,21 +33,16 @@ _CHUNK = 1024 * 1024
 
 class NewRun(BaseModel):
     release_id: str
-    trainer: str = "yolo"
+    template: str = ""  # id or name; empty = the project's default
+    environment: str = ""  # id or name; empty = the template's default
+    params: dict[str, Any] = Field(default_factory=dict)  # the template's own settings
     name: str = ""
     model_name: str = ""
-    model: str = "yolo11n.pt"
-    epochs: int = 50
-    imgsz: int = 640
-    batch: int = 16
-    workers: int = 4
-    pretrained: bool = True
     classes: list[int] = Field(default_factory=list)
     unlabelled: str = "exclude"
     val_fraction: float = 0.2
     gpus: int | None = None
     min_vram_mb: int = 0
-    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/projects/{project_id}/runs")
@@ -138,6 +133,18 @@ def manifest(
     job_id: str, after: int = 0, limit: int = 2000, node: Node = Depends(current_node), db: Session = Depends(db_session)
 ) -> dict[str, Any]:
     return training.manifest(db, node, job_id, after, limit)
+
+
+@agent_router.get("/template")
+def template_bundle(
+    job_id: str, node: Node = Depends(current_node), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> Response:
+    """The code of the run's template, as the zip it was registered with."""
+    blob = training.template_bundle(db, node, job_id)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if not storage.has_blob(blob):
+        raise HTTPException(status_code=404, detail="템플릿 묶음이 저장소에 없습니다.")
+    return Response(storage.get_blob(blob), media_type="application/zip")
 
 
 @agent_router.post("/report")
