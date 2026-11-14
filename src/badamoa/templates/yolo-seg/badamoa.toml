@@ -1,11 +1,12 @@
 name = "yolo-seg"
 title = "Ultralytics YOLO 분할"
-version = "1"
+version = "2"
 description = "Ultralytics YOLO 인스턴스 분할 (YOLO11-seg, YOLO26-seg)"
 task = "segment"
 data_format = "yolo-seg"
 license = "AGPL-3.0"
 variant = "model"
+resume = true
 
 [environment]
 requirements = ["ultralytics>=8.3,<9", "onnx>=1.12", "onnxslim", "onnxruntime"]

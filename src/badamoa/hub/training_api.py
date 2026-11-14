@@ -85,6 +85,15 @@ def rerun(
     return training.run_view(db, hub.settings, run)
 
 
+@router.post("/runs/{run_id}/resume")
+def resume(
+    run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    run = training.resume(db, user, run_id, via="ui")
+    db.commit()
+    return training.run_view(db, hub.settings, run)
+
+
 @router.delete("/runs/{run_id}")
 def delete_run(run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
     training.delete_run(db, user, run_id)

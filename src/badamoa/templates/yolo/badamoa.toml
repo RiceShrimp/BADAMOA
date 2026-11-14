@@ -1,11 +1,12 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "4"
+version = "5"
 description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
 task = "detect"
 data_format = "yolo"
 license = "AGPL-3.0"
 variant = "model"
+resume = true
 
 [environment]
 requirements = ["ultralytics>=8.3,<9", "onnx>=1.12", "onnxslim", "onnxruntime"]

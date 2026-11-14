@@ -69,6 +69,17 @@ def hub_run(
     home: HomeOpt = None,
     public_url: Annotated[str | None, typer.Option(help="원격 노드·에이전트가 접속할 URL")] = None,
     local_node: Annotated[bool, typer.Option(help="이 머신도 노드로 사용 (All-in-one)")] = True,
+    gpu_busy_memory_pct: Annotated[
+        float,
+        typer.Option(
+            envvar="BADAMOA_GPU_BUSY_MEMORY_PCT",
+            help="다른 프로세스가 GPU 메모리를 이만큼(%) 넘게 쓰면 사용 중으로 보고 배정하지 않음. 100보다 크면 항상 배정",
+        ),
+    ] = 10.0,
+    gpu_busy_util_pct: Annotated[
+        float,
+        typer.Option(envvar="BADAMOA_GPU_BUSY_UTIL_PCT", help="GPU 사용률이 이만큼(%) 넘으면 사용 중으로 봄"),
+    ] = 50.0,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Hub를 실행합니다. 기본값은 All-in-one(이 머신도 노드로 동작)입니다."""
@@ -80,7 +91,13 @@ def hub_run(
     from badamoa.hub.config import HubSettings
 
     settings = HubSettings(
-        home=component_home("hub", home), host=host, port=port, public_url=public_url, local_node=local_node
+        home=component_home("hub", home),
+        host=host,
+        port=port,
+        public_url=public_url,
+        local_node=local_node,
+        gpu_busy_memory_pct=gpu_busy_memory_pct,
+        gpu_busy_util_pct=gpu_busy_util_pct,
     )
     application = create_app(settings)
     if local_node:

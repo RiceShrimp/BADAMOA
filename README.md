@@ -85,6 +85,7 @@ uv run python scripts/fetch_mnist160.py
 - 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
 - 노드가 처음 학습할 때 PyTorch와 Ultralytics를 별도 가상환경에 설치합니다(몇 분, 노드에 uv 필요). GPU 드라이버에 맞는 PyTorch 빌드를 자동으로 고르며, 노드의 환경 변수 `BADAMOA_TORCH_BACKEND`(예: `cpu`, `cu128`)로 지정할 수도 있습니다.
 - 끝나면 가중치가 **모델** 화면에 버전으로 등록됩니다.
+- 다른 프로세스가 GPU 메모리를 10% 넘게 쓰고 있으면 그 GPU는 "사용 중"으로 보고 기다립니다. 혼자 쓰는 PC에서 그래도 배정하려면 Hub를 `--gpu-busy-memory-pct 101 --gpu-busy-util-pct 101`로 실행합니다.
 
 COCO128이 있으면 실제 YOLO 학습(1 epoch, CPU)까지 확인하는 테스트를 돌릴 수 있습니다.
 

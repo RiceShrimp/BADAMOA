@@ -6,6 +6,7 @@ task = "detect"
 data_format = "yolo"
 hidden = true
 variant = "model"
+resume = true
 
 [entrypoints]
 train = "python train.py --config {config}"

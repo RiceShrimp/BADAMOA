@@ -187,6 +187,25 @@ def _split_from_name(name: str) -> str:
     return ""
 
 
+def _polygon_area(points: list[float]) -> float:
+    xs, ys = points[0::2], points[1::2]
+    return abs(sum(xs[i] * ys[i - 1] - xs[i - 1] * ys[i] for i in range(len(xs)))) / 2
+
+
+def _coco_outline(segmentation: Any, width: float, height: float) -> list[float]:
+    """The outline of a COCO annotation as normalised x1, y1, x2, y2, …; empty when there is none.
+
+    An object drawn as several polygons keeps its largest one; RLE masks are not read.
+    """
+    if not isinstance(segmentation, list):
+        return []
+    polygons = [p for p in segmentation if isinstance(p, list) and len(p) >= 6 and len(p) % 2 == 0]
+    if not polygons:
+        return []
+    largest = max(polygons, key=_polygon_area)
+    return [round(min(1.0, max(0.0, float(v) / (width if n % 2 == 0 else height))), 5) for n, v in enumerate(largest)]
+
+
 def scan_coco(root: Path) -> Scan:
     categories: dict[int, str] = {}
     parsed = []
@@ -216,9 +235,9 @@ def scan_coco(root: Path) -> Scan:
                 continue
             x, y, bw, bh = (float(v) for v in bbox[:4])
             box = [index[ann["category_id"]], (x + bw / 2) / w, (y + bh / 2) / h, bw / w, bh / h]
-            boxes_by_image.setdefault(ann["image_id"], []).append(
-                [box[0], *(round(min(1.0, max(0.0, v)), 5) for v in box[1:])]
-            )
+            row = [box[0], *(round(min(1.0, max(0.0, v)), 5) for v in box[1:])]
+            # Kept only in segmentation projects; a detection project uses the box.
+            boxes_by_image.setdefault(ann["image_id"], []).append([*row, *_coco_outline(ann.get("segmentation"), w, h)])
         for img in data["images"]:
             name = img["file_name"]
             candidates = [root / name, root / "images" / name, root / "images" / split / name, root / split / name]

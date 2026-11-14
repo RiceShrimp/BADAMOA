@@ -81,6 +81,7 @@ def start_run(
     min_vram_mb: int = 0,
     source_run_id: str | None = None,
     base_model_id: str = "",
+    resume_run_id: str = "",
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
@@ -115,6 +116,7 @@ def start_run(
         raise ServiceError(400, f"라벨 공간 {space.name}에 없는 클래스 id가 있습니다: {sorted(set(chosen) - known)}")
     node = data_node(db, release.id)
     env = registry.environment_for_run(db, manifest, environment, node)
+    interrupted = get_run(db, resume_run_id) if resume_run_id else None
     base = None
     if base_model_id:
         base = get_model(db, base_model_id)
@@ -151,6 +153,7 @@ def start_run(
             "min_vram_mb": min_vram_mb,
             "model_name": _slug(model_name),
             **({"base_model": {"id": base.id, "name": base.name, "version": base.version}} if base else {}),
+            **({"resumed_from": {"id": interrupted.id, "name": interrupted.name}} if interrupted else {}),
         },
         epochs=int(epochs) if isinstance(epochs, int | float) else 0,
         source_run_id=source_run_id,
@@ -180,6 +183,7 @@ def start_run(
             "unlabelled": unlabelled,
             "val_fraction": val_fraction,
             **({"init_weights": {"blob": base.blob, "file_name": base.file_name or "best.pt"}} if base else {}),
+            **({"resume_job_id": interrupted.job_id} if interrupted and interrupted.job_id else {}),
         },
         node.id,
         via=via,
@@ -220,6 +224,44 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         min_vram_mb=c.get("min_vram_mb", 0),
         base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,
+        via=via,
+    )
+
+
+def _can_resume(db: Session, run: Run, status: str) -> bool:
+    """An interrupted run whose template knows how to continue from its last checkpoint."""
+    if status not in ("failed", "canceled") or run.epoch < 1:
+        return False
+    row = db.get(Template, (run.template or {}).get("id", ""))
+    return bool(row and row.deleted_at is None and registry.manifest_of(row).resume)
+
+
+def resume(db: Session, user: User, run_id: str, via: str = "api") -> Run:
+    """Continue an interrupted run from its last checkpoint, as a new run with the same settings."""
+    source = get_run(db, run_id)
+    job = db.get(Job, source.job_id) if source.job_id else None
+    if not _can_resume(db, source, job.status if job else "failed"):
+        raise ServiceError(400, "이어서 실행할 수 없습니다. 중단되거나 실패한 실행이고 모델 종류가 재개를 지원해야 합니다.")
+    c = source.config
+    row = db.get(Template, source.template["id"])
+    env = source.environment or {}
+    return start_run(
+        db,
+        user,
+        release_id=source.release_id,
+        template=row.id,
+        environment=env.get("id") or ("auto" if env.get("kind") == "auto" else ""),
+        params={k: c[k] for k in registry.manifest_of(row).params if k in c},
+        name=source.name,
+        model_name=c.get("model_name", ""),
+        classes=c.get("classes"),
+        unlabelled=c.get("unlabelled", "exclude"),
+        val_fraction=c.get("val_fraction", 0.2),
+        gpus=c.get("gpus"),
+        min_vram_mb=c.get("min_vram_mb", 0),
+        base_model_id=(c.get("base_model") or {}).get("id", ""),
+        source_run_id=source.id,
+        resume_run_id=source.id,
         via=via,
     )
 
@@ -491,6 +533,8 @@ def run_view(
         "metrics": run.summary or {},  # final metrics once finished, the best step so far before that
         "model": {"id": model.id, "name": model.name, "version": model.version, "alias": model.alias} if model else None,
         "base_model": run.config.get("base_model"),  # the registered model this run started from, if any
+        "resumed_from": run.config.get("resumed_from"),  # the interrupted run this one continues
+        "can_resume": _can_resume(db, run, status),
         "source_run_id": run.source_run_id,
     }
     if detail:

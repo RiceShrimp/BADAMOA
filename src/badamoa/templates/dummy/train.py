@@ -32,7 +32,14 @@ def main(argv: list[str]) -> int:
     if cfg.get("init_weights"):
         print(f"이어서 학습: {Path(cfg['init_weights']).read_text(encoding='utf-8')[:60]}")
     metrics: dict[str, float] = {}
-    for epoch in range(1, epochs + 1):
+    out = Path(cfg["out"])
+    out.mkdir(parents=True, exist_ok=True)
+    first = 1
+    checkpoint = Path(cfg.get("resume_dir") or "") / "epoch.txt"
+    if cfg.get("resume_dir") and checkpoint.is_file():
+        first = int(checkpoint.read_text()) + 1
+        print(f"체크포인트에서 이어 갑니다: epoch {first}부터")
+    for epoch in range(first, epochs + 1):
         progress = 1 - math.exp(-3 * epoch / epochs)
         metrics = {
             "map50_95": round(ceiling * progress, 4),
@@ -44,10 +51,9 @@ def main(argv: list[str]) -> int:
         }
         emit("epoch", epoch=epoch, epochs=epochs, metrics=metrics)
         print(f"epoch {epoch}/{epochs} mAP50-95 {metrics['map50_95']}")
+        (out / "epoch.txt").write_text(str(epoch))  # the checkpoint a resumed run starts after
         time.sleep(pause)
 
-    out = Path(cfg["out"])
-    out.mkdir(parents=True, exist_ok=True)
     weights = out / "best.pt"
     content = {"dummy": True, "model": params.get("model"), "classes": cfg["classes"]}
     weights.write_text(json.dumps(content), encoding="utf-8")

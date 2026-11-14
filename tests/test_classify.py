@@ -280,3 +280,28 @@ def test_outlines_are_kept_in_segmentation_projects_only(hub, tmp_path):
     assert stored["detect"] == [[2, 0.3, 0.4, 0.4, 0.4], [1, 0.7, 0.7, 0.2, 0.2]]
     offered = [t["name"] for t in hub.get("/api/templates", params={"task": "segment"}).json()]
     assert offered == ["yolo-seg"]
+
+
+def test_coco_outlines_are_read_and_the_largest_polygon_kept(tmp_path):
+    import json
+
+    from PIL import Image
+
+    root = tmp_path / "coco"
+    (root / "images").mkdir(parents=True)
+    Image.new("RGB", (200, 100), (30, 60, 90)).save(root / "images" / "a.jpg")
+    small, large = [10, 10, 20, 10, 20, 20], [100, 20, 180, 20, 180, 80, 100, 80]
+    annotations = [
+        {"id": 1, "image_id": 1, "category_id": 7, "bbox": [100, 20, 80, 60], "segmentation": [small, large]},
+        {"id": 2, "image_id": 1, "category_id": 7, "bbox": [0, 0, 50, 50], "segmentation": {"counts": "rle"}},
+    ]
+    data = {
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 200, "height": 100}],
+        "categories": [{"id": 7, "name": "car"}],
+        "annotations": annotations,
+    }
+    (root / "instances_train.json").write_text(json.dumps(data), encoding="utf-8")
+    found = importer.scan(root)
+    outlined, rle = found.entries[0].boxes
+    assert outlined == [0, 0.7, 0.5, 0.4, 0.6, 0.5, 0.2, 0.9, 0.2, 0.9, 0.8, 0.5, 0.8]  # box, then the larger polygon
+    assert rle == [0, 0.125, 0.25, 0.25, 0.5]  # an RLE mask is not read: the box only

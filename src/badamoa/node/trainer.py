@@ -202,6 +202,13 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 cached.write_bytes(resp.content)
             config["init_weights"] = str(cached)
             print(f"등록된 모델의 가중치에서 시작합니다: {cached.name}")
+        previous = node_home / "runs" / str(params.get("resume_job_id") or "-") / "out"
+        if params.get("resume_job_id"):
+            if previous.is_dir():
+                config["resume_dir"] = str(previous)
+                print("중단된 실행의 체크포인트에서 이어 갑니다.")
+            else:
+                print("중단된 실행의 작업 폴더가 이 서버에 남아 있지 않아 처음부터 시작합니다.")
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         env = {
@@ -326,6 +333,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         final = {"metrics": outcome.get("metrics") or {}, "classes": outcome.get("classes") or [], "weights": uploaded}
         result = post("/finish", final)
     shutil.rmtree(work, ignore_errors=True)  # the export is links and the weights are on the Hub now
+    if params.get("resume_job_id"):
+        shutil.rmtree(previous.parent, ignore_errors=True)  # the interrupted run's leftovers are no longer needed
     if result.get("model"):
         print(f"완료: 모델 {result['model']['name']} v{result['model']['version']} 등록")
     else:

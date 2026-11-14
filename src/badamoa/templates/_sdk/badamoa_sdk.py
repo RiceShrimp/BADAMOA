@@ -148,6 +148,8 @@ class Run:
         self.classes: list[str] = cfg.get("classes", [])
         # 등록된 모델에서 이어서 학습할 때 그 모델의 가중치 파일 (아니면 None)
         self.init_weights = Path(cfg["init_weights"]) if cfg.get("init_weights") else None
+        # 중단된 실행을 이어 갈 때 그 실행이 쓰던 출력 폴더 (체크포인트를 여기서 찾습니다. 아니면 None)
+        self.resume_dir = Path(cfg["resume_dir"]) if cfg.get("resume_dir") else None
         # 평가·내보내기·테스트(eval · export · predict 진입점)에서만 채워지는 값
         self.weights = Path(cfg["weights"]) if cfg.get("weights") else None  # 다룰 모델의 가중치 파일
         self.train_params: dict[str, Any] = cfg.get("train_params", {})  # 그 모델을 학습할 때의 설정

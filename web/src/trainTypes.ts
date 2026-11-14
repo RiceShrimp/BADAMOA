@@ -88,6 +88,8 @@ export interface Run {
   metrics: Record<string, number>;
   model: { id: string; name: string; version: number; alias: string } | null;
   base_model: { id: string; name: string; version: number } | null;
+  resumed_from: { id: string; name: string } | null;
+  can_resume: boolean;
   source_run_id: string | null;
 }
 

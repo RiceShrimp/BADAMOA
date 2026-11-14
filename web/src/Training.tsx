@@ -373,6 +373,11 @@ function RunView({ runId }: { runId: string }) {
       const next = await api<Run>(`/runs/${run.id}/rerun`, { method: "POST" });
       window.location.hash = `#/training/${next.id}`;
     });
+  const resume = () =>
+    act(async () => {
+      const next = await api<Run>(`/runs/${run.id}/resume`, { method: "POST" });
+      window.location.hash = `#/training/${next.id}`;
+    });
   const remove = () => {
     if (!window.confirm(`${run.name} 실행 기록을 지울까요? 등록된 모델은 남습니다.`)) return;
     void act(async () => {
@@ -433,6 +438,11 @@ function RunView({ runId }: { runId: string }) {
           {active && run.job_id && (
             <button className="danger" disabled={working} onClick={() => act(() => api(`/jobs/${run.job_id}/cancel`, { method: "POST" }))}>
               중단
+            </button>
+          )}
+          {run.can_resume && (
+            <button className="primary" disabled={working} onClick={resume} title="멈춘 곳(마지막으로 끝난 epoch)부터 이어서 학습합니다">
+              이어서 실행
             </button>
           )}
           <button disabled={working} onClick={again} title="같은 릴리스와 설정으로 새 실행을 시작합니다">
@@ -556,6 +566,14 @@ function RunView({ runId }: { runId: string }) {
                 <dt>라이브러리</dt>
                 <dd className="mono small">
                   ultralytics {info.ultralytics} · torch {info.torch}
+                </dd>
+              </>
+            )}
+            {run.resumed_from && (
+              <>
+                <dt>이어 받은 실행</dt>
+                <dd>
+                  <a href={`#/training/${run.resumed_from.id}`}>{run.resumed_from.name}</a>이 멈춘 곳부터
                 </dd>
               </>
             )}

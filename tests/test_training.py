@@ -374,3 +374,38 @@ def test_sdk_callbacks_for_lightning_and_hugging_face(monkeypatch, capsys):
     assert events[2] == {"event": "log", "step": 40, "metrics": {"loss": 1.5, "learning_rate": 0.0001}}
     assert events[3] == {"event": "progress", "current": 40, "total": 100}
     bm.load_config([])
+
+
+def test_resume_an_interrupted_run_from_its_checkpoint(hub, release):
+    started = hub.post(
+        "/api/runs",
+        json={"release_id": release["id"], "template": "dummy", "params": {"epochs": 40, "sleep": 0.5}, "gpus": 0},
+    ).json()
+    for _ in range(200):  # let it get a few epochs in, then stop it
+        if hub.get(f"/api/runs/{started['id']}").json()["epoch"] >= 3:
+            break
+        time.sleep(0.1)
+    assert hub.get(f"/api/runs/{started['id']}").json()["can_resume"] is False  # still running
+    hub.post(f"/api/jobs/{started['job_id']}/cancel")
+    assert _wait(hub, started["job_id"])["status"] == "canceled"
+    stopped = hub.get(f"/api/runs/{started['id']}").json()
+    assert stopped["can_resume"] is True and stopped["epoch"] >= 3
+
+    resp = hub.post(f"/api/runs/{started['id']}/resume")
+    assert resp.status_code == 200, resp.text
+    run = resp.json()
+    assert run["resumed_from"] == {"id": started["id"], "name": started["name"]} and run["config"]["epochs"] == 40
+    for _ in range(150):  # 40 slow epochs: its first report is enough
+        view = hub.get(f"/api/runs/{run['id']}").json()
+        if view["history"]["steps"] or view["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.2)
+    hub.post(f"/api/jobs/{run['job_id']}/cancel")
+    _wait(hub, run["job_id"])
+    logs = _logs(hub, run["job_id"])
+    assert "중단된 실행의 체크포인트에서 이어 갑니다" in logs and "체크포인트에서 이어 갑니다: epoch" in logs, logs
+    assert view["history"]["steps"] and view["history"]["steps"][0] > 3  # it did not start over
+
+    done, job = _train(hub, release, {"epochs": 2})
+    assert job["status"] == "succeeded"
+    assert hub.post(f"/api/runs/{done['id']}/resume").status_code == 400  # a finished run has nothing to resume

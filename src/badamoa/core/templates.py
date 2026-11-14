@@ -30,6 +30,7 @@ PARAM_TYPES = ("string", "integer", "number", "boolean", "object")
 # Set by BADAMOA for every run; a template may not use these as param names.
 RESERVED = {
     "classes", "unlabelled", "val_fraction", "gpus", "min_vram_mb", "model_name", "run_id", "release_id", "base_model",
+    "resumed_from",
 }  # fmt: skip
 MAX_BUNDLE_BYTES = 64 * 1024**2
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".vscode", "runs", "wandb"}
@@ -70,6 +71,8 @@ class TemplateManifest(BaseModel):
     license: str = ""
     hidden: bool = False  # not offered in the training dialog (test helpers)
     variant: str = ""  # the param that names the model variant, e.g. "model" → yolo11n
+    # The train code can pick up where an interrupted run stopped (it reads ``resume_dir`` from its config).
+    resume: bool = False
     entrypoints: dict[str, str] = Field(default_factory=dict)
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     environment: EnvironmentSpec = Field(default_factory=EnvironmentSpec)

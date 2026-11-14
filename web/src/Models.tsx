@@ -4,7 +4,16 @@ import { ProjectPicker, useProject } from "./ProjectPicker";
 import { ClassTable } from "./Training";
 import { api } from "./api";
 import { bytesLabel } from "./catalogTypes";
-import { METRIC_LABEL, type ModelDetail, type ModelInfo, classScore, delta, keyMetrics, metric } from "./trainTypes";
+import {
+  METRIC_LABEL,
+  type ModelDetail,
+  type ModelInfo,
+  type ModelOp,
+  classScore,
+  delta,
+  keyMetrics,
+  metric,
+} from "./trainTypes";
 import { Icon, Stat, timeAgo, usePolling } from "./ui";
 
 export function Models({ modelId, isAdmin }: { modelId?: string; isAdmin: boolean }) {
@@ -213,6 +222,7 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
           </tr>
         </tbody>
       </table>
+      <SharedEvaluations a={a} b={b} metricKeys={metricKeys} />
       {classRows.length > 0 && (
         <details className="fold inner">
           <summary>
@@ -243,6 +253,85 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
         </details>
       )}
     </section>
+  );
+}
+
+/** Evaluations both models have on the same release and split: the fair comparison. */
+function SharedEvaluations({ a, b, metricKeys }: { a: ModelDetail; b: ModelDetail; metricKeys: string[] }) {
+  const [rows, setRows] = useState<{ key: string; title: string; a: ModelOp; b: ModelOp }[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const latest = (ops: ModelOp[]) => {
+      const found = new Map<string, ModelOp>();
+      for (const op of ops) {
+        if (op.kind !== "eval" || op.status !== "succeeded" || !op.release) continue;
+        const key = `${op.release.id}:${String(op.params.split)}`;
+        if (!found.has(key)) found.set(key, op); // newest first
+      }
+      return found;
+    };
+    void Promise.all([a, b].map((m) => api<ModelOp[]>(`/models/${m.id}/ops`))).then(([first, second]) => {
+      if (!alive) return;
+      const ours = latest(first);
+      const theirs = latest(second);
+      setRows(
+        [...ours.keys()]
+          .filter((key) => theirs.has(key))
+          .map((key) => {
+            const op = ours.get(key)!;
+            const title = `${op.release!.dataset} ${op.release!.version} · ${String(op.params.split)}`;
+            return { key, title, a: op, b: theirs.get(key)! };
+          }),
+      );
+    });
+    return () => {
+      alive = false;
+    };
+  }, [a, b]);
+
+  if (rows == null) return null;
+  if (rows.length === 0) {
+    return (
+      <p className="muted small">
+        두 모델을 같은 릴리스로 평가한 기록이 없습니다. 각 모델 화면의 "평가"에서 같은 릴리스와 같은 부분으로 평가하면 여기에 나란히
+        나옵니다.
+      </p>
+    );
+  }
+  return (
+    <>
+      <div className="eyebrow op-head">같은 데이터로 평가한 결과</div>
+      <table>
+        <thead>
+          <tr>
+            <th>릴리스 · 부분 / 지표</th>
+            <th className="right">
+              {a.name} v{a.version}
+            </th>
+            <th className="right">
+              {b.name} v{b.version}
+            </th>
+            <th className="right">차이</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.flatMap((row) =>
+            metricKeys.map((k, i) => (
+              <tr key={`${row.key}.${k}`}>
+                <td>
+                  {i === 0 && <strong>{row.title}</strong>} <span className="muted">{METRIC_LABEL[k] ?? k}</span>
+                </td>
+                <td className="num right">{metric(row.a.result.metrics?.[k])}</td>
+                <td className="num right">{metric(row.b.result.metrics?.[k])}</td>
+                <td className={`num right ${sign(row.b.result.metrics?.[k], row.a.result.metrics?.[k])}`}>
+                  {delta(row.b.result.metrics?.[k], row.a.result.metrics?.[k])}
+                </td>
+              </tr>
+            )),
+          )}
+        </tbody>
+      </table>
+    </>
   );
 }
 
