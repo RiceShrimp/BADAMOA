@@ -84,6 +84,29 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             params_schema=_TRAIN_PARAMS,
         ),
         JobTypeSpec(
+            type="model.run",
+            title="모델 작업",
+            description="등록된 모델을 평가하거나, 다른 형식으로 내보내거나, 올린 이미지로 테스트합니다.",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "op_id": {"type": "string"},
+                    "model_id": {"type": "string"},
+                    "action": {"type": "string"},  # eval | export | predict
+                    "template": {"type": "object"},
+                    "environment": {"type": "object"},
+                    "params": {"type": "object", "default": {}},
+                    "train_params": {"type": "object", "default": {}},
+                    "classes": {"type": "array", "default": []},
+                    "weights": {"type": "object"},
+                    "release_id": {"type": "string"},
+                    "split": {"type": "string"},
+                    "class_ids": {"type": "array"},
+                },
+            },
+        ),
+        JobTypeSpec(
             type="env.check",
             title="환경 확인",
             description="노드에 있는 Python 환경이 실행되는지, 어떤 라이브러리가 들어 있는지 확인합니다.",

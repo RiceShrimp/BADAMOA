@@ -49,9 +49,9 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   return (await resp.json()) as T;
 }
 
-/** Send a file as the raw request body (template bundles). */
-export async function apiUpload<T>(path: string, file: Blob): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/zip" };
+/** Send a file as the raw request body (template bundles, sample images). */
+export async function apiUpload<T>(path: string, file: Blob, contentType = "application/zip"): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": contentType || "application/octet-stream" };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const resp = await fetch(`/api${path}`, { method: "POST", headers, body: file });

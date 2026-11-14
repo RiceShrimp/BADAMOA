@@ -72,6 +72,12 @@ def train_run(params: dict[str, Any]) -> dict[str, Any]:
     return trainer.run(params)
 
 
+def model_run(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import modelops
+
+    return modelops.run(params)
+
+
 def env_check(params: dict[str, Any]) -> dict[str, Any]:
     from badamoa.node import envs
 
@@ -91,6 +97,7 @@ HANDLERS = {
     "debug.sleep": debug_sleep,
     "data.import": data_import,
     "train.run": train_run,
+    "model.run": model_run,
     "env.check": env_check,
 }
 

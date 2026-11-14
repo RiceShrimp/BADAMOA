@@ -9,6 +9,9 @@ variant = "model"
 
 [entrypoints]
 train = "python train.py --config {config}"
+eval = "python ops.py --config {config}"
+export = "python ops.py --config {config}"
+predict = "python ops.py --config {config}"
 
 [params.model]
 type = "string"

@@ -146,7 +146,29 @@ export interface ModelInfo {
   release: { id: string; dataset: string; version: string; deleted: boolean } | null;
 }
 
+/** An evaluation, an export or a test run of a model. */
+export interface ModelOp {
+  id: string;
+  kind: "eval" | "export" | "predict";
+  status: RunStatus;
+  error: string | null;
+  wait_reason: string | null;
+  duration_s: number | null;
+  job_id: string | null;
+  created_at: string;
+  release: { id: string; dataset: string; version: string } | null;
+  params: Record<string, unknown>;
+  result: {
+    metrics?: Record<string, number>;
+    classes?: ClassMetric[];
+    file?: string;
+    predictions?: { image: string; boxes?: number[][]; top?: [number, number][] }[];
+  };
+  files: { name: string; kind: "image" | "file"; bytes: number; url: string }[];
+}
+
 export interface ModelDetail extends ModelInfo {
+  actions: string[];
   classes: string[];
   class_metrics: ClassMetric[];
   file_name: string;

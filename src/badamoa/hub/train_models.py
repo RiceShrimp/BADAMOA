@@ -99,6 +99,23 @@ class RunMetric(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ModelJob(Base):
+    """Something done with a model after training: an evaluation, an export, a test on sample images."""
+
+    __tablename__ = "model_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    model_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # eval | export | predict
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # what an evaluation measured on
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # metrics, per-class numbers, predictions
+    files: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)  # [{"name", "blob", "bytes", "kind"}]
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class RunFile(Base):
     """A file the training code recorded with the run: a plot, sample predictions, a report."""
 

@@ -263,3 +263,50 @@ def test_training_through_mcp(hub, release):
     assert call("set_model_alias", {"model_id": model["id"], "alias": "challenger"})["alias"] == "challenger"
     fetched = call("get_model", {"model_id": model["id"]})
     assert fetched["alias"] == "challenger" and "download_url" not in fetched and fetched["release"]["version"] == "v1"
+
+
+def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
+    run, job = _train(hub, release, {"model": "yolo11n.pt", "imgsz": 320})
+    assert job["status"] == "succeeded", _logs(hub, job["id"])
+    model_id = hub.get(f"/api/runs/{run['id']}").json()["model"]["id"]
+    assert hub.get(f"/api/models/{model_id}").json()["actions"] == ["eval", "export", "predict"]
+
+    def finished(op):
+        job = _wait(hub, op["job_id"])
+        assert job["status"] == "succeeded", _logs(hub, job["id"])
+        return next(o for o in hub.get(f"/api/models/{model_id}/ops").json() if o["id"] == op["id"])
+
+    # ---- evaluate on a release: the split the user asked for, with the settings the model was trained with
+    resp = hub.post(f"/api/models/{model_id}/eval", json={"release_id": release["id"], "split": "val", "gpus": 0})
+    assert resp.status_code == 200, resp.text
+    evaluation = finished(resp.json())
+    assert evaluation["kind"] == "eval" and evaluation["release"]["version"] == "v1"
+    assert evaluation["result"]["metrics"] == {"map50_95": 0.4, "map50": 0.6, "images": 2.0}
+    assert [c["name"] for c in evaluation["result"]["classes"]] == CLASSES
+    assert "'imgsz': 320" in _logs(hub, evaluation["job_id"])
+    assert hub.post(f"/api/models/{model_id}/eval", json={"release_id": release["id"], "split": "dev"}).status_code == 400
+    assert hub.post(f"/api/models/{model_id}/eval", json={"release_id": "nope"}).status_code == 404
+
+    # ---- export: the file comes back and can be downloaded
+    exported = finished(hub.post(f"/api/models/{model_id}/export", json={"format": "onnx"}).json())
+    assert exported["result"]["file"] == "model.onnx" and [f["name"] for f in exported["files"]] == ["model.onnx"]
+    download = httpx.get(str(hub.base_url).rstrip("/") + exported["files"][0]["url"])
+    assert download.content.startswith(b"exported:") and download.headers["content-disposition"].startswith("attachment")
+    assert hub.post(f"/api/models/{model_id}/export", json={"format": "exe"}).status_code == 400
+
+    # ---- test on uploaded images
+    image = next((tmp_path / "ds" / "images" / "val").iterdir())
+    uploads = [
+        hub.post("/api/uploads", params={"name": f"sample{i}.jpg"}, content=image.read_bytes()).json() for i in range(2)
+    ]
+    tested = finished(hub.post(f"/api/models/{model_id}/predict", json={"images": uploads, "conf": 0.5}).json())
+    assert [p["image"] for p in tested["result"]["predictions"]] == ["00_sample0.jpg", "01_sample1.jpg"]
+    assert tested["result"]["predictions"][0]["boxes"] == [[0, 0.5, 0.5, 0.5, 0.2, 0.2]]
+    assert [(f["name"], f["kind"]) for f in tested["files"]] == [("00_sample0.jpg", "image"), ("01_sample1.jpg", "image")]
+    shown = httpx.get(str(hub.base_url).rstrip("/") + tested["files"][0]["url"])
+    assert shown.content == image.read_bytes() and shown.headers["content-type"] == "image/jpeg"
+    assert "images" not in tested["params"] and tested["params"]["conf"] == 0.5
+    assert hub.post(f"/api/models/{model_id}/predict", json={"images": []}).status_code == 400
+    missing = {"images": [{"name": "x.jpg", "blob": "0" * 64}]}
+    assert hub.post(f"/api/models/{model_id}/predict", json=missing).status_code == 400
+    assert [o["kind"] for o in hub.get(f"/api/models/{model_id}/ops").json()] == ["predict", "export", "eval"]

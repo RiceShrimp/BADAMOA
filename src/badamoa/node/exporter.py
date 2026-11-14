@@ -25,6 +25,8 @@ class ExportOptions:
     classes: list[int] = field(default_factory=list)  # class ids to keep; empty = all
     unlabelled: str = "exclude"  # exclude | background
     val_fraction: float = 0.2  # held out of train when the release has no val split
+    # Evaluation wants the release's splits exactly as they are: no stand-in for a missing val split.
+    keep_splits: bool = False
 
 
 def select_boxes(item: dict[str, Any], keep: dict[int, int], options: ExportOptions) -> tuple[list[list[float]] | None, str]:
@@ -116,7 +118,7 @@ def build(
         selected.append((item, split, boxes))
 
     val_source = "release"
-    if not any(split == "val" for _, split, _ in selected):
+    if not options.keep_splits and not any(split == "val" for _, split, _ in selected):
         if options.val_fraction > 0:
             val_source = "holdout"
             selected = [
@@ -151,7 +153,7 @@ def build(
         counts[split] += 1
         box_total += len(boxes)
 
-    if counts["train"] == 0:
+    if counts["train"] == 0 and not options.keep_splits:
         raise ValueError("학습에 쓸 이미지가 없습니다. 릴리스의 라벨 상태와 파일 위치를 확인하세요.")
 
     lines = [f"path: {json.dumps(out.resolve().as_posix(), ensure_ascii=False)}", "train: images/train"]
@@ -208,7 +210,7 @@ def build_imagefolder(
             selected.append((item, item.get("split") if item.get("split") in SPLITS else "train", label))
 
     val_source = "release"
-    if not any(split == "val" for _, split, _ in selected):
+    if not options.keep_splits and not any(split == "val" for _, split, _ in selected):
         if any(split == "test" for _, split, _ in selected):
             val_source = "test"
             selected = [(item, "val" if split == "test" else split, label) for item, split, label in selected]
@@ -238,7 +240,7 @@ def build_imagefolder(
         method = _place(source, target)
         methods[method] = methods.get(method, 0) + 1
         counts[split] += 1
-    if counts["train"] == 0:
+    if counts["train"] == 0 and not options.keep_splits:
         raise ValueError("학습에 쓸 이미지가 없습니다. 릴리스의 라벨 상태와 파일 위치를 확인하세요.")
     for split in ("train", "val"):  # every class folder exists in both, so class indices line up
         if counts[split]:

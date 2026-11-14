@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "2"
+__version__ = "3"
 
 
 # ---- 설정 선언 ---------------------------------------------------------------------------
@@ -146,6 +146,11 @@ class Run:
         self.cache = Path(cfg.get("cache", "."))  # 실행 사이에 유지되는 폴더 (사전학습 가중치 등)
         self.device: str = cfg.get("device", "cpu")  # "cpu" 또는 "0", "0,1" (배정받은 GPU는 0번부터)
         self.classes: list[str] = cfg.get("classes", [])
+        # 평가·내보내기·테스트(eval · export · predict 진입점)에서만 채워지는 값
+        self.weights = Path(cfg["weights"]) if cfg.get("weights") else None  # 다룰 모델의 가중치 파일
+        self.train_params: dict[str, Any] = cfg.get("train_params", {})  # 그 모델을 학습할 때의 설정
+        self.split: str = cfg.get("split", "val")  # 평가할 split
+        self.source = Path(cfg.get("source", "."))  # 테스트할 이미지가 있는 폴더
         self.summary: dict[str, float] = {}
         self._step = 0
         self._weights = ""
@@ -249,11 +254,17 @@ def log_artifact(path: str | Path, name: str | None = None) -> None:
 log_image = log_artifact  # 이미지도 같은 방식으로 기록합니다
 
 
-def finish(metrics: dict[str, Any] | None = None) -> None:
-    """실행을 끝냅니다. metrics를 주면 그것이 최종 지표가 되고, 없으면 마지막으로 기록한 값이 됩니다."""
+def finish(metrics: dict[str, Any] | None = None, **extra: Any) -> None:
+    """실행을 끝냅니다. metrics를 주면 그것이 최종 지표가 되고, 없으면 마지막으로 기록한 값이 됩니다.
+
+    평가는 `finish(metrics, classes=[…])`, 테스트는 `finish(predictions=[…])` 처럼 결과를 함께 넘깁니다.
+    predictions 항목: {"image": 파일 이름, "boxes": [[클래스 번호, 확신도, cx, cy, w, h], …]} (탐지)
+                     {"image": 파일 이름, "top": [[클래스 번호, 확률], …]} (분류)
+    """
     run = _current()
     if run._finished:
         return
     run._finished = True
     final = _numbers(metrics) if metrics else run.summary
-    _emit("result", weights=run._weights, metrics=final, classes=run._class_metrics)
+    extra.setdefault("classes", run._class_metrics)
+    _emit("result", weights=run._weights, metrics=final, **extra)

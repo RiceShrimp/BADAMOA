@@ -1,6 +1,6 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "2"
+version = "3"
 description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
 task = "detect"
 data_format = "yolo"
@@ -8,12 +8,15 @@ license = "AGPL-3.0"
 variant = "model"
 
 [environment]
-requirements = ["ultralytics>=8.3,<9"]
+requirements = ["ultralytics>=8.3,<9", "onnx>=1.12", "onnxslim", "onnxruntime"]
 python = "3.12"
 torch = true
 
 [entrypoints]
 train = "python train.py --config {config}"
+eval = "python ops.py --config {config}"
+export = "python ops.py --config {config}"
+predict = "python ops.py --config {config}"
 
 [params.model]
 type = "string"

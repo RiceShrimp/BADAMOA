@@ -238,7 +238,7 @@ class NodeAgent:
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
                     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
-                if job["type"].startswith(("data.", "train.")):
+                if job["type"].startswith(("data.", "train.", "model.")):
                     # These jobs exchange data with the Hub themselves (import chunks, metrics, weights).
                     env["BADAMOA_HUB_URL"] = self.config.hub_url
                     env["BADAMOA_NODE_TOKEN"] = self.config.node_token

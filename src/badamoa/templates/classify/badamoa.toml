@@ -1,6 +1,6 @@
 name = "classify"
 title = "torchvision 분류"
-version = "1"
+version = "2"
 description = "이미지 분류: ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin (torchvision, ImageNet 사전학습)"
 task = "classify"
 data_format = "imagefolder"
@@ -8,11 +8,14 @@ license = "BSD-3-Clause"
 variant = "model"
 
 [environment]
-requirements = ["torch", "torchvision"]
+requirements = ["torch", "torchvision", "onnx", "onnxscript"]
 python = "3.12"
 torch = true
 
 [entrypoints]
 train = "python train.py --config {config}"
+eval = "python ops.py --config {config}"
+export = "python ops.py --config {config}"
+predict = "python ops.py --config {config}"
 
 # 설정은 train.py의 bm.params(...)에 선언되어 있습니다.

@@ -43,7 +43,7 @@ def _device() -> str:
     return ",".join(str(i) for i in range(len(visible))) if visible else "cpu"
 
 
-def _manifest(client: httpx.Client, base: str) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
+def manifest_stream(client: httpx.Client, base: str) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
     """The manifest header plus a lazy stream of its items (paged by item id)."""
 
     def page(after: int) -> dict[str, Any]:
@@ -122,7 +122,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
 
         # 1. dataset
         stage("data")
-        header, items = _manifest(client, base)
+        header, items = manifest_stream(client, base)
         print(f"릴리스 {header['dataset']} {header['version']} 를 학습 형식으로 준비합니다: {work / 'data'}")
         options = exporter.ExportOptions(
             classes=[int(c) for c in params.get("classes") or []],

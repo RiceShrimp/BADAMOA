@@ -229,7 +229,11 @@ def _running(db: Session, node: Node, job_id: str) -> tuple[Job, Run]:
 def manifest(db: Session, node: Node, job_id: str, after: int = 0, limit: int = 2000) -> dict[str, Any]:
     """What to train on: every item of the release with its split and the labels the release pins."""
     _, run = _running(db, node, job_id)
-    release = db.get(Release, run.release_id)
+    return release_manifest(db, node, db.get(Release, run.release_id), after, limit)
+
+
+def release_manifest(db: Session, node: Node, release: Release, after: int = 0, limit: int = 2000) -> dict[str, Any]:
+    """A page of a release's items as the node needs them to lay the data out for a template."""
     dataset = db.get(Dataset, release.dataset_id)
     space = db.get(LabelSpace, release.label_space_id)
     limit = max(1, min(limit, MANIFEST_MAX))

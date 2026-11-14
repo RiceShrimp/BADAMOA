@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ModelOps } from "./ModelOps";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { ClassTable } from "./Training";
 import { api } from "./api";
@@ -317,6 +318,8 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
           <Stat key={k} icon="chart" label={METRIC_LABEL[k]} value={metric(model.metrics[k])} sub="검증 데이터 기준" />
         ))}
       </div>
+
+      <ModelOps model={model} />
 
       <section className="card">
         <h3>계보</h3>

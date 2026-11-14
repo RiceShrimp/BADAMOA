@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
-from . import catalog, services, training
+from . import catalog, modelops, services, training
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -104,7 +104,10 @@ def list_models(
 def get_model(
     model_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
-    return training.model_view(db, hub.settings, training.get_model(db, model_id), detail=True)
+    model = training.get_model(db, model_id)
+    view = training.model_view(db, hub.settings, model, detail=True)
+    view["actions"] = modelops.actions(db, model)  # what this model's template can do: eval, export, predict
+    return view
 
 
 @router.post("/models/{model_id}/alias")

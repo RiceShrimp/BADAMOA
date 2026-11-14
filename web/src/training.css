@@ -530,3 +530,25 @@ pre.packages {
   overflow-y: auto;
   margin: 0;
 }
+
+/* what was done with a model: evaluations, exports, tests */
+.op-head {
+  margin: 16px 0 6px;
+}
+.op-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 5px 0;
+}
+.op-row .run-file {
+  padding: 0;
+}
+.op-test {
+  padding: 6px 0 10px;
+  border-top: 1px solid var(--border);
+}
+.op-test:first-of-type {
+  border-top: 0;
+}
