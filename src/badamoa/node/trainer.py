@@ -409,7 +409,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 except httpx.HTTPError:
                     pass  # the next one will do
 
-        threading.Thread(target=flush_every_second, daemon=True).start()
+        flusher = threading.Thread(target=flush_every_second, daemon=True)
+        flusher.start()
         for raw in proc.stdout:
             line = ANSI.sub("", raw).rstrip()
             if not line.startswith(EVENT_PREFIX):
@@ -442,6 +443,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             elif kind == "checkpoint":
                 note_checkpoint(event)
         ended.set()
+        # A batch the thread is still sending must arrive before the final one and the result:
+        # arriving after the result it would put the best-so-far back in place of the final metrics.
+        flusher.join(timeout=60)
         flush()
         if proc.wait() != 0:
             raise RuntimeError(f"학습 프로세스가 종료 코드 {proc.returncode}로 끝났습니다.")
