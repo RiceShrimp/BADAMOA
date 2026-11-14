@@ -5,6 +5,27 @@ BADAMOA의 버전별 변경 내용입니다. 사용자에게 보이는 변화를
 
 형식: `## [버전] - 날짜` 아래에 `### 추가 / 변경 / 수정 / 제거 / 알려진 문제` 를 두고 항목을 `- ` 로 적습니다.
 
+## [0.15.0] - 2026-11-15
+
+실행과 모델에 메모와 태그를 남기고, 그것으로 찾고 걸러 봅니다. 모델 alias를 자유롭게 짓고, 실행 표를 원하는 열로 보고 CSV로 받습니다.
+
+### 추가
+- 실행: 메모, 태그, 이름 바꾸기. 실행 화면 제목 아래 "메모 · 태그 추가"에서 편집
+- 모델 버전: 설명과 태그
+- 학습 · 모델 목록에서 이름 · 메모 · 태그로 찾기, 프로젝트에서 쓰는 태그를 눌러 걸러 보기
+- 모델 alias를 자유롭게: champion · challenger · production · staging을 먼저 보여 주고 다른 이름도 됨. 한 버전에 여러 개, 같은 모델의 다른 버전에 있던 alias는 옮겨 옴. × 로 떼기
+- 이름과 alias로 버전 찾기: `GET /api/projects/{id}/models?name=…&alias=production` (MLflow의 `name@alias`)
+- 학습 목록의 "열 고르기": 모든 지표와 설정(epochs, lr0, model 등) 중에서 보고 싶은 열을 고름. 프로젝트마다 이 브라우저에 기억
+- 학습 목록의 열 머리를 눌러 정렬
+- 학습 목록 "CSV로 받기": 보이는 실행의 모든 지표 · 설정 · 태그 · 메모를 한 표로
+- 실행 화면 "단계별 지표 CSV로 받기": 기록한 모든 step (화면 그래프처럼 줄이지 않음)
+- MCP: `update_training_run`, `update_model`, 실행 · 모델 목록의 태그 · 글자 검색, `set_model_alias`의 `remove`, `start_training`의 `tags` · `note`
+- API: `PATCH /api/runs/{id}`, `PATCH /api/models/{id}`, `DELETE /api/models/{id}/alias/{alias}`, `GET /api/projects/{id}/tags`
+
+### 변경
+- "다시 실행"은 태그를, "이어서 실행"은 태그와 메모를 이어받음
+- `set_model_alias`(MCP)와 alias API가 alias를 바꾸지 않고 더함. 모두 떼려면 빈 alias
+
 ## [0.14.0] - 2026-11-14
 
 학습 · 평가가 남긴 것은 전부 BADAMOA가 설치된 서버(Hub)에 보관합니다. 학습 서버에는 캐시만 남습니다.

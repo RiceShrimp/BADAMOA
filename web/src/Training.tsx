@@ -1,9 +1,10 @@
-import { AliasChip, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
+import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
 import { FileList, fileSize } from "./Files";
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LineChart } from "./Chart";
 import { EpochChart, type EpochSeries } from "./EpochChart";
 import { ProjectPicker, useProject } from "./ProjectPicker";
+import { RunTable } from "./RunTable";
 import { type Job, type LogLine, type MetricHistory, api } from "./api";
 import type { LabelClass, ReleaseInfo, TreeDataset } from "./catalogTypes";
 import {
@@ -157,100 +158,26 @@ function RunList({
 
       {compared.length > 0 && <Comparison ids={compared} live={busy} task={task} />}
 
-      {(filtered || (runs?.length ?? 0) > 5 || (projectTags?.runs.length ?? 0) > 0) && (
-        <ListFilter
-          query={typed}
-          onQuery={setTyped}
-          tags={projectTags?.runs ?? []}
-          tag={tag}
-          onTag={setTag}
-          placeholder="이름 · 메모 · 태그로 찾기"
-        />
-      )}
-
-      <div className="card flush table-wrap">
-        <table className="runs">
-          <thead>
-            <tr>
-              <th aria-label="비교" />
-              <th>실행</th>
-              <th>상태</th>
-              {metricKeys.map((k) => (
-                <th key={k} className="right">
-                  {METRIC_LABEL[k]}
-                </th>
-              ))}
-              <th>모델</th>
-              <th>노드</th>
-              <th className="right">소요</th>
-              <th className="right">시작</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs?.length === 0 && (
-              <tr>
-                <td colSpan={11} className="empty">
-                  {filtered ? "찾는 실행이 없습니다." : '아직 학습한 적이 없습니다. "새 학습"으로 릴리스를 골라 시작하세요.'}
-                </td>
-              </tr>
-            )}
-            {runs?.map((run) => {
-              const slot = compared.indexOf(run.id) + 1;
-              return (
-                <tr key={run.id} className="clickable" onClick={() => (window.location.hash = `#/training/${run.id}`)}>
-                  <td onClick={(e) => e.stopPropagation()} className="pick">
-                    <label title="지표 그래프에 겹쳐 보기">
-                      <input
-                        type="checkbox"
-                        checked={slot > 0}
-                        onChange={() => toggle(run.id)}
-                        disabled={run.epoch === 0}
-                        aria-label={`${run.name} 지표 겹쳐 보기`}
-                      />
-                      {slot > 0 && <i style={{ background: `var(--series-${slot})` }} />}
-                    </label>
-                  </td>
-                  <td>
-                    <strong>{run.name}</strong> <TagList tags={run.tags} />
-                    <div className="muted small">
-                      {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 릴리스"} ·{" "}
-                      {run.template.variant || run.template.title}
-                    </div>
-                    {run.note && <div className="note-line">{run.note}</div>}
-                  </td>
-                  <td>
-                    <Badge kind={run.status}>{STATUS_LABEL[run.status]}</Badge>
-                    {run.status === "running" &&
-                      (run.stage === "train" && run.epochs > 0 ? (
-                        <Progress epoch={run.epoch} epochs={run.epochs} />
-                      ) : (
-                        <div className="wait-reason">{STAGE_LABEL[run.stage] ?? "준비"} 중</div>
-                      ))}
-                    {run.status === "queued" && run.wait_reason && <div className="wait-reason">{run.wait_reason}</div>}
-                  </td>
-                  {metricKeys.map((k) => (
-                    <td key={k} className="num right">
-                      {metric(run.metrics[k])}
-                    </td>
-                  ))}
-                  <td onClick={(e) => e.stopPropagation()}>
-                    {run.model ? (
-                      <a href={`#/models/${run.model.id}`}>
-                        {run.model.name} v{run.model.version}
-                      </a>
-                    ) : (
-                      <span className="muted">–</span>
-                    )}
-                  </td>
-                  <td>{run.node_name ?? <span className="muted">배정 대기</span>}</td>
-                  <td className="num right">{duration(run.duration_s)}</td>
-                  <td className="muted right">{timeAgo(run.created_at)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <RunTable
+        runs={runs ?? null}
+        projectId={projectId}
+        task={task}
+        filtered={filtered}
+        compared={compared}
+        onCompare={toggle}
+        tools={
+          (filtered || (runs?.length ?? 0) > 5 || (projectTags?.runs.length ?? 0) > 0) && (
+            <ListFilter
+              query={typed}
+              onQuery={setTyped}
+              tags={projectTags?.runs ?? []}
+              tag={tag}
+              onTag={setTag}
+              placeholder="이름 · 메모 · 태그로 찾기"
+            />
+          )
+        }
+      />
 
       {creating && (
         <NewRun
@@ -296,20 +223,6 @@ function Stages({ run }: { run: RunDetail }) {
         </li>
       ))}
     </ol>
-  );
-}
-
-function Progress({ epoch, epochs }: { epoch: number; epochs: number }) {
-  const pct = epochs > 0 ? Math.min(100, Math.round((epoch / epochs) * 100)) : 0;
-  return (
-    <div className="progress" title={`epoch ${epoch} / ${epochs}`}>
-      <div className="progress-bar">
-        <i style={{ width: `${pct}%` }} />
-      </div>
-      <span>
-        {epoch}/{epochs}
-      </span>
-    </div>
   );
 }
 
@@ -536,6 +449,13 @@ function RunView({ runId }: { runId: string }) {
         </a>
       )}
 
+      {charts.length > 0 && run.metrics_csv_url && (
+        <div className="charts-tools">
+          <a className="link small" href={run.metrics_csv_url} download>
+            단계별 지표 CSV로 받기
+          </a>
+        </div>
+      )}
       {charts.length > 0 && (
         <div className="mini-charts wide">
           {charts.map((c) => (

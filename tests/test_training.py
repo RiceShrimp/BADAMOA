@@ -202,6 +202,10 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     table = httpx.get(base + files["logs/history.csv"]["url"])
     assert table.text.startswith("epoch,map50_95\n5,") and "history.csv" in table.headers["content-disposition"]
     assert "logs" not in table.headers["content-disposition"]
+    table = httpx.get(base + done["metrics_csv_url"])  # every step, for a spreadsheet
+    lines = table.content.decode("utf-8-sig").splitlines()
+    assert lines[0].split(",")[:3] == ["step", "time", "map50"] and "map50_95" in lines[0] and len(lines) == 6
+    assert lines[5].startswith("5,") and "street-v1-yolo11n-metrics.csv" in table.headers["content-disposition"]
     bundle = httpx.get(base + done["files_url"])
     assert bundle.status_code == 200 and "street-v1-yolo11n.zip" in bundle.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:

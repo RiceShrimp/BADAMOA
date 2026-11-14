@@ -390,6 +390,20 @@ def blob_response(storage, blob: str, name: str, image: bool) -> StreamingRespon
     return StreamingResponse(stream(), media_type=kind if inline else "application/octet-stream", headers=headers)
 
 
+@media_router.get("/run-metrics/{run_id}")
+def run_metrics(run_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Session = Depends(db_session)) -> Response:
+    """The run's metrics at every step as CSV (with a BOM, so spreadsheet programs read Korean names right)."""
+    if not catalog.verify_media(hub.settings, "run-metrics", run_id, exp, sig):
+        raise HTTPException(status_code=403, detail="링크가 만료되었거나 올바르지 않습니다.")
+    run = training.get_run(db, run_id)
+    file_name = quote(f"{run.name or run.id}-metrics.csv")
+    return Response(
+        training.metrics_csv(db, run).encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=\"metrics.csv\"; filename*=UTF-8''{file_name}"},
+    )
+
+
 @media_router.get("/run-files/{run_id}")
 def run_files(
     run_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Session = Depends(db_session)

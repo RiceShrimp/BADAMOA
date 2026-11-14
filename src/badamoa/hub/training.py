@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 from pathlib import Path
 from typing import Any
@@ -638,6 +640,7 @@ def run_view(
             for f in db.scalars(select(RunFile).where(RunFile.run_id == run.id).order_by(RunFile.created_at, RunFile.name))
         ]
         view["files_url"] = catalog.media_url(settings, "run-files", run.id) if view["files"] else None
+        view["metrics_csv_url"] = catalog.media_url(settings, "run-metrics", run.id) if rows else None
         view["class_metrics"] = run.class_metrics or []
         view["settings"] = _settings_of(db, run)
     return view
@@ -652,6 +655,18 @@ def _search(query: Any, table: Any, kind: str, tag: str, q: str) -> Any:
         tagged = select(Tag.object_id).where(Tag.kind == kind, Tag.name.ilike(like))
         query = query.where(or_(table.name.ilike(like), table.note.ilike(like), table.id.in_(tagged)))
     return query
+
+
+def metrics_csv(db: Session, run: Run) -> str:
+    """Every step the run logged, one row each (the screen thins long histories out; this does not)."""
+    rows = db.scalars(select(RunMetric).where(RunMetric.run_id == run.id).order_by(RunMetric.step)).all()
+    keys = sorted({k for r in rows for k in r.data})
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["step", "time", *keys])
+    for r in rows:
+        writer.writerow([r.step, iso(r.ts), *("" if r.data.get(k) is None else r.data[k] for k in keys)])
+    return out.getvalue()
 
 
 def list_runs(

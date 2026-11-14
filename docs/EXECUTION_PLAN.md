@@ -175,7 +175,9 @@ bm.finish({"map50_95": best})               # 최종 지표
 | 파일·이미지 기록 | `wandb.log({"img": wandb.Image})`, `log_artifact` | `log_artifact`, `log_image` | `bm.log_artifact(파일)` → 실행 화면의 "산출물"(이미지는 미리보기). 분류 템플릿은 혼동 행렬을 자동 기록 | 0.8.0 |
 | 산출물 전체 보관 | `wandb.save`, `log_artifact(폴더)` | `log_artifacts(폴더)`, autolog | 자동: 출력 폴더(`run.out`)에 남긴 파일은 부르지 않아도 전부 Hub로. 폴더 구조 그대로 보고 한 번에 내려받음. 평가·내보내기·테스트, 중단된 실행도 같음 | 0.14.0 |
 | 보관 위치와 사용량 | 프로젝트 저장 용량 | artifact store | 설정의 "저장 공간": Hub의 폴더 하나에 모두, 종류별 크기와 디스크 여유 | 0.14.0 |
-| 메모·태그 | notes, tags | tags, description | — | 계획 |
+| 메모·태그 | notes, tags | tags, description | 실행: 메모 · 태그 · 이름, 모델: 설명 · 태그. 목록에서 태그로 걸러 보고 글자로 찾음 | 0.15.0 |
+| 모델 alias | aliases (`best`, `production`) | aliases (`name@champion`) | 자유로운 이름, 한 버전에 여러 개, 같은 모델 안에서는 한 버전에만. 이름 + alias로 찾기 | 0.15.0 |
+| 실행 표, 내보내기 | Runs 표(열 고르기), CSV | `search_runs` → DataFrame | 학습 목록에서 지표 · 설정 열 고르기와 정렬, CSV로 받기. 실행별 단계 지표 CSV | 0.15.0 |
 | 하이퍼파라미터 탐색 | Sweeps | (Optuna 연동) | — | 계획 |
 | 단계별 이미지·표 | `wandb.Image`, Tables | `log_image(step=)`, `log_table` | — | 계획 |
 | 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 0.10.0 |

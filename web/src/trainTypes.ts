@@ -136,6 +136,7 @@ export interface RunDetail extends Run {
   class_metrics: ClassMetric[];
   files: RunFile[];
   files_url: string | null; // everything below as one zip
+  metrics_csv_url: string | null; // every logged step, not thinned out
   settings: { name: string; label: string; value: unknown; group: string; advanced: boolean; changed: boolean }[];
 }
 
