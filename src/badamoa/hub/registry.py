@@ -37,6 +37,11 @@ def sync_builtin(db: Session) -> None:
             db.add(row)
         row.title, row.task, row.hidden = manifest.title, manifest.task, manifest.hidden
         row.manifest, row.builtin, row.deleted_at = manifest.model_dump(), True, None
+        db.flush()
+        # A node only carries the version shipped with it, so earlier built-in versions leave the list.
+        older = select(Template).where(Template.name == name, Template.builtin, Template.id != row.id)
+        for previous in db.scalars(older):
+            previous.deleted_at = previous.deleted_at or utcnow()
 
 
 def register_template(db: Session, user: User, data: bytes, storage: Storage, via: str = "api") -> Template:
@@ -127,7 +132,7 @@ def list_templates(db: Session, include_hidden: bool = False) -> list[dict[str, 
         ).all()
     )
     shown = [t for t in newest.values() if include_hidden or not t.hidden]
-    shown.sort(key=lambda t: (not t.builtin, t.title.lower()))
+    shown.sort(key=lambda t: (t.name != DEFAULT_TEMPLATE, not t.builtin, t.title.lower()))
     return [template_view(db, t, counts[t.name], models.get(t.name, 0)) for t in shown]
 
 

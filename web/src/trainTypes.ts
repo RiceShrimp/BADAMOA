@@ -11,6 +11,7 @@ export interface TemplateParam {
   minimum: number | null;
   maximum: number | null;
   advanced: boolean;
+  group: string;
 }
 
 export interface Template {
@@ -112,7 +113,7 @@ export interface RunDetail extends Run {
   export: ExportSummary;
   info: Record<string, unknown>;
   class_metrics: ClassMetric[];
-  settings: { name: string; label: string; value: unknown }[];
+  settings: { name: string; label: string; value: unknown; group: string; advanced: boolean; changed: boolean }[];
 }
 
 export interface ModelInfo {

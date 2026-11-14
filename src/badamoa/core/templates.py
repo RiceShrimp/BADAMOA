@@ -11,8 +11,10 @@ through stdout lines starting with ``@@badamoa `` (see ``badamoa.templates``).
 
 from __future__ import annotations
 
+import ast
 import io
 import re
+import shlex
 import tomllib
 import zipfile
 from pathlib import Path
@@ -46,6 +48,7 @@ class ParamSpec(BaseModel):
     minimum: float | None = None
     maximum: float | None = None
     advanced: bool = False  # folded under "세부 설정" in the dialog
+    group: str = ""  # heading inside "세부 설정", e.g. "최적화"
 
 
 class EnvironmentSpec(BaseModel):
@@ -70,7 +73,74 @@ class TemplateManifest(BaseModel):
     environment: EnvironmentSpec = Field(default_factory=EnvironmentSpec)
 
 
-def parse_manifest(text: str) -> TemplateManifest:
+# ---- settings declared in the code itself (``badamoa_sdk.params(...)``) ---------------
+
+_DECLARATIONS = {"choice": "string", "text": "string", "integer": "integer", "number": "number", "boolean": "boolean"}
+_OPTIONS = {"label", "help", "group", "advanced", "custom"}
+
+
+def entry_script(command: str) -> str:
+    """The Python file a command starts, e.g. ``python train.py --config {config}`` → ``train.py``."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return ""
+    return next((part for part in parts if part.endswith(".py")), "")
+
+
+def _train_script(manifest_text: str) -> str:
+    """The train script named in a declaration file, read leniently (full checks come later)."""
+    try:
+        command = tomllib.loads(manifest_text).get("entrypoints", {}).get("train", "")
+    except tomllib.TOMLDecodeError:
+        return ""
+    return entry_script(command) if isinstance(command, str) else ""
+
+
+def params_from_code(source: str, file_name: str = "train.py") -> dict[str, ParamSpec]:
+    """Read the settings a script declares with ``params(name=integer(…), …)`` without running it.
+
+    Only the syntax is looked at, so the values must be written out (numbers, strings,
+    lists) — that is what makes it safe to do on the Hub, where the code never runs.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        raise TemplateError(f"{file_name}을 읽을 수 없습니다 ({e.lineno}행): {e.msg}") from e
+    found: dict[str, ParamSpec] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "attr", getattr(node.func, "id", "")) != "params":
+            continue
+        for keyword in node.keywords:
+            call = keyword.value
+            kind = getattr(getattr(call, "func", None), "attr", getattr(getattr(call, "func", None), "id", ""))
+            if keyword.arg is None or not isinstance(call, ast.Call) or kind not in _DECLARATIONS:
+                continue  # not a declaration of ours: some other function that happens to be called params
+            where = f"{file_name} {call.lineno}행, 설정 {keyword.arg}"
+            try:
+                args = [ast.literal_eval(a) for a in call.args]
+                options = {k.arg: ast.literal_eval(k.value) for k in call.keywords if k.arg}
+            except (ValueError, SyntaxError):
+                raise TemplateError(f"{where}: 선언에는 값을 직접 적어야 합니다 (변수나 계산식은 쓸 수 없습니다).") from None
+            spec: dict[str, Any] = {"type": _DECLARATIONS[kind], **{k: v for k, v in options.items() if k in _OPTIONS}}
+            if kind == "choice":
+                choices = list(args[0] if args else options.get("options", []))
+                if not choices:
+                    raise TemplateError(f"{where}: choice에는 고를 값의 목록이 필요합니다.")
+                spec["choices"] = choices
+                spec["default"] = options.get("default", args[1] if len(args) > 1 else choices[0])
+            else:
+                spec["default"] = options.get("default", args[0] if args else ("" if kind == "text" else None))
+                spec["minimum"], spec["maximum"] = options.get("min"), options.get("max")
+            try:
+                found[keyword.arg] = ParamSpec(**spec)
+            except ValidationError:
+                raise TemplateError(f"{where}: 선언의 값이 올바르지 않습니다.") from None
+    return found
+
+
+def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
+    """``code`` is the source of the train script; settings it declares are added to those in the file."""
     try:
         manifest = TemplateManifest(**tomllib.loads(text))
     except tomllib.TOMLDecodeError as e:
@@ -78,6 +148,10 @@ def parse_manifest(text: str) -> TemplateManifest:
     except ValidationError as e:
         problems = "; ".join(f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()[:5])
         raise TemplateError(f"{MANIFEST}의 형식이 맞지 않습니다 — {problems}") from e
+    if code:
+        declared = params_from_code(code, entry_script(manifest.entrypoints.get("train", "")) or "train.py")
+        # Code order first; what the file says about the same setting wins.
+        manifest.params = {**declared, **manifest.params}
     if not _NAME_RE.match(manifest.name):
         raise TemplateError("name은 영문 소문자·숫자·`-`·`_`·`.`로 2~63자여야 합니다 (예: inhouse-rtdetr).")
     if not manifest.version.strip():
@@ -114,7 +188,9 @@ def load_manifest(folder: Path) -> TemplateManifest:
     path = folder / MANIFEST
     if not path.is_file():
         raise TemplateError(f"{folder}에 {MANIFEST}이 없습니다. `badamoa template init`으로 뼈대를 만들 수 있습니다.")
-    return parse_manifest(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    script = folder / _train_script(text)
+    return parse_manifest(text, script.read_text(encoding="utf-8") if script.is_file() else None)
 
 
 def _coerce(name: str, spec: ParamSpec, value: Any) -> Any:
@@ -201,7 +277,9 @@ def read_bundle(data: bytes) -> TemplateManifest:
                     raise TemplateError(f"압축 파일에 허용되지 않는 경로가 있습니다: {name}")
             if MANIFEST not in names:
                 raise TemplateError(f"압축 파일의 맨 위에 {MANIFEST}이 없습니다. 템플릿 폴더의 내용을 그대로 압축하세요.")
-            return parse_manifest(archive.read(MANIFEST).decode("utf-8"))
+            text = archive.read(MANIFEST).decode("utf-8")
+            script = _train_script(text)
+            return parse_manifest(text, archive.read(script).decode("utf-8") if script in names else None)
     except zipfile.BadZipFile as e:
         raise TemplateError("zip 파일이 아닙니다.") from e
     except UnicodeDecodeError as e:

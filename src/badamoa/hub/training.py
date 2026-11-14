@@ -182,6 +182,8 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
     source = get_run(db, run_id)
     c = source.config
     row = db.get(Template, (source.template or {}).get("id", "")) or registry.get_template(db, source.trainer)
+    if row.deleted_at is not None and row.builtin:
+        row = registry.get_template(db, row.name)  # built-in templates move on with the installed version
     if row.deleted_at is not None:
         raise ServiceError(409, f"이 실행이 쓴 템플릿({row.title} {row.version})이 삭제되었습니다.")
     declared = registry.manifest_of(row).params
@@ -366,7 +368,15 @@ def _settings_of(db: Session, run: Run) -> list[dict[str, Any]]:
     declared = registry.manifest_of(row).params if row else {}
     names = list(declared) + [k for k in run.config if k not in declared and k not in RESERVED]
     return [
-        {"name": k, "label": (declared[k].label if k in declared else "") or k, "value": run.config[k]}
+        {
+            "name": k,
+            "label": (declared[k].label if k in declared else "") or k,
+            "value": run.config[k],
+            "group": declared[k].group if k in declared else "",
+            "advanced": declared[k].advanced if k in declared else False,
+            # Lets the screen show what was changed first and fold the untouched defaults away.
+            "changed": k not in declared or run.config[k] != declared[k].default,
+        }
         for k in names
         if k in run.config and not isinstance(run.config[k], dict)
     ]

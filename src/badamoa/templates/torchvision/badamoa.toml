@@ -1,0 +1,18 @@
+name = "torchvision"
+title = "torchvision 검출"
+version = "1"
+description = "torchvision의 검출 모델: Faster R-CNN · RetinaNet · FCOS (ResNet-50 백본), SSDlite (MobileNetV3)"
+task = "detect"
+data_format = "yolo"
+license = "BSD-3-Clause"
+variant = "model"
+
+[environment]
+requirements = ["torch", "torchvision", "torchmetrics", "pycocotools"]
+python = "3.12"
+torch = true
+
+[entrypoints]
+train = "python train.py --config {config}"
+
+# 설정은 train.py의 bm.params(...)에 선언되어 있습니다.

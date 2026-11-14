@@ -221,7 +221,7 @@ src/badamoa/
   hub/      FastAPI 앱 · services · REST(api) · 노드 프로토콜(agent_api) · MCP(mcp_server)
             설치 스크립트/wheel 인덱스(install) · static/ (빌드된 웹 UI)
   node/     Node Agent · 내장 Job · 데이터 가져오기 · 학습용 변환 · 환경 · 부팅 서비스 등록
-  templates/  내장 모델 템플릿(yolo, dummy)과 새 템플릿의 뼈대(_scaffold)
+  templates/  내장 모델 템플릿(yolo, torchvision, dummy) · SDK(_sdk/badamoa_sdk.py) · 새 템플릿의 뼈대(_scaffold)
   cli.py    `badamoa hub …` / `badamoa node …`
 web/        React + Vite (빌드 결과는 src/badamoa/hub/static 으로)
 plugins/    (Phase 3~) 저장소 밖에서 추가하는 플러그인 — labelers/ generators/ exporters/ curators/

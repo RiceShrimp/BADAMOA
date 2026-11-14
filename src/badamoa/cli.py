@@ -234,7 +234,7 @@ def template_init(
     name: Annotated[str | None, typer.Option(help="템플릿 이름 (기본: 폴더 이름)")] = None,
     task: Annotated[str, typer.Option(help="detect | segment | classify")] = "detect",
 ) -> None:
-    """새 모델 템플릿의 뼈대를 만듭니다: 선언 파일, 학습 코드 예시, 보고 도우미."""
+    """새 모델 템플릿의 뼈대를 만듭니다: 선언 파일, 학습 코드 예시, SDK(badamoa_sdk.py)."""
     import re
 
     from badamoa import templates
@@ -254,6 +254,8 @@ def template_init(
         if source.name == MANIFEST:
             text = text.replace("__NAME__", slug).replace("__TITLE__", title).replace("__TASK__", task)
         (folder / source.name).write_text(text, encoding="utf-8", newline="\n")
+    sdk = templates.SDK / "badamoa_sdk.py"  # a copy, so the code also runs outside BADAMOA
+    (folder / sdk.name).write_text(sdk.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     typer.echo(f"템플릿 뼈대를 만들었습니다: {folder}")
     typer.echo("  1. train.py의 표시한 부분을 학습 코드로 바꿉니다")
     typer.echo(f"  2. badamoa template check {folder}")
@@ -273,7 +275,11 @@ def template_check(folder: Annotated[Path, typer.Argument(help="템플릿 폴더
     typer.echo(f"{manifest.title} ({manifest.name} {manifest.version})")
     typer.echo(f"  태스크 : {manifest.task} · 데이터 형식 {manifest.data_format}")
     typer.echo(f"  진입점 : {', '.join(manifest.entrypoints)}")
-    typer.echo(f"  설정   : {', '.join(manifest.params) or '(없음)'}")
+    basic = [name for name, spec in manifest.params.items() if not spec.advanced]
+    detailed = [name for name, spec in manifest.params.items() if spec.advanced]
+    typer.echo(f"  설정   : {', '.join(basic) or '(없음)'}")
+    if detailed:
+        typer.echo(f"  세부 설정 : {', '.join(detailed)}")
     environment = manifest.environment.default or ("자동 설치" if manifest.environment.requirements else "노드의 Python")
     typer.echo(f"  환경   : {environment}")
     typer.echo(f"  묶음   : {size / 1024:.0f} KB")

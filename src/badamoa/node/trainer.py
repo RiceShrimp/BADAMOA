@@ -172,6 +172,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",
             "NO_COLOR": "1",  # the log is plain text
+            # Template code can ``import badamoa_sdk`` without shipping or installing it.
+            "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
             # Ultralytics keeps its settings here instead of touching the user's own.
             "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
         }

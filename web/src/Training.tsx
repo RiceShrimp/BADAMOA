@@ -232,6 +232,10 @@ function RunList({
   );
 }
 
+function settingValue(value: unknown): string {
+  return typeof value === "boolean" ? (value ? "예" : "아니오") : String(value);
+}
+
 /** Where a waiting or running job is: one line, in plain words. */
 function Stages({ run }: { run: RunDetail }) {
   const order = ["queued", "data", "env", "train", "upload"];
@@ -377,6 +381,9 @@ function RunView({ runId }: { runId: string }) {
   const excluded = run.export.excluded ?? {};
   const leftOut = (excluded.unlabelled ?? 0) + (excluded.partial ?? 0) + (excluded.missing ?? 0);
   const classRows = [...run.class_metrics].sort((a, b) => b.map50_95 - a.map50_95);
+  // Basic settings and anything the user changed; detailed settings left at their default are folded.
+  const shownSettings = run.settings.filter((s) => !s.advanced || s.changed);
+  const defaultSettings = run.settings.filter((s) => s.advanced && !s.changed);
   const info = run.info as { ultralytics?: string; torch?: string; device?: string; gpus?: string[] };
 
   return (
@@ -506,10 +513,10 @@ function RunView({ runId }: { runId: string }) {
             <dd>
               {run.template.title} {run.template.version && <span className="muted">v{run.template.version}</span>}
             </dd>
-            {run.settings.map((item) => (
+            {shownSettings.map((item) => (
               <Fragment key={item.name}>
                 <dt>{item.label}</dt>
-                <dd>{typeof item.value === "boolean" ? (item.value ? "예" : "아니오") : String(item.value)}</dd>
+                <dd>{settingValue(item.value)}</dd>
               </Fragment>
             ))}
             <dt>환경</dt>
@@ -543,6 +550,22 @@ function RunView({ runId }: { runId: string }) {
               </>
             )}
           </dl>
+          {defaultSettings.length > 0 && (
+            <details className="defaults">
+              <summary>기본값 그대로 둔 설정 {defaultSettings.length}개</summary>
+              <dl className="kv">
+                {defaultSettings.map((item) => (
+                  <Fragment key={item.name}>
+                    <dt>
+                      {item.group ? `${item.group} · ` : ""}
+                      {item.label}
+                    </dt>
+                    <dd>{settingValue(item.value)}</dd>
+                  </Fragment>
+                ))}
+              </dl>
+            </details>
+          )}
         </section>
       </div>
 
@@ -761,6 +784,13 @@ function NewRun({
   const fields = (template?.params ?? []).filter((p) => p.type !== "object");
   const basic = fields.filter((p) => !p.advanced);
   const advanced = fields.filter((p) => p.advanced);
+  // Hyperparameters under the headings the template gave them, in the template's order.
+  const groups: [string, TemplateParam[]][] = [];
+  for (const p of advanced) {
+    const entry = groups.find(([name]) => name === p.group);
+    if (entry) entry[1].push(p);
+    else groups.push([p.group, [p]]);
+  }
   const pickTemplate = (name: string) => {
     setTemplateName(name);
     setValues(initialValues(templates?.find((t) => t.name === name)));
@@ -853,9 +883,19 @@ function NewRun({
 
           <details className="advanced">
             <summary>
-              세부 설정 <span className="muted">(비워 두면 자동)</span>
+              세부 설정{" "}
+              <span className="muted">
+                {advanced.length > 0 ? `(하이퍼파라미터 ${advanced.length}개 · 환경 · 클래스 — 그대로 두면 기본값)` : "(그대로 두면 자동)"}
+              </span>
             </summary>
-            {advanced.length > 0 && <div className="param-grid">{advanced.map(field)}</div>}
+            {groups.map(([group, members]) => (
+              <fieldset className="param-group" key={group}>
+                {group && <legend>{group}</legend>}
+                <div className="param-grid">{members.map(field)}</div>
+              </fieldset>
+            ))}
+            <fieldset className="param-group">
+              {groups.some(([group]) => group) && <legend>실행</legend>}
             <div className="form-row">
               <label>
                 환경
@@ -910,6 +950,7 @@ function NewRun({
                 <input value={extra.model_name} onChange={setExtraField("model_name")} placeholder="자동" />
               </label>
             </div>
+            </fieldset>
           </details>
 
           <p className="muted small">

@@ -12,7 +12,12 @@ The contract with the node:
   (kept between runs), ``device`` (``cpu``, ``0`` or ``0,1``), ``classes``
   (names, in training order) and ``params`` (what the user chose)
 - output: ordinary stdout lines are the job log; a line starting with
-  ``@@badamoa `` carries one JSON event — ``info``, ``epoch`` or ``result``
+  ``@@badamoa `` carries one JSON event — ``info``, ``epoch``, ``log``,
+  ``progress`` or ``result``
+
+Template code does not write those lines itself: it imports ``badamoa_sdk``
+(``_sdk/badamoa_sdk.py``, one file, no dependencies), which also lets it declare
+its settings in code.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 SCAFFOLD = ROOT / "_scaffold"
+# ``badamoa_sdk.py``: put on the import path of every template run, so code can ``import badamoa_sdk``.
+SDK = ROOT / "_sdk"
 
 
 def builtin() -> dict[str, Path]:

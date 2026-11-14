@@ -126,6 +126,14 @@
   - [x] 테스트 60개 — 뼈대 만들기 → 올리기 → 학습 → 버전 올리기 → 같은 버전으로 다시 실행, 기존 환경 등록·확인·사용, 프로젝트 기본값
   - [x] 실데이터 확인(Windows, CPU): COCO128로 내장 YOLO 템플릿 학습, CLI로 올린 사내 템플릿 학습, 미리 만들어 둔 환경을 등록해 그 환경에서 YOLO26n 학습
   - [ ] 환경 "미리 준비" 작업 (지금은 첫 학습 때 설치)
+- [x] **1.2 SDK와 세부 설정** (0.7.0)
+  - [x] SDK `badamoa_sdk`(한 파일, 의존성 없음): 노드가 실행할 때 import 경로에 넣어 주므로 설치하지 않음. `bm.params`로 설정 선언, `bm.init · log · progress · epoch · log_model · finish`로 보고
+  - [x] 코드에 선언한 설정을 실행하지 않고 읽어(문법 분석) 학습 대화상자의 입력 칸으로. 선언 파일의 `[params]`로 덮어쓸 수 있음
+  - [x] 세부 설정의 묶음(group): 학습 · 최적화 · 증강. YOLO 하이퍼파라미터 24개(옵티마이저 · 학습률 · 모멘텀 · weight decay · 워밍업 · 조기 종료 · 증강 11종 …)
+  - [x] 실행 화면: 기본 설정과 바꾼 설정을 먼저 보여 주고, 기본값 그대로 둔 것은 접어 둠
+  - [x] 기본 제공 템플릿 `torchvision`: Faster R-CNN · RetinaNet · FCOS(ResNet-50), Faster R-CNN · SSDlite(MobileNetV3). SDK로 작성
+  - [x] 테스트 63개, 실데이터 확인(Windows, CPU, COCO128): Faster R-CNN MobileNetV3 2 epoch(42초), Faster R-CNN ResNet-50 1 epoch(64초), YOLO11n을 AdamW·학습률 0.002로 학습해 로그에서 적용 확인
+- [ ] **1.3 분류**: 분류 데이터 가져오기(폴더 이름 = 클래스), 이미지당 클래스 라벨, ImageFolder 형식 변환, top-1 · F1 지표, 분류 템플릿(ResNet · EfficientNet · ConvNeXt · ViT — torchvision / timm)
   - [ ] Git 주소로 템플릿 등록
 - [ ] **1.5 추적 확장** — W&B·MLflow에서 익숙한 나머지: 파일·이미지 기록(`log_artifact`, 실행 화면의 "파일" 탭), 학습 중 서버 자원(GPU·메모리) 그래프, 설치된 패키지 목록 자동 기록, step이 많은 지표의 간추림, Lightning·Hugging Face Trainer용 콜백, 기존 `wandb.log` 코드를 거의 그대로 쓰는 호환 층
 - [ ] **2. 평가**: `eval` 진입점, 평가 작업, 모델의 평가 기록, 같은 릴리스로 평가한 모델끼리 비교

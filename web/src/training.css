@@ -461,3 +461,32 @@ td .tag,
     gap: 4px;
   }
 }
+
+/* hyperparameter groups inside "세부 설정" */
+.param-group {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0 0 4px;
+  padding: 10px 0 0;
+  min-width: 0;
+}
+.param-group:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.param-group legend {
+  padding: 0 8px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.advanced[open] {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.defaults {
+  margin-top: 12px;
+}
+.defaults[open] summary {
+  margin-bottom: 10px;
+}

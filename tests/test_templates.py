@@ -83,7 +83,7 @@ def test_manifest_problems_are_reported_in_words(change, hint):
 
 def test_shipped_templates_are_valid_and_the_command_uses_the_environment_python(tmp_path):
     names = set(shipped.builtin())
-    assert {"yolo", "dummy"} <= names and "_scaffold" not in names
+    assert names == {"yolo", "torchvision", "dummy"}  # folders starting with _ are not templates
     for folder in shipped.builtin().values():
         manifest = fmt.load_manifest(folder)
         assert (folder / "train.py").is_file() and "train" in manifest.entrypoints
@@ -115,6 +115,89 @@ def test_bundle_is_stable_and_refuses_unsafe_archives(tmp_path):
         fmt.read_bundle(evil.getvalue())
     with pytest.raises(fmt.TemplateError, match="zip 파일이 아닙니다"):
         fmt.read_bundle(b"not a zip")
+
+
+CODE = """
+import badamoa_sdk as bm
+
+hp = bm.params(
+    model=bm.choice(["r18", "r50"], label="모델"),
+    epochs=bm.integer(30, min=1, max=1000, label="epoch"),
+    lr=bm.number(1e-3, min=0, label="학습률", group="최적화", advanced=True),
+    amp=bm.boolean(True, label="혼합 정밀도", group="최적화", advanced=True),
+    resume=bm.text(label="이어 학습할 가중치", advanced=True),
+)
+other = something.params(weights)  # not a declaration: left alone
+"""
+
+
+def test_settings_declared_in_code_are_read_without_running_it():
+    declared = fmt.params_from_code(CODE)
+    assert list(declared) == ["model", "epochs", "lr", "amp", "resume"]
+    model = declared["model"]
+    assert (model.choices, model.default, model.type, model.label) == (["r18", "r50"], "r18", "string", "모델")
+    assert (declared["epochs"].minimum, declared["epochs"].maximum, declared["epochs"].advanced) == (1, 1000, False)
+    assert (declared["lr"].default, declared["lr"].group, declared["lr"].advanced) == (0.001, "최적화", True)
+    assert declared["amp"].type == "boolean" and declared["resume"].default == ""
+
+    # the declaration file can add to and override what the code declares
+    manifest = fmt.parse_manifest(MANIFEST.replace('variant = "backbone"', 'variant = "model"'), CODE)
+    assert list(manifest.params) == ["model", "epochs", "lr", "amp", "resume", "backbone"]
+    assert manifest.params["epochs"].default == 10 and manifest.params["lr"].group == ""  # from the file
+
+    with pytest.raises(fmt.TemplateError, match="3행, 설정 lr.*직접 적어야"):
+        fmt.params_from_code("import badamoa_sdk as bm\nBASE = 0.1\nhp = bm.params(lr=bm.number(BASE * 2))")
+    with pytest.raises(fmt.TemplateError, match="목록이 필요"):
+        fmt.params_from_code("hp = bm.params(model=bm.choice([]))")
+    with pytest.raises(fmt.TemplateError, match="BADAMOA가 쓰는 이름"):
+        fmt.parse_manifest(MANIFEST, "hp = bm.params(classes=bm.integer(3))")
+
+
+def test_sdk_gives_chosen_values_and_defaults(tmp_path, capsys, monkeypatch):
+    import importlib
+    import json
+
+    monkeypatch.syspath_prepend(str(shipped.SDK))
+    bm = importlib.import_module("badamoa_sdk")
+    declare = {"epochs": bm.integer(30), "lr": bm.number(0.001), "model": bm.choice(["a", "b"]), "amp": bm.boolean(True)}
+
+    bm.load_config([])  # run outside BADAMOA: the declared defaults
+    assert bm.params(**declare) == {"epochs": 30, "lr": 0.001, "model": "a", "amp": True}
+
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"params": {"epochs": 5, "lr": 1, "amp": False}, "out": str(tmp_path / "o")}))
+    bm.load_config(["train.py", "--config", str(config)])
+    hp = bm.params(**declare)
+    assert (hp.epochs, hp.lr, hp["model"], hp.amp) == (5, 1.0, "a", False) and isinstance(hp.lr, float)
+    with pytest.raises(AttributeError):
+        _ = hp.momentum
+
+    bm.init()
+    bm.log({"loss": 0.5, "bad": float("nan"), "val/acc": 0.9})
+    bm.log_model(tmp_path / "o" / "w.pt")
+    bm.finish()
+    events = [json.loads(line[10:]) for line in capsys.readouterr().out.splitlines() if line.startswith("@@badamoa ")]
+    assert [e["event"] for e in events] == ["info", "log", "result"]
+    assert events[1] == {"event": "log", "step": 1, "metrics": {"loss": 0.5, "val_acc": 0.9}}
+    assert events[2]["metrics"] == {"loss": 0.5, "val_acc": 0.9} and events[2]["weights"].endswith("w.pt")
+    bm.load_config([])
+
+
+def test_yolo_hyperparameters_are_detailed_settings():
+    manifest = fmt.load_manifest(shipped.builtin()["yolo"])
+    basic = [name for name, spec in manifest.params.items() if not spec.advanced]
+    assert basic == ["model", "epochs"]
+    groups = {spec.group for spec in manifest.params.values() if spec.advanced and spec.type != "object"}
+    assert groups == {"학습", "최적화", "증강"}
+    chosen = fmt.resolve_params(manifest, {"lr0": "0.002", "optimizer": "AdamW", "mosaic": 0})
+    assert (chosen["lr0"], chosen["optimizer"], chosen["mosaic"], chosen["momentum"]) == (0.002, "AdamW", 0.0, 0.937)
+    with pytest.raises(fmt.TemplateError, match="옵티마이저"):
+        fmt.resolve_params(manifest, {"optimizer": "Lion"})
+
+    # the torchvision template declares everything in code
+    torchvision = fmt.load_manifest(shipped.builtin()["torchvision"])
+    assert "fasterrcnn_resnet50_fpn" in torchvision.params["model"].choices
+    assert torchvision.params["lr"].group == "최적화" and torchvision.variant == "model"
 
 
 # ---- registering and running in-house code ---------------------------------------------
@@ -172,17 +255,21 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     assert cli_run.invoke(cli, ["template", "check", str(folder)]).exit_code == 0
     assert cli_run.invoke(cli, ["template", "init", str(folder)]).exit_code == 1  # never overwrites
 
+    (folder / "badamoa_sdk.py").unlink()  # the node provides the SDK; a template need not ship it
     pushed = _push(hub, folder)
     assert pushed.exit_code == 0 and "my-detector 0.1.0" in pushed.output, pushed.output
     assert _push(hub, folder).exit_code == 0  # the same content again is fine
     listed = {t["name"]: t for t in hub.get("/api/templates").json()}
-    assert set(listed) == {"yolo", "my-detector"} and listed["yolo"]["builtin"] is True
+    assert set(listed) == {"yolo", "torchvision", "my-detector"} and listed["yolo"]["builtin"] is True
     mine = listed["my-detector"]
     assert (mine["title"], mine["versions"], mine["entrypoints"]) == ("My Detector", 1, ["train"])
-    assert [p["name"] for p in mine["params"]] == ["model", "epochs", "lr"] and mine["params"][2]["advanced"] is True
+    # the settings come from bm.params(...) in train.py, read without running it
+    assert [p["name"] for p in mine["params"]] == ["model", "epochs", "lr", "weight_decay", "batch", "augment"]
+    assert [(p["group"], p["advanced"]) for p in mine["params"][1:4]] == [("", False), ("최적화", True), ("최적화", True)]
 
     # ---- train with it: metrics arrive through log(), the bar through progress()
-    body = {"release_id": release["id"], "template": "my-detector", "params": {"epochs": 3, "model": "large"}, "gpus": 0}
+    chosen = {"epochs": 3, "model": "large", "weight_decay": 0.01}
+    body = {"release_id": release["id"], "template": "my-detector", "params": chosen, "gpus": 0}
     run = hub.post("/api/runs", json=body).json()
     job = _wait(hub, run["job_id"])
     assert job["status"] == "succeeded", _logs(hub, job["id"])
@@ -192,7 +279,12 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     assert (done["epoch"], done["epochs"], done["history"]["steps"]) == (3, 3, [1, 2, 3])
     assert done["history"]["series"]["map50_95"] == [pytest.approx(0.5 * n / 3) for n in (1, 2, 3)]
     assert done["metrics"]["map50_95"] == 0.5 and done["model"]["name"] == "street-large"
-    assert {"name": "lr", "label": "학습률", "value": 0.001} in done["settings"]
+    settings = {s["name"]: s for s in done["settings"]}
+    assert settings["lr"] == {
+        "name": "lr", "label": "학습률", "value": 0.001, "group": "최적화", "advanced": True, "changed": False
+    }  # fmt: skip
+    assert settings["weight_decay"]["changed"] is True and settings["augment"]["value"] is True
+    assert "모델 large · 학습률 0.001" in _logs(hub, job["id"])  # hp.* in the code got the chosen values
     assert "학습 이미지 5장" in _logs(hub, job["id"])
     cached = list((hub.node_home / "cache" / "templates").iterdir())
     assert len(cached) == 1 and (cached[0] / "train.py").is_file()
@@ -218,10 +310,10 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     login = httpx.post(f"{hub.url}/api/auth/login", json={"username": "member", "password": "member-test-pw"}).json()
     member = {"Authorization": f"Bearer {login['token']}"}
     assert httpx.post(f"{hub.url}/api/templates", content=fmt.bundle(folder), headers=member).status_code == 403
-    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 2  # but everyone can pick one
+    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 3  # but everyone can pick one
     assert hub.delete(f"/api/templates/{listed['yolo']['id']}").status_code == 400
     assert hub.delete(f"/api/templates/{latest['id']}").status_code == 200
-    assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo"]
+    assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "torchvision"]
     assert hub.get(f"/api/runs/{run['id']}").json()["template"]["title"] == "My Detector"  # the record stays
 
 

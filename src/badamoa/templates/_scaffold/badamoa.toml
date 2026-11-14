@@ -9,12 +9,12 @@ data_format = "yolo"          # BADAMOA가 릴리스를 이 형식으로 풀어 
 variant = "model"             # 모델 종류를 정하는 설정 이름 (모델 이름을 지을 때 씁니다). 없으면 지우세요
 
 [environment]
-# 비워 두면 아래 requirements로 노드가 가상환경을 자동으로 만듭니다.
+# 비워 두면 아래 requirements로 서버가 가상환경을 자동으로 만듭니다.
 # Hub의 설정 → 환경에 등록한 이름을 적으면 그 환경(서버에 이미 있는 Python 등)을 기본으로 씁니다.
 default = ""
 requirements = []             # 예: ["torch", "torchvision", "pycocotools"]
 python = "3.12"
-torch = false                 # true면 노드의 GPU 드라이버에 맞는 PyTorch 빌드를 고릅니다
+torch = false                 # true면 서버의 GPU 드라이버에 맞는 PyTorch 빌드를 고릅니다
 
 [entrypoints]
 # {config} 자리에 설정 JSON 파일 경로가 들어갑니다. python은 선택된 환경의 Python으로 실행됩니다.
@@ -22,21 +22,12 @@ train = "python train.py --config {config}"
 # eval    = "python eval.py --config {config}"
 # predict = "python predict.py --config {config}"
 
-# [params.*] 는 학습 대화상자의 입력 항목이 됩니다. advanced = true 면 "세부 설정"에 접혀 들어갑니다.
-[params.model]
-type = "string"
-label = "모델"
-default = "small"
-choices = ["small", "large"]
-
-[params.epochs]
-type = "integer"
-label = "epoch"
-default = 10
-minimum = 1
-
-[params.lr]
-type = "number"
-label = "학습률"
-default = 0.001
-advanced = true
+# 설정(하이퍼파라미터)은 train.py 안에서 badamoa_sdk로 선언합니다: bm.params(lr=bm.number(0.001, …))
+# 코드를 건드리지 않고 여기서 선언하거나 덮어쓸 수도 있습니다:
+#
+# [params.lr]
+# type = "number"
+# label = "학습률"
+# default = 0.001
+# group = "최적화"
+# advanced = true

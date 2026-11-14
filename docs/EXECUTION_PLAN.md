@@ -3,7 +3,8 @@
 0.5.0의 학습은 "Ultralytics YOLO를, 노드가 자동으로 만든 환경에서, 데이터가 있는 그 노드에서" 돌리는 한 가지 경우만 됐다.
 이 문서는 그 세 고정값을 각각 고를 수 있는 것으로 바꾸는 계획이다.
 
-**진행 상태**: 7장의 1단계(템플릿과 환경의 틀)는 0.6.0에 구현했다 — 모델 템플릿, 자동 설치·기존 환경, 보고 도우미, 새 학습 대화상자, 설정 메뉴.
+**진행 상태**: 7장의 1단계(템플릿과 환경의 틀)는 0.6.0에 구현했다 — 모델 템플릿, 자동 설치·기존 환경, 새 학습 대화상자, 설정 메뉴.
+0.7.0에 SDK(`badamoa_sdk`: 코드에서 설정 선언 + 진행 보고), 하이퍼파라미터 세부 설정, 두 번째 기본 제공 템플릿(torchvision 검출)을 더했다.
 Docker 환경, 평가·추론 진입점, 추적 확장(2.6), 저장 위치(4장)는 아직 계획이다.
 
 | 지금 고정된 것 | 바꾸려는 것 | 장 |
@@ -95,6 +96,10 @@ type = "integer"
 default = 72
 ```
 
+설정은 선언 파일 대신 **코드에서** 선언할 수도 있다(0.7.0, 2.6): `hp = bm.params(lr=bm.number(0.001, label="학습률", group="최적화", advanced=True))`.
+Hub는 코드를 실행하지 않고 문법만 읽어 입력 칸을 만든다. 그래서 값은 직접 적어야 하고(변수·계산식 불가), 등록할 때 사내 코드가 Hub에서 실행되는 일이 없다. 같은 이름을 선언 파일에도 적으면 파일이 우선한다.
+`advanced = true`인 설정은 "세부 설정"에 접히고, `group`은 그 안의 묶음 제목이다(학습 · 최적화 · 증강).
+
 `data_format = "manifest"`는 변환 없이 이미지 경로·split·박스를 적은 JSON Lines 파일만 받는 방식이다. 자체 데이터 로더가 있는 코드용이다.
 
 ### 2.3 코드가 지켜야 할 약속
@@ -108,7 +113,7 @@ default = 72
 | 결과 | `result` 한 줄: 학습은 가중치 파일 경로·최종 지표·클래스별 지표, 평가는 지표, 추론은 예측 파일 경로 |
 | 그 밖의 출력 | 전부 작업 로그가 된다 |
 
-- 이 줄을 직접 찍을 필요는 없다. 보고용 한 파일짜리 도우미(`badamoa_report.py`, 의존성 없음)를 템플릿에 넣어 주고, 코드는 그 함수만 부른다 (2.6).
+- 이 줄을 직접 찍을 필요는 없다. 한 파일짜리 SDK(`badamoa_sdk`, 의존성 없음)를 노드가 실행할 때 import 경로에 넣어 주고, 코드는 그 함수만 부른다 (2.6).
 - 지표 이름은 자유지만 `map50_95, map50, precision, recall`(검출), `top1, f1`(분류)을 쓰면 표와 타일에 바로 나온다. 나머지는 그래프에 나온다.
 
 ### 2.4 등록과 전달
@@ -141,31 +146,36 @@ default = 72
 사내 코드를 붙이는 사람이 이미 아는 방식이어야 한다. W&B나 MLflow를 쓸 때처럼 **코드에 몇 줄을 넣으면 그 정보가 실시간으로 화면에 나온다.**
 
 ```python
-import badamoa_report as report
+import badamoa_sdk as bm                    # BADAMOA가 실행할 때 자동으로 제공. 설치하지 않는다
 
-run = report.init()                         # 실행 시작. run.config에 사용자가 고른 설정
-for epoch in range(1, epochs + 1):
+hp = bm.params(                             # 설정 선언 → 학습 대화상자의 입력 칸 (wandb.config)
+    epochs=bm.integer(30, min=1, label="epoch"),
+    lr=bm.number(0.001, label="학습률", group="최적화", advanced=True),
+)
+run = bm.init()                             # 실행 시작. 데이터·출력 폴더·장치
+for epoch in range(1, hp.epochs + 1):
     ...
-    report.log({"train_loss": loss, "map50_95": score}, step=epoch)   # 지표 → 그래프
-    report.progress(epoch, epochs)                                     # 진행률
-report.log_model(run.out / "best.pt")       # 모델로 등록할 가중치
-report.finish({"map50_95": best})           # 최종 지표
+    bm.log({"train_loss": loss, "map50_95": score}, step=epoch)   # 지표 → 그래프
+    bm.progress(epoch, hp.epochs)                                  # 진행률
+bm.log_model(run.out / "best.pt")           # 모델로 등록할 가중치
+bm.finish({"map50_95": best})               # 최종 지표
 ```
 
 | 하려는 일 | W&B | MLflow | BADAMOA | 상태 |
 |---|---|---|---|---|
-| 실행 시작, 설정 읽기 | `wandb.init(config=…)`, `wandb.config` | `mlflow.start_run()`, `log_params` | `report.init()`, `run.config` — 설정은 화면에서 고른 값이 들어온다 | 0.6.0 |
-| 지표 기록 | `wandb.log({...}, step=)` | `log_metric(s)` | `report.log({...}, step=)` — 어떤 이름이든 그래프가 생긴다 | 0.6.0 |
-| 진행률 | (없음) | (없음) | `report.progress(현재, 전체)`, `report.epoch(...)` | 0.6.0 |
-| 모델 등록 | `log_artifact(type="model")` | `log_model`, `register_model` | `report.log_model(파일)` → 모델 화면에 버전으로 | 0.6.0 |
-| 끝내기, 최종 지표 | `wandb.finish()`, `run.summary` | `end_run()` | `report.finish({...})` | 0.6.0 |
+| 실행 시작 | `wandb.init()` | `mlflow.start_run()` | `bm.init()` | 0.6.0 |
+| 설정(하이퍼파라미터) | `wandb.config` | `log_params` | `bm.params(lr=bm.number(…))` — 코드에 선언하면 화면의 입력 칸이 되고, 고른 값이 `hp.lr`로 들어온다 | 0.7.0 |
+| 지표 기록 | `wandb.log({...}, step=)` | `log_metric(s)` | `bm.log({...}, step=)` — 어떤 이름이든 그래프가 생긴다 | 0.6.0 |
+| 진행률 | (없음) | (없음) | `bm.progress(현재, 전체)`, `bm.epoch(...)` | 0.6.0 |
+| 모델 등록 | `log_artifact(type="model")` | `log_model`, `register_model` | `bm.log_model(파일)` → 모델 화면에 버전으로 | 0.6.0 |
+| 끝내기, 최종 지표 | `wandb.finish()`, `run.summary` | `end_run()` | `bm.finish({...})` | 0.6.0 |
 | 콘솔 출력 | 자동 수집 | — | 자동: `print`가 그대로 실시간 로그 | 0.5.0 |
 | 실행한 코드 버전 | Git 커밋 | Git 커밋 | 자동: 템플릿 버전과 코드 해시 | 0.6.0 |
-| 파일·이미지 기록 | `wandb.log({"img": wandb.Image})`, `log_artifact` | `log_artifact`, `log_image` | `report.log_artifact(파일)` → 실행 화면의 "파일" 탭(혼동 행렬, 예측 예시 이미지) | 계획 (1.5) |
+| 파일·이미지 기록 | `wandb.log({"img": wandb.Image})`, `log_artifact` | `log_artifact`, `log_image` | `bm.log_artifact(파일)` → 실행 화면의 "파일" 탭(혼동 행렬, 예측 예시 이미지) | 계획 (1.5) |
 | 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 계획 (1.5) |
 | 설치된 패키지 | 자동 (`requirements.txt`) | 자동 (환경 파일) | 자동: 실행 환경의 패키지 목록을 실행 기록에 | 계획 (1.5) |
 | 프레임워크 연동 | Lightning·HF 콜백, `wandb.watch` | `autolog()` | Ultralytics는 내장. Lightning·Hugging Face Trainer용 콜백을 도우미에 추가 | 계획 (1.5) |
-| 이미 W&B를 쓰는 코드 | — | — | `import badamoa_report as wandb`로 `init · log · finish`가 동작하는 호환 층 | 계획 (1.5) |
+| 이미 W&B를 쓰는 코드 | — | — | `import badamoa_sdk as wandb`로 `init · log · finish`가 동작하는 호환 층 | 계획 (1.5) |
 | 실행 비교, 표·그래프 | 프로젝트 화면 | 실험 화면 | 학습 화면: 실행을 체크하면 지표를 겹쳐 비교 | 0.5.0 |
 
 W&B·MLflow와 다르게 한 것:
@@ -175,6 +185,22 @@ W&B·MLflow와 다르게 한 것:
 - **모델까지 한 흐름이다.** 기록한 가중치가 곧 모델 버전이 되고 릴리스·템플릿 버전·환경과 묶인다.
 
 W&B나 MLflow에 **함께** 기록하고 싶으면 코드에서 그것을 그대로 불러도 된다. BADAMOA 쪽 기록을 그쪽으로 복제하는 미러는 "필요해지면" 목록에 있다.
+
+### 2.7 기본 제공 템플릿
+
+"Ultralytics만 되는 도구"가 아니다. 기본 제공 템플릿은 사내 템플릿과 같은 형식이고, 오픈소스 모델을 하나씩 같은 방식으로 더한다.
+
+| 템플릿 | 모델 | 태스크 | 상태 |
+|---|---|---|---|
+| `yolo` | Ultralytics YOLO11 · YOLO26 | 검출 | 0.5.0. 하이퍼파라미터 24개를 세부 설정으로 (0.7.0) |
+| `torchvision` | Faster R-CNN · RetinaNet · FCOS (ResNet-50 백본), Faster R-CNN · SSDlite (MobileNetV3) | 검출 | 0.7.0. SDK로 작성한 참고 예시이기도 하다 |
+| 분류 | ResNet · EfficientNet · ConvNeXt · ViT (torchvision / timm) | 분류 | 계획 — 아래 |
+| 그 밖의 검출 | RT-DETR, D-FINE, RF-DETR | 검출 | 계획 (Phase 4) |
+| 분할 | YOLO-seg, Mask R-CNN | 분할 | 계획 (Phase 4, 마스크 라벨 가져오기가 먼저) |
+
+**분류(ResNet 등)가 아직 안 되는 이유**는 모델이 아니라 데이터다. 카탈로그가 지금 박스 라벨만 안다.
+분류 템플릿을 넣으려면 ① 분류 데이터 가져오기(폴더 이름 = 클래스) ② 이미지당 클래스 라벨을 개정으로 저장하고 화면에 표시
+③ 릴리스 → ImageFolder 형식 변환 ④ 분류 지표(top-1 · F1)를 표와 타일에 표시가 필요하다. 템플릿 코드 자체는 torchvision 검출 템플릿과 같은 크기다.
 
 기록 빈도가 높을 때: 지금은 `log`마다 Hub에 한 번 보낸다. iteration마다 기록하는 코드를 위해 노드가 1초 단위로 묶어 보내고, 읽을 때 간추리는 것을 1.5에 넣는다.
 
@@ -266,6 +292,8 @@ S3는 등록할 때 모든 객체를 한 번 내려받아 해시와 썸네일을
 | 단계 | 내용 | 확인 방법 | 이 PC에서 확인 |
 |---|---|---|---|
 | **1** 템플릿과 환경의 틀 ✅ 0.6.0 | 선언 형식, 내장 YOLO 이전, 템플릿 올리기·뼈대 만들기, 환경 등록(자동 설치 · 기존 환경), 학습 대화상자(기본 입력 3개 + 접힌 세부 설정, 설정 항목 자동 생성), 진행 단계 표시, 관리자 설정 메뉴, 실행에 버전 기록 | 뼈대로 만든 작은 사내 템플릿을 올려 학습 → 모델 등록. YOLO는 전과 같이 동작 | 가능 |
+| **1.2** SDK와 세부 설정 ✅ 0.7.0 | `badamoa_sdk`(코드에서 설정 선언, 진행 보고), 설정 묶음(group), YOLO 하이퍼파라미터, torchvision 검출 템플릿, 실행 화면에서 바꾼 설정만 먼저 표시 | COCO128로 Faster R-CNN(ResNet-50 · MobileNetV3) 학습, YOLO를 AdamW·학습률을 바꿔 학습 | 완료 |
+| **1.3** 분류 | 2.7의 ①~④와 분류 템플릿(ResNet 등) | 작은 공개 분류 데이터셋으로 ResNet-18 학습 → top-1 표시 → 모델 등록 | 가능 |
 | **1.5** 추적 확장 | 2.6의 "계획" 항목: 파일·이미지 기록과 "파일" 탭, 서버 자원 그래프, 패키지 목록 자동 기록, 잦은 기록 묶어 보내기와 간추림, Lightning·HF 콜백, W&B 호환 층 | 사내 템플릿에서 혼동 행렬 이미지를 기록해 실행 화면에서 확인, iteration 단위로 수천 번 기록해도 화면이 빠름 | 가능 |
 | **2** 평가 | `eval` 진입점, 평가 작업, 모델의 평가 기록, 같은 릴리스로 평가한 모델끼리 비교 | YOLO 모델 두 개를 같은 릴리스로 평가해 비교 | 가능 |
 | **3** 저장 위치의 틀과 NAS | 위치 찾기 단계, 이미지당 여러 위치, 공유 마운트 등록과 서버별 경로, 학습 노드 선택, 가져오기 대화상자를 "저장 위치 이름 → 폴더 탐색"으로 변경 | 노드 두 개를 띄우고 같은 폴더를 서로 다른 경로로 마운트한 것처럼 구성해 양쪽에서 학습 | 가능 (실제 NAS는 서버 검증 때) |

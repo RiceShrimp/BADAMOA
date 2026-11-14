@@ -13,6 +13,12 @@ import os
 import sys
 from pathlib import Path
 
+# Settings handed to Ultralytics under the same name (see badamoa.toml).
+HYPERPARAMETERS = (
+    "patience", "seed", "optimizer", "lr0", "lrf", "momentum", "weight_decay", "warmup_epochs", "cos_lr",
+    "mosaic", "close_mosaic", "mixup", "fliplr", "flipud", "degrees", "translate", "scale", "hsv_h", "hsv_s", "hsv_v",
+)  # fmt: skip
+
 NAMES = {
     "metrics/precision(B)": "precision",
     "metrics/recall(B)": "recall",
@@ -91,6 +97,7 @@ def main(argv: list[str]) -> int:
         name="train",
         exist_ok=True,
         plots=False,
+        **{name: params[name] for name in HYPERPARAMETERS if name in params},
         **(params.get("extra") or {}),
     )
 
