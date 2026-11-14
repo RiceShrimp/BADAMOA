@@ -21,6 +21,10 @@ class HubSettings:
     node_offline_after_s: float = 30.0
     node_lost_after_s: float = 90.0
     session_ttl_hours: int = 24 * 14
+    # A GPU nobody reserved through BADAMOA still counts as busy above these levels
+    # (someone is using the server directly).
+    gpu_busy_memory_pct: float = 10.0
+    gpu_busy_util_pct: float = 50.0
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:

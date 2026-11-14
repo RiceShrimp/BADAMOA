@@ -3,6 +3,7 @@ import { Agents } from "./Agents";
 import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./api";
 import { Home } from "./Home";
 import { Jobs } from "./Jobs";
+import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
 import { ReleaseNotes, hasUnseenRelease } from "./ReleaseNotes";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
@@ -65,7 +66,7 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
 const PAGES = NAV.flatMap((g) => g.items.filter((i) => i.page).map((i) => ({ ...i, group: g.group })));
 
 function pageFromHash(): Page {
-  const id = window.location.hash.replace("#/", "");
+  const id = window.location.hash.replace("#/", "").split("/")[0];
   return (PAGES.find((p) => p.page === id)?.page ?? "home") as Page;
 }
 
@@ -74,9 +75,13 @@ export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [version, setVersion] = useState("");
   const [page, setPage] = useState<Page>(pageFromHash);
+  const [hash, setHash] = useState(window.location.hash);
 
   useEffect(() => {
-    const onHash = () => setPage(pageFromHash());
+    const onHash = () => {
+      setPage(pageFromHash());
+      setHash(window.location.hash);
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -117,10 +122,23 @@ export function App() {
     setState("login");
   };
 
-  return <Shell user={user} version={version} page={page} onLogout={logout} />;
+  const nodeId = page === "nodes" ? hash.match(/^#\/nodes\/(.+)$/)?.[1] : undefined;
+  return <Shell user={user} version={version} page={page} nodeId={nodeId} onLogout={logout} />;
 }
 
-function Shell({ user, version, page, onLogout }: { user: User; version: string; page: Page; onLogout: () => void }) {
+function Shell({
+  user,
+  version,
+  page,
+  nodeId,
+  onLogout,
+}: {
+  user: User;
+  version: string;
+  page: Page;
+  nodeId?: string;
+  onLogout: () => void;
+}) {
   const [theme, toggleTheme] = useTheme();
   const [notesOpen, setNotesOpen] = useState(false);
   const [unseen, setUnseen] = useState(() => hasUnseenRelease(version));
@@ -216,7 +234,7 @@ function Shell({ user, version, page, onLogout }: { user: User; version: string;
         </header>
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
-          {page === "nodes" && <Nodes isAdmin={isAdmin} />}
+          {page === "nodes" && (nodeId ? <NodeDetail nodeId={nodeId} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}
         </main>

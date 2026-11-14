@@ -161,7 +161,7 @@ def node_join(
 @node_app.command("run")
 def node_run(
     home: HomeOpt = None,
-    max_jobs: Annotated[int, typer.Option(help="동시에 실행할 작업 수")] = 1,
+    max_jobs: Annotated[int | None, typer.Option(help="동시에 실행할 작업 수 (기본: 4와 GPU 수 중 큰 값)")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Node Agent를 실행합니다 (Ctrl+C로 종료)."""

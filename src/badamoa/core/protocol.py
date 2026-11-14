@@ -52,6 +52,7 @@ class ClaimedJob(BaseModel):
     type: str
     params: dict[str, Any]
     created_at: datetime
+    gpu_indices: list[int] = Field(default_factory=list)
 
 
 class ClaimResponse(BaseModel):

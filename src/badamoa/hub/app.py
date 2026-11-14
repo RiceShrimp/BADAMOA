@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
-from . import agent_api, api, install, services
+from . import agent_api, api, install, resources, services
 from .config import HubSettings
 from .db import Database
 from .deps import Hub
@@ -29,8 +29,19 @@ async def _sweeper(hub: Hub) -> None:
         with hub.db.session() as db:
             return services.sweep_lost_jobs(db, hub.settings)
 
+    def prune() -> None:
+        with hub.db.session() as db:
+            resources.prune(db)
+
+    ticks = 0
     while True:
         await anyio.sleep(_SWEEP_INTERVAL_S)
+        ticks += 1
+        if ticks % 40 == 0:  # about every 10 minutes
+            try:
+                await anyio.to_thread.run_sync(prune)
+            except Exception:
+                log.exception("metric prune failed")
         try:
             lost = await anyio.to_thread.run_sync(sweep)
             if lost:

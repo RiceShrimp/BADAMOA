@@ -16,7 +16,7 @@ class JobTypeSpec(BaseModel):
     title: str
     description: str
     params_schema: dict[str, Any] = Field(default_factory=dict)
-    gpu: bool = False
+    gpus: int = 0  # GPUs the job needs by default
 
 
 BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
@@ -27,6 +27,13 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             title="시스템 정보",
             description="노드의 OS, CPU, 메모리, 디스크, GPU, 드라이버 정보를 수집합니다.",
             params_schema={"type": "object", "properties": {}},
+        ),
+        JobTypeSpec(
+            type="system.gpu",
+            title="GPU 점검",
+            description="배정받은 GPU에서 nvidia-smi를 실행합니다. GPU 단위 배정 확인용.",
+            params_schema={"type": "object", "properties": {}},
+            gpus=1,
         ),
         JobTypeSpec(
             type="debug.sleep",

@@ -6,6 +6,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/hub", "--port", "8470"],
       "port": 8470
+    },
+    {
+      "name": "badamoa-hub-check",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/check", "--port", "8471", "--host", "127.0.0.1"],
+      "port": 8471
     }
   ]
 }

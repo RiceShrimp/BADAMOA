@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import services
+from . import resources, services
 from .db import iso
 from .deps import Hub, admin_user, current_user, db_session, get_hub, public_base_url
 from .install import join_commands
@@ -136,7 +136,23 @@ def list_nodes(
 def get_node(
     node_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
-    return services.serialize_node(services.get_node(db, node_id), hub.settings)
+    node = services.get_node(db, node_id)
+    data = services.node_view(db, hub.settings, node)
+    data["disk_forecast"] = resources.disk_forecast(db, node)
+    names = {node.id: node.name}
+    data["recent_jobs"] = [services.serialize_job(j, names) for j in services.list_jobs(db, None, node.id, 10)]
+    return data
+
+
+@router.get("/nodes/{node_id}/metrics")
+def node_metrics(
+    node_id: str, range: str = "1h", _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    services.get_node(db, node_id)
+    try:
+        return resources.history(db, node_id, range)
+    except ValueError as e:
+        raise services.ServiceError(400, str(e)) from e
 
 
 class NodePatch(BaseModel):
@@ -156,7 +172,7 @@ def patch_node(
 ) -> dict[str, Any]:
     node = services.update_node(db, user, node_id, **body.model_dump(exclude_unset=True))
     db.commit()
-    return services.serialize_node(node, hub.settings)
+    return services.node_view(db, hub.settings, node)
 
 
 @router.delete("/nodes/{node_id}")
@@ -204,6 +220,8 @@ class NewJob(BaseModel):
     type: str
     params: dict[str, Any] = Field(default_factory=dict)
     node_id: str | None = None
+    gpus: int | None = None  # None → the job type's default
+    min_vram_mb: int = 0
 
 
 @router.get("/jobs")
@@ -213,21 +231,28 @@ def list_jobs(
     limit: int = 100,
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> list[dict[str, Any]]:
     names = services.node_name_map(db)
-    return [services.serialize_job(j, names) for j in services.list_jobs(db, status, node_id, limit)]
+    return [services.job_view(db, hub.settings, j, names) for j in services.list_jobs(db, status, node_id, limit)]
 
 
 @router.post("/jobs")
-def create_job(body: NewJob, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
-    job = services.create_job(db, user, body.type, body.params, body.node_id, via="ui")
+def create_job(
+    body: NewJob, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict:
+    job = services.create_job(
+        db, user, body.type, body.params, body.node_id, via="ui", gpus=body.gpus, min_vram_mb=body.min_vram_mb
+    )
     db.commit()
-    return services.serialize_job(job, services.node_name_map(db))
+    return services.job_view(db, hub.settings, job)
 
 
 @router.get("/jobs/{job_id}")
-def get_job(job_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
-    return services.serialize_job(services.get_job(db, job_id), services.node_name_map(db))
+def get_job(
+    job_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict:
+    return services.job_view(db, hub.settings, services.get_job(db, job_id))
 
 
 @router.get("/jobs/{job_id}/logs")
@@ -242,7 +267,9 @@ def get_job_logs(
 
 
 @router.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+def cancel_job(
+    job_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict:
     job = services.cancel_job(db, user, job_id, via="ui")
     db.commit()
-    return services.serialize_job(job, services.node_name_map(db))
+    return services.job_view(db, hub.settings, job)

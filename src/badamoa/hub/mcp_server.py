@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import services
+from . import resources, services
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -121,7 +121,25 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         """노드 하나의 상세 정보(하드웨어, 드라이버, 최근 지표)를 반환합니다."""
         user_of(ctx)
         with hub.db.session() as db:
-            return services.serialize_node(services.get_node(db, node_id), hub.settings)
+            return services.node_view(db, hub.settings, services.get_node(db, node_id))
+
+    @mcp.tool(title="노드 자원 이력", annotations=READ_ONLY)
+    @guarded
+    def get_node_metrics(node_id: str, ctx: Context, range: str = "1h") -> dict[str, Any]:
+        """노드의 자원 사용 이력을 요약합니다(시리즈별 평균·최대·최근값).
+
+        range: 1h | 6h | 24h | 7d | 30d. 시리즈 예: cpu, mem, gpu0_util, gpu0_mem, gpu0_temp, power,
+        disk_pct:<마운트>. 디스크 증가 추세와 가득 차는 예상 시점도 함께 반환합니다.
+        """
+        user_of(ctx)
+        with hub.db.session() as db:
+            node = services.get_node(db, node_id)
+            try:
+                data = resources.summarize(db, node_id, range)
+            except ValueError as e:
+                raise ToolError(str(e)) from e
+            data["disk_forecast"] = resources.disk_forecast(db, node)
+            return data
 
     @mcp.tool(title="노드 추가 명령 생성", annotations=WRITE)
     @guarded
@@ -156,16 +174,25 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
     @mcp.tool(title="작업 실행", annotations=WRITE)
     @guarded
     def run_job(
-        type: str, ctx: Context, params: dict[str, Any] | None = None, node_id: str | None = None
+        type: str,
+        ctx: Context,
+        params: dict[str, Any] | None = None,
+        node_id: str | None = None,
+        gpus: int | None = None,
+        min_vram_mb: int = 0,
     ) -> dict[str, Any]:
         """작업을 큐에 넣습니다. node_id를 생략하면 조건에 맞는 아무 온라인 노드가 실행합니다.
 
+        gpus: 필요한 GPU 수(생략하면 작업 유형의 기본값). 다른 사람이 쓰고 있는 GPU에는 배정되지 않으며,
+        빈 GPU가 없으면 대기합니다. 이때 반환값의 wait_reason에 이유가 나옵니다.
         즉시 반환하므로 wait_for_job으로 완료를 기다리세요.
         """
         user = user_of(ctx)
         with hub.db.session() as db:
-            job = services.create_job(db, user, type, params, node_id, via="mcp")
-            return services.serialize_job(job, services.node_name_map(db))
+            job = services.create_job(
+                db, user, type, params, node_id, via="mcp", gpus=gpus, min_vram_mb=min_vram_mb
+            )
+            return services.job_view(db, hub.settings, job)
 
     @mcp.tool(title="작업 조회", annotations=READ_ONLY)
     @guarded
@@ -173,7 +200,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         """작업의 상태, 실행 노드, 결과 또는 오류를 반환합니다."""
         user_of(ctx)
         with hub.db.session() as db:
-            return services.serialize_job(services.get_job(db, job_id), services.node_name_map(db))
+            return services.job_view(db, hub.settings, services.get_job(db, job_id))
 
     @mcp.tool(title="작업 완료 대기", annotations=READ_ONLY)
     @guarded
@@ -187,7 +214,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         while True:
             with hub.db.session() as db:
                 job = services.get_job(db, job_id)
-                data = services.serialize_job(job, services.node_name_map(db))
+                data = services.job_view(db, hub.settings, job)
             if data["status"] in TERMINAL_STATUSES or time.monotonic() >= deadline:
                 return data
             time.sleep(0.5)
@@ -201,7 +228,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         user_of(ctx)
         with hub.db.session() as db:
             names = services.node_name_map(db)
-            return [services.serialize_job(j, names) for j in services.list_jobs(db, status, node_id, limit)]
+            return [services.job_view(db, hub.settings, j, names) for j in services.list_jobs(db, status, node_id, limit)]
 
     @mcp.tool(title="작업 로그", annotations=READ_ONLY)
     @guarded
@@ -221,7 +248,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         user = user_of(ctx)
         with hub.db.session() as db:
             job = services.cancel_job(db, user, job_id, via="mcp")
-            return services.serialize_job(job, services.node_name_map(db))
+            return services.job_view(db, hub.settings, job)
 
     # ---- resources -----------------------------------------------------------
 
@@ -239,7 +266,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 job = services.get_job(db, job_id)
             except services.ServiceError as e:
                 raise ResourceNotFoundError(e.message) from e
-            data = services.serialize_job(job, services.node_name_map(db))
+            data = services.job_view(db, hub.settings, job)
         return json.dumps(data, ensure_ascii=False, indent=2)
 
     @mcp.resource("badamoa://jobs/{job_id}/logs", name="job-logs", title="작업 로그", mime_type="text/plain")

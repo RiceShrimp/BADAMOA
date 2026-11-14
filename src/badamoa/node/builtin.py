@@ -10,6 +10,7 @@ will follow the same contract from their own virtual environments.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -44,7 +45,22 @@ def debug_sleep(params: dict[str, Any]) -> dict[str, Any]:
     return {"slept_seconds": seconds}
 
 
-HANDLERS = {"system.info": system_info, "debug.sleep": debug_sleep}
+def system_gpu(_: dict[str, Any]) -> dict[str, Any]:
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    print(f"CUDA_VISIBLE_DEVICES={visible or '(설정 안 됨)'}")
+    assigned = [int(x) for x in visible.split(",") if x.strip().isdigit()]
+    found = [g for g in sysinfo.gpus() if g["index"] in assigned]
+    for gpu in found:
+        print(
+            f"gpu {gpu['index']}: {gpu['name']} · {gpu['memory_used_mb']}/{gpu['memory_total_mb']} MB · "
+            f"{gpu['utilization_pct']}% · {gpu['temperature_c']}°C · {gpu['power_w']} W"
+        )
+    if len(found) != len(assigned) or not assigned:
+        raise RuntimeError("배정받은 GPU를 찾지 못했습니다.")
+    return {"assigned": assigned, "gpus": found}
+
+
+HANDLERS = {"system.info": system_info, "system.gpu": system_gpu, "debug.sleep": debug_sleep}
 
 
 def main(argv: list[str]) -> int:

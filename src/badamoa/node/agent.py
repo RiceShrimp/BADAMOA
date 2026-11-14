@@ -90,13 +90,15 @@ def _now() -> str:
 
 
 class NodeAgent:
-    def __init__(self, config: NodeConfig, home: Path, max_jobs: int = 1) -> None:
+    def __init__(self, config: NodeConfig, home: Path, max_jobs: int | None = None) -> None:
         self.config = config
         self.home = home
-        self.max_jobs = max_jobs
+        # GPU jobs are limited by the GPUs the Hub hands out; this caps everything else.
+        self.max_jobs = max_jobs or max(4, len(sysinfo.gpus()))
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}  # job_id -> cancel event
+        self._sampler = sysinfo.MetricsSampler(str(home))
         self._client = httpx.Client(
             base_url=config.hub_url,
             headers={"Authorization": f"Bearer {config.node_token}"},
@@ -146,7 +148,7 @@ class NodeAgent:
                     running = list(self._running)
                 body: dict[str, Any] = {
                     "agent_version": __version__,
-                    "metrics": sysinfo.metrics(str(self.home)),
+                    "metrics": self._sampler.sample(),
                     "running_job_ids": running,
                 }
                 if not sent_info:
@@ -205,6 +207,10 @@ class NodeAgent:
                 result_path = Path(tmp) / "result.json"
                 params_path.write_text(json.dumps(job.get("params") or {}), encoding="utf-8")
                 env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+                if job.get("gpu_indices"):
+                    # The job sees only the GPUs the Hub reserved for it.
+                    env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
+                    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "badamoa.node.builtin", job["type"], str(params_path), str(result_path)],
                     stdout=subprocess.PIPE,

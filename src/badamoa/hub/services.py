@@ -25,6 +25,7 @@ from badamoa.core.protocol import (
     RegisterRequest,
 )
 
+from . import resources
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import ApiToken, AuditLog, Job, JobLog, JoinToken, Node, User
@@ -252,6 +253,7 @@ def heartbeat(db: Session, node: Node, req: HeartbeatRequest) -> list[str]:
     node.last_seen_at = now
     node.metrics = req.metrics
     node.agent_version = req.agent_version
+    resources.record(db, node.id, req.metrics, now)
     if req.info:
         node.info = req.info
         node.os = str(req.info.get("os", node.os))
@@ -270,7 +272,9 @@ def heartbeat(db: Session, node: Node, req: HeartbeatRequest) -> list[str]:
     return cancel_ids
 
 
-def serialize_node(node: Node, settings: HubSettings) -> dict[str, Any]:
+def serialize_node(
+    node: Node, settings: HubSettings, assigned: dict[int, str] | None = None
+) -> dict[str, Any]:
     info = node.info or {}
     return {
         "id": node.id,
@@ -288,6 +292,7 @@ def serialize_node(node: Node, settings: HubSettings) -> dict[str, Any]:
             "hostname": info.get("hostname"),
             "os_release": info.get("os_release"),
             "arch": info.get("arch"),
+            "cpu_model": info.get("cpu_model"),
             "cpu_count": info.get("cpu_count"),
             "memory_total_mb": info.get("memory_total_mb"),
             "gpus": [
@@ -296,12 +301,18 @@ def serialize_node(node: Node, settings: HubSettings) -> dict[str, Any]:
             ],
         },
         "metrics": node.metrics or {},
+        "gpu_states": resources.gpu_states(node, settings, assigned),
     }
 
 
 def list_nodes(db: Session, settings: HubSettings) -> list[dict[str, Any]]:
     nodes = db.scalars(select(Node).order_by(Node.is_local.desc(), Node.created_at)).all()
-    return [serialize_node(n, settings) for n in nodes]
+    assigned = resources.assignments(db)
+    return [serialize_node(n, settings, assigned.get(n.id)) for n in nodes]
+
+
+def node_view(db: Session, settings: HubSettings, node: Node) -> dict[str, Any]:
+    return serialize_node(node, settings, resources.assignments(db).get(node.id))
 
 
 def get_node(db: Session, node_id: str) -> Node:
@@ -362,13 +373,20 @@ def create_job(
     params: dict[str, Any] | None = None,
     node_id: str | None = None,
     via: str = "api",
+    gpus: int | None = None,
+    min_vram_mb: int = 0,
 ) -> Job:
     try:
         clean = validate_params(job_type, params or {})
     except ValueError as e:
         raise ServiceError(400, str(e)) from e
     spec = BUILTIN_JOB_TYPES[job_type]
-    requirements: dict[str, Any] = {"roles": ["compute"]} if spec.gpu else {}
+    gpu_count = spec.gpus if gpus is None else gpus
+    if not 0 <= gpu_count <= 16 or min_vram_mb < 0:
+        raise ServiceError(400, "GPU 수는 0~16, 최소 VRAM은 0 이상이어야 합니다.")
+    requirements: dict[str, Any] = {}
+    if gpu_count:
+        requirements = {"roles": ["compute"], "gpus": gpu_count, "min_vram_mb": min_vram_mb}
     if node_id:
         node = get_node(db, node_id)
         if not node.enabled:
@@ -398,19 +416,27 @@ def _node_matches(job: Job, node: Node) -> bool:
     return True
 
 
-def try_claim(db: Session, node: Node) -> Job | None:
+def try_claim(db: Session, node: Node, settings: HubSettings) -> Job | None:
     if not node.enabled:
         return None
+    assigned = resources.assignments(db).get(node.id, {})
     candidates = db.scalars(
         select(Job).where(Job.status == "queued").order_by(Job.created_at).limit(50)
     ).all()
     for job in candidates:
         if not _node_matches(job, node):
             continue
+        req = job.requirements or {}
+        gpu_indices: list[int] = []
+        if req.get("gpus"):
+            free = resources.free_gpus(node, settings, assigned, req.get("min_vram_mb", 0))
+            if len(free) < req["gpus"]:
+                continue  # not enough idle GPUs here right now
+            gpu_indices = free[: req["gpus"]]
         res = db.execute(
             update(Job)
             .where(Job.id == job.id, Job.status == "queued")
-            .values(status="running", node_id=node.id, started_at=utcnow())
+            .values(status="running", node_id=node.id, started_at=utcnow(), gpu_indices=gpu_indices)
         )
         if res.rowcount == 1:
             db.refresh(job)
@@ -488,7 +514,9 @@ def list_jobs(
     return list(db.scalars(q))
 
 
-def serialize_job(job: Job, node_names: dict[str, str] | None = None) -> dict[str, Any]:
+def serialize_job(
+    job: Job, node_names: dict[str, str] | None = None, wait_reason: str | None = None
+) -> dict[str, Any]:
     spec = BUILTIN_JOB_TYPES.get(job.type)
     end = job.finished_at or (utcnow() if job.status == "running" else None)
     duration = (end - job.started_at).total_seconds() if (job.started_at and end) else None
@@ -511,7 +539,54 @@ def serialize_job(job: Job, node_names: dict[str, str] | None = None) -> dict[st
         "result": job.result,
         "error": job.error,
         "log_count": job.log_count,
+        "gpus_requested": (job.requirements or {}).get("gpus", 0),
+        "gpu_indices": job.gpu_indices or [],
+        "wait_reason": wait_reason,
     }
+
+
+def job_view(db: Session, settings: HubSettings, job: Job, node_names: dict[str, str] | None = None) -> dict[str, Any]:
+    reason = explain_wait(db, settings, job) if job.status == "queued" else None
+    return serialize_job(job, node_names if node_names is not None else node_name_map(db), reason)
+
+
+def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
+    """Why a queued job has not started yet, in words the user can act on."""
+    nodes = list(db.scalars(select(Node)))
+    if job.target_node_id:
+        nodes = [n for n in nodes if n.id == job.target_node_id]
+        if not nodes:
+            return "지정한 노드가 더 이상 없습니다."
+    nodes = [n for n in nodes if n.enabled]
+    if not nodes:
+        return "작업을 받을 수 있는 노드가 없습니다."
+    online = [n for n in nodes if node_status(n, settings) == "online"]
+    if not online:
+        return "지정한 노드가 오프라인입니다." if job.target_node_id else "온라인 노드가 없습니다."
+    req = job.requirements or {}
+    eligible = [n for n in online if all(role in n.roles for role in req.get("roles", []))]
+    if not eligible:
+        return f"필요한 역할({', '.join(req.get('roles', []))})을 가진 온라인 노드가 없습니다."
+    need = req.get("gpus", 0)
+    if need:
+        assigned = resources.assignments(db)
+        details = []
+        for node in eligible:
+            states = resources.gpu_states(node, settings, assigned.get(node.id))
+            free = resources.free_gpus(node, settings, assigned.get(node.id), req.get("min_vram_mb", 0))
+            if len(free) >= need:
+                return "빈 GPU가 있어 곧 배정됩니다."
+            users = sorted({u for g in states if g["state"] == "busy" for u in g["users"]})
+            by_jobs = sum(1 for g in states if g["state"] == "job")
+            who = ", ".join(users) if users else ("다른 프로세스" if any(g["state"] == "busy" for g in states) else "")
+            parts = [f"빈 GPU {len(free)}/{len(states)}개"]
+            if who:
+                parts.append(f"사용 중: {who}")
+            if by_jobs:
+                parts.append(f"BADAMOA 작업 {by_jobs}개")
+            details.append(f"{node.name} — {' · '.join(parts)}")
+        return f"빈 GPU가 부족합니다 (필요 {need}개). " + " / ".join(details)
+    return "노드가 작업을 가져가기를 기다리는 중입니다."
 
 
 def node_name_map(db: Session) -> dict[str, str]:

@@ -94,6 +94,8 @@ class Job(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     log_count: Mapped[int] = mapped_column(Integer, default=0)
+    # GPUs (indices on the node) reserved for this job while it runs.
+    gpu_indices: Mapped[list[int]] = mapped_column(JSON, default=list)
 
 
 class JobLog(Base):
@@ -106,6 +108,23 @@ class JobLog(Base):
     ts: Mapped[datetime] = mapped_column(DateTime)
     stream: Mapped[str] = mapped_column(String(8), default="stdout")
     text: Mapped[str] = mapped_column(Text)
+
+
+class NodeMetric(Base):
+    """Rolled-up node metrics. One row per (node, resolution, bucket start).
+
+    ``data`` maps a series key (e.g. ``cpu``, ``gpu0_util``) to ``[sum, count, max]``
+    so buckets can be extended as samples arrive and averaged when read.
+    """
+
+    __tablename__ = "node_metrics"
+    __table_args__ = (Index("ix_node_metrics_key", "node_id", "res", "ts", unique=True),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(ForeignKey("nodes.id", ondelete="CASCADE"))
+    res: Mapped[str] = mapped_column(String(4))  # 1m | 10m | 1h
+    ts: Mapped[datetime] = mapped_column(DateTime)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class AuditLog(Base):

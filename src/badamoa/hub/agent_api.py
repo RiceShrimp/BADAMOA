@@ -55,11 +55,13 @@ def _claim_once(hub: Hub, token: str) -> dict[str, Any] | None | bool:
         if node is None:
             return False
         node.last_seen_at = utcnow()
-        job = services.try_claim(db, node)
+        job = services.try_claim(db, node, hub.settings)
         db.commit()
         if job is None:
             return None
-        return ClaimedJob(id=job.id, type=job.type, params=job.params, created_at=job.created_at).model_dump()
+        return ClaimedJob(
+            id=job.id, type=job.type, params=job.params, created_at=job.created_at, gpu_indices=job.gpu_indices or []
+        ).model_dump()
 
 
 @router.post("/claim", response_model=ClaimResponse)

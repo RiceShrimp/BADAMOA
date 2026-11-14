@@ -68,6 +68,69 @@ export interface GpuMetric {
   memory_total_mb: number | null;
   utilization_pct: number | null;
   temperature_c: number | null;
+  power_w?: number | null;
+  power_limit_w?: number | null;
+  users?: string[];
+}
+
+export interface GpuState {
+  index: number;
+  state: "job" | "busy" | "free";
+  job_id: string | null;
+  users: string[];
+}
+
+export interface DiskMetric {
+  mount: string;
+  device: string;
+  fstype: string;
+  total_gb: number;
+  used_gb: number;
+  free_gb: number;
+  pct: number;
+}
+
+export interface PhysicalDisk {
+  name: string;
+  model: string | null;
+  kind: string | null;
+  read_mbps: number | null;
+  write_mbps: number | null;
+  busy_pct: number | null;
+}
+
+export interface UserUsage {
+  user: string;
+  cpu_cores: number;
+  memory_mb: number;
+  processes: number;
+  gpus: number[];
+  gpu_memory_mb: number;
+  active: boolean;
+}
+
+export interface LoginSession {
+  user: string | null;
+  terminal: string | null;
+  host: string | null;
+  started: number;
+}
+
+export interface DiskForecast {
+  mount: string;
+  history_days: number;
+  delta_7d_gb: number | null;
+  days_until_full: number | null;
+}
+
+export interface MetricHistory {
+  range: string;
+  resolution: string;
+  step_s: number;
+  from: string;
+  to: string;
+  timestamps: string[];
+  series: Record<string, { avg: (number | null)[]; max: (number | null)[] }>;
 }
 
 export interface NodeInfo {
@@ -83,18 +146,33 @@ export interface NodeInfo {
   info: {
     hostname?: string;
     os_release?: string;
+    cpu_model?: string | null;
     cpu_count?: number;
     memory_total_mb?: number;
     gpus: Gpu[];
   };
   metrics: {
     cpu_pct?: number;
+    load?: number[] | null;
+    cpu_temp_c?: number | null;
+    cpu_power_w?: number | null;
     memory_used_mb?: number;
     memory_total_mb?: number;
+    uptime_s?: number;
     disk_free_gb?: number;
     disk_total_gb?: number;
     gpus?: GpuMetric[];
+    disks?: DiskMetric[];
+    physical_disks?: PhysicalDisk[];
+    users?: UserUsage[];
+    sessions?: LoginSession[];
   };
+  gpu_states: GpuState[];
+}
+
+export interface NodeDetailInfo extends NodeInfo {
+  disk_forecast: DiskForecast[];
+  recent_jobs: Job[];
 }
 
 export interface Job {
@@ -112,12 +190,16 @@ export interface Job {
   result: unknown;
   error: string | null;
   log_count: number;
+  gpus_requested: number;
+  gpu_indices: number[];
+  wait_reason?: string | null;
 }
 
 export interface JobType {
   type: string;
   title: string;
   description: string;
+  gpus: number;
   params_schema: { properties?: Record<string, { type: string; default?: unknown }> };
 }
 

@@ -78,8 +78,16 @@ export function Jobs() {
                 </td>
                 <td>
                   <Badge kind={job.status}>{STATUS_LABEL[job.status]}</Badge>
+                  {job.status === "queued" && job.wait_reason && <div className="wait-reason">{job.wait_reason}</div>}
                 </td>
-                <td>{job.node_name ?? <span className="muted">배정 대기</span>}</td>
+                <td>
+                  {job.node_name ?? <span className="muted">배정 대기</span>}
+                  {job.gpu_indices.length > 0 ? (
+                    <div className="muted small">GPU {job.gpu_indices.join(", ")}</div>
+                  ) : (
+                    job.gpus_requested > 0 && <div className="muted small">GPU {job.gpus_requested}개 필요</div>
+                  )}
+                </td>
                 <td>
                   <span className="tag">{VIA_LABEL[job.created_via] ?? job.created_via}</span>
                 </td>
@@ -154,11 +162,20 @@ function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => void }) {
               {VIA_LABEL[job.created_via] ?? job.created_via}
             </div>
             <div>
+              <div className="eyebrow">GPU</div>
+              {job.gpu_indices.length > 0
+                ? job.gpu_indices.map((i) => `#${i}`).join(", ")
+                : job.gpus_requested > 0
+                  ? `${job.gpus_requested}개 필요`
+                  : "사용 안 함"}
+            </div>
+            <div>
               <div className="eyebrow">ID</div>
               <span className="mono small">{job.id.slice(0, 12)}</span>
             </div>
           </div>
           {job.error && <div className="error">{job.error}</div>}
+          {job.status === "queued" && job.wait_reason && <div className="notice">{job.wait_reason}</div>}
           <pre className="log" ref={logRef}>
             {lines.length === 0 ? (
               <span className="dim">{active ? "로그를 기다리는 중…" : "로그가 없습니다."}</span>
@@ -201,6 +218,7 @@ function NewJob({ onClose, onCreated }: { onClose: () => void; onCreated: (id: s
   const [type, setType] = useState("");
   const [nodeId, setNodeId] = useState("");
   const [params, setParams] = useState<Record<string, string>>({});
+  const [gpus, setGpus] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -222,7 +240,9 @@ function NewJob({ onClose, onCreated }: { onClose: () => void; onCreated: (id: s
       body[name] = schema.type === "integer" ? Number(raw) : schema.type === "boolean" ? raw === "true" : raw;
     }
     try {
-      const job = await api<Job>("/jobs", { body: { type, params: body, node_id: nodeId || null } });
+      const job = await api<Job>("/jobs", {
+        body: { type, params: body, node_id: nodeId || null, gpus: gpus === "" ? null : Number(gpus) },
+      });
       onCreated(job.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -261,6 +281,20 @@ function NewJob({ onClose, onCreated }: { onClose: () => void; onCreated: (id: s
             ))}
         </select>
       </label>
+      <label>
+        GPU 수
+        <input
+          type="number"
+          min={0}
+          max={16}
+          placeholder={`기본값 ${spec?.gpus ?? 0}`}
+          value={gpus}
+          onChange={(e) => setGpus(e.target.value)}
+        />
+      </label>
+      <p className="muted small">
+        다른 사람이 쓰고 있는 GPU에는 배정되지 않습니다. 빈 GPU가 없으면 대기하고, 대기 사유가 작업 목록에 표시됩니다.
+      </p>
       {props.map(([name, schema]) =>
         schema.type === "boolean" ? (
           <div className="checks" key={name}>
