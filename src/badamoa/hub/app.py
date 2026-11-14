@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
-from . import agent_api, api, install, resources, services
+from . import agent_api, api, catalog_api, install, resources, services
 from .config import HubSettings
 from .db import Database
 from .deps import Hub
@@ -80,6 +80,9 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(api.router)
     app.include_router(agent_api.router)
     app.include_router(install.router)
+    app.include_router(catalog_api.router)
+    app.include_router(catalog_api.agent_router)
+    app.include_router(catalog_api.media_router)
     app.router.routes.append(Route("/mcp", endpoint=mcp_endpoint))
 
     web_dir = settings.web_dir or STATIC_DIR

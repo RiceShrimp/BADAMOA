@@ -455,7 +455,7 @@ label,
   font-weight: 600;
   margin-bottom: 12px;
 }
-input:not([type="checkbox"]),
+input:not([type="checkbox"]):not([type="radio"]),
 select {
   display: block;
   width: 100%;

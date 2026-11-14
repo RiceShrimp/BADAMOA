@@ -53,7 +53,8 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 | 분산 실행 | **Hub + Node Agent** (노드가 Hub로 outbound HTTP) | Ray — 멀티노드 클러스터가 Windows 미지원 |
 | 워크플로 | **Job 큐** + 단계 목록형 파이프라인(Phase 5) | Prefect/범용 DAG 엔진 — 단계가 굵어서 불필요 |
 | 제어 DB | **SQLite** (Postgres는 옵션) | 무설정 설치 |
-| 대량 데이터 | **Lance 테이블** (샘플 메타·어노테이션·임베딩·벡터 검색을 한 엔진에) | Qdrant·MongoDB 서버. SQLite에 수백만 어노테이션 행을 넣지 않는다 |
+| 카탈로그 데이터 | **SQLite** (0.4.0) — 항목·라벨 개정·릴리스. 박스는 개정마다 JSON 한 덩어리로 두고 필터용 값만 열로 둔다 | 별도 DB 서버. 박스를 한 줄씩 행으로 넣지 않는다 |
+| 임베딩·벡터 검색 | **Lance** (Phase 2에서 도입) | Qdrant·MongoDB 서버. 임베딩이 필요해지기 전에는 의존성을 늘리지 않는다 |
 | 실험 추적·레지스트리 | **자체** (지표 시계열 + 아티팩트 + alias) | MLflow 내장 — 무거운 의존성, 별도 서버·UI·인증, 레지스트리가 둘이 됨. 필요하면 **미러 플러그인**으로 MLflow/W&B에 복제 |
 | 큐레이션 | 기본(near-dup·uniqueness·대표성)은 **임베딩으로 자체 계산**. FiftyOne Brain은 **플러그인 Job**(노드 venv에서 실행, 점수만 Hub에 기록) | FiftyOne을 Hub 의존성으로 두는 것 — MongoDB가 딸려오고 데이터 저장소가 둘이 됨 |
 | 평가 | **자체** (pycocotools 계열 + 샘플 단위 TP/FP/FN) | 평가만을 위한 FiftyOne 의존 |
@@ -122,7 +123,10 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **라벨은 덮어쓰지 않고 개정(Label revision)으로 쌓인다.** 개정은 라벨 공간, 출처, 날짜, **빠짐없이 라벨한 클래스 목록**, 라벨 상태(라벨 있음 / 배경으로 확인 / 미라벨)를 가진다. 릴리스는 항목마다 (split, 가리키는 개정)을 기록하므로, 한 이미지를 여러 릴리스가 서로 다른 라벨로 공유한다.
 - **릴리스는 base 릴리스에서 파생**되고, 항목 → 포함된 릴리스 역참조를 지원한다.
 - **제어 엔티티 (SQLite)**: User, ApiToken, Node, Job, JobLog, AuditLog, Project, Ontology, DatasetVersion, Run, ModelVersion, Engine, Deployment, Plugin, StorageLocation, LicenseRecord, NodeMetric(시계열 요약)
-- **대량 데이터 (Lance)**: `samples(hash, uri, 메타, 태그, embedding)`, `annotations(sample_hash, 형태, 클래스, source, confidence, review_status)`
+- **카탈로그 (SQLite, 0.4.0에 구현)**: `projects, label_spaces, storage_locations, batches, items(sha256, 크기, 사이트, 카메라, 위치), label_revisions(rev, 상태, boxes JSON, 빠짐없이 라벨한 클래스), revision_classes(클래스 필터용), datasets, releases(통계), release_items(split, 가리키는 개정)`. 코드: `hub/catalog_models.py`, `hub/catalog.py`
+- **가져오기는 노드가 한다.** 데이터가 있는 노드가 `data.import` 작업으로 폴더를 읽어 해시·크기·라벨·썸네일만 Hub에 묶음 단위로 올린다(`node/importer.py`). 이미지 파일은 옮기지 않는다.
+- **이미지 URL은 서명된다.** `<img>`는 인증 헤더를 못 보내므로 썸네일·원본 URL에 만료 시각과 서명을 붙인다. 원본은 Hub 머신에서 읽을 수 있는 경로일 때만 제공한다.
+- **임베딩 (Lance, Phase 2)**: `embeddings(item_id, vector)` — 텍스트·이미지 검색과 큐레이션용
 - **Folder → Project.** 폴더는 프로젝트를 묶는 선택적 1단 분류다. **Project** = 하나의 태스크 범위로, 온톨로지를 공유하는 데이터셋 여러 개·Run·모델·승인 요청을 묶는다.
 - **Batch** = 가져오기 한 번(이름 · 태그 · 출처 · 시각). 모든 샘플은 자신이 들어온 배치를 기억한다 — 가져오기 취소, 배치 단위 오토라벨·검수 배정, 출처 필터에 쓴다.
 - **split은 데이터셋 안에서 샘플의 속성**이고, 버전을 찍을 때 고정된다. **전처리·증강은 버전에 굽지 않고 학습 설정(Run)에 둔다** — 이미지 복제가 없고, 같은 버전으로 설정만 바꿔 실험할 수 있다.
@@ -134,7 +138,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **Annotation.source** = `human | autolabel:<model>@<ver> | synthetic:<generator>`
 - **Model Contract** = 입력 크기·전처리·클래스·임계값·온톨로지 버전. SDK·추론 서비스·Edge가 같은 계약을 쓴다 (학습/배포 전처리 불일치 방지).
 
-> Lance가 100만 샘플 규모에서 동시 쓰기(오토라벨 Job)와 UI 조회를 감당하는지는 Phase 2 첫 주에 벤치마크로 확인한다.
+> 카탈로그를 SQLite에 둔 것은 150장 규모에서만 확인했다. 수십만 장에서 가져오기 속도와 필터 응답이 충분한지는 실제 데이터로 측정해야 하고, 부족하면 항목·개정을 열 기반 저장으로 옮긴다.
 
 ## 5. 기능
 

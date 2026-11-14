@@ -363,7 +363,7 @@ def delete_node(db: Session, user: User, node_id: str) -> None:
 
 
 def list_job_types() -> list[dict[str, Any]]:
-    return [spec.model_dump() for spec in BUILTIN_JOB_TYPES.values()]
+    return [spec.model_dump() for spec in BUILTIN_JOB_TYPES.values() if not spec.hidden]
 
 
 def create_job(

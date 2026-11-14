@@ -60,7 +60,18 @@ def system_gpu(_: dict[str, Any]) -> dict[str, Any]:
     return {"assigned": assigned, "gpus": found}
 
 
-HANDLERS = {"system.info": system_info, "system.gpu": system_gpu, "debug.sleep": debug_sleep}
+def data_import(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import importer
+
+    return importer.run(params)
+
+
+HANDLERS = {
+    "system.info": system_info,
+    "system.gpu": system_gpu,
+    "debug.sleep": debug_sleep,
+    "data.import": data_import,
+}
 
 
 def main(argv: list[str]) -> int:

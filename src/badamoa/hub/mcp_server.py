@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import resources, services
+from . import catalog, resources, services
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -143,9 +143,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
     @mcp.tool(title="노드 추가 명령 생성", annotations=WRITE)
     @guarded
-    def create_node_join_command(
-        ctx: Context, roles: list[str] | None = None, ttl_minutes: int = 60
-    ) -> dict[str, Any]:
+    def create_node_join_command(ctx: Context, roles: list[str] | None = None, ttl_minutes: int = 60) -> dict[str, Any]:
         """원격 머신을 노드로 추가하는 1회용 설치 명령(Linux/Windows)을 만듭니다. 관리자 전용.
 
         roles: compute | storage | inference 중 선택 (기본: 전부).
@@ -189,9 +187,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         """
         user = user_of(ctx)
         with hub.db.session() as db:
-            job = services.create_job(
-                db, user, type, params, node_id, via="mcp", gpus=gpus, min_vram_mb=min_vram_mb
-            )
+            job = services.create_job(db, user, type, params, node_id, via="mcp", gpus=gpus, min_vram_mb=min_vram_mb)
             return services.job_view(db, hub.settings, job)
 
     @mcp.tool(title="작업 조회", annotations=READ_ONLY)
@@ -248,6 +244,73 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         user = user_of(ctx)
         with hub.db.session() as db:
             job = services.cancel_job(db, user, job_id, via="mcp")
+            return services.job_view(db, hub.settings, job)
+
+    # ---- tools: datasets -----------------------------------------------------
+
+    @mcp.tool(title="프로젝트 목록", annotations=READ_ONLY)
+    @guarded
+    def list_projects(ctx: Context) -> list[dict[str, Any]]:
+        """프로젝트 목록과 각 프로젝트의 릴리스 수·항목 수를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.list_projects(db)
+
+    @mcp.tool(title="데이터셋 목록", annotations=READ_ONLY)
+    @guarded
+    def list_datasets(project_id: str, ctx: Context) -> list[dict[str, Any]]:
+        """프로젝트의 데이터셋 계열과 각 계열의 릴리스(버전, 항목 수, 라벨 공간)를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.tree(db, project_id)
+
+    @mcp.tool(title="릴리스 조회", annotations=READ_ONLY)
+    @guarded
+    def get_release(release_id: str, ctx: Context) -> dict[str, Any]:
+        """릴리스의 통계(항목 수, split, 라벨 상태, 클래스별 박스 수), 라벨 공간, base 릴리스를 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.release_view(db, release_id)
+
+    @mcp.tool(title="릴리스 비교", annotations=READ_ONLY)
+    @guarded
+    def compare_releases(release_id: str, other_release_id: str, ctx: Context) -> dict[str, Any]:
+        """other_release_id에서 release_id로 가면서 바뀐 것: 추가·제거된 항목, 라벨이 바뀐 항목, 클래스별 박스 수 증감."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.compare(db, release_id, other_release_id)
+
+    @mcp.tool(title="데이터셋 가져오기", annotations=WRITE)
+    @guarded
+    def import_dataset(
+        project_id: str,
+        node_id: str,
+        path: str,
+        dataset: str,
+        version: str,
+        ctx: Context,
+        format: str = "auto",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """노드에 있는 YOLO/COCO 형식 폴더를 복사 없이 새 릴리스로 등록합니다.
+
+        node_id는 데이터가 있는 노드, path는 그 노드에서의 폴더 경로입니다. format: auto | yolo | coco.
+        작업을 반환하므로 wait_for_job으로 완료를 기다린 뒤 result.release_id를 get_release로 확인하세요.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            job = catalog.start_import(
+                db,
+                user,
+                project_id=project_id,
+                node_id=node_id,
+                path=path,
+                dataset=dataset,
+                version=version,
+                fmt=format,
+                note=note,
+                via="mcp",
+            )
             return services.job_view(db, hub.settings, job)
 
     # ---- resources -----------------------------------------------------------

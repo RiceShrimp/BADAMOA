@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Agents } from "./Agents";
 import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./api";
+import { Datasets } from "./Datasets";
 import { Home } from "./Home";
 import { Jobs } from "./Jobs";
 import { NodeDetail } from "./NodeDetail";
@@ -8,7 +9,7 @@ import { Nodes } from "./Nodes";
 import { ReleaseNotes, hasUnseenRelease } from "./ReleaseNotes";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "nodes" | "jobs" | "agents";
+type Page = "home" | "datasets" | "nodes" | "jobs" | "agents";
 
 interface NavItem {
   label: string;
@@ -25,7 +26,7 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     hint: "데이터",
     items: [
       { label: "샘플 라이브러리", icon: "images", phase: 2 },
-      { label: "데이터셋", icon: "database", phase: 1 },
+      { label: "데이터셋", icon: "database", page: "datasets" },
     ],
   },
   {
@@ -122,21 +123,21 @@ export function App() {
     setState("login");
   };
 
-  const nodeId = page === "nodes" ? hash.match(/^#\/nodes\/(.+)$/)?.[1] : undefined;
-  return <Shell user={user} version={version} page={page} nodeId={nodeId} onLogout={logout} />;
+  const sub = hash.split("/")[2] || undefined; // #/<page>/<id>
+  return <Shell user={user} version={version} page={page} sub={sub} onLogout={logout} />;
 }
 
 function Shell({
   user,
   version,
   page,
-  nodeId,
+  sub,
   onLogout,
 }: {
   user: User;
   version: string;
   page: Page;
-  nodeId?: string;
+  sub?: string;
   onLogout: () => void;
 }) {
   const [theme, toggleTheme] = useTheme();
@@ -234,7 +235,8 @@ function Shell({
         </header>
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
-          {page === "nodes" && (nodeId ? <NodeDetail nodeId={nodeId} /> : <Nodes isAdmin={isAdmin} />)}
+          {page === "datasets" && <Datasets releaseId={sub} isAdmin={isAdmin} />}
+          {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}
         </main>

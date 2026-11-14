@@ -73,6 +73,32 @@ class LogAck(BaseModel):
     cancel_requested: bool = False
 
 
+class ImportBegin(BaseModel):
+    """First call of a dataset import: the class names, in id order."""
+
+    classes: list[str]
+    total: int = 0
+    format: str = ""
+
+
+class ImportItem(BaseModel):
+    sha256: str
+    file_name: str
+    rel_path: str  # relative to the import root on the node
+    width: int
+    height: int
+    bytes: int
+    split: str = ""  # train | val | test | ""
+    state: Literal["labelled", "background", "unlabelled"]
+    # [class_id, cx, cy, w, h] normalised to 0..1 (YOLO convention)
+    boxes: list[list[float]] = Field(default_factory=list)
+    thumb_b64: str | None = None
+
+
+class ImportChunk(BaseModel):
+    items: list[ImportItem]
+
+
 class CompleteRequest(BaseModel):
     status: Literal["succeeded", "failed", "canceled"]
     result: dict[str, Any] | None = None

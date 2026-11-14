@@ -211,6 +211,11 @@ class NodeAgent:
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
                     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
+                if job["type"].startswith("data."):
+                    # Built-in data jobs upload their results to the Hub themselves, in chunks.
+                    env["BADAMOA_HUB_URL"] = self.config.hub_url
+                    env["BADAMOA_NODE_TOKEN"] = self.config.node_token
+                    env["BADAMOA_JOB_ID"] = job_id
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "badamoa.node.builtin", job["type"], str(params_path), str(result_path)],
                     stdout=subprocess.PIPE,

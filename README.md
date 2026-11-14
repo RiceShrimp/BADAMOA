@@ -8,7 +8,7 @@
 데이터 관리, 오토라벨링, 학습(일반 학습 + Teacher→Student 증류), 평가, 모델 관리, 배포를 한 곳에서 하고,
 원격 학습·데이터 서버를 한 줄 명령으로 붙이며, Claude Code 같은 에이전트가 MCP로 전부 조작할 수 있게 만드는 것이 목표입니다.
 
-지금은 **Phase 0(골격)** 입니다: Hub, Node Agent, Job 실행·로그, MCP 서버, 웹 UI.
+지금 되는 것: Hub와 노드 연결, 작업 실행·로그, 노드 자원 관리(GPU 단위 배정), 데이터셋 카탈로그(복사 없이 등록, 릴리스, 라벨 개정, 비교), MCP 서버, 웹 UI. 학습은 다음 단계입니다.
 바뀐 내용은 [CHANGELOG.md](CHANGELOG.md), 설계는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), 일정은 [docs/ROADMAP.md](docs/ROADMAP.md), 화면 구성과 레퍼런스 분석은 [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md), 최초 구상은 [docs/PLANS.md](docs/PLANS.md).
 
 ## 실행 (개발 환경)
@@ -58,6 +58,17 @@ claude mcp add --transport http badamoa http://localhost:8470/mcp --header "Auth
 ```
 
 연결한 뒤 "BADAMOA 노드 상태 점검해줘"처럼 요청하면 됩니다.
+
+## 데이터셋 등록해 보기
+
+웹 UI → **데이터셋** 에서 프로젝트를 만들고 **데이터셋 가져오기** 를 누른 뒤, 노드에 있는 YOLO 또는 COCO 형식 폴더의 경로를 넣습니다.
+이미지는 복사하지 않고 제자리에 둡니다.
+
+시험용 데이터가 필요하면 아래 명령으로 작은 YOLO 데이터셋(150장)을 만들 수 있습니다.
+
+```bash
+uv run python tests/sample_data.py .badamoa/sample-yolo
+```
 
 ## 개발
 

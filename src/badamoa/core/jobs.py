@@ -17,6 +17,7 @@ class JobTypeSpec(BaseModel):
     description: str
     params_schema: dict[str, Any] = Field(default_factory=dict)
     gpus: int = 0  # GPUs the job needs by default
+    hidden: bool = False  # started from its own screen, not the generic job dialog
 
 
 BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
@@ -34,6 +35,27 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             description="배정받은 GPU에서 nvidia-smi를 실행합니다. GPU 단위 배정 확인용.",
             params_schema={"type": "object", "properties": {}},
             gpus=1,
+        ),
+        JobTypeSpec(
+            type="data.import",
+            title="데이터셋 가져오기",
+            description="노드에 있는 YOLO/COCO 형식 데이터셋을 복사 없이 등록합니다.",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "dataset": {"type": "string"},
+                    "version": {"type": "string"},
+                    "path": {"type": "string"},
+                    "format": {"type": "string", "default": "auto"},
+                    "label_space": {"type": "string", "default": ""},
+                    "site": {"type": "string", "default": ""},
+                    "camera": {"type": "string", "default": ""},
+                    "note": {"type": "string", "default": ""},
+                    "base_release_id": {"type": "string", "default": ""},
+                },
+            },
         ),
         JobTypeSpec(
             type="debug.sleep",
