@@ -22,6 +22,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(16), default="member")  # admin | member
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # A stopped account cannot sign in and its tokens stop working; nothing it made is removed.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ApiToken(Base):

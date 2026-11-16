@@ -174,7 +174,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
             <i className="swatch job" /> BADAMOA 실행
           </span>
           <span>
-            <i className="swatch busy" /> 사람이 쓰는 중
+            <i className="swatch busy" /> 사람이 쓰는 중 (<a href="#/settings/gpu">기준</a>)
           </span>
           <span>
             <i className="swatch free" /> 비어 있음

@@ -10,9 +10,9 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import gpus, prometheus, resources, services
+from . import admin, gpus, prometheus, resources, services
 from .db import iso
-from .deps import Hub, admin_user, current_user, db_session, get_hub, public_base_url
+from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub, public_base_url
 from .install import join_commands
 from .models import User
 from .release_notes import load_release_notes
@@ -112,17 +112,67 @@ class NewUser(Credentials):
 
 @router.get("/users")
 def list_users(_: User = Depends(admin_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
-    from sqlalchemy import select
-
-    return [services.serialize_user(u) for u in db.scalars(select(User).order_by(User.created_at))]
+    return admin.list_users(db)
 
 
 @router.post("/users")
-def create_user(body: NewUser, admin: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
+def create_user(body: NewUser, who: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
     user = services.create_user(db, body.username, body.password, body.role)
-    services.audit(db, admin.id, "ui", "user.create", user.id, username=user.username, role=user.role)
+    services.audit(db, who.id, "ui", "user.create", user.id, username=user.username, role=user.role)
     db.commit()
     return services.serialize_user(user)
+
+
+class UserPatch(BaseModel):
+    role: str | None = None
+    disabled: bool | None = None
+    password: str | None = None  # a new password set by the admin; the person's browser sessions end
+
+
+@router.patch("/users/{user_id}")
+def update_user(
+    user_id: str, body: UserPatch, who: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    admin.update_user(db, who, user_id, **body.model_dump(exclude_unset=True))
+    db.commit()
+    return next(u for u in admin.list_users(db) if u["id"] == user_id)
+
+
+class PasswordChange(BaseModel):
+    current: str
+    new: str
+
+
+@router.post("/auth/password")
+def change_password(
+    body: PasswordChange, request: Request, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict:
+    """Your own password; your other browser sessions are signed out, this one stays."""
+    admin.change_own_password(db, user, body.current, body.new, bearer_token(request))
+    db.commit()
+    return {"ok": True}
+
+
+# ---- when a GPU counts as busy (admin) ---------------------------------------------
+
+
+class GpuBusy(BaseModel):
+    memory_pct: float | None = None  # both None: back to the Hub's launch options
+    util_pct: float | None = None
+
+
+@router.get("/settings/gpu-busy")
+def gpu_busy(_: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)) -> dict:
+    return admin.gpu_busy_view(db, hub.settings)
+
+
+@router.put("/settings/gpu-busy")
+def set_gpu_busy(
+    body: GpuBusy, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict:
+    view = admin.set_gpu_busy(db, user, hub.settings, body.memory_pct, body.util_pct)
+    db.commit()
+    return view
 
 
 # ---- nodes ----------------------------------------------------------------------

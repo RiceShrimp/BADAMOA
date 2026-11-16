@@ -559,6 +559,47 @@ tr.current-row td {
 .modal-actions .push-left {
   margin-right: auto;
 }
+/* ---- settings: accounts, GPU rule ---- */
+a.who {
+  color: inherit;
+  text-decoration: none;
+}
+a.who:hover strong {
+  color: var(--accent);
+}
+.input-with-button {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.input-with-button input {
+  flex: 1;
+}
+.input-with-button button {
+  flex: none;
+  margin-top: 5px;
+}
+.row-buttons {
+  white-space: nowrap;
+}
+.row-buttons button + button {
+  margin-left: 6px;
+}
+tr.muted-row td {
+  color: var(--muted);
+}
+.narrow-card {
+  max-width: 640px;
+}
+table.plain td select {
+  margin-top: 0;
+  padding: 4px 8px;
+  width: auto;
+}
+.gpu-busy-form {
+  max-width: 640px;
+  margin-bottom: 12px;
+}
 .card-head .head-actions input[type="search"] {
   width: 200px;
   margin-top: 0;

@@ -1,17 +1,33 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { GpuBusyPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { fileSize } from "./Files";
-import { type NodeInfo, api, apiUpload } from "./api";
+import { type NodeInfo, type User, api, apiUpload } from "./api";
 import type { Project } from "./catalogTypes";
 import type { Environment, EnvironmentNode, Template } from "./trainTypes";
 import { Badge, CopyBlock, Icon, Modal, timeAgo, usePolling } from "./ui";
 
 const ENTRY_LABEL: Record<string, string> = { train: "학습", eval: "평가", predict: "추론", export: "내보내기" };
 
+/** The settings menu; ``admin`` entries are shown to admins only. */
+const SECTIONS: { id: string; label: string; admin?: boolean }[] = [
+  { id: "templates", label: "모델 종류" },
+  { id: "environments", label: "환경" },
+  { id: "projects", label: "프로젝트 기본값", admin: true },
+  { id: "gpu", label: "GPU 배정" },
+  { id: "storage", label: "저장 공간" },
+  { id: "users", label: "사용자", admin: true },
+  { id: "account", label: "내 계정" },
+  { id: "monitoring", label: "외부 모니터링" },
+];
+
 /**
  * What is set up once so that everyone else only picks by name: model templates,
- * environments, project defaults. Members can look; only admins change things.
+ * environments, project defaults, GPU rules, accounts. Members can look; only admins change things.
+ * Each part has its own address (``#/settings/<part>``).
  */
-export function Settings({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo[] | null }) {
+export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; nodes: NodeInfo[] | null; user: User; sub?: string }) {
+  const sections = SECTIONS.filter((s) => isAdmin || !s.admin);
+  const part = sections.find((s) => s.id === sub)?.id ?? "templates";
   return (
     <>
       <div className="page-head">
@@ -24,11 +40,21 @@ export function Settings({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo
           </p>
         </div>
       </div>
-      <Templates isAdmin={isAdmin} />
-      <Environments isAdmin={isAdmin} nodes={nodes ?? []} />
-      {isAdmin && <ProjectDefaults />}
-      <StorageUsage isAdmin={isAdmin} />
-      <ExternalMonitoring />
+      <nav className="tabs" aria-label="설정">
+        {sections.map((s) => (
+          <a key={s.id} href={`#/settings/${s.id}`} className={part === s.id ? "active" : ""}>
+            {s.label}
+          </a>
+        ))}
+      </nav>
+      {part === "templates" && <Templates isAdmin={isAdmin} />}
+      {part === "environments" && <Environments isAdmin={isAdmin} nodes={nodes ?? []} />}
+      {part === "projects" && <ProjectDefaults />}
+      {part === "gpu" && <GpuBusyPanel isAdmin={isAdmin} />}
+      {part === "storage" && <StorageUsage isAdmin={isAdmin} />}
+      {part === "users" && <UsersPanel me={user} />}
+      {part === "account" && <MyAccount me={user} />}
+      {part === "monitoring" && <ExternalMonitoring />}
     </>
   );
 }
@@ -49,10 +75,12 @@ function ExternalMonitoring() {
     `      - targets: ["${target}"]`,
   ].join("\n");
   return (
-    <details className="card fold">
-      <summary>
-        Prometheus · Grafana로 보내기 <span className="muted small">(사내에 이미 있다면)</span>
-      </summary>
+    <section className="card">
+      <div className="card-head">
+        <h3>
+          Prometheus · Grafana로 보내기 <span className="muted small">(사내에 이미 있다면)</span>
+        </h3>
+      </div>
       <p className="muted small">
         Hub의 <code>/metrics</code>가 노드 · GPU · 디스크 · 작업 대기열을 Prometheus 형식으로 내줍니다. 가져갈 때만 계산하고 따로
         저장하지 않으므로 BADAMOA 쪽 부담은 거의 없습니다. 토큰은 <a href="#/agents">에이전트 연결</a>에서 만듭니다.
@@ -63,7 +91,7 @@ function ExternalMonitoring() {
         <code>badamoa_gpu_memory_used_bytes</code>, <code>badamoa_gpu_state</code>(free · job · busy · reserved · offline),{" "}
         <code>badamoa_disk_used_bytes</code>, <code>badamoa_jobs</code> 등
       </p>
-    </details>
+    </section>
   );
 }
 
@@ -625,7 +653,8 @@ function EnvironmentForm({
 function ProjectDefaults() {
   const { data: projects, refresh } = usePolling(() => api<Project[]>("/projects"), 30000);
   const { data: templates } = usePolling(() => api<Template[]>("/templates"), 30000);
-  if (!projects || projects.length === 0) return null;
+  if (!projects) return null;
+  if (projects.length === 0) return <section className="card empty">프로젝트가 아직 없습니다.</section>;
 
   const change = async (project: Project, template: string) => {
     await api(`/projects/${project.id}/settings`, { method: "PUT", body: { template } });

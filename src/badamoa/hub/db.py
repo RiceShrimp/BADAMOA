@@ -23,6 +23,7 @@ _ADDED_COLUMNS = [
     ("run_files", "step", "INTEGER"),
     ("run_files", "caption", "VARCHAR(255) DEFAULT ''"),
     ("nodes", "reserved_gpus", "JSON DEFAULT '[]'"),
+    ("users", "disabled_at", "DATETIME"),
 ]
 
 

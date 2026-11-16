@@ -38,6 +38,9 @@ interface StorageInfo {
 const ACTION_LABEL: Record<string, string> = {
   "setup.admin_created": "관리자 계정을 만들었습니다",
   "user.create": "사용자를 추가했습니다",
+  "user.update": "사용자 계정을 바꿨습니다",
+  "user.password": "비밀번호를 바꿨습니다",
+  "gpu.busy": "GPU 배정 기준을 바꿨습니다",
   "token.create": "에이전트 토큰을 발급했습니다",
   "node.join_token": "노드 추가 명령을 만들었습니다",
   "node.register": "노드가 등록되었습니다",

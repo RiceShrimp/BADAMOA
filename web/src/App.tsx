@@ -197,10 +197,10 @@ function Shell({
         </nav>
         <div className="sidebar-foot">
           <div className="avatar">{user.username.slice(0, 1).toUpperCase()}</div>
-          <div className="who">
+          <a className="who" href="#/settings/account" title="내 계정 · 비밀번호">
             <strong>{user.username}</strong>
             <small>{isAdmin ? "관리자" : "멤버"}</small>
-          </div>
+          </a>
           <button className="icon-btn" onClick={onLogout} aria-label="로그아웃" title="로그아웃">
             <Icon name="logout" />
           </button>
@@ -247,7 +247,7 @@ function Shell({
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}
-          {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} />}
+          {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}
         </main>
         {notesOpen && <ReleaseNotes version={version} onClose={() => setNotesOpen(false)} />}
       </div>

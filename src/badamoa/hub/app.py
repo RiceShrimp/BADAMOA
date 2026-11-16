@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
 from . import (
+    admin,
     agent_api,
     api,
     catalog_api,
@@ -89,6 +90,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     hub = Hub(settings=settings, db=db)
     with db.session() as session:
         registry.sync_builtin(session)
+        admin.load_gpu_busy(session, settings)
     mcp, mcp_endpoint = build_mcp(hub)
 
     @asynccontextmanager

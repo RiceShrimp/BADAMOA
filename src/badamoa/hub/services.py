@@ -100,6 +100,8 @@ def login(db: Session, username: str, password: str, settings: HubSettings) -> t
     user = db.scalar(select(User).where(User.username == username))
     if user is None or not verify_password(password, user.password_hash):
         raise ServiceError(401, "아이디 또는 비밀번호가 올바르지 않습니다.")
+    if user.disabled_at is not None:
+        raise ServiceError(403, "사용이 중지된 계정입니다. 관리자에게 문의하세요.")
     token, _ = issue_token(db, user, "session", "web", timedelta(hours=settings.session_ttl_hours))
     return token, user
 
@@ -112,6 +114,8 @@ def authenticate(db: Session, token: str) -> User | None:
         return None
     now = utcnow()
     if row.expires_at and row.expires_at < now:
+        return None
+    if row.user.disabled_at is not None:
         return None
     if row.last_used_at is None or (now - row.last_used_at).total_seconds() > 60:
         row.last_used_at = now
@@ -145,7 +149,13 @@ def list_api_tokens(db: Session, user: User) -> list[dict[str, Any]]:
 
 
 def serialize_user(user: User) -> dict[str, Any]:
-    return {"id": user.id, "username": user.username, "role": user.role, "created_at": iso(user.created_at)}
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "created_at": iso(user.created_at),
+        "disabled": user.disabled_at is not None,
+    }
 
 
 def require_admin(user: User) -> None:
