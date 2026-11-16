@@ -150,6 +150,10 @@ def hub_run(
     typer.echo(f"  웹 UI   : {url}{where}")
     typer.echo(f"  MCP     : {url}/mcp")
     typer.echo(f"  데이터  : {settings.home}\n")
+    from badamoa.hub.install import ensure_node_wheel
+
+    # The package remote nodes install: made in the background from this checkout when it is missing.
+    threading.Thread(target=ensure_node_wheel, args=(settings,), name="node-wheel", daemon=True).start()
     if open_browser if open_browser is not None else _has_screen():
         threading.Thread(target=_open_when_up, args=(port, url), name="open-browser", daemon=True).start()
     uvicorn.run(application, host=host, port=port, log_level="debug" if verbose else "warning")

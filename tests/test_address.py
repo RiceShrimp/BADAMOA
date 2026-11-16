@@ -46,3 +46,28 @@ def test_hub_start_opens_the_web_ui_at_the_network_address(live_hub, monkeypatch
     port = int(live_hub.rsplit(":", 1)[1])
     cli._open_when_up(port, f"http://192.0.2.10:{port}")  # waits for the Hub, then opens that address
     assert opened == [f"http://192.0.2.10:{port}"]
+
+
+def test_node_package_of_this_version(client, admin, settings):
+    from badamoa.hub import install, services
+
+    body = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()
+    assert body["node_package"] == {"version": services.HUB_VERSION, "ready": False}  # the install would stop half-way
+    (settings.wheels_dir / f"badamoa-{services.HUB_VERSION}-py3-none-any.whl").write_bytes(b"x")
+    assert client.post("/api/nodes/join-tokens", json={}, headers=admin).json()["node_package"]["ready"] is True
+    assert install.ensure_node_wheel(settings) == "ready"
+
+
+def test_hub_builds_the_node_package_from_its_checkout(tmp_path):
+    import shutil
+
+    import pytest
+
+    from badamoa.hub import install, services
+    from badamoa.hub.config import HubSettings
+
+    if shutil.which("uv") is None or install._source_root() is None:
+        pytest.skip("needs uv and a source checkout")
+    settings = HubSettings(home=tmp_path / "hub")
+    assert install.ensure_node_wheel(settings) == "built"
+    assert install.node_wheel(settings).name == f"badamoa-{services.HUB_VERSION}-py3-none-any.whl"

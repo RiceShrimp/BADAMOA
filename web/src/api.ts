@@ -245,6 +245,7 @@ export interface JoinToken {
   expires_at: string;
   hub_url: string;
   address: HubAddress;
+  node_package: { version: string; ready: boolean };
   commands: { linux: string; windows: string; dev: string };
 }
 

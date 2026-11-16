@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from . import address, admin, gpus, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
-from .install import join_commands
+from .install import join_commands, node_wheel
 from .models import User
 from .release_notes import load_release_notes
 
@@ -302,6 +302,8 @@ def create_join_token(
         "expires_at": iso(row.expires_at),
         "hub_url": hub_url,
         "address": where,  # where the address came from, and others this machine has
+        # Without the wheel of this Hub's version on its index the install fails half-way.
+        "node_package": {"version": services.HUB_VERSION, "ready": node_wheel(hub.settings) is not None},
         "commands": join_commands(hub_url, token),
     }
 

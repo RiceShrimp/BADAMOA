@@ -470,3 +470,8 @@ details.node-more > summary {
 .address-edit input {
   margin-top: 0;
 }
+
+.row-links {
+  display: flex;
+  gap: 10px;
+}

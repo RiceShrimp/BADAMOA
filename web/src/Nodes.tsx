@@ -158,7 +158,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
       {board && board.nodes.length > 0 && (
         <section className="card board">
           {board.nodes.map((node) => (
-            <ServerRow key={node.id} node={node} isAdmin={isAdmin} onEdit={() => setEditing(node)} />
+            <ServerRow key={node.id} node={node} isAdmin={isAdmin} onEdit={() => setEditing(node)} onChanged={() => void refresh()} />
           ))}
           {isAdmin && (
             <button className="board-add" onClick={() => setAdding(true)}>
@@ -200,7 +200,23 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function ServerRow({ node, isAdmin, onEdit }: { node: BoardNode; isAdmin: boolean; onEdit: () => void }) {
+function ServerRow({
+  node,
+  isAdmin,
+  onEdit,
+  onChanged,
+}: {
+  node: BoardNode;
+  isAdmin: boolean;
+  onEdit: () => void;
+  onChanged: () => void;
+}) {
+  const toggle = async () => {
+    const stop = node.enabled;
+    if (stop && !window.confirm(`${node.name}을(를) 비활성화할까요?\n새 작업을 보내지 않습니다. 실행 중인 작업은 끝까지 갑니다. 언제든 "다시 사용"으로 되돌릴 수 있습니다.`)) return;
+    await api(`/nodes/${node.id}`, { method: "PATCH", body: { enabled: !stop } });
+    onChanged();
+  };
   const online = node.status === "online";
   const facts = [
     node.cpu_pct != null ? `CPU ${Math.round(node.cpu_pct)}%` : null,
@@ -230,9 +246,14 @@ function ServerRow({ node, isAdmin, onEdit }: { node: BoardNode; isAdmin: boolea
           </div>
         )}
         {isAdmin && (
-          <button className="link small" onClick={onEdit}>
-            설정
-          </button>
+          <div className="row-links">
+            <button className="link small" onClick={onEdit}>
+              설정
+            </button>
+            <button className="link small" onClick={() => void toggle()}>
+              {node.enabled ? "비활성화" : "다시 사용"}
+            </button>
+          </div>
         )}
       </div>
       <div className="board-gpus">
@@ -349,6 +370,12 @@ function AddNode({ onClose }: { onClose: () => void }) {
             추가할 서버의 터미널에서 아래 명령을 실행하세요. 명령은 <strong>1회용</strong>이고 1시간 뒤 만료됩니다.
           </p>
           <AddressNote where={join.address} onChange={create} />
+          {!join.node_package.ready && (
+            <div className="error">
+              노드 설치 파일(badamoa {join.node_package.version})이 Hub에 아직 없어 설치가 중간에 멈춥니다. Hub를 소스에서 실행하면 시작할 때
+              자동으로 만들어지니 잠시 뒤 다시 여세요. 설치본이라면 <code>badamoa hub publish-wheel &lt;wheel 파일&gt;</code>로 올리세요.
+            </div>
+          )}
           <CopyBlock label="Ubuntu / Linux" text={join.commands.linux} />
           <CopyBlock label="Windows (관리자 PowerShell)" text={join.commands.windows} />
           <p className="muted small">설치가 끝나면 노드 목록에 자동으로 나타납니다.</p>
@@ -472,8 +499,8 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
       <RolePicker roles={roles} onChange={setRoles} />
       <div className="checks">
         <label>
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          작업 받기 (끄면 새 작업을 배정하지 않습니다)
+          <input type="checkbox" checked={!enabled} onChange={(e) => setEnabled(!e.target.checked)} />
+          비활성화 <span className="muted small">— 새 작업을 보내지 않습니다. 실행 중인 작업은 끝까지 갑니다</span>
         </label>
       </div>
       {node.gpus.length > 0 && (
@@ -494,17 +521,27 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
           </div>
         </>
       )}
+      {node.is_local && <p className="muted small">Hub가 있는 이 PC의 노드는 삭제할 수 없습니다. 쓰지 않으려면 비활성화하세요.</p>}
       {error && <div className="error">{error}</div>}
       <div className="modal-actions">
         {!node.is_local && (
           <button
             className="danger"
             onClick={() => {
-              if (window.confirm(`노드 "${node.name}"을(를) Hub에서 제거할까요?`))
-                void run(() => api(`/nodes/${node.id}`, { method: "DELETE" }));
+              const text = [
+                `노드 "${node.name}"을(를) 삭제할까요?`,
+                "",
+                "- Hub의 노드 목록에서 사라지고 이 서버로 작업을 보내지 않습니다.",
+                "- 이 서버에서 실행 중인 작업은 실패로 끝납니다.",
+                "- 이 서버에 있는 이미지로 등록한 데이터셋은 학습 · 내려받기를 할 수 없게 됩니다(등록 기록은 남음).",
+                "- 서버에 설치된 BADAMOA는 그대로 남습니다. 다시 쓰려면 노드 추가로 다시 붙이세요.",
+                "",
+                "잠시 쉬게 하려는 것이면 삭제 대신 비활성화하세요.",
+              ].join("\n");
+              if (window.confirm(text)) void run(() => api(`/nodes/${node.id}`, { method: "DELETE" }));
             }}
           >
-            노드 제거
+            노드 삭제
           </button>
         )}
         <span className="spacer" />

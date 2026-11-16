@@ -9,16 +9,23 @@ third-party dependencies still come from PyPI until the offline bundle lands.
 from __future__ import annotations
 
 import html
+import logging
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 
+import badamoa
+
 from . import services
+from .config import HubSettings
 from .deps import Hub, get_hub, public_base_url
 
 router = APIRouter(prefix="/install")
+log = logging.getLogger("badamoa.hub.install")
 
 _NORMALIZE = re.compile(r"[-_.]+")
 _SCRIPTS_DIR = Path(__file__).parent / "scripts"
@@ -30,6 +37,49 @@ def _normalize(name: str) -> str:
 
 def _wheel_project(filename: str) -> str:
     return _normalize(filename.split("-", 1)[0])
+
+
+# ---- the node package for this Hub's version -----------------------------------------
+#
+# The install scripts ask the Hub's index for ``badamoa==<the Hub's version>``. A Hub run from
+# a source checkout builds that wheel itself at start-up; an installed Hub ships with it.
+
+
+def node_wheel(settings: HubSettings, version: str = services.HUB_VERSION) -> Path | None:
+    assert settings.wheels_dir is not None
+    found = sorted(settings.wheels_dir.glob(f"badamoa-{version}-*.whl"))
+    return found[-1] if found else None
+
+
+def _source_root() -> Path | None:
+    """The checkout this Hub runs from (an editable install), if it is one."""
+    root = Path(badamoa.__file__).resolve().parents[2]
+    project = root / "pyproject.toml"
+    if project.is_file() and 'name = "badamoa"' in project.read_text(encoding="utf-8"):
+        return root
+    return None
+
+
+def ensure_node_wheel(settings: HubSettings) -> str:
+    """Have the wheel nodes install: "ready" (there), "built" (just made), or "missing" (with a reason logged)."""
+    if node_wheel(settings):
+        return "ready"
+    root, uv = _source_root(), shutil.which("uv")
+    if root is None or uv is None:
+        hint = "`badamoa hub publish-wheel <wheel>`로 올리세요"
+        log.warning("노드 설치 파일(badamoa %s wheel)이 없습니다. %s.", services.HUB_VERSION, hint)
+        return "missing"
+    done = subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(settings.wheels_dir), str(root)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if done.returncode != 0 or node_wheel(settings) is None:
+        log.warning("노드 설치 파일을 만들지 못했습니다: %s", (done.stderr or done.stdout)[-500:])
+        return "missing"
+    log.info("노드 설치 파일을 만들었습니다: %s", node_wheel(settings).name)
+    return "built"
 
 
 def join_commands(hub_url: str, token: str) -> dict[str, str]:
