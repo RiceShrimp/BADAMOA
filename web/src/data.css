@@ -559,6 +559,113 @@ tr.current-row td {
 .modal-actions .push-left {
   margin-right: auto;
 }
+/* ---- the board's filter button and panel ---- */
+.filter-anchor {
+  position: relative;
+}
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.filter-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.filter-btn em {
+  font-style: normal;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+}
+.filter-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+}
+.filter-panel .eyebrow {
+  margin: 4px 0 6px;
+}
+.filter-panel .segmented {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.board-tools .filter-panel input[type="search"],
+.filter-panel input[type="search"] {
+  width: 100%;
+  margin: 0 0 6px;
+}
+.class-suggest {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.class-suggest button {
+  width: 100%;
+  justify-content: space-between;
+  border: 0;
+  padding: 5px 8px;
+  text-align: left;
+}
+.class-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 4px 0 10px;
+}
+.class-picks button {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12.5px;
+}
+.class-picks button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.filter-panel-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+.active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 12px;
+}
+.active-filters > button:not(.link) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.card-matched {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--accent);
+}
+.card-matched strong {
+  font-weight: 600;
+}
 .folder-chips .add-chip {
   color: var(--muted);
   border-style: dashed;

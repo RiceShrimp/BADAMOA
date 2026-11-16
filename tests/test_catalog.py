@@ -405,6 +405,10 @@ def test_cards_and_release_tabs(hub, tmp_path):
     assert 1 <= len(card["collage"]) <= 4
     assert all(c["boxes"] and c["url"].startswith("/media/thumb/") for c in card["collage"])
     assert card["best"] is None and card["updated_at"]
+    # the classes that have labels (for the board's class filter), most labels first
+    labels = [c["labels"] for c in card["classes"]]
+    assert {c["name"] for c in card["classes"]} <= set(CLASSES) and labels == sorted(labels, reverse=True)
+    assert sum(labels) == hub.get(f"/api/releases/{v1}").json()["stats"]["boxes"]
 
     # ---- moved to another folder, renamed
     moved = hub.patch(f"/api/projects/{project['id']}", json={"folder": "공장", "name": "카드-2"})

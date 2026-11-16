@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { SPLIT_LABEL, type TrashInfo, bytesLabel, classColor } from "./catalogTypes";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
@@ -27,6 +27,8 @@ export interface ProjectCardInfo {
   models: number;
   best: { id: string; name: string; metric: string; value: number } | null;
   collage: Shot[];
+  /** Classes with labels in the newest version of each dataset, most labels first. */
+  classes: { name: string; labels: number; images: number }[];
 }
 
 interface DatasetCardInfo {
@@ -198,6 +200,8 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   const [folder, setFolder] = useState<string | null>(null); // null: all, "": no folder
   const [q, setQ] = useState("");
   const [task, setTask] = useState(""); // "": every task
+  const [wanted, setWanted] = useState<string[]>([]); // class names a project must all have (any case)
+  const [filtering, setFiltering] = useState(false);
   const [sort, setSort] = useState("updated");
   const [editing, setEditing] = useState<ProjectCardInfo | null>(null);
   const [makingFolder, setMakingFolder] = useState(false);
@@ -245,6 +249,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
       (c) =>
         (folder === null || c.folder === folder) &&
         (!task || c.task === task) &&
+        hasAll(c, wanted) &&
         (!needle || `${c.name} ${c.description} ${c.folder}`.toLowerCase().includes(needle)),
     );
     const by: Record<string, (a: ProjectCardInfo, b: ProjectCardInfo) => number> = {
@@ -253,7 +258,12 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
       items: (a, b) => b.items - a.items,
     };
     return [...list].sort(by[sort]);
-  }, [cards, folder, task, q, sort]);
+  }, [cards, folder, task, wanted, q, sort]);
+  const clearFilters = () => {
+    setTask("");
+    setWanted([]);
+  };
+  const filters = (task ? 1 : 0) + wanted.length;
   // The tasks there are, with how many projects each: the filter lists only those.
   const tasks = useMemo(() => {
     const counts = new Map<string, number>();
@@ -299,16 +309,24 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
           </div>
           <span className="spacer" />
           <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="프로젝트 찾기" aria-label="프로젝트 찾기" />
-          {(tasks.length > 1 || task) && (
-            <select value={task} onChange={(e) => setTask(e.target.value)} aria-label="태스크">
-              <option value="">모든 태스크</option>
-              {tasks.map(([t, n]) => (
-                <option key={t} value={t}>
-                  {TASK_LABEL[t]} ({n})
-                </option>
-              ))}
-            </select>
-          )}
+          <div className="filter-anchor">
+            <button className={filters ? "filter-btn on" : "filter-btn"} onClick={() => setFiltering(!filtering)} aria-expanded={filtering}>
+              <Icon name="filter" size={14} />
+              필터{filters > 0 && <em>{filters}</em>}
+            </button>
+            {filtering && (
+              <FilterPanel
+                cards={cards}
+                tasks={tasks}
+                task={task}
+                wanted={wanted}
+                onTask={setTask}
+                onWanted={setWanted}
+                onClear={clearFilters}
+                onClose={() => setFiltering(false)}
+              />
+            )}
+          </div>
           <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="정렬">
             {SORTS.map((s) => (
               <option key={s.id} value={s.id}>
@@ -322,6 +340,23 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
               휴지통 {binned}
             </a>
           )}
+        </div>
+      )}
+      {filters > 0 && (
+        <div className="active-filters">
+          {task && (
+            <button onClick={() => setTask("")} title="이 조건 빼기">
+              {TASK_LABEL[task] ?? task} <Icon name="x" size={11} />
+            </button>
+          )}
+          {wanted.map((w) => (
+            <button key={w} onClick={() => setWanted(wanted.filter((x) => x !== w))} title="이 조건 빼기">
+              {w} <Icon name="x" size={11} />
+            </button>
+          ))}
+          <button className="link small" onClick={clearFilters}>
+            필터 지우기
+          </button>
         </div>
       )}
       {folder && (
@@ -358,26 +393,26 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
         </div>
       )}
 
-      {cards && (cards.length > 0 || names.length > 0) && shown.length === 0 && (q.trim() || task) && (
+      {cards && (cards.length > 0 || names.length > 0) && shown.length === 0 && (q.trim() || filters > 0) && (
         <p className="muted">
           조건에 맞는 프로젝트가 없습니다.{" "}
           <button
             className="link"
             onClick={() => {
               setQ("");
-              setTask("");
+              clearFilters();
             }}
           >
-            찾기 · 태스크 지우기
+            찾기 · 필터 지우기
           </button>
         </p>
       )}
-      {cards && folder && shown.length === 0 && !q.trim() && !task && (
+      {cards && folder && shown.length === 0 && !q.trim() && filters === 0 && (
         <p className="muted">빈 폴더입니다. 여기서 새 프로젝트를 만들거나, 다른 프로젝트의 설정(톱니바퀴)에서 이 폴더로 옮기세요.</p>
       )}
       <div className="card-grid">
         {shown.map((c) => (
-          <ProjectCard key={c.id} card={c} onEdit={() => setEditing(c)} />
+          <ProjectCard key={c.id} card={c} onEdit={() => setEditing(c)} highlight={wanted} />
         ))}
         {cards && (cards.length > 0 || names.length > 0) && (
           <button className="add-tile" onClick={() => onNewProject(folder ?? "")}>
@@ -422,7 +457,164 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   );
 }
 
-export function ProjectCard({ card, onEdit }: { card: ProjectCardInfo; onEdit?: () => void }) {
+/** Every class name in ``wanted`` has labels in the project (names compared without case). */
+function hasAll(card: ProjectCardInfo, wanted: string[]): boolean {
+  if (wanted.length === 0) return true;
+  const have = new Set((card.classes ?? []).map((c) => c.name.toLowerCase()));
+  return wanted.every((w) => have.has(w.toLowerCase()));
+}
+
+const COMMON_CLASSES = 12;
+
+/**
+ * The less used filters, behind one button: the task, and classes a project must hold.
+ * Classes are not all listed (there can be hundreds): the common ones are one click, the rest are typed.
+ */
+function FilterPanel({
+  cards,
+  tasks,
+  task,
+  wanted,
+  onTask,
+  onWanted,
+  onClear,
+  onClose,
+}: {
+  cards: ProjectCardInfo[] | null;
+  tasks: [string, number][];
+  task: string;
+  wanted: string[];
+  onTask: (task: string) => void;
+  onWanted: (names: string[]) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [typed, setTyped] = useState("");
+  // Every class with labels somewhere: in how many projects, how many labels in all.
+  const index = useMemo(() => {
+    const all = new Map<string, { name: string; projects: number; labels: number }>();
+    for (const card of cards ?? []) {
+      for (const c of card.classes ?? []) {
+        const entry = all.get(c.name.toLowerCase()) ?? { name: c.name, projects: 0, labels: 0 };
+        entry.projects += 1;
+        entry.labels += c.labels;
+        all.set(c.name.toLowerCase(), entry);
+      }
+    }
+    return [...all.values()].sort((a, b) => b.projects - a.projects || b.labels - a.labels || a.name.localeCompare(b.name));
+  }, [cards]);
+  const picked = new Set(wanted.map((w) => w.toLowerCase()));
+  const needle = typed.trim().toLowerCase();
+  const found = needle ? index.filter((c) => c.name.toLowerCase().includes(needle) && !picked.has(c.name.toLowerCase())).slice(0, 8) : [];
+  const toggle = (name: string) => {
+    onWanted(picked.has(name.toLowerCase()) ? wanted.filter((w) => w.toLowerCase() !== name.toLowerCase()) : [...wanted, name]);
+  };
+
+  // Closes on a click outside or Escape.
+  useEffect(() => {
+    const away = (e: MouseEvent) => {
+      if (panel.current && !panel.current.parentElement?.contains(e.target as Node)) onClose();
+    };
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      window.removeEventListener("keydown", key);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="filter-panel" ref={panel} role="dialog" aria-label="필터">
+      <div className="eyebrow">태스크</div>
+      <div className="segmented">
+        <button className={task === "" ? "active" : ""} onClick={() => onTask("")}>
+          모두
+        </button>
+        {tasks.map(([t, n]) => (
+          <button key={t} className={task === t ? "active" : ""} onClick={() => onTask(t)}>
+            {TASK_LABEL[t] ?? t} <span className="muted">{n}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="eyebrow">클래스</div>
+      {index.length === 0 ? (
+        <p className="muted small">아직 라벨이 있는 데이터셋이 없습니다.</p>
+      ) : (
+        <>
+          <input
+            type="search"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && found[0]) {
+                e.preventDefault();
+                toggle(found[0].name);
+                setTyped("");
+              }
+            }}
+            placeholder="클래스 이름 찾기"
+            aria-label="클래스 찾기"
+            autoFocus
+          />
+          {needle && (
+            <ul className="class-suggest">
+              {found.length === 0 && <li className="muted small">"{typed.trim()}"이 들어간 클래스가 없습니다.</li>}
+              {found.map((c) => (
+                <li key={c.name}>
+                  <button
+                    onClick={() => {
+                      toggle(c.name);
+                      setTyped("");
+                    }}
+                  >
+                    {c.name} <span className="muted small">프로젝트 {c.projects} · 라벨 {c.labels.toLocaleString()}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {wanted.length > 0 && (
+            <div className="class-picks">
+              {wanted.map((w) => (
+                <button key={w} className="on" onClick={() => toggle(w)} title="빼기">
+                  {w} <Icon name="x" size={11} />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="muted small">많이 쓰는 클래스</div>
+          <div className="class-picks">
+            {index
+              .filter((c) => !picked.has(c.name.toLowerCase()))
+              .slice(0, COMMON_CLASSES)
+              .map((c) => (
+                <button key={c.name} onClick={() => toggle(c.name)} title={`프로젝트 ${c.projects}개 · 라벨 ${c.labels.toLocaleString()}개`}>
+                  {c.name} <span className="muted">{c.projects}</span>
+                </button>
+              ))}
+          </div>
+          <p className="muted small">고른 클래스가 모두 들어 있는 프로젝트만 보입니다. 라벨이 실제로 있는 클래스만 셉니다(각 데이터셋의 최신 버전 기준).</p>
+        </>
+      )}
+      <div className="filter-panel-foot">
+        <button className="link small" onClick={onClear}>
+          필터 지우기
+        </button>
+        <button className="small" onClick={onClose}>
+          닫기
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function ProjectCard({ card, onEdit, highlight = [] }: { card: ProjectCardInfo; onEdit?: () => void; highlight?: string[] }) {
+  const matched = highlight
+    .map((w) => (card.classes ?? []).find((c) => c.name.toLowerCase() === w.toLowerCase()))
+    .filter((c): c is ProjectCardInfo["classes"][number] => Boolean(c));
   return (
     <div className="data-card">
       <a href={`#/datasets/project/${card.id}`} onClick={() => rememberProject(card.id)} className="data-card-link">
@@ -440,6 +632,15 @@ export function ProjectCard({ card, onEdit }: { card: ProjectCardInfo; onEdit?: 
             학습 {card.runs} · 모델 {card.models}
             {card.best ? ` · 최고 ${METRIC_NAME[card.best.metric] ?? card.best.metric} ${card.best.value.toFixed(3)}` : ""}
           </div>
+          {matched.length > 0 && (
+            <div className="card-matched small">
+              {matched.map((c) => (
+                <span key={c.name}>
+                  {c.name} <strong>{c.labels.toLocaleString()}</strong>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="muted small">{timeAgo(card.updated_at)} 수정</div>
         </div>
       </a>

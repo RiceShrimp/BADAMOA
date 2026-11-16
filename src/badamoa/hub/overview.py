@@ -122,6 +122,26 @@ def _best_model(db: Session, project: Project) -> dict[str, Any] | None:
     return best
 
 
+def _labelled_classes(db: Session, project: Project) -> list[dict[str, Any]]:
+    """Classes that have labels in the newest version of each dataset, by name, most labels first.
+
+    Declared but unused classes (a COCO label space with 80 names) do not count: the board's
+    class filter finds the projects that actually hold examples of a class.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for dataset in db.scalars(select(Dataset).where(Dataset.project_id == project.id)):
+        latest = _latest(db, dataset.id)
+        if latest is None:
+            continue
+        names = _class_names(db, latest)
+        for cid, numbers in ((latest.stats or {}).get("classes") or {}).items():
+            name = str(names.get(int(cid), {}).get("name", cid))
+            entry = found.setdefault(name.lower(), {"name": name, "labels": 0, "images": 0})
+            entry["labels"] += int(numbers.get("boxes") or 0)
+            entry["images"] += int(numbers.get("items") or 0)
+    return sorted((e for e in found.values() if e["labels"] > 0), key=lambda e: (-e["labels"], e["name"]))
+
+
 def _project_card(db: Session, settings: HubSettings, project: Project, counts: dict[str, dict[str, int]]) -> dict[str, Any]:
     newest = db.scalar(
         select(Release)
@@ -147,6 +167,7 @@ def _project_card(db: Session, settings: HubSettings, project: Project, counts: 
         "models": counts["models"].get(project.id, 0),
         "best": _best_model(db, project),
         "collage": _collage(db, settings, newest),
+        "classes": _labelled_classes(db, project),
     }
 
 
