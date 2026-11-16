@@ -92,3 +92,37 @@ def test_timeline_has_jobs_and_people_on_each_gpu(client, admin, settings):
         resources.prune(db)
         assert db.query(GpuSpan).count() == 0
     database.engine.dispose()
+
+
+def test_zoomed_history_picks_a_resolution_that_covers_the_window(client, admin):
+    node_id, node = _join(client, admin)
+    _beat(client, node, [_gpu(0, 12000, util=40), _gpu(1, 0)])
+    now = utcnow()
+
+    def zoom(hours_ago, hours_to=0):
+        start, end = now - timedelta(hours=hours_ago), now - timedelta(hours=hours_to)
+        params = {"from": start.isoformat() + "Z", "to": (end + timedelta(minutes=1)).isoformat() + "Z"}
+        return client.get(f"/api/nodes/{node_id}/metrics", params=params, headers=admin)
+
+    near = zoom(2).json()
+    assert (near["range"], near["resolution"]) == ("custom", "1m") and near["series"]["gpu0_util"]["avg"][-1] == 40.0
+    assert zoom(3 * 24).json()["resolution"] == "10m"  # minute buckets are kept a day: older windows read 10-minute ones
+    assert zoom(20 * 24).json()["resolution"] == "1h"
+    assert zoom(1, 2).status_code == 400  # the end before the start
+
+
+def test_prometheus_metrics(client, admin):
+    node_id, node = _join(client, admin)
+    _beat(client, node, [_person(0, 18000, "kgu", "python"), _gpu(1, 300)])
+    client.patch(f"/api/nodes/{node_id}", json={"reserved_gpus": [1]}, headers=admin)
+    client.post("/api/jobs", json={"type": "system.gpu"}, headers=admin)  # waits: one busy, one kept for people
+
+    assert client.get("/metrics").status_code == 401  # a scraper signs in with an API token
+    text = client.get("/metrics", headers=admin).text
+    name = client.get(f"/api/nodes/{node_id}", headers=admin).json()["name"]
+    assert "# TYPE badamoa_gpu_utilization_percent gauge" in text
+    assert f'badamoa_node_up{{node="{name}"}} 1' in text
+    assert f'badamoa_gpu_state{{node="{name}",gpu="0",state="busy"}} 1' in text
+    assert f'badamoa_gpu_state{{node="{name}",gpu="1",state="reserved"}} 1' in text
+    assert f'badamoa_gpu_memory_used_bytes{{node="{name}",gpu="0",name="RTX 4090"}} {18000 * 1024 * 1024:g}' in text
+    assert 'badamoa_jobs{status="queued"} 1' in text

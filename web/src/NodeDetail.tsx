@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { LineChart, type Series } from "./Chart";
+import { CrosshairProvider, LineChart, type Series } from "./Chart";
 import { GpuTimeline } from "./GpuTimeline";
 import { type MetricHistory, type NodeDetailInfo, api } from "./api";
-import { Badge, Icon, Meter, STATUS_LABEL, Stat, duration, gb, timeAgo, usePolling } from "./ui";
+import { Badge, Icon, Meter, RefreshButton, STATUS_LABEL, Stat, duration, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
 const RANGES = [
   { id: "1h", label: "1시간" },
@@ -12,6 +12,20 @@ const RANGES = [
   { id: "30d", label: "30일" },
 ];
 const STEP_LABEL: Record<string, string> = { "1m": "1분", "10m": "10분", "1h": "1시간" };
+const REFRESH = [
+  { id: "auto", label: "자동" },
+  { id: "0", label: "끔" },
+  { id: "10000", label: "10초" },
+  { id: "30000", label: "30초" },
+  { id: "60000", label: "1분" },
+  { id: "300000", label: "5분" },
+];
+
+function moment(ms: number): string {
+  const d = new Date(ms);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
 
 function uptime(seconds?: number): string {
   if (!seconds) return "–";
@@ -35,12 +49,39 @@ function occupant(state: NodeDetailInfo["gpu_states"][number] | undefined): stri
 export function NodeDetail({ nodeId }: { nodeId: string }) {
   const [range, setRange] = useState("1h");
   const [mode, setMode] = useState<"avg" | "max">("avg");
-  const { data: node, error } = usePolling(() => api<NodeDetailInfo>(`/nodes/${nodeId}`), 5000, [nodeId]);
-  const { data: history } = usePolling(
-    () => api<MetricHistory>(`/nodes/${nodeId}/metrics?range=${range}`),
-    range === "1h" || range === "6h" ? 15000 : 60000,
-    [nodeId, range],
+  // A window dragged on a chart (Grafana's zoom); null: the chosen range up to now.
+  const [zoom, setZoom] = useState<{ from: number; to: number } | null>(null);
+  const [refresh, setRefresh] = useState("auto");
+  const chosen = refresh === "auto" ? null : Number(refresh); // the interval someone picked for the whole page
+  const { data: node, error, refresh: reloadNode } = usePolling(
+    () => api<NodeDetailInfo>(`/nodes/${nodeId}`),
+    chosen ?? 5000,
+    [nodeId],
   );
+  const updated = useUpdatedAt(node);
+  const [timelineTick, setTimelineTick] = useState(0);
+  // A zoomed window is in the past and does not change: it is not refreshed unless asked.
+  const every = chosen ?? (zoom ? 0 : range === "1h" || range === "6h" ? 15000 : 60000);
+  const { data: history, refresh: reloadHistory } = usePolling(
+    () =>
+      api<MetricHistory>(
+        zoom
+          ? `/nodes/${nodeId}/metrics?from=${new Date(zoom.from).toISOString()}&to=${new Date(zoom.to).toISOString()}`
+          : `/nodes/${nodeId}/metrics?range=${range}`,
+      ),
+    every,
+    [nodeId, range, zoom?.from, zoom?.to],
+  );
+  const reloadAll = async () => {
+    setTimelineTick((n) => n + 1);
+    await Promise.all([reloadNode(), reloadHistory()]);
+  };
+  const zoomOut = () => {
+    if (!zoom) return;
+    const half = zoom.to - zoom.from;
+    const end = Math.min(Date.now(), zoom.to + half / 2);
+    setZoom({ from: end - half * 2, to: end });
+  };
 
   if (error && !node) return <div className="error">{error}</div>;
   if (!node) return <div className="muted">불러오는 중…</div>;
@@ -70,7 +111,9 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
       .filter((s): s is Series => s !== null);
   const only = (...items: (Series | null)[]) => items.filter((s): s is Series => s !== null);
 
-  const sub = history ? `${RANGES.find((r) => r.id === range)?.label} · ${STEP_LABEL[history.resolution]} ${mode === "avg" ? "평균" : "최대"}` : "";
+  const sub = history
+    ? `${zoom ? "확대한 구간" : RANGES.find((r) => r.id === range)?.label} · ${STEP_LABEL[history.resolution]} ${mode === "avg" ? "평균" : "최대"}`
+    : "";
   const charts: { title: string; unit: string; yMax?: number; series: Series[] }[] = [
     { title: "CPU · 메모리 사용률", unit: "%", yMax: 100, series: only(pick("cpu", "CPU"), pick("mem", "메모리")) },
     { title: "GPU 사용률", unit: "%", yMax: 100, series: gpuSeries("util") },
@@ -101,6 +144,19 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
             {uptime(m.uptime_s)} · 수집 {timeAgo(node.last_seen_at)}
           </p>
         </div>
+        <div className="head-actions">
+          <label className="inline-select">
+            자동 새로고침
+            <select value={refresh} onChange={(e) => setRefresh(e.target.value)}>
+              {REFRESH.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <RefreshButton onRefresh={reloadAll} updated={updated} />
+        </div>
       </div>
 
       <div className="now-line">
@@ -127,7 +183,8 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
           ))}
       </div>
 
-      <GpuTimeline nodeId={nodeId} />
+      <CrosshairProvider>
+      <GpuTimeline nodeId={nodeId} refreshMs={chosen} reloadKey={timelineTick} />
 
       <details className="node-more">
         <summary>
@@ -185,13 +242,41 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
         <div className="segmented" role="group" aria-label="기간">
           <span className="eyebrow">기간</span>
           {RANGES.map((r) => (
-            <button key={r.id} className={range === r.id ? "active" : ""} onClick={() => setRange(r.id)} aria-pressed={range === r.id}>
+            <button
+              key={r.id}
+              className={range === r.id && !zoom ? "active" : ""}
+              onClick={() => {
+                setRange(r.id);
+                setZoom(null);
+              }}
+              aria-pressed={range === r.id && !zoom}
+            >
               {r.label}
             </button>
           ))}
         </div>
       </div>
 
+      <div className="toolbar zoom-bar">
+        {zoom ? (
+          <span className="zoom-chip">
+            확대: {moment(zoom.from)} – {moment(zoom.to)}
+            <button className="link small" onClick={zoomOut}>
+              축소
+            </button>
+            <button className="link small" onClick={() => setZoom(null)}>
+              되돌리기
+            </button>
+          </span>
+        ) : (
+          <span className="muted small">그래프를 드래그하면 그 시간대로 확대합니다. 범례를 누르면 그 값만 봅니다.</span>
+        )}
+        <span className="muted small">그래프 새로고침: {every ? `${every / 1000}초마다` : "멈춤"}</span>
+      </div>
+
+      {history && charts.length === 0 && (
+        <div className="card empty">{zoom ? "확대한 구간에는 기록이 없습니다." : "이 기간의 기록이 아직 없습니다."}</div>
+      )}
       {history && (
         <div className="chart-grid">
           {charts.map((c) => (
@@ -206,6 +291,8 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
               to={history.to}
               stepSeconds={history.step_s}
               series={c.series}
+              onZoom={(from, to) => setZoom({ from, to })}
+              onReset={() => setZoom(null)}
             />
           ))}
         </div>
@@ -417,6 +504,7 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
       </div>
 
       </details>
+      </CrosshairProvider>
 
       <section className="card table-wrap">
         <div className="card-head">

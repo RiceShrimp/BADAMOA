@@ -159,6 +159,56 @@ def window(db: Session, node_id: str, start: datetime, end: datetime) -> dict[st
     }
 
 
+ZOOM_POINTS = 1500  # at most this many buckets in a zoomed view: the finest resolution that stays under it
+
+
+def zoom(db: Session, node_id: str, start: datetime, end: datetime, now: datetime | None = None) -> dict[str, Any]:
+    """History between two moments someone picked on a chart (Grafana's drag-to-zoom).
+
+    The resolution is the finest one that still keeps ``start`` and gives no more than
+    ``ZOOM_POINTS`` buckets, so a zoom into the last hour shows minutes and a zoom into
+    last week shows hours, with no hole where minute buckets were already pruned.
+    """
+    now = now or utcnow()
+    end = min(end, now)
+    if end <= start:
+        raise ValueError("끝 시각이 시작 시각보다 뒤여야 합니다.")
+    names = list(RESOLUTIONS)
+    fits = [
+        n for n in names if start >= now - RETENTION[n] and (end - start).total_seconds() / RESOLUTIONS[n] <= ZOOM_POINTS
+    ]
+    rows: list[NodeMetric] = []
+    res = "1h"
+    # The finest that fits; a coarser one when it holds nothing there (the node was away, or older data)
+    for res in names[names.index(fits[0]) :] if fits else ["1h"]:
+        first = _bucket(start, RESOLUTIONS[res])
+        rows = list(
+            db.scalars(
+                select(NodeMetric)
+                .where(NodeMetric.node_id == node_id, NodeMetric.res == res, NodeMetric.ts >= first, NodeMetric.ts <= end)
+                .order_by(NodeMetric.ts)
+            )
+        )
+        if rows:
+            break
+    keys = sorted({key for row in rows for key in row.data})
+    series: dict[str, dict[str, list[float | None]]] = {key: {"avg": [], "max": []} for key in keys}
+    for row in rows:
+        for key in keys:
+            cell = row.data.get(key)
+            series[key]["avg"].append(round(cell[0] / cell[1], 2) if cell and cell[1] else None)
+            series[key]["max"].append(round(cell[2], 2) if cell else None)
+    return {
+        "range": "custom",
+        "resolution": res,
+        "step_s": RESOLUTIONS[res],
+        "from": iso(start),
+        "to": iso(end),
+        "timestamps": [iso(row.ts) for row in rows],
+        "series": series,
+    }
+
+
 def summarize(db: Session, node_id: str, range_name: str) -> dict[str, Any]:
     """Average and peak per series over a range (compact form for agents)."""
     data = history(db, node_id, range_name)

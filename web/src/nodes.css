@@ -376,3 +376,69 @@ details.node-more > summary {
     grid-template-columns: 64px minmax(0, 1fr);
   }
 }
+
+/* ---- zoom and refresh on a server's page; the shared crosshair on the timeline ---- */
+.zoom-bar {
+  justify-content: space-between;
+  align-items: center;
+}
+.zoom-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+.zoom-chip .link {
+  padding: 0;
+}
+.inline-select {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+.inline-select select {
+  width: auto;
+}
+.lane-track {
+  position: relative;
+}
+.lane-cursor {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  z-index: 2;
+  width: 0;
+  border-left: 1px dashed var(--muted);
+  pointer-events: none;
+}
+
+/* ---- refresh now ---- */
+.refresh-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.refresh-now button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.refresh-now .spin {
+  display: inline-flex;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

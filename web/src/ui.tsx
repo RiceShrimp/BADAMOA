@@ -22,7 +22,7 @@ export function usePolling<T>(load: () => Promise<T>, ms: number, deps: unknown[
       if (alive) void refresh();
     };
     tick();
-    const id = setInterval(tick, ms);
+    const id = ms > 0 ? setInterval(tick, ms) : undefined; // 0: load once, no refreshing
     return () => {
       alive = false;
       clearInterval(id);
@@ -141,6 +141,7 @@ const ICONS: Record<string, ReactNode> = {
   ),
   moon: <path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a6.8 6.8 0 0 0 10 10z" />,
   logout: <path d="M9 20H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3M15 16l4-4-4-4M19 12H9" />,
+  refresh: <path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />,
   copy: (
     <>
       <rect x="9" y="9" width="11" height="11" rx="2" />
@@ -249,6 +250,45 @@ export function CopyBlock({ label, text }: { label?: string; text: string }) {
       </div>
     </div>
   );
+}
+
+/** "↻ 새로고침" with the time of the last update; spins while the reload is under way. */
+export function RefreshButton({ onRefresh, updated }: { onRefresh: () => Promise<unknown>; updated: number | null }) {
+  const [busy, setBusy] = useState(false);
+  const click = async () => {
+    setBusy(true);
+    try {
+      await onRefresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const when = updated ? new Date(updated) : null;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return (
+    <span className="refresh-now">
+      {when && (
+        <span className="muted small">
+          {two(when.getHours())}:{two(when.getMinutes())}:{two(when.getSeconds())} 갱신
+        </span>
+      )}
+      <button onClick={() => void click()} disabled={busy} title="지금 다시 불러옵니다">
+        <span className={busy ? "spin" : ""}>
+          <Icon name="refresh" size={14} />
+        </span>
+        새로고침
+      </button>
+    </span>
+  );
+}
+
+/** When ``data`` last changed (for "updated at"). */
+export function useUpdatedAt(data: unknown): number | null {
+  const [at, setAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (data != null) setAt(Date.now());
+  }, [data]);
+  return at;
 }
 
 export function Meter({ value, max }: { value?: number | null; max?: number | null }) {

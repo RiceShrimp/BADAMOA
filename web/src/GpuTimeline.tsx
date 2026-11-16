@@ -1,5 +1,6 @@
 import { useState } from "react";
 import "./nodes.css";
+import { useCrosshair } from "./Chart";
 import { api } from "./api";
 import { usePolling } from "./ui";
 
@@ -46,12 +47,21 @@ const time = (iso: string, days: boolean) => {
  * One lane per GPU over the chosen range: the BADAMOA runs and the people that held it as
  * labelled bars, and below them how busy it was (darker = higher utilization).
  */
-export function GpuTimeline({ nodeId }: { nodeId: string }) {
+export function GpuTimeline({
+  nodeId,
+  refreshMs = null,
+  reloadKey = 0,
+}: {
+  nodeId: string;
+  refreshMs?: number | null; // the page's chosen interval; null: its own
+  reloadKey?: number; // changes when the page's refresh button is pressed
+}) {
   const [range, setRange] = useState("24h");
+  const crosshair = useCrosshair();
   const { data, error } = usePolling(
     () => api<Timeline>(`/nodes/${nodeId}/timeline?range=${range}`),
-    range === "7d" ? 120000 : 30000,
-    [nodeId, range],
+    refreshMs ?? (range === "7d" ? 120000 : 30000),
+    [nodeId, range, reloadKey],
   );
   if (error && !data) return <div className="error">{error}</div>;
   if (!data) return <p className="muted small">GPU 타임라인을 불러오는 중…</p>;
@@ -63,6 +73,15 @@ export function GpuTimeline({ nodeId }: { nodeId: string }) {
   const cell = (data.step_s * 1000 * 100) / span;
   const days = data.range === "7d";
   const ticks = [0, 0.25, 0.5, 0.75].map((f) => new Date(from + f * span).toISOString());
+  // The moment under the mouse here or in a chart below: a line across every lane.
+  const cursor = crosshair?.time != null && crosshair.time >= from && crosshair.time <= to ? ((crosshair.time - from) / span) * 100 : null;
+  const track = {
+    onMouseMove: (e: React.MouseEvent<HTMLDivElement>) => {
+      const box = e.currentTarget.getBoundingClientRect();
+      crosshair?.set(from + ((e.clientX - box.left) / box.width) * span, "timeline");
+    },
+    onMouseLeave: () => crosshair?.set(null, null),
+  };
 
   return (
     <section className="card timeline">
@@ -87,7 +106,8 @@ export function GpuTimeline({ nodeId }: { nodeId: string }) {
             {gpu.reserved && <span className="tag">사람 전용</span>}
             <div className="muted small">{gpu.name ?? ""}</div>
           </div>
-          <div className="lane-track">
+          <div className="lane-track" {...track}>
+            {cursor != null && <div className="lane-cursor" style={{ left: `${cursor}%` }} />}
             <div className="lane-spans">
               {gpu.spans.map((s, i) => {
                 const left = x(s.start);

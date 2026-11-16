@@ -63,7 +63,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 | 서빙 | **내장 추론 서비스** (ONNX Runtime / TensorRT), REST | Triton(사실상 Linux 전용)·gRPC — 필요해지면 exporter 플러그인 |
 | Edge | **같은 Node Agent** (Jetson = arm64 노드) | 별도 Edge Agent 앱, 별도 Device 엔티티 |
 | 인증·보안 | 내장 계정·역할, 노드/API **토큰**, TLS는 인증서 지정 또는 자체서명+지문 고정 | Keycloak, mTLS·사설 CA 운영 |
-| 모니터링 | 노드가 보내는 지표 → **내장 화면** | Prometheus/Grafana 스택 |
+| 모니터링 | 노드가 보내는 지표 → **내장 화면**(GPU 자리표 · 타임라인, 확대 · 공유 십자선). 사내 Prometheus · Grafana에는 `/metrics`로 내보냄 | Prometheus/Grafana 스택을 함께 설치 |
 | 프론트 | **React + Vite SPA** (Hub가 정적 서빙) | Next.js — 런타임에 Node.js 필요 |
 | 설치 | **uv 기반 부트스트랩 스크립트** 하나로 Hub·노드 설치. `.deb`/EXE는 같은 스크립트 + 오프라인 wheelhouse를 감싼 래퍼 | Python 런타임 직접 번들, GPU 감지 로직 자작, Tauri 트레이 앱 |
 | 에이전트 | **Hub = MCP 서버** + 내장 런타임(PydanticAI) | Claude 전용 SDK에 묶이는 구조, stdio 브리지 |

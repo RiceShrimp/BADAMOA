@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import gpus, resources, services
+from . import gpus, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, current_user, db_session, get_hub, public_base_url
 from .install import join_commands
@@ -16,6 +18,7 @@ from .models import User
 from .release_notes import load_release_notes
 
 router = APIRouter(prefix="/api")
+public_router = APIRouter()  # outside /api: /metrics, where scrapers look for it
 
 
 # ---- health & setup ---------------------------------------------------------
@@ -146,13 +149,37 @@ def get_node(
 
 @router.get("/nodes/{node_id}/metrics")
 def node_metrics(
-    node_id: str, range: str = "1h", _: User = Depends(current_user), db: Session = Depends(db_session)
+    node_id: str,
+    range: str = "1h",
+    start: datetime | None = Query(None, alias="from"),
+    end: datetime | None = Query(None, alias="to"),
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
 ) -> dict[str, Any]:
+    """A node's history: a named ``range``, or the moments ``from`` … ``to`` picked on a chart (ISO, UTC)."""
     services.get_node(db, node_id)
     try:
+        if start is not None and end is not None:
+            return resources.zoom(db, node_id, _naive_utc(start), _naive_utc(end))
         return resources.history(db, node_id, range)
     except ValueError as e:
         raise services.ServiceError(400, str(e)) from e
+
+
+def _naive_utc(moment: datetime) -> datetime:
+    """The Hub stores naive UTC; a time with an offset is converted, one without is taken as UTC."""
+    return moment.astimezone(UTC).replace(tzinfo=None) if moment.tzinfo else moment
+
+
+@public_router.get("/metrics", response_class=PlainTextResponse)
+def prometheus_metrics(
+    _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> str:
+    """Nodes, GPUs, disks and the job queue in the Prometheus text format (for an existing Prometheus · Grafana).
+
+    Sign in with an API token: ``authorization: {credentials: <token>}`` in the scrape config.
+    """
+    return prometheus.render(db, hub.settings)
 
 
 class NodePatch(BaseModel):

@@ -1412,3 +1412,33 @@ h1.with-badge {
   margin-bottom: 12px;
   overflow-wrap: anywhere;
 }
+
+/* ---- chart handling: legend picking, drag to zoom ---- */
+button.legend-item {
+  padding: 1px 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+button.legend-item:hover {
+  background: var(--surface-2);
+}
+.legend-item.off {
+  opacity: 0.45;
+}
+.legend-item.off strong {
+  color: var(--muted);
+}
+.chart-plot.zoomable svg {
+  cursor: crosshair;
+  user-select: none;
+}
+.zoom-band {
+  fill: var(--accent);
+  fill-opacity: 0.12;
+  stroke: var(--accent);
+  stroke-opacity: 0.5;
+}

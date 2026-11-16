@@ -114,6 +114,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         return JSONResponse({"detail": exc.message}, status_code=exc.status)
 
     app.include_router(api.router)
+    app.include_router(api.public_router)
     app.include_router(agent_api.router)
     app.include_router(install.router)
     app.include_router(catalog_api.router)

@@ -28,7 +28,42 @@ export function Settings({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo
       <Environments isAdmin={isAdmin} nodes={nodes ?? []} />
       {isAdmin && <ProjectDefaults />}
       <StorageUsage isAdmin={isAdmin} />
+      <ExternalMonitoring />
     </>
+  );
+}
+
+// ---- for teams that already run Prometheus and Grafana ---------------------------------
+
+function ExternalMonitoring() {
+  const target = window.location.host;
+  const scheme = window.location.protocol.replace(":", "");
+  const config = [
+    "scrape_configs:",
+    "  - job_name: badamoa",
+    `    scheme: ${scheme}`,
+    "    metrics_path: /metrics",
+    "    authorization:",
+    "      credentials: <토큰>",
+    "    static_configs:",
+    `      - targets: ["${target}"]`,
+  ].join("\n");
+  return (
+    <details className="card fold">
+      <summary>
+        Prometheus · Grafana로 보내기 <span className="muted small">(사내에 이미 있다면)</span>
+      </summary>
+      <p className="muted small">
+        Hub의 <code>/metrics</code>가 노드 · GPU · 디스크 · 작업 대기열을 Prometheus 형식으로 내줍니다. 가져갈 때만 계산하고 따로
+        저장하지 않으므로 BADAMOA 쪽 부담은 거의 없습니다. 토큰은 <a href="#/agents">에이전트 연결</a>에서 만듭니다.
+      </p>
+      <CopyBlock label="prometheus.yml" text={config} />
+      <p className="muted small">
+        지표 이름: <code>badamoa_node_up</code>, <code>badamoa_node_cpu_percent</code>, <code>badamoa_gpu_utilization_percent</code>,{" "}
+        <code>badamoa_gpu_memory_used_bytes</code>, <code>badamoa_gpu_state</code>(free · job · busy · reserved · offline),{" "}
+        <code>badamoa_disk_used_bytes</code>, <code>badamoa_jobs</code> 등
+      </p>
+    </details>
   );
 }
 

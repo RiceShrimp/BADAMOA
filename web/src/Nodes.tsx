@@ -1,7 +1,7 @@
 import { useState } from "react";
 import "./nodes.css";
 import { type JoinToken, api } from "./api";
-import { CopyBlock, Icon, Modal, gb, timeAgo, usePolling } from "./ui";
+import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
 const ROLES = [
   { id: "compute", label: "학습·오토라벨" },
@@ -80,6 +80,7 @@ function left(seconds: number): string {
  */
 export function Nodes({ isAdmin }: { isAdmin: boolean }) {
   const { data: board, error, refresh } = usePolling(() => api<Board>("/gpu-board"), 5000);
+  const updated = useUpdatedAt(board);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BoardNode | null>(null);
   const c = board?.counts;
@@ -95,12 +96,15 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
             GPU에는 작업을 보내지 않습니다.
           </p>
         </div>
-        {isAdmin && (
-          <button className="primary" onClick={() => setAdding(true)}>
-            <Icon name="plus" />
-            노드 추가
-          </button>
-        )}
+        <div className="head-actions">
+          <RefreshButton onRefresh={refresh} updated={updated} />
+          {isAdmin && (
+            <button className="primary" onClick={() => setAdding(true)}>
+              <Icon name="plus" />
+              노드 추가
+            </button>
+          )}
+        </div>
       </div>
 
       {c && (
