@@ -106,6 +106,11 @@ export interface ItemDetail {
   releases: { id: string; dataset: string; version: string; split: string; rev: number | null; current: boolean }[];
 }
 
+export interface TrashInfo {
+  projects: { id: string; name: string; task: string; folder: string; deleted_at: string; releases: number; items: number }[];
+  releases: { id: string; dataset: string; version: string; project: { id: string; name: string }; deleted_at: string; items: number }[];
+}
+
 export interface CompareResult {
   release: { id: string; version: string; items: number; boxes: number };
   other: { id: string; version: string; items: number; boxes: number };

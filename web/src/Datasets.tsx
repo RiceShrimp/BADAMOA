@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { ProjectBoard, ProjectPage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
+import { ProjectBoard, ProjectPage, SPLIT_COLOR, Shot, TrashPage, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
-import { ExportDialog, type ItemFilter, NewReleaseDialog } from "./ReleaseMaker";
+import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
 import { type Job, type NodeInfo, api } from "./api";
 import {
@@ -28,6 +28,7 @@ export function Datasets({ sub, arg, isAdmin }: { sub?: string; arg?: string; is
 
   let body;
   if (!sub) body = <ProjectBoard onNewProject={(folder) => setCreating(folder)} />;
+  else if (sub === "trash") body = <TrashPage isAdmin={isAdmin} />;
   else if (sub === "project" && arg) body = <ProjectPage projectId={arg} onImport={() => setImporting(arg)} />;
   else {
     const [tab, query = ""] = (arg ?? "images").split("?");
@@ -92,6 +93,11 @@ function ReleaseView({
   const [split, setSplit] = useState("all");
   const [state, setState] = useState("");
   const [classId, setClassId] = useState(() => new URLSearchParams(query).get("class") ?? "");
+  // A class name clicked on the classes tab opens the images tab of the same version with that class.
+  useEffect(() => {
+    const wanted = new URLSearchParams(query).get("class");
+    if (wanted !== null) setClassId(wanted);
+  }, [query]);
   const [view, setViewState] = useState(rememberedView);
   const [showBoxes, setShowBoxes] = useState(true);
   const setView = (v: string) => {
@@ -108,7 +114,8 @@ function ReleaseView({
   const [page, setPage] = useState(0);
   const [viewing, setViewing] = useState<number | null>(null);
   const [compareWith, setCompareWith] = useState("");
-  const [making, setMaking] = useState(false);
+  const [making, setMaking] = useState<"" | "items" | "classes">("");
+  const [naming, setNaming] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   const filterQuery = useMemo(() => {
@@ -154,7 +161,7 @@ function ReleaseView({
   const present = Object.keys(stats.classes ?? {}).length;
 
   const remove = async () => {
-    if (!window.confirm(`${release.dataset.name} ${release.version} 버전을 삭제할까요? 휴지통에서 복원할 수 있고, 이미지 파일은 지워지지 않습니다.`)) return;
+    if (!window.confirm(`${release.dataset.name} ${release.version} 버전을 휴지통으로 옮길까요? 휴지통에서 되살릴 수 있고, 이미지 파일은 지워지지 않습니다.`)) return;
     await api(`/releases/${releaseId}`, { method: "DELETE" });
     window.location.hash = `#/datasets/project/${release.project_id}`;
   };
@@ -187,7 +194,7 @@ function ReleaseView({
         </div>
         <div className="head-actions">
           {release.status === "ready" && (
-            <button onClick={() => setMaking(true)} title="이 버전의 항목을 골라 새 버전을 만들거나 split을 다시 나눕니다">
+            <button onClick={() => setMaking("items")} title="이 버전의 항목을 골라 새 버전을 만들거나 split을 다시 나눕니다">
               새 버전
             </button>
           )}
@@ -236,7 +243,9 @@ function ReleaseView({
         ))}
       </nav>
 
-      {tab === "classes" && <ClassesTab release={release} onChanged={() => void refresh()} />}
+      {tab === "classes" && (
+        <ClassesTab release={release} onChanged={() => void refresh()} onEditClasses={release.status === "ready" ? () => setMaking("classes") : undefined} />
+      )}
       {tab === "charts" && <ChartsTab release={release} />}
       {tab === "models" && <ModelsTab release={release} />}
       {tab === "releases" && <ReleasesTab release={release} onCompare={setCompareWith} />}
@@ -286,6 +295,11 @@ function ReleaseView({
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="파일 이름에 포함…" aria-label="파일 이름" />
         <span className="muted count">{(items?.total ?? 0).toLocaleString()}개</span>
         <span className="spacer" />
+        {release.status === "ready" && (
+          <button className="ghost-btn" onClick={() => setNaming(true)} title="파일 이름에서 사이트 · 카메라를 읽어 채웁니다">
+            사이트 · 카메라
+          </button>
+        )}
         {task !== "classify" && (
           <label className="check inline-check">
             <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />
@@ -391,17 +405,29 @@ function ReleaseView({
       {making && (
         <NewReleaseDialog
           release={release}
+          task={task}
           filter={filter}
           filtered={items?.total ?? 0}
-          onClose={() => setMaking(false)}
+          editClasses={making === "classes"}
+          onClose={() => setMaking("")}
           onCreated={(id) => {
-            setMaking(false);
+            setMaking("");
             window.location.hash = `#/datasets/${id}`;
           }}
         />
       )}
+      {naming && (
+        <NamesDialog
+          release={release}
+          onClose={() => setNaming(false)}
+          onDone={() => {
+            setNaming(false);
+            void refresh();
+          }}
+        />
+      )}
       {viewing != null && items && (
-        <ItemViewer releaseId={releaseId} filterQuery={filterQuery} start={viewing} total={items.total} colorOf={colorOf} onClose={() => setViewing(null)} />
+        <ItemViewer releaseId={releaseId} filterQuery={filterQuery} start={viewing} total={items.total} colorOf={colorOf} classes={classes} onClose={() => setViewing(null)} />
       )}
     </>
   );
@@ -534,7 +560,17 @@ function NewProject({
 
 function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
-  const [form, setForm] = useState({ node_id: "", path: "", dataset: "", version: "v1", format: "auto", site: "", camera: "", note: "" });
+  const [form, setForm] = useState({
+    node_id: "",
+    path: "",
+    dataset: "",
+    version: "v1",
+    format: "auto",
+    site: "",
+    camera: "",
+    name_pattern: "",
+    note: "",
+  });
   const [job, setJob] = useState<Job | null>(null);
   const [lastLog, setLastLog] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -613,16 +649,30 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
               </select>
             </label>
           </div>
-          <div className="form-row">
+          <details className="advanced" open={Boolean(form.site || form.camera || form.name_pattern)}>
+            <summary>
+              사이트 · 카메라 <span className="muted">(선택 · 필터와 split 묶음에 쓰임)</span>
+            </summary>
             <label>
-              사이트 (선택)
-              <input value={form.site} onChange={set("site")} />
+              파일 이름 규칙
+              <input value={form.name_pattern} onChange={set("name_pattern")} placeholder="{site}_{camera}_*" className="mono" />
             </label>
-            <label>
-              카메라 (선택)
-              <input value={form.camera} onChange={set("camera")} />
-            </label>
-          </div>
+            <p className="muted small">
+              <code>{"{site}"}</code> · <code>{"{camera}"}</code> 자리의 글자를 읽고, <code>*</code>는 아무 글자입니다. 예: seoul_cam03_0001.jpg →{" "}
+              <code>{"{site}_{camera}_*"}</code>, seoul/cam03/0001.jpg → <code>{"{site}/{camera}/*"}</code>. 등록한 뒤에도 버전 화면에서 채울 수
+              있습니다.
+            </p>
+            <div className="form-row">
+              <label>
+                모든 이미지의 사이트
+                <input value={form.site} onChange={set("site")} placeholder="규칙에 맞지 않을 때" />
+              </label>
+              <label>
+                모든 이미지의 카메라
+                <input value={form.camera} onChange={set("camera")} placeholder="규칙에 맞지 않을 때" />
+              </label>
+            </div>
+          </details>
           <label>
             메모 (선택)
             <input value={form.note} onChange={set("note")} placeholder="이 버전에서 달라진 점" />

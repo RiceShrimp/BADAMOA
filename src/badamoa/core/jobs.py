@@ -74,6 +74,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "label_space": {"type": "string", "default": ""},
                     "site": {"type": "string", "default": ""},
                     "camera": {"type": "string", "default": ""},
+                    "name_pattern": {"type": "string", "default": ""},
                     "note": {"type": "string", "default": ""},
                     "base_release_id": {"type": "string", "default": ""},
                 },
@@ -81,8 +82,8 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
         ),
         JobTypeSpec(
             type="data.export",
-            title="릴리스 내보내기",
-            description="릴리스를 YOLO · COCO · 클래스별 폴더 형식의 zip으로 묶어 Hub에 올립니다 (내려받기용).",
+            title="데이터셋 버전 내보내기",
+            description="데이터셋 버전을 YOLO · COCO · 클래스별 폴더 형식의 zip으로 묶어 Hub에 올립니다 (내려받기용).",
             hidden=True,
             params_schema={
                 "type": "object",
@@ -97,7 +98,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
         JobTypeSpec(
             type="train.run",
             title="학습",
-            description="릴리스를 학습 형식으로 풀고 모델 템플릿의 학습 코드를 실행해 지표와 모델을 Hub에 기록합니다.",
+            description="데이터셋 버전을 학습 형식으로 풀고 템플릿의 학습 코드를 실행해 지표와 모델을 Hub에 기록합니다.",
             hidden=True,
             gpus=1,
             params_schema=_TRAIN_PARAMS,

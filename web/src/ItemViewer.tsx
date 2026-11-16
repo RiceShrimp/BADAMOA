@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { type ItemDetail, type ItemPage, SPLIT_LABEL, STATE_LABEL, bytesLabel, classColor } from "./catalogTypes";
+import {
+  type ItemDetail,
+  type ItemPage,
+  type LabelClass,
+  type Revision,
+  SPLIT_LABEL,
+  STATE_LABEL,
+  bytesLabel,
+  classColor,
+} from "./catalogTypes";
 import { Icon } from "./ui";
 
 interface Props {
@@ -12,18 +21,30 @@ interface Props {
   onClose: () => void;
   /** Colour of a class: the one picked in the classes tab, or the automatic one. */
   colorOf?: (id: number) => string;
+  /** This version's classes: labels of other versions are matched to them by name. */
+  classes?: LabelClass[];
 }
 
-/** Full-screen item view: boxes over the image, label revisions, where else the image is used. */
-export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor }: Props) {
+/** Where a label revision came from, in words: "import:coco v1" → "가져오기 · coco v1". */
+function sourceLabel(source: string): string {
+  const [kind, ...rest] = source.split(":");
+  const what = rest.join(":");
+  const words: Record<string, string> = { import: "가져오기", classes: "클래스 변경", human: "사람이 고침", autolabel: "자동 라벨" };
+  return words[kind] ? (what ? `${words[kind]} · ${what}` : words[kind]) : source;
+}
+
+/** Full-screen item view: boxes over the image, label revisions (one or two side by side), where else the image is used. */
+export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor, classes = [] }: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revisionId, setRevisionId] = useState<number | null>(null);
+  const [compareId, setCompareId] = useState<number | null>(null);
   const [showLabels, setShowLabels] = useState(true);
   const [showNames, setShowNames] = useState(true);
   const [fill, setFill] = useState(false);
-  const [hidden, setHidden] = useState<Set<number>>(new Set());
+  const [onlyHere, setOnlyHere] = useState(false);
+  const [hidden, setHidden] = useState<Set<string>>(new Set()); // class names
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
 
@@ -49,7 +70,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
         if (!alive) return;
         setItem(detail);
         setRevisionId(detail.revision_id);
-        setHidden(new Set());
+        setCompareId(null);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
@@ -75,91 +96,140 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   }, [onClose, total]);
 
   const revision = item?.revisions.find((r) => r.id === revisionId) ?? null;
+  const compare = item?.revisions.find((r) => r.id === compareId && r.id !== revisionId) ?? null;
   const currentRev = item?.revisions.find((r) => r.id === item.revision_id)?.rev ?? null;
   // A label revision goes by the versions that carry it; the bare revision number means nothing to people.
   const versionsOf = (rev: number) => {
     const here = item?.releases.find((r) => r.current)?.dataset;
     return (item?.releases ?? []).filter((r) => r.rev === rev).map((r) => (r.dataset === here ? r.version : `${r.dataset} ${r.version}`));
   };
-  const names =useMemo(() => Object.fromEntries((revision?.classes ?? []).map((c) => [c.id, c.name])), [revision]);
+  const revisionName = (r: Revision) => versionsOf(r.rev).join(" · ") || "버전에 없는 라벨";
+
+  // Labels of another label space are matched to this version's classes by name (colour, "only these classes").
+  const here = useMemo(() => new Map(classes.map((c) => [c.name, c.id])), [classes]);
+  const foreign = (r: Revision | null) => Boolean(r && item && r.label_space.id !== item.release_label_space_id);
+  const namesOf = (r: Revision) => Object.fromEntries(r.classes.map((c) => [c.id, c.name])) as Record<number, string>;
+  const colorIn = (r: Revision, cls: number) => {
+    if (!foreign(r)) return colorOf(cls);
+    const same = here.get(namesOf(r)[cls]);
+    return same != null ? colorOf(same) : classColor(cls);
+  };
+  const visible = (r: Revision) => {
+    const names = namesOf(r);
+    return r.boxes.filter((b) => {
+      const name = names[b[0]] ?? String(b[0]);
+      return !hidden.has(name) && !(onlyHere && foreign(r) && classes.length > 0 && !here.has(name));
+    });
+  };
+
   const counts = useMemo(() => {
-    const map = new Map<number, number>();
-    for (const box of revision?.boxes ?? []) map.set(box[0], (map.get(box[0]) ?? 0) + 1);
-    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+    const map = new Map<string, { n: number; id: number }>();
+    if (!revision) return [];
+    const names = Object.fromEntries(revision.classes.map((c) => [c.id, c.name])) as Record<number, string>;
+    for (const box of revision.boxes) {
+      const name = names[box[0]] ?? String(box[0]);
+      map.set(name, { n: (map.get(name)?.n ?? 0) + 1, id: box[0] });
+    }
+    return [...map.entries()].sort((a, b) => b[1].n - a[1].n);
   }, [revision]);
 
-  const toggleClass = (id: number) => {
+  const toggleClass = (name: string) => {
     const next = new Set(hidden);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
     setHidden(next);
   };
 
   const w = item?.width ?? 1;
   const h = item?.height ?? 1;
   const font = Math.max(w, h) / 70;
-  // Fit the image inside the stage whatever its aspect ratio (small images are scaled up).
-  const fitWidth = Math.max(0, Math.min(stage.w, (stage.h * w) / h));
+  // Fit the image (or two of them, side by side) inside the stage whatever its aspect ratio.
+  const pair = Boolean(compare);
+  const room = pair ? (stage.w - 12) / 2 : stage.w;
+  const fitWidth = Math.max(0, Math.min(room, ((stage.h - (pair ? 26 : 0)) * w) / h));
   const frameStyle = { width: fitWidth, height: (fitWidth * h) / w };
+
+  const drawBoxes = (r: Revision) => {
+    const names = namesOf(r);
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+        {visible(r).map((b, i) => {
+          // A classification label has no geometry: it is drawn as a frame around the whole image.
+          const [cls, cx = 0.5, cy = 0.5, bw = 1, bh = 1] = b;
+          const x = (cx - bw / 2) * w;
+          const y = (cy - bh / 2) * h;
+          const color = colorIn(r, cls);
+          const label = names[cls] ?? String(cls);
+          // A segmentation label carries its outline after the box: x1, y1, x2, y2, …
+          const outline = b.slice(5);
+          const points = outline.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ");
+          return (
+            <g key={i}>
+              {outline.length >= 6 && (
+                <polygon
+                  points={points}
+                  fill={color}
+                  fillOpacity={fill ? 0.4 : 0.18}
+                  stroke={color}
+                  strokeWidth="2"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              <rect
+                x={x}
+                y={y}
+                width={bw * w}
+                height={bh * h}
+                strokeDasharray={outline.length >= 6 ? "4 3" : undefined}
+                fill={fill && outline.length < 6 ? color : "none"}
+                fillOpacity={0.25}
+                stroke={color}
+                strokeWidth="2"
+                vectorEffect="non-scaling-stroke"
+              />
+              {showNames && (
+                <>
+                  <rect x={x} y={Math.max(0, y - font * 1.35)} width={label.length * font * 0.62 + font * 0.6} height={font * 1.35} fill={color} />
+                  <text x={x + font * 0.3} y={Math.max(font, y - font * 0.35)} fontSize={font} fill="#fff" fontWeight="600">
+                    {label}
+                  </text>
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    );
+  };
+
+  const shown = [revision, compare].filter((r): r is Revision => r !== null);
+  const anyForeign = shown.some(foreign) && classes.length > 0;
 
   return (
     <div className="viewer" role="dialog" aria-modal="true" aria-label="항목 보기">
       <div className="viewer-stage" ref={stageRef}>
         {error && <div className="error">{error}</div>}
         {item && (
-          <div className="viewer-frame" style={frameStyle}>
-            <img src={item.image_url ?? item.thumb_url ?? ""} alt={item.file_name} />
-            {showLabels && revision && (
-              <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
-                {revision.boxes
-                  .filter((b) => !hidden.has(b[0]))
-                  .map((b, i) => {
-                    // A classification label has no geometry: it is drawn as a frame around the whole image.
-                    const [cls, cx = 0.5, cy = 0.5, bw = 1, bh = 1] = b;
-                    const x = (cx - bw / 2) * w;
-                    const y = (cy - bh / 2) * h;
-                    const color = colorOf(cls);
-                    const label = names[cls] ?? String(cls);
-                    // A segmentation label carries its outline after the box: x1, y1, x2, y2, …
-                    const outline = b.slice(5);
-                    const points = outline.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ");
-                    return (
-                      <g key={i}>
-                        {outline.length >= 6 && (
-                          <polygon
-                            points={points}
-                            fill={color}
-                            fillOpacity={fill ? 0.4 : 0.18}
-                            stroke={color}
-                            strokeWidth="2"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        )}
-                        <rect
-                          x={x}
-                          y={y}
-                          width={bw * w}
-                          height={bh * h}
-                          strokeDasharray={outline.length >= 6 ? "4 3" : undefined}
-                          fill={fill && outline.length < 6 ? color : "none"}
-                          fillOpacity={0.25}
-                          stroke={color}
-                          strokeWidth="2"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        {showNames && (
-                          <>
-                            <rect x={x} y={Math.max(0, y - font * 1.35)} width={label.length * font * 0.62 + font * 0.6} height={font * 1.35} fill={color} />
-                            <text x={x + font * 0.3} y={Math.max(font, y - font * 0.35)} fontSize={font} fill="#fff" fontWeight="600">
-                              {label}
-                            </text>
-                          </>
-                        )}
-                      </g>
-                    );
-                  })}
-              </svg>
-            )}
+          <div className="viewer-frames">
+            {(shown.length ? shown : [null]).map((r, n) => (
+              <figure key={r?.id ?? n} className="viewer-figure">
+                <div className="viewer-frame" style={frameStyle}>
+                  <img src={item.image_url ?? item.thumb_url ?? ""} alt={item.file_name} />
+                  {showLabels && r && drawBoxes(r)}
+                </div>
+                {pair && r && (
+                  <figcaption>
+                    <strong>{revisionName(r)}</strong> · {r.state === "labelled" ? `박스 ${visible(r).length}개` : STATE_LABEL[r.state]} ·{" "}
+                    {r.label_space.name}
+                    {n === 1 && (
+                      <button className="link" onClick={() => setCompareId(null)}>
+                        닫기
+                      </button>
+                    )}
+                  </figcaption>
+                )}
+              </figure>
+            ))}
           </div>
         )}
         {item && !item.image_url && (
@@ -197,18 +267,23 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
           <label className="check">
             <input type="checkbox" checked={fill} onChange={(e) => setFill(e.target.checked)} /> 박스 채우기 <kbd>F</kbd>
           </label>
+          {anyForeign && (
+            <label className="check" title="다른 클래스 목록의 라벨에서, 이 버전에 같은 이름의 클래스가 없는 것은 숨깁니다">
+              <input type="checkbox" checked={onlyHere} onChange={(e) => setOnlyHere(e.target.checked)} /> 이 버전의 클래스만
+            </label>
+          )}
           <div className="class-chips">
-            {counts.map(([id, n]) => (
-              <button key={id} className={`class-chip ${hidden.has(id) ? "off" : ""}`} onClick={() => toggleClass(id)} aria-pressed={!hidden.has(id)}>
-                <i style={{ background: colorOf(id) }} />
-                {names[id] ?? id} <span>{n}</span>
+            {counts.map(([name, { n, id }]) => (
+              <button key={name} className={`class-chip ${hidden.has(name) ? "off" : ""}`} onClick={() => toggleClass(name)} aria-pressed={!hidden.has(name)}>
+                <i style={{ background: revision ? colorIn(revision, id) : colorOf(id) }} />
+                {name} <span>{n}</span>
               </button>
             ))}
           </div>
           {counts.length > 1 && (
             <div className="row-actions">
               <button onClick={() => setHidden(new Set())}>모두</button>
-              <button onClick={() => setHidden(new Set(counts.map(([id]) => id)))}>없음</button>
+              <button onClick={() => setHidden(new Set(counts.map(([name]) => name)))}>없음</button>
             </div>
           )}
         </section>
@@ -218,16 +293,22 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
             <section>
               <div className="eyebrow">버전별 라벨</div>
               {item.revisions.map((r) => (
-                <label key={r.id} className={`revision ${r.id === revisionId ? "active" : ""}`}>
-                  <input type="radio" name="revision" checked={r.id === revisionId} onChange={() => setRevisionId(r.id)} />
-                  <div>
+                <div key={r.id} className={`revision ${r.id === revisionId ? "active" : ""} ${r.id === compare?.id ? "paired" : ""}`}>
+                  <input
+                    type="radio"
+                    name="revision"
+                    checked={r.id === revisionId}
+                    onChange={() => setRevisionId(r.id)}
+                    aria-label={`${revisionName(r)} 라벨 보기`}
+                  />
+                  <div className="revision-body" onClick={() => setRevisionId(r.id)}>
                     <div>
-                      <strong title={`라벨 개정 ${r.rev}`}>{versionsOf(r.rev).join(" · ") || "버전에 없는 라벨"}</strong> ·{r.state === "labelled" ? `박스 ${r.box_count}개` : STATE_LABEL[r.state]} ·{" "}
+                      <strong title={`라벨 개정 ${r.rev}`}>{revisionName(r)}</strong> ·{r.state === "labelled" ? `박스 ${r.box_count}개` : STATE_LABEL[r.state]} ·{" "}
                       {r.label_space.name}
                       {r.id === item.revision_id && <span className="tag accent">이 버전</span>}
                     </div>
                     <div className="muted small">
-                      {r.source} · {r.created_at.slice(0, 10)}
+                      {sourceLabel(r.source)} · {r.created_at.slice(0, 10)}
                     </div>
                     {r.id === revisionId && r.labelled_classes.length > 0 && (
                       <div className="muted small">
@@ -236,8 +317,19 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                       </div>
                     )}
                   </div>
-                </label>
+                  {item.revisions.length > 1 && r.id !== revisionId && (
+                    <button
+                      className={`icon-btn pair-btn ${r.id === compare?.id ? "active" : ""}`}
+                      onClick={() => setCompareId(r.id === compare?.id ? null : r.id)}
+                      title={r.id === compare?.id ? "나란히 보기 닫기" : "선택한 라벨과 나란히 보기"}
+                      aria-pressed={r.id === compare?.id}
+                    >
+                      <Icon name="columns" size={14} />
+                    </button>
+                  )}
+                </div>
               ))}
+              {item.revisions.length > 1 && !compare && <p className="muted small">옆의 버튼으로 두 라벨을 나란히 볼 수 있습니다.</p>}
             </section>
 
             <section>

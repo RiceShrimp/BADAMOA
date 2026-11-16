@@ -306,15 +306,18 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         exclude: bool = False,
         split: dict[str, float] | None = None,
         group_by: str = "",
+        classes: dict[str, str] | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """기존 릴리스의 항목으로 새 릴리스를 만듭니다. 이미지는 옮기지 않습니다.
+        """기존 릴리스의 항목으로 새 릴리스를 만듭니다. 이미지는 옮기지 않습니다. 화면에서는 릴리스를 "버전"이라고 부릅니다.
 
         sources: 담을 릴리스 id들(여러 개면 합침, 같은 항목은 앞의 것의 split · 라벨). 클래스 목록이 같아야 합니다.
         dataset: 비우면 첫 릴리스의 데이터셋에 새 버전으로. filter: {"split", "state", "class_id", "site", "camera",
         "q"} 중 일부 — 맞는 항목만(exclude=true면 맞는 항목을 뺀 나머지). split: {"train": 80, "val": 10, "test": 10}처럼
         주면 다시 나눔(해시로 정해 같은 항목은 늘 같은 쪽). group_by: "camera" 또는 "site"면 같은 카메라 · 사이트는 같은
-        split으로. dry_run=true면 만들지 않고 split별 항목 수만 반환합니다.
+        split으로. classes: {"원래 클래스 번호": "새 이름"} — 이름 바꾸기, 같은 새 이름이면 합치기, ""이면 빼기(분류는 그
+        클래스의 이미지를 뺌). 라벨은 새 개정으로 기록되고 원래 릴리스는 그대로입니다. dry_run=true면 만들지 않고 split별
+        항목 수와 클래스 수만 반환합니다.
         """
         user = user_of(ctx)
         with hub.db.session() as db:
@@ -329,6 +332,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 exclude=exclude,
                 split=split,
                 group_by=group_by,
+                classes=classes,
                 dry_run=dry_run,
                 via="mcp",
             )
@@ -344,10 +348,12 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         ctx: Context,
         format: str = "auto",
         note: str = "",
+        name_pattern: str = "",
     ) -> dict[str, Any]:
         """노드에 있는 YOLO/COCO 형식 폴더를 복사 없이 새 릴리스로 등록합니다.
 
         node_id는 데이터가 있는 노드, path는 그 노드에서의 폴더 경로입니다. format: auto | yolo | coco.
+        name_pattern: 파일 이름에서 사이트 · 카메라를 읽는 규칙, 예: "{site}_{camera}_*" 또는 "{site}/{camera}/*".
         작업을 반환하므로 wait_for_job으로 완료를 기다린 뒤 result.release_id를 get_release로 확인하세요.
         """
         user = user_of(ctx)
@@ -362,6 +368,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 version=version,
                 fmt=format,
                 note=note,
+                name_pattern=name_pattern,
                 via="mcp",
             )
             return services.job_view(db, hub.settings, job)

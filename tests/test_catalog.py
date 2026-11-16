@@ -8,7 +8,7 @@ import time
 import httpx
 import pytest
 from conftest import ADMIN
-from sample_data import CLASSES, make_coco, make_yolo
+from sample_data import CLASSES, make_coco, make_imagefolder, make_yolo
 
 from badamoa.node import agent as node_agent
 from badamoa.node import importer
@@ -208,7 +208,8 @@ def test_new_releases_from_existing_ones(hub, tmp_path):
         return {d["name"]: [r["version"] for r in d["releases"]] for d in tree}
 
     # ---- a dry run counts and makes nothing
-    assert make(dry_run=True, filter={"state": "labelled"}).json() == {"items": 6, "splits": {"train": 4, "val": 2}}
+    counted = make(dry_run=True, filter={"state": "labelled"}).json()
+    assert counted == {"items": 6, "splits": {"train": 4, "val": 2}, "classes": 3}
     stats = hub.get(f"/api/releases/{v1}").json()["stats"]
     assert make(dry_run=True, filter={"class_id": "0"}).json()["items"] == stats["classes"]["0"]["items"]
     assert releases() == {"street": ["more", "v1"]}
@@ -437,3 +438,121 @@ def test_cards_and_release_tabs(hub, tmp_path):
     # ---- grid items carry their boxes
     items = hub.get(f"/api/releases/{v1}/items").json()["items"]
     assert any(i["boxes"] for i in items) and all(len(i["boxes"]) == i["box_count"] for i in items if i["box_count"] <= 30)
+
+
+def test_project_trash_and_restore(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "지울 것", "task": "detect"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+    empty = {"projects": [], "releases": []}
+    assert hub.get("/api/trash").json() == empty
+
+    # ---- a version to the trash, then the whole project (its versions go with it)
+    assert hub.delete(f"/api/releases/{v1}").status_code == 200
+    trash = hub.get("/api/trash").json()
+    assert [r["id"] for r in trash["releases"]] == [v1] and trash["releases"][0]["project"]["name"] == "지울 것"
+    assert hub.delete(f"/api/projects/{project['id']}").status_code == 200
+    trash = hub.get("/api/trash").json()
+    assert [p["id"] for p in trash["projects"]] == [project["id"]] and trash["releases"] == []
+    assert (trash["projects"][0]["items"], trash["projects"][0]["releases"]) == (8, 0)
+    assert all(c["id"] != project["id"] for c in hub.get("/api/project-cards").json())
+    assert hub.get(f"/api/projects/{project['id']}/overview").status_code == 404
+    taken = hub.post("/api/projects", json={"name": "지울 것"})
+    assert taken.status_code == 409 and "휴지통" in taken.json()["detail"]
+
+    # ---- back again, with everything it held
+    assert hub.post(f"/api/projects/{project['id']}/restore").status_code == 200
+    assert hub.post(f"/api/releases/{v1}/restore").status_code == 200
+    page = hub.get(f"/api/projects/{project['id']}/overview").json()
+    assert (page["items"], page["releases"]) == (8, 1)
+    assert hub.get("/api/trash").json() == empty
+    assert hub.delete("/api/projects/no-such").status_code == 404
+
+
+def test_site_and_camera_from_file_names(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "이름 규칙", "task": "detect"}).json()
+    # read while importing: images/train/train_0000.jpg → site "train"; the fixed camera goes to every image
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1", camera="cam", name_pattern="{site}_*")
+    stats = hub.get(f"/api/releases/{v1}").json()["stats"]
+    assert (stats["sites"], stats["cameras"]) == (["train", "val"], ["cam"])
+    bad_import = {"node_id": hub.node_id, "path": "x", "dataset": "d", "version": "v9", "name_pattern": "{weather}"}
+    assert hub.post(f"/api/projects/{project['id']}/imports", json=bad_import).status_code == 400
+
+    def rule(pattern, dry_run=True):
+        return hub.post(f"/api/releases/{v1}/names", json={"pattern": pattern, "dry_run": dry_run})
+
+    # ---- a dry run shows what the rule finds, and changes nothing
+    preview = rule("{camera}_{site}").json()
+    assert (preview["items"], preview["matched"], preview["changed"], preview["fields"]) == (8, 8, 8, ["camera", "site"])
+    assert preview["values"]["camera"]["count"] == 2 and preview["values"]["site"]["count"] == 6
+    assert preview["examples"][0] == {"path": "images/train/train_0000.jpg", "camera": "train", "site": "0000"}
+    assert hub.get(f"/api/releases/{v1}").json()["stats"]["cameras"] == ["cam"]
+    folders = rule("{camera}/*").json()  # the folder the file sits in
+    assert folders["matched"] == 8 and folders["examples"][0]["camera"] == "train"
+    missed = rule("{site}-{camera}").json()
+    assert missed["matched"] == 0 and len(missed["misses"]) == 4
+    assert rule("{site}-{camera}", dry_run=False).status_code == 400
+    for wrong in ("", "*", "{weather}_*", "{site}_{site}"):
+        assert rule(wrong).status_code == 400, wrong
+
+    # ---- applied: every version holding the images offers the new values
+    assert rule("{camera}_{site}", dry_run=False).json()["changed"] == 8
+    stats = hub.get(f"/api/releases/{v1}").json()["stats"]
+    assert stats["cameras"] == ["train", "val"] and len(stats["sites"]) == 6
+    assert hub.get(f"/api/releases/{v1}/items", params={"camera": "val"}).json()["total"] == 2
+    assert rule("{camera}_{site}").json()["changed"] == 0
+
+
+def test_rename_merge_and_drop_classes_as_a_new_version(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "클래스 바꾸기", "task": "detect"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+    before = hub.get(f"/api/releases/{v1}").json()
+    boxes = {name: before["stats"]["classes"].get(str(i), {}).get("boxes", 0) for i, name in enumerate(CLASSES)}
+    merge = {"0": "사람", "1": "사물", "2": "사물"}
+
+    def make(version, classes, dry_run=False):
+        body = {"sources": [v1], "version": version, "classes": classes, "dry_run": dry_run}
+        return hub.post("/api/releases", json=body)
+
+    # ---- renamed and merged: car and dog become one class
+    assert make("x", merge, dry_run=True).json() == {"items": 8, "splits": {"train": 6, "val": 2}, "classes": 2}
+    merged = make("v2", merge).json()
+    view = hub.get(f"/api/releases/{merged['release_id']}").json()
+    assert [c["name"] for c in view["label_space"]["classes"]] == ["사람", "사물"]
+    assert view["stats"]["boxes"] == before["stats"]["boxes"] and view["stats"]["items"] == 8
+    assert view["stats"]["classes"]["1"]["boxes"] == boxes["car"] + boxes["dog"]
+    assert view["stats"]["classes"].get("0", {}).get("boxes", 0) == boxes["person"]
+    assert hub.get(f"/api/releases/{v1}").json()["stats"] == before["stats"]  # the old version is as it was
+    item = next(i for i in hub.get(f"/api/releases/{merged['release_id']}/items").json()["items"] if i["box_count"])
+    detail = hub.get(f"/api/releases/{merged['release_id']}/items/{item['id']}").json()
+    assert [r["rev"] for r in detail["revisions"]] == [1, 2] and detail["revisions"][1]["source"] == "classes:street v2"
+    assert {r["rev"] for r in detail["releases"]} == {1, 2}
+    assert hub.get(f"/api/releases/{merged['release_id']}/compare", params={"other": v1}).json()["label_space_changed"]
+
+    # ---- the same change again reuses the label space and the revisions
+    again = make("v2b", merge).json()
+    assert hub.get(f"/api/releases/{again['release_id']}").json()["label_space"]["name"] == view["label_space"]["name"]
+    assert len(hub.get(f"/api/releases/{again['release_id']}/items/{item['id']}").json()["revisions"]) == 2
+
+    # ---- a class dropped: its boxes go, the images stay
+    dropped = hub.get(f"/api/releases/{make('v3', {'2': ''}).json()['release_id']}").json()
+    assert [c["name"] for c in dropped["label_space"]["classes"]] == ["person", "car"]
+    assert dropped["stats"]["boxes"] == before["stats"]["boxes"] - boxes["dog"] and "2" not in dropped["stats"]["classes"]
+    assert dropped["stats"]["items"] == 8
+    assert dropped["stats"]["states"]["background"] >= before["stats"]["states"]["background"]
+
+    # ---- nothing changed: the same label space; nothing left: refused
+    same = make("v4", {"0": "person"}).json()
+    assert hub.get(f"/api/releases/{same['release_id']}").json()["label_space"]["name"] == before["label_space"]["name"]
+    assert make("none", {"0": "", "1": " ", "2": ""}).status_code == 400
+
+
+def test_dropping_a_class_of_a_classification_version(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "분류 클래스", "task": "classify"}).json()
+    v1 = _import(hub, project["id"], make_imagefolder(tmp_path / "cls"), "v1")
+    ids = {c["name"]: str(c["id"]) for c in hub.get(f"/api/releases/{v1}").json()["label_space"]["classes"]}
+    # dog merged into cat, bird dropped: the bird images leave the new version
+    body = {"sources": [v1], "version": "v2", "classes": {ids["bird"]: "", ids["dog"]: "cat"}}
+    made = hub.post("/api/releases", json=body).json()
+    assert (made["items"], made["classes"]) == (12, 1)
+    view = hub.get(f"/api/releases/{made['release_id']}").json()
+    assert view["stats"]["classes"] == {"0": {"boxes": 12, "items": 12}}

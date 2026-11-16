@@ -456,7 +456,8 @@ label,
   margin-bottom: 12px;
 }
 input:not([type="checkbox"]):not([type="radio"]),
-select {
+select,
+label > textarea {
   display: block;
   width: 100%;
   margin-top: 5px;

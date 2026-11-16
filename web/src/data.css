@@ -556,6 +556,67 @@ tr.current-row td {
   }
 }
 
+.modal-actions .push-left {
+  margin-right: auto;
+}
+.card-head .head-actions input[type="search"] {
+  width: 200px;
+  margin-top: 0;
+}
+label > textarea {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.45;
+}
+
+/* ---- new version: class changes; site and camera rule ---- */
+.class-edit table {
+  width: 100%;
+}
+.class-edit td,
+.class-edit th {
+  padding: 4px 6px;
+}
+.class-edit td input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+}
+.class-edit .mid {
+  text-align: center;
+  width: 48px;
+}
+.class-edit tr.off td:first-child {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.class-edit + p,
+.advanced > input[type="search"] {
+  margin: 8px 0 4px;
+}
+.swatch-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: baseline;
+}
+.rule-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 8px;
+}
+.rule-presets button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.names-preview .path {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
 /* ---- home ---- */
 .stats.six {
   grid-template-columns: repeat(6, minmax(0, 1fr));

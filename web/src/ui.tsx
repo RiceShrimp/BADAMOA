@@ -58,6 +58,8 @@ export function useTheme(): [Theme, () => void] {
 
 const ICONS: Record<string, ReactNode> = {
   folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+  trash: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />,
+  columns: <path d="M4 5h16v14H4zM12 5v14" />,
   disk: (
     <>
       <rect x="3" y="4" width="18" height="16" rx="2" />

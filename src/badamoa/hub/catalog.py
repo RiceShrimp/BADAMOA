@@ -7,13 +7,15 @@ import binascii
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select
+from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
@@ -36,6 +38,7 @@ from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
+from .train_models import Run, Sweep
 
 TASKS = ("detect", "segment", "classify")
 SPLITS = ("train", "val", "test", "")
@@ -55,13 +58,25 @@ def create_project(
         raise ServiceError(400, "프로젝트 이름은 1~128자여야 합니다.")
     if task not in TASKS:
         raise ServiceError(400, f"task는 {', '.join(TASKS)} 중 하나여야 합니다.")
-    if db.scalar(select(Project).where(Project.name == name)):
-        raise ServiceError(409, "같은 이름의 프로젝트가 이미 있습니다.")
+    _name_free(db, name)
     project = Project(name=name, task=task, folder=folder.strip(), description=description, created_by=user.id)
     db.add(project)
     db.flush()
     services.audit(db, user.id, "api", "project.create", project.id, name=name)
     return project
+
+
+def _name_free(db: Session, name: str, other_than: str = "") -> None:
+    taken = db.scalar(select(Project).where(Project.name == name, Project.id != other_than))
+    if taken is not None and taken.deleted_at is not None:
+        raise ServiceError(409, "휴지통에 같은 이름의 프로젝트가 있습니다. 되살리거나 다른 이름을 쓰세요.")
+    if taken is not None:
+        raise ServiceError(409, "같은 이름의 프로젝트가 이미 있습니다.")
+
+
+def _may_edit(project: Project, user: User) -> None:
+    if user.role != "admin" and project.created_by != user.id:
+        raise ServiceError(403, "프로젝트를 만든 사람이나 관리자만 바꿀 수 있습니다.")
 
 
 def get_project(db: Session, project_id: str) -> Project:
@@ -109,14 +124,12 @@ def update_project(
 ) -> Project:
     """Rename a project, move it into a folder (a new folder is just a new name), or change its description."""
     project = get_project(db, project_id)
-    if user.role != "admin" and project.created_by != user.id:
-        raise ServiceError(403, "프로젝트를 만든 사람이나 관리자만 바꿀 수 있습니다.")
+    _may_edit(project, user)
     if name is not None:
         name = name.strip()
         if not 1 <= len(name) <= 128:
             raise ServiceError(400, "프로젝트 이름은 1~128자여야 합니다.")
-        if db.scalar(select(Project).where(Project.name == name, Project.id != project.id)):
-            raise ServiceError(409, "같은 이름의 프로젝트가 이미 있습니다.")
+        _name_free(db, name, other_than=project.id)
         project.name = name
     if folder is not None:
         project.folder = folder.strip()[:128]
@@ -133,6 +146,97 @@ def update_project_settings(db: Session, user: User, project_id: str, settings: 
     project.settings = {**(project.settings or {}), **settings}
     services.audit(db, user.id, "api", "project.settings", project.id, **settings)
     return project
+
+
+ACTIVE = ("queued", "running")
+
+
+def _busy(db: Session, project_id: str) -> list[str]:
+    """What is still under way in a project, e.g. ["학습 2개", "가져오기 1개"]."""
+    runs = db.scalar(
+        select(func.count(Run.id))
+        .join(Job, Job.id == Run.job_id)
+        .where(Run.project_id == project_id, Job.status.in_(ACTIVE))
+    )
+    sweeps = db.scalar(select(func.count(Sweep.id)).where(Sweep.project_id == project_id, Sweep.status == "running"))
+    imports = sum(
+        1
+        for params in db.scalars(select(Job.params).where(Job.type == "data.import", Job.status.in_(ACTIVE)))
+        if (params or {}).get("project_id") == project_id
+    )
+    found = [("학습", runs or 0), ("탐색", sweeps or 0), ("가져오기", imports)]
+    return [f"{what} {n}개" for what, n in found if n]
+
+
+def set_project_deleted(db: Session, user: User, project_id: str, deleted: bool) -> Project:
+    """Move a project to the trash (with its datasets, runs and models) or bring it back. Nothing is erased."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise ServiceError(404, "프로젝트를 찾을 수 없습니다.")
+    _may_edit(project, user)
+    if deleted and project.deleted_at is None:
+        busy = _busy(db, project.id)
+        if busy:
+            raise ServiceError(409, f"이 프로젝트에서 {', '.join(busy)}가 진행 중입니다. 끝나거나 멈춘 뒤에 지우세요.")
+        project.deleted_at = utcnow()
+    elif not deleted:
+        project.deleted_at = None
+    services.audit(
+        db, user.id, "api", "project.delete" if deleted else "project.restore", project.id, name=project.name
+    )
+    return project
+
+
+def trash(db: Session) -> dict[str, Any]:
+    """Deleted projects, and deleted versions of projects that are still there."""
+    projects = db.scalars(select(Project).where(Project.deleted_at.is_not(None)).order_by(Project.deleted_at.desc())).all()
+    ids = [p.id for p in projects]
+    releases_of = dict(
+        db.execute(
+            select(Dataset.project_id, func.count(Release.id))
+            .join(Release, Release.dataset_id == Dataset.id)
+            .where(Dataset.project_id.in_(ids), Release.deleted_at.is_(None))
+            .group_by(Dataset.project_id)
+        ).all()
+    )
+    items_of = dict(
+        db.execute(
+            select(Item.project_id, func.count(Item.id)).where(Item.project_id.in_(ids)).group_by(Item.project_id)
+        ).all()
+    )
+    rows = db.execute(
+        select(Release, Dataset.name, Project)
+        .join(Dataset, Dataset.id == Release.dataset_id)
+        .join(Project, Project.id == Dataset.project_id)
+        .where(Release.deleted_at.is_not(None), Project.deleted_at.is_(None))
+        .order_by(Release.deleted_at.desc())
+    ).all()
+    return {
+        "projects": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "task": p.task,
+                "folder": p.folder,
+                "created_by": p.created_by,
+                "deleted_at": iso(p.deleted_at),
+                "releases": releases_of.get(p.id, 0),
+                "items": items_of.get(p.id, 0),
+            }
+            for p in projects
+        ],
+        "releases": [
+            {
+                "id": r.id,
+                "dataset": name,
+                "version": r.version,
+                "project": {"id": p.id, "name": p.name},
+                "deleted_at": iso(r.deleted_at),
+                "items": (r.stats or {}).get("items", 0),
+            }
+            for r, name, p in rows
+        ],
+    }
 
 
 def tree(db: Session, project_id: str, include_deleted: bool = False) -> list[dict[str, Any]]:
@@ -182,6 +286,7 @@ def start_import(
     label_space: str = "",
     site: str = "",
     camera: str = "",
+    name_pattern: str = "",
     note: str = "",
     base_release_id: str = "",
     via: str = "api",
@@ -192,6 +297,8 @@ def start_import(
         raise ServiceError(400, "데이터셋 이름, 버전, 경로는 비워 둘 수 없습니다.")
     if fmt not in ("auto", "yolo", "coco", "imagefolder"):
         raise ServiceError(400, "형식은 auto, yolo, coco, imagefolder 중 하나여야 합니다.")
+    if name_pattern.strip():
+        name_rule(name_pattern)  # a wrong rule is turned away now, not after the node has read every file
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
     if existing and db.scalar(select(Release).where(Release.dataset_id == existing.id, Release.version == version)):
         raise ServiceError(409, f"{dataset} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
@@ -204,10 +311,144 @@ def start_import(
         "label_space": label_space.strip(),
         "site": site.strip(),
         "camera": camera.strip(),
+        "name_pattern": name_pattern.strip(),
         "note": note,
         "base_release_id": base_release_id,
     }
     return services.create_job(db, user, "data.import", params, node_id, via=via)
+
+
+# ---- site and camera from file names ---------------------------------------------------
+#
+# A rule such as ``{site}_{camera}_*`` is matched against the file name without its extension;
+# with folders in it (``{site}/{camera}/*``) against as many trailing folders of the path.
+
+NAME_FIELDS = ("site", "camera")
+
+
+def name_rule(pattern: str) -> tuple[re.Pattern[str], int, list[str]]:
+    """The rule as a regular expression, how many path parts it covers, and the fields it fills."""
+    pattern = pattern.strip().replace("\\", "/").strip("/")
+    if not pattern:
+        raise ServiceError(400, "파일 이름 규칙을 적으세요. 예: {site}_{camera}_*")
+    regex, fields = [], []
+    for part in re.split(r"(\{[^{}]*\}|\*)", pattern):
+        if not part:
+            continue
+        if part == "*":
+            regex.append(r"[^/]*")
+        elif part.startswith("{") and part.endswith("}"):
+            name = part[1:-1].strip()
+            if name not in NAME_FIELDS:
+                raise ServiceError(400, f"규칙에는 {{site}}와 {{camera}}만 쓸 수 있습니다. ({part})")
+            if name in fields:
+                raise ServiceError(400, f"{part}가 두 번 나옵니다.")
+            fields.append(name)
+            regex.append(f"(?P<{name}>[^/]+?)")
+        else:
+            regex.append(re.escape(part))
+    if not fields:
+        raise ServiceError(400, "규칙에 {site}나 {camera}를 하나 이상 넣으세요.")
+    return re.compile("".join(regex)), pattern.count("/") + 1, fields
+
+
+def names_from(rule: tuple[re.Pattern[str], int, list[str]], path: str) -> dict[str, str] | None:
+    """{"site": …, "camera": …} read from a file path by the rule, or None when it does not fit."""
+    regex, depth, _ = rule
+    parts = path.replace("\\", "/").strip("/").split("/")
+    if len(parts) < depth:
+        return None
+    stem, dot, _ext = parts[-1].rpartition(".")
+    parts[-1] = stem if dot and stem else parts[-1]
+    found = regex.fullmatch("/".join(parts[-depth:]))
+    if found is None:
+        return None
+    values = {k: v.strip()[:64] for k, v in found.groupdict().items()}
+    return values if all(values.values()) else None
+
+
+def _places(db: Session, release: Release) -> None:
+    """Refresh the sites and cameras a release's filters offer."""
+    stats = dict(release.stats or {})
+    for field in NAME_FIELDS:
+        values = db.scalars(
+            select(getattr(Item, field))
+            .join(ReleaseItem, ReleaseItem.item_id == Item.id)
+            .where(ReleaseItem.release_id == release.id)
+            .distinct()
+        ).all()
+        stats[f"{field}s"] = sorted(v for v in values if v)
+    release.stats = stats
+
+
+def fill_names(
+    db: Session, user: User, release_id: str, pattern: str, dry_run: bool = False, via: str = "api"
+) -> dict[str, Any]:
+    """Read site and camera from the file names of a release's images; ``dry_run`` shows what the rule finds.
+
+    Site and camera belong to the image, so every version holding it sees the new values.
+    Images the rule does not fit keep what they had.
+    """
+    release = get_release(db, release_id)
+    project = get_project(db, db.get(Dataset, release.dataset_id).project_id)
+    rule = name_rule(pattern)
+    fields = rule[2]
+    rows = db.execute(
+        select(Item.id, Item.rel_path, Item.file_name, Item.site, Item.camera)
+        .join(ReleaseItem, ReleaseItem.item_id == Item.id)
+        .where(ReleaseItem.release_id == release.id)
+        .order_by(Item.id)
+    ).all()
+    found: dict[int, dict[str, str]] = {}
+    changed: dict[tuple[str, ...], list[int]] = {}
+    examples: list[dict[str, str]] = []
+    misses: list[str] = []
+    counts = {field: Counter() for field in fields}
+    for item_id, rel_path, file_name, site, camera in rows:
+        path = rel_path or file_name
+        values = names_from(rule, path)
+        if values is None:
+            if len(misses) < 4:
+                misses.append(path)
+            continue
+        found[item_id] = values
+        for field in fields:
+            counts[field][values[field]] += 1
+        if len(examples) < 6:
+            examples.append({"path": path, **values})
+        if any(values[field] != now for field, now in (("site", site), ("camera", camera)) if field in fields):
+            changed.setdefault(tuple(values[f] for f in fields), []).append(item_id)
+    summary = {
+        "items": len(rows),
+        "matched": len(found),
+        "changed": sum(len(ids) for ids in changed.values()),
+        "fields": fields,
+        "examples": examples,
+        "misses": misses,
+        "values": {
+            field: {"count": len(counts[field]), "top": [{"value": v, "items": n} for v, n in counts[field].most_common(6)]}
+            for field in fields
+        },
+    }
+    if dry_run:
+        return summary
+    _may_edit(project, user)
+    if not found:
+        raise ServiceError(400, "규칙에 맞는 파일이 없습니다. 예시의 경로를 보고 규칙을 고치세요.")
+    for values, ids in changed.items():
+        new = dict(zip(fields, values, strict=True))
+        for start in range(0, len(ids), 900):
+            db.execute(update(Item).where(Item.id.in_(ids[start : start + 900])).values(new))
+    db.flush()
+    touched = db.scalars(
+        select(Release)
+        .join(Dataset, Dataset.id == Release.dataset_id)
+        .where(Dataset.project_id == project.id, Release.status == "ready")
+    ).all()
+    for each in touched:
+        _places(db, each)
+    services.audit(db, user.id, via, "items.names", release.id, pattern=pattern.strip(), changed=summary["changed"])
+    return summary
 
 
 def _import_job(db: Session, node: Node, job_id: str) -> Job:
@@ -218,17 +459,22 @@ def _import_job(db: Session, node: Node, job_id: str) -> Job:
 
 
 def _label_space(db: Session, project_id: str, classes: list[str], wanted: str) -> LabelSpace:
-    wanted_classes = [{"id": i, "name": name} for i, name in enumerate(classes)]
+    return _space_for(db, project_id, [{"id": i, "name": name} for i, name in enumerate(classes)], wanted)
+
+
+def _space_for(db: Session, project_id: str, classes: list[dict[str, Any]], wanted: str = "") -> LabelSpace:
+    """The project's label space with these classes (ids and names; colours do not count), or a new one."""
+    plain = [(int(c["id"]), c["name"]) for c in classes]
     spaces = db.scalars(select(LabelSpace).where(LabelSpace.project_id == project_id)).all()
     for space in spaces:
-        if space.classes == wanted_classes and (not wanted or space.name == wanted):
+        if [(int(c["id"]), c["name"]) for c in space.classes] == plain and (not wanted or space.name == wanted):
             return space
     name = wanted or f"{len(classes)}cls"
     taken = {s.name for s in spaces}
     candidate, n = name, 2
     while candidate in taken:  # same name, different classes: keep both
         candidate, n = f"{name}-{n}", n + 1
-    space = LabelSpace(project_id=project_id, name=candidate, classes=wanted_classes)
+    space = LabelSpace(project_id=project_id, name=candidate, classes=classes)
     db.add(space)
     db.flush()
     return space
@@ -304,6 +550,7 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     space = db.get(LabelSpace, release.label_space_id)
     project_id = job.params["project_id"]
     site, camera = job.params.get("site", ""), job.params.get("camera", "")
+    rule = name_rule(job.params["name_pattern"]) if job.params.get("name_pattern") else None
     class_ids = [c["id"] for c in space.classes]
     segment = get_project(db, project_id).task == "segment"
     incoming = {item.sha256: item for item in chunk.items}  # a file listed twice counts once
@@ -320,6 +567,7 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
                 thumb_key = storage.put_blob(base64.b64decode(data.thumb_b64))
             except (binascii.Error, ValueError):
                 thumb_key = None
+        named = (names_from(rule, data.rel_path or data.file_name) if rule else None) or {}
         items[sha] = Item(
             project_id=project_id,
             sha256=sha,
@@ -327,8 +575,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
             width=data.width,
             height=data.height,
             bytes=data.bytes,
-            site=site,
-            camera=camera,
+            site=named.get("site", site),
+            camera=named.get("camera", camera),
             location_id=batch.location_id,
             rel_path=data.rel_path,
             thumb_key=thumb_key,
@@ -712,6 +960,101 @@ def _ratios(split: dict[str, Any] | None) -> list[tuple[str, float]] | None:
     return [(name, v / total) for name, v in values if v > 0]
 
 
+def _class_plan(space: LabelSpace, wanted: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[int, int]] | None:
+    """New classes from the old: ``wanted`` maps an old class id to its new name. The same name merges, "" drops.
+
+    Returns the new classes (numbered from 0 in their old order) and old id → new id, or None
+    when nothing changes.
+    """
+    if not wanted:
+        return None
+    classes: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
+    mapping: dict[int, int] = {}
+    for c in space.classes:
+        old = int(c["id"])
+        name = str(wanted.get(str(old), c["name"]) or "").strip()[:128]
+        if not name:
+            continue
+        if name not in index:
+            index[name] = len(classes)
+            classes.append({"id": len(classes), "name": name, **({"color": c["color"]} if c.get("color") else {})})
+        mapping[old] = index[name]
+    if not classes:
+        raise ServiceError(400, "클래스를 하나 이상 남기세요.")
+    if [(c["id"], c["name"]) for c in classes] == [(int(c["id"]), c["name"]) for c in space.classes]:
+        return None
+    return classes, mapping
+
+
+def _without_dropped(db: Session, members: dict[int, ReleaseItem], kept: list[int]) -> dict[int, ReleaseItem]:
+    """Classification: an image whose class was dropped leaves the new release (it has nothing left to say)."""
+    labelled = [row.revision_id for row in members.values() if row.state == "labelled"]
+    keep: set[int] = set()
+    for start in range(0, len(labelled), 5000):
+        chunk = labelled[start : start + 5000]
+        keep.update(
+            db.scalars(
+                select(RevisionClass.revision_id).where(
+                    RevisionClass.revision_id.in_(chunk), RevisionClass.class_id.in_(kept)
+                )
+            )
+        )
+    return {i: row for i, row in members.items() if row.state != "labelled" or row.revision_id in keep}
+
+
+def _relabel(
+    db: Session, members: dict[int, ReleaseItem], space: LabelSpace, mapping: dict[int, int], source: str
+) -> dict[int, LabelRevision]:
+    """Each item's labels under the new classes: an existing revision when one says the same, else a new one."""
+    olds_of: dict[int, set[int]] = {}
+    for old, new in mapping.items():
+        olds_of.setdefault(new, set()).add(old)
+    out: dict[int, LabelRevision] = {}
+    ids = list(members)
+    for start in range(0, len(ids), 2000):
+        chunk = ids[start : start + 2000]
+        wanted = [members[i].revision_id for i in chunk]
+        source_revs = {r.id: r for r in db.scalars(select(LabelRevision).where(LabelRevision.id.in_(wanted)))}
+        history: dict[int, list[LabelRevision]] = {}
+        for r in db.scalars(select(LabelRevision).where(LabelRevision.item_id.in_(chunk))):
+            history.setdefault(r.item_id, []).append(r)
+        created: list[LabelRevision] = []
+        for item_id in chunk:
+            src = source_revs[members[item_id].revision_id]
+            boxes = [[mapping[int(b[0])], *b[1:]] for b in src.boxes if int(b[0]) in mapping]
+            if boxes and all(len(b) == 1 for b in boxes):  # classification: two merged classes are one label
+                boxes = [list(b) for b in dict.fromkeys(tuple(b) for b in boxes)]
+            state = src.state if boxes or src.state != "labelled" else "background"
+            covered = set(src.labelled_class_ids or [])
+            # A merged class was looked for everywhere only if every class merged into it was.
+            labelled = [new for new, olds in sorted(olds_of.items()) if olds <= covered] if state != "unlabelled" else []
+            digest = _digest(space.id, state, boxes)
+            past = history.setdefault(item_id, [])
+            same = next((r for r in past if r.digest == digest), None)
+            if same is None:
+                same = LabelRevision(
+                    item_id=item_id,
+                    rev=max((r.rev for r in past), default=0) + 1,
+                    label_space_id=space.id,
+                    source=source,
+                    state=state,
+                    box_count=len(boxes),
+                    boxes=boxes,
+                    labelled_class_ids=labelled,
+                    digest=digest,
+                )
+                db.add(same)
+                created.append(same)
+                past.append(same)
+            out[item_id] = same
+        db.flush()
+        for rev in created:
+            counts = Counter(int(b[0]) for b in rev.boxes)
+            db.add_all(RevisionClass(revision_id=rev.id, class_id=cid, count=n) for cid, n in counts.items())
+    return out
+
+
 def new_release(
     db: Session,
     user: User,
@@ -724,6 +1067,7 @@ def new_release(
     exclude: bool = False,
     split: dict[str, Any] | None = None,
     group_by: str = "",
+    classes: dict[str, Any] | None = None,
     dry_run: bool = False,
     via: str = "api",
 ) -> dict[str, Any]:
@@ -733,6 +1077,8 @@ def new_release(
     the items matching it, or with ``exclude`` all but those. With several sources an item that is
     in more than one keeps the split and labels of the first. ``split``: ratios such as
     {"train": 80, "val": 10, "test": 10} to deal the items out again (otherwise they keep theirs).
+    ``classes``: {old class id: new name} to rename classes, merge them (the same new name) or
+    drop them (""); the labels are rewritten as new revisions, the old versions stay as they were.
     """
     if not sources:
         raise ServiceError(400, "새 버전에 담을 버전을 하나 이상 고르세요.")
@@ -749,6 +1095,8 @@ def new_release(
             raise ServiceError(400, "클래스 목록(라벨 공간)이 다른 버전은 합칠 수 없습니다.")
     if group_by not in SPLIT_GROUPS:
         raise ServiceError(400, "split을 묶는 기준은 site 또는 camera입니다.")
+    old_space = db.get(LabelSpace, first.label_space_id)
+    plan = _class_plan(old_space, classes)
     ratios = _ratios(split)
     wanted = match or {}
     class_id = wanted.get("class_id")
@@ -774,6 +1122,8 @@ def new_release(
             rows = [r for r in rows if (r.item_id in matched) != exclude]
         for row in rows:
             members.setdefault(row.item_id, row)
+    if plan and get_project(db, project_id).task == "classify":
+        members = _without_dropped(db, members, list(plan[1]))
     items = {}
     if ratios:
         ids = list(members)
@@ -787,7 +1137,7 @@ def new_release(
     counts: dict[str, int] = {}
     for value in splits.values():
         counts[value] = counts.get(value, 0) + 1
-    summary = {"items": len(members), "splits": counts}
+    summary = {"items": len(members), "splits": counts, "classes": len(plan[0] if plan else old_space.classes)}
     if dry_run:
         return summary
     if not members:
@@ -804,10 +1154,11 @@ def new_release(
         target = Dataset(project_id=project_id, name=name)
         db.add(target)
         db.flush()
+    space = _space_for(db, project_id, plan[0]) if plan else old_space
     release = Release(
         dataset_id=target.id,
         version=version,
-        label_space_id=first.label_space_id,
+        label_space_id=space.id,
         base_release_id=first.id,
         note=note.strip(),
         status="building",
@@ -815,16 +1166,22 @@ def new_release(
     )
     db.add(release)
     db.flush()
+    labels = {
+        item_id: (row.revision_id, row.state, row.box_count) for item_id, row in members.items()
+    }
+    if plan:
+        for item_id, rev in _relabel(db, members, space, plan[1], f"classes:{name} {version}").items():
+            labels[item_id] = (rev.id, rev.state, rev.box_count)
     rows = [
         {
             "release_id": release.id,
             "item_id": item_id,
             "split": splits[item_id],
-            "revision_id": row.revision_id,
-            "state": row.state,
-            "box_count": row.box_count,
+            "revision_id": labels[item_id][0],
+            "state": labels[item_id][1],
+            "box_count": labels[item_id][2],
         }
-        for item_id, row in members.items()
+        for item_id in members
     ]
     for start in range(0, len(rows), 5000):
         db.execute(insert(ReleaseItem), rows[start : start + 5000])
@@ -842,6 +1199,7 @@ def new_release(
         sources=[r.id for r in releases],
         items=len(members),
         resplit=bool(ratios),
+        classes=summary["classes"] if plan else None,
     )
     return {**summary, "release_id": release.id, "dataset": name, "version": version}
 

@@ -27,7 +27,16 @@ export const colorFor = (classes: { id: number; color?: string | null }[]) => (i
 // ---- classes --------------------------------------------------------------------------
 
 /** Every class of the release: colour (click to change), index, name, boxes and images, share of the boxes. */
-export function ClassesTab({ release, onChanged }: { release: ReleaseInfo; onChanged: () => void }) {
+export function ClassesTab({
+  release,
+  onChanged,
+  onEditClasses,
+}: {
+  release: ReleaseInfo;
+  onChanged: () => void;
+  /** Rename, merge or drop classes: that makes a new version. */
+  onEditClasses?: () => void;
+}) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: "id" | "name" | "boxes" | "items"; dir: 1 | -1 }>({ key: "boxes", dir: -1 });
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +80,14 @@ export function ClassesTab({ release, onChanged }: { release: ReleaseInfo; onCha
             {release.label_space.name} · 클래스 {release.label_space.classes.length}개 · {Object.keys(stats).length}개가 이 버전에 나옴
           </div>
         </div>
-        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="클래스 찾기" aria-label="클래스 찾기" />
+        <div className="head-actions">
+          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="클래스 찾기" aria-label="클래스 찾기" />
+          {onEditClasses && (
+            <button onClick={onEditClasses} title="클래스 이름을 바꾸거나 합치거나 빼서 새 버전을 만듭니다">
+              이름 바꾸기 · 합치기
+            </button>
+          )}
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
       <div className="table-wrap">

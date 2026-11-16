@@ -1,6 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { api } from "./api";
-import { SPLIT_LABEL, bytesLabel, classColor } from "./catalogTypes";
+import { SPLIT_LABEL, type TrashInfo, bytesLabel, classColor } from "./catalogTypes";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
 // ---- what the Hub sends ---------------------------------------------------------------
@@ -147,6 +147,8 @@ const SORTS = [
  */
 export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) => void }) {
   const { data: cards, error, refresh } = usePolling(() => api<ProjectCardInfo[]>("/project-cards"), 30000);
+  const { data: trash, refresh: refreshTrash } = usePolling(() => api<TrashInfo>("/trash"), 60000);
+  const binned = (trash?.projects.length ?? 0) + (trash?.releases.length ?? 0);
   const [folder, setFolder] = useState<string | null>(null); // null: all
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("updated");
@@ -213,7 +215,18 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
               </option>
             ))}
           </select>
+          {binned > 0 && (
+            <a className="btn ghost-btn" href="#/datasets/trash" title="지운 프로젝트와 버전을 되살립니다">
+              <Icon name="trash" size={13} />
+              휴지통 {binned}
+            </a>
+          )}
         </div>
+      )}
+      {cards && cards.length === 0 && binned > 0 && (
+        <p className="muted small">
+          지운 프로젝트가 있습니다. <a href="#/datasets/trash">휴지통 {binned}</a>
+        </p>
       )}
 
       {!cards && <p className="muted">프로젝트를 불러오는 중…</p>}
@@ -247,6 +260,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
           onClose={() => {
             setEditing(null);
             void refresh();
+            void refreshTrash();
           }}
         />
       )}
@@ -301,7 +315,7 @@ function EditProject({
 }: {
   card: ProjectCardInfo;
   folders: string[];
-  onClose: () => void;
+  onClose: (deleted?: boolean) => void;
 }) {
   const [name, setName] = useState(card.name);
   const [folder, setFolder] = useState(card.folder);
@@ -316,8 +330,18 @@ function EditProject({
       setError(err instanceof Error ? err.message : String(err));
     }
   };
+  const remove = async () => {
+    const what = `${card.name} · 데이터셋 ${card.datasets} · 학습 ${card.runs} · 모델 ${card.models}`;
+    if (!window.confirm(`이 프로젝트를 휴지통으로 옮길까요?\n${what}\n\n휴지통에서 되살릴 수 있고, 이미지 파일은 지워지지 않습니다.`)) return;
+    try {
+      await api(`/projects/${card.id}`, { method: "DELETE" });
+      onClose(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
   return (
-    <Modal title={`${card.name} 설정`} onClose={onClose}>
+    <Modal title={`${card.name} 설정`} onClose={() => onClose()}>
       <form onSubmit={save}>
         <label>
           이름
@@ -339,7 +363,10 @@ function EditProject({
         <p className="muted small">태스크({TASK_LABEL[card.task] ?? card.task})는 바꿀 수 없습니다. 라벨과 학습이 그 태스크에 맞춰져 있습니다.</p>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>
+          <button type="button" className="danger push-left" onClick={() => void remove()}>
+            휴지통으로
+          </button>
+          <button type="button" onClick={() => onClose()}>
             취소
           </button>
           <button className="primary">저장</button>
@@ -397,10 +424,128 @@ function NewFolder({ cards, onClose }: { cards: ProjectCardInfo[]; onClose: (mad
   );
 }
 
+// ---- the trash: deleted projects and versions, to bring back ----------------------------------
+
+export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
+  const { data: trash, error, refresh } = usePolling(() => api<TrashInfo>("/trash"), 30000);
+  const [failed, setFailed] = useState<string | null>(null);
+  const restore = async (path: string) => {
+    try {
+      setFailed(null);
+      await api(path, { method: "POST" });
+      await refresh();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    }
+  };
+  if (error && !trash) return <div className="error">{error}</div>;
+  return (
+    <>
+      <nav className="page-crumbs">
+        <a href="#/datasets">데이터셋</a>
+        <strong>휴지통</strong>
+      </nav>
+      <div className="page-head">
+        <div>
+          <h1>휴지통</h1>
+          <p className="muted">
+            지운 프로젝트와 버전입니다. 되살리면 데이터셋 · 학습 · 모델이 그대로 돌아옵니다. 이미지 파일은 처음부터 지우지 않습니다.
+          </p>
+        </div>
+      </div>
+      {failed && <div className="error">{failed}</div>}
+      {!trash && <p className="muted">불러오는 중…</p>}
+      {trash && trash.projects.length + trash.releases.length === 0 && <div className="card empty">휴지통이 비어 있습니다.</div>}
+      {trash && trash.projects.length > 0 && (
+        <section className="card home-block">
+          <div className="card-head">
+            <h3>프로젝트</h3>
+            <span className="muted small">만든 사람이나 관리자가 되살릴 수 있습니다</span>
+          </div>
+          <table className="plain">
+            <thead>
+              <tr>
+                <th>이름</th>
+                <th>태스크</th>
+                <th className="right">버전</th>
+                <th className="right">이미지</th>
+                <th>지운 때</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {trash.projects.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    <strong>{p.name}</strong>
+                    {p.folder && <span className="muted small"> · {p.folder}</span>}
+                  </td>
+                  <td>{TASK_LABEL[p.task] ?? p.task}</td>
+                  <td className="num right">{p.releases}</td>
+                  <td className="num right">{p.items.toLocaleString()}</td>
+                  <td>{timeAgo(p.deleted_at)}</td>
+                  <td className="right">
+                    <button className="small" onClick={() => void restore(`/projects/${p.id}/restore`)}>
+                      되살리기
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+      {trash && trash.releases.length > 0 && (
+        <section className="card home-block">
+          <div className="card-head">
+            <h3>버전</h3>
+            {!isAdmin && <span className="muted small">버전은 관리자가 되살릴 수 있습니다</span>}
+          </div>
+          <table className="plain">
+            <thead>
+              <tr>
+                <th>버전</th>
+                <th>프로젝트</th>
+                <th className="right">이미지</th>
+                <th>지운 때</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {trash.releases.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <strong>
+                      {r.dataset} {r.version}
+                    </strong>
+                  </td>
+                  <td>
+                    <a href={`#/datasets/project/${r.project.id}`}>{r.project.name}</a>
+                  </td>
+                  <td className="num right">{r.items.toLocaleString()}</td>
+                  <td>{timeAgo(r.deleted_at)}</td>
+                  <td className="right">
+                    {isAdmin && (
+                      <button className="small" onClick={() => void restore(`/releases/${r.id}/restore`)}>
+                        되살리기
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+    </>
+  );
+}
+
 // ---- a project: its datasets as cards ------------------------------------------------------
 
 export function ProjectPage({ projectId, onImport }: { projectId: string; onImport: () => void }) {
-  const { data: page, error } = usePolling(() => api<ProjectPageInfo>(`/projects/${projectId}/overview`), 15000, [projectId]);
+  const { data: page, error, refresh } = usePolling(() => api<ProjectPageInfo>(`/projects/${projectId}/overview`), 15000, [projectId]);
+  const [editing, setEditing] = useState(false);
   if (error && !page) return <div className="error">{error}</div>;
   if (!page) return <div className="muted">불러오는 중…</div>;
   const colorOf = (cards: DatasetCardInfo) => (id: number) =>
@@ -424,6 +569,9 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
           {page.description && <p className="note">{page.description}</p>}
         </div>
         <div className="head-actions">
+          <button className="icon-btn" onClick={() => setEditing(true)} title="이름 · 폴더 · 설명 · 휴지통" aria-label={`${page.name} 설정`}>
+            <Icon name="settings" />
+          </button>
           <a className="btn" href="#/training" onClick={() => rememberProject(page.id)}>
             학습
           </a>
@@ -498,6 +646,17 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
           </a>
         </aside>
       </div>
+      {editing && (
+        <EditProject
+          card={page}
+          folders={[]}
+          onClose={(deleted) => {
+            setEditing(false);
+            if (deleted) window.location.hash = "#/datasets";
+            else void refresh();
+          }}
+        />
+      )}
     </>
   );
 }

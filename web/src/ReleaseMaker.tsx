@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useDebounced } from "./Annotate";
 import { type Job, api } from "./api";
-import { type ReleaseInfo, SPLIT_LABEL, STATE_LABEL, type TreeDataset, bytesLabel } from "./catalogTypes";
+import { type LabelClass, type ReleaseInfo, SPLIT_LABEL, STATE_LABEL, type TreeDataset, bytesLabel, classColor } from "./catalogTypes";
 import { Modal, timeAgo, usePolling } from "./ui";
 
 /** The release screen's filters, as the Hub takes them. */
@@ -17,6 +17,33 @@ export interface ItemFilter {
 interface Preview {
   items: number;
   splits: Record<string, number>;
+  classes: number;
+}
+
+/** What renaming, merging and dropping classes comes to, in words. */
+function classChanges(classes: LabelClass[], names: Record<number, string>, dropped: Set<number>) {
+  const groups = new Map<string, LabelClass[]>();
+  for (const c of classes) {
+    const name = (names[c.id] ?? c.name).trim();
+    if (dropped.has(c.id) || !name) continue;
+    groups.set(name, [...(groups.get(name) ?? []), c]);
+  }
+  const merged = [...groups.entries()].filter(([, from]) => from.length > 1);
+  const renamed = [...groups.entries()].filter(([name, from]) => from.length === 1 && from[0].name !== name);
+  const gone = classes.filter((c) => dropped.has(c.id) || !(names[c.id] ?? c.name).trim());
+  const parts = [
+    ...merged.map(([name, from]) => `${from.map((c) => c.name).join(" + ")} → ${name}`),
+    ...renamed.map(([name, [c]]) => `${c.name} → ${name}`),
+    ...(gone.length ? [`뺌: ${gone.map((c) => c.name).join(", ")}`] : []),
+  ];
+  const changed = parts.length > 0;
+  // Only the classes that change go to the Hub: {old id: new name}, "" for a dropped one.
+  const body: Record<string, string> = {};
+  for (const c of classes) {
+    const name = dropped.has(c.id) ? "" : (names[c.id] ?? c.name).trim();
+    if (name !== c.name) body[String(c.id)] = name;
+  }
+  return { count: groups.size, text: parts.join(" · "), body: changed ? body : null, names: [...groups.keys()] };
 }
 
 /** v3 → v4, 2026.1 → 2026.2, anything else → name-2. */
@@ -49,19 +76,29 @@ const splitText = (splits: Record<string, number>) =>
  */
 export function NewReleaseDialog({
   release,
+  task,
   filter,
   filtered,
+  editClasses = false,
   onClose,
   onCreated,
 }: {
   release: ReleaseInfo;
+  task: string;
   filter: ItemFilter;
   filtered: number;
+  /** Opened from the classes tab: the class section starts open and the filter is not applied. */
+  editClasses?: boolean;
   onClose: () => void;
   onCreated: (releaseId: string) => void;
 }) {
   const filtering = Object.keys(filter).length > 0;
-  const [take, setTake] = useState<"all" | "match" | "rest">(filtering ? "match" : "all");
+  const [take, setTake] = useState<"all" | "match" | "rest">(filtering && !editClasses ? "match" : "all");
+  const [names, setNames] = useState<Record<number, string>>({});
+  const [dropped, setDropped] = useState<Set<number>>(new Set());
+  const [classQ, setClassQ] = useState("");
+  const classes = release.label_space.classes;
+  const plan = useMemo(() => classChanges(classes, names, dropped), [classes, names, dropped]);
   const [dataset, setDataset] = useState(release.dataset.name);
   const [version, setVersion] = useState(nextVersion(release.version));
   const [resplit, setResplit] = useState(false);
@@ -94,8 +131,9 @@ export function NewReleaseDialog({
       exclude: take === "rest",
       split: resplit ? ratios : null,
       group_by: resplit ? groupBy : "",
+      classes: plan.body,
     }),
-    [release.id, extra, dataset, version, note, take, filter, resplit, ratios, groupBy],
+    [release.id, extra, dataset, version, note, take, filter, resplit, ratios, groupBy, plan.body],
   );
   // What the release would hold, counted by the Hub as the choices change.
   const counted = useDebounced(JSON.stringify({ ...body, version: "", note: "" }), 250);
@@ -123,6 +161,9 @@ export function NewReleaseDialog({
   };
 
   const total = release.stats.items ?? 0;
+  const counts = release.stats.classes ?? {};
+  const needle = classQ.trim().toLowerCase();
+  const listed = classes.filter((c) => !needle || c.name.toLowerCase().includes(needle) || (names[c.id] ?? "").toLowerCase().includes(needle));
   const groups = [
     ...((release.stats.cameras?.length ?? 0) > 0 ? [["camera", "같은 카메라끼리"]] : []),
     ...((release.stats.sites?.length ?? 0) > 0 ? [["site", "같은 사이트끼리"]] : []),
@@ -204,6 +245,76 @@ export function NewReleaseDialog({
             </p>
           </>
         )}
+        <details className="advanced" open={editClasses || plan.body !== null}>
+          <summary>
+            클래스 바꾸기 <span className="muted">(이름 바꾸기 · 합치기 · 빼기)</span>
+          </summary>
+          <p className="muted small">
+            새 이름을 같게 적으면 합쳐집니다. 라벨은 새 개정으로 기록되고, 이 버전은 그대로 남습니다.{" "}
+            {task === "classify" ? "뺀 클래스의 이미지는 새 버전에 담지 않습니다." : "뺀 클래스의 박스는 지우고 이미지는 남깁니다."}
+          </p>
+          {classes.length > 10 && (
+            <input type="search" value={classQ} onChange={(e) => setClassQ(e.target.value)} placeholder="클래스 찾기" aria-label="클래스 찾기" />
+          )}
+          <div className="class-edit">
+            <table className="plain">
+              <thead>
+                <tr>
+                  <th>클래스</th>
+                  <th className="right">라벨</th>
+                  <th>새 이름</th>
+                  <th className="mid">빼기</th>
+                </tr>
+              </thead>
+              <tbody>
+                {listed.map((c) => {
+                  const off = dropped.has(c.id);
+                  return (
+                    <tr key={c.id} className={off ? "off" : ""}>
+                      <td>
+                        <i className="swatch-dot" style={{ background: c.color ?? classColor(c.id) }} />
+                        {c.name}
+                      </td>
+                      <td className="num right muted">{(counts[String(c.id)]?.boxes ?? 0).toLocaleString()}</td>
+                      <td>
+                        <input
+                          value={names[c.id] ?? c.name}
+                          disabled={off}
+                          list="new-class-names"
+                          aria-label={`${c.name}의 새 이름`}
+                          onChange={(e) => setNames({ ...names, [c.id]: e.target.value })}
+                        />
+                      </td>
+                      <td className="mid">
+                        <input
+                          type="checkbox"
+                          checked={off}
+                          aria-label={`${c.name} 빼기`}
+                          onChange={(e) => {
+                            const next = new Set(dropped);
+                            if (e.target.checked) next.add(c.id);
+                            else next.delete(c.id);
+                            setDropped(next);
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <datalist id="new-class-names">
+              {plan.names.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+          </div>
+          {plan.body && (
+            <p className="small">
+              클래스 {classes.length}개 → {plan.count}개 · {plan.text}
+            </p>
+          )}
+        </details>
         {others.length > 0 && (
           <details className="advanced" open={extra.length > 0}>
             <summary>
@@ -228,7 +339,7 @@ export function NewReleaseDialog({
         </label>
         <div className="notice">
           {preview
-            ? `새 버전: 항목 ${preview.items.toLocaleString()}개 · ${splitText(preview.splits)}`
+            ? `새 버전: 항목 ${preview.items.toLocaleString()}개 · ${splitText(preview.splits)}${plan.body ? ` · 클래스 ${preview.classes}개` : ""}`
             : error
               ? null
               : "항목 수를 세는 중…"}
@@ -240,6 +351,129 @@ export function NewReleaseDialog({
           </button>
           <button className="primary" disabled={saving || !preview || preview.items === 0}>
             만들기
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ---- site and camera from file names ------------------------------------------------------
+
+interface NamePreview {
+  items: number;
+  matched: number;
+  changed: number;
+  fields: string[];
+  examples: Record<string, string>[];
+  misses: string[];
+  values: Record<string, { count: number; top: { value: string; items: number }[] }>;
+}
+
+const FIELD_LABEL: Record<string, string> = { site: "사이트", camera: "카메라" };
+const RULES = ["{site}_{camera}_*", "{site}/{camera}/*", "{camera}/*", "{camera}_*"];
+
+/** A rule such as {site}_{camera}_* read over the file names; the Hub shows what it finds before anything is written. */
+export function NamesDialog({ release, onClose, onDone }: { release: ReleaseInfo; onClose: () => void; onDone: () => void }) {
+  const [pattern, setPattern] = useState(RULES[0]);
+  const [preview, setPreview] = useState<NamePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const typed = useDebounced(pattern, 300);
+
+  useEffect(() => {
+    let live = true;
+    api<NamePreview>(`/releases/${release.id}/names`, { body: { pattern: typed, dry_run: true } })
+      .then((p) => live && (setPreview(p), setError(null)))
+      .catch((e) => live && (setPreview(null), setError(e instanceof Error ? e.message : String(e))));
+    return () => {
+      live = false;
+    };
+  }, [typed, release.id]);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api(`/releases/${release.id}/names`, { body: { pattern, dry_run: false } });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const stale = typed !== pattern;
+  return (
+    <Modal title="사이트 · 카메라 채우기" onClose={onClose}>
+      <form onSubmit={submit}>
+        <p className="muted">
+          파일 이름(또는 폴더 이름)에서 사이트와 카메라를 읽어 이미지에 적습니다. 필터와 "같은 카메라끼리" split 나누기에 쓰입니다. 이미지에
+          붙는 값이라 같은 이미지가 든 다른 버전에도 보입니다.
+        </p>
+        <label>
+          파일 이름 규칙
+          <input className="mono" value={pattern} onChange={(e) => setPattern(e.target.value)} autoFocus />
+        </label>
+        <div className="rule-presets">
+          {RULES.map((r) => (
+            <button key={r} type="button" className={`small mono ${r === pattern ? "active" : ""}`} onClick={() => setPattern(r)}>
+              {r}
+            </button>
+          ))}
+        </div>
+        <p className="muted small">
+          <code>{"{site}"}</code> · <code>{"{camera}"}</code> 자리의 글자를 읽고, <code>*</code>는 아무 글자입니다. 확장자는 빼고 맞추고, <code>/</code>를
+          넣으면 폴더 이름까지 봅니다.
+        </p>
+        {preview && (
+          <>
+            <div className="notice">
+              {preview.items.toLocaleString()}개 중 {preview.matched.toLocaleString()}개가 규칙에 맞습니다
+              {preview.matched > 0 && preview.fields.map((f) => ` · ${FIELD_LABEL[f]} ${preview.values[f].count.toLocaleString()}개`).join("")}
+              {preview.matched > 0 && (preview.changed > 0 ? ` · ${preview.changed.toLocaleString()}개가 바뀝니다` : " · 지금과 같습니다")}
+            </div>
+            {preview.examples.length > 0 && (
+              <div className="table-wrap">
+                <table className="plain names-preview">
+                  <thead>
+                    <tr>
+                      <th>파일</th>
+                      {preview.fields.map((f) => (
+                        <th key={f}>{FIELD_LABEL[f]}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.examples.map((ex) => (
+                      <tr key={ex.path}>
+                        <td className="mono path">{ex.path}</td>
+                        {preview.fields.map((f) => (
+                          <td key={f}>
+                            <strong>{ex[f]}</strong>
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {preview.misses.length > 0 && (
+              <p className="muted small">
+                맞지 않는 파일 예: <span className="mono">{preview.misses.join(", ")}</span> — 이런 이미지는 지금 값을 그대로 둡니다.
+              </p>
+            )}
+          </>
+        )}
+        {error && <div className="error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>
+            취소
+          </button>
+          <button className="primary" disabled={saving || stale || !preview || preview.changed === 0}>
+            채우기
           </button>
         </div>
       </form>

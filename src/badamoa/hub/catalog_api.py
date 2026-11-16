@@ -58,6 +58,27 @@ def update_project(
     return next(p for p in catalog.list_projects(db) if p["id"] == project_id)
 
 
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """To the trash, with its datasets, runs and models; the person who made it or an admin."""
+    catalog.set_project_deleted(db, user, project_id, True)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/projects/{project_id}/restore")
+def restore_project(project_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    catalog.set_project_deleted(db, user, project_id, False)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/trash")
+def trash(_: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """Deleted projects and versions, to bring back."""
+    return catalog.trash(db)
+
+
 @router.get("/project-cards")
 def project_cards(
     _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
@@ -99,6 +120,7 @@ class ImportRequest(BaseModel):
     label_space: str = ""
     site: str = ""
     camera: str = ""
+    name_pattern: str = ""  # e.g. "{site}_{camera}_*": site and camera read from each file name
     note: str = ""
     base_release_id: str = ""
 
@@ -123,6 +145,7 @@ def start_import(
         label_space=body.label_space,
         site=body.site,
         camera=body.camera,
+        name_pattern=body.name_pattern,
         note=body.note,
         base_release_id=body.base_release_id,
         via="ui",
@@ -226,6 +249,7 @@ class NewRelease(BaseModel):
     exclude: bool = False  # all items but those matching the filter
     split: dict[str, float] | None = None  # deal out again, e.g. {"train": 80, "val": 10, "test": 10}
     group_by: str = ""  # "", "site" or "camera": one group, one split
+    classes: dict[str, str] | None = None  # {old class id: new name}: same name merges, "" drops
     dry_run: bool = False
 
 
@@ -243,9 +267,26 @@ def new_release(body: NewRelease, user: User = Depends(current_user), db: Sessio
         exclude=body.exclude,
         split=body.split,
         group_by=body.group_by,
+        classes=body.classes,
         dry_run=body.dry_run,
         via="ui",
     )
+    if not body.dry_run:
+        db.commit()
+    return result
+
+
+class NameRule(BaseModel):
+    pattern: str  # "{site}_{camera}_*", "{site}/{camera}/*" …
+    dry_run: bool = False
+
+
+@router.post("/releases/{release_id}/names")
+def fill_names(
+    release_id: str, body: NameRule, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Site and camera read from the file names of a release's images; ``dry_run`` only shows what the rule finds."""
+    result = catalog.fill_names(db, user, release_id, body.pattern, dry_run=body.dry_run, via="ui")
     if not body.dry_run:
         db.commit()
     return result
