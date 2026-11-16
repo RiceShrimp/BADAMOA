@@ -108,11 +108,19 @@ def start_run(
         raise ServiceError(409, "아직 등록 중인 버전입니다.")
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
+    if project.task == "pose":
+        raise ServiceError(
+            400,
+            "키포인트 학습은 아직 없습니다(지금은 가져오기 · 보기까지). "
+            "박스로 학습하려면 같은 폴더를 객체 탐지 프로젝트로 가져오세요.",
+        )
     fallback = registry.DEFAULT_BY_TASK.get(project.task, registry.DEFAULT_TEMPLATE)
     row = registry.get_template(db, template or (project.settings or {}).get("template") or fallback)
     manifest = registry.manifest_of(row)
     if manifest.task != project.task:
-        raise ServiceError(400, f"{row.title}은 {manifest.task} 템플릿이고 이 프로젝트는 {project.task}입니다.")
+        kinds = catalog.KIND_NAME
+        made_for, used_for = kinds.get(manifest.task, manifest.task), kinds.get(project.task, project.task)
+        raise ServiceError(400, f"{row.title} 템플릿은 {made_for}용이고 이 프로젝트는 {used_for}용입니다.")
     try:
         settings = resolve_params(manifest, params or {})
     except TemplateError as e:

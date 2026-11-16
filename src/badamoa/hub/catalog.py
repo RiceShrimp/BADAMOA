@@ -41,11 +41,28 @@ from .models import HubSetting, Job, Node, User
 from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, Sweep
 
-TASKS = ("detect", "segment", "classify")
+TASKS = ("detect", "segment", "classify", "pose")
+KIND_NAME = {"detect": "객체 탐지", "classify": "분류", "segment": "분할", "pose": "키포인트"}
 SPLITS = ("train", "val", "test", "")
 STATES = ("labelled", "background", "unlabelled")
 MAX_PAGE = 200
 GRID_BOXES = 30  # boxes drawn over a grid thumbnail; the item view shows all
+OUTLINE_POINTS = 48  # points of an outline drawn over a thumbnail
+
+
+def light_shape(box: list[float]) -> list[float]:
+    """A label for drawing over a thumbnail: the box, and its outline or keypoints kept small.
+
+    Keypoints (triples) are kept whole; a long outline (pairs) is thinned to OUTLINE_POINTS points.
+    Which of the two follows the box is for the screen to tell from the project's task.
+    """
+    rest = box[5:]
+    if len(rest) <= OUTLINE_POINTS * 2 or len(rest) % 2:
+        return list(box)
+    pairs = len(rest) // 2
+    step = pairs / OUTLINE_POINTS
+    picked = [int(i * step) for i in range(OUTLINE_POINTS)]
+    return [*box[:5], *(v for i in picked for v in rest[i * 2 : i * 2 + 2])]
 
 
 # ---- projects ------------------------------------------------------------------
@@ -572,16 +589,25 @@ def _import_job(db: Session, node: Node, job_id: str) -> Job:
     return job
 
 
-def _label_space(db: Session, project_id: str, classes: list[str], wanted: str) -> LabelSpace:
-    return _space_for(db, project_id, [{"id": i, "name": name} for i, name in enumerate(classes)], wanted)
+def _label_space(
+    db: Session, project_id: str, classes: list[str], wanted: str, keypoints: dict[str, Any] | None = None
+) -> LabelSpace:
+    """Keypoint datasets give every class the points' names and the limbs that join them."""
+    extra: dict[str, Any] = {}
+    if keypoints:
+        extra = {"keypoints": list(keypoints.get("names") or []), "skeleton": keypoints.get("skeleton") or []}
+    return _space_for(db, project_id, [{"id": i, "name": name, **extra} for i, name in enumerate(classes)], wanted)
 
 
 def _space_for(db: Session, project_id: str, classes: list[dict[str, Any]], wanted: str = "") -> LabelSpace:
     """The project's label space with these classes (ids and names; colours do not count), or a new one."""
-    plain = [(int(c["id"]), c["name"]) for c in classes]
+    def plain(entries: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+        return [(int(c["id"]), c["name"], tuple(c.get("keypoints") or ())) for c in entries]
+
+    wanted_plain = plain(classes)
     spaces = db.scalars(select(LabelSpace).where(LabelSpace.project_id == project_id)).all()
     for space in spaces:
-        if [(int(c["id"]), c["name"]) for c in space.classes] == plain and (not wanted or space.name == wanted):
+        if plain(space.classes) == wanted_plain and (not wanted or space.name == wanted):
             return space
     name = wanted or f"{len(classes)}cls"
     taken = {s.name for s in spaces}
@@ -601,9 +627,11 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
         return {"release_id": release.id}
     p = job.params
     project = get_project(db, p["project_id"])
-    found = "classify" if body.format == "imagefolder" else "detect"
-    if project.task != found and not (project.task == "segment" and found == "detect"):
-        kinds = {"detect": "객체 탐지", "classify": "분류", "segment": "분할"}
+    found = "classify" if body.format == "imagefolder" else "pose" if body.keypoints else "detect"
+    # Allowed besides the same task: boxes (or outlines) into segmentation, keypoint data into detection (boxes kept).
+    fits = project.task == found or (project.task, found) in (("segment", "detect"), ("detect", "pose"))
+    if not fits:
+        kinds = KIND_NAME
         mismatch = f"이 폴더는 {kinds[found]} 데이터인데 프로젝트는 {kinds[project.task]}용입니다."
         raise ServiceError(400, f"{mismatch} {kinds[found]} 프로젝트에 가져오세요.")
     location = db.scalar(
@@ -622,7 +650,8 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
         created_by=job.created_by,
     )
     db.add(batch)
-    space = _label_space(db, project.id, body.classes, p.get("label_space", ""))
+    keypoints = body.keypoints if project.task == "pose" else None
+    space = _label_space(db, project.id, body.classes, p.get("label_space", ""), keypoints)
     dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == p["dataset"]))
     if dataset is None:
         dataset = Dataset(project_id=project.id, name=p["dataset"])
@@ -668,7 +697,7 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     site, camera = job.params.get("site", ""), job.params.get("camera", "")
     rule = name_rule(job.params["name_pattern"]) if job.params.get("name_pattern") else None
     class_ids = [c["id"] for c in space.classes]
-    segment = get_project(db, project_id).task == "segment"
+    segment = get_project(db, project_id).task in ("segment", "pose")  # outlines or keypoints follow the box
     incoming = {item.sha256: item for item in chunk.items}  # a file listed twice counts once
 
     items = {
@@ -963,7 +992,7 @@ def list_items(
                 "state": member.state,
                 "box_count": member.box_count,
                 "thumb_url": media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
-                "boxes": [b[:5] for b in revisions.get(member.revision_id, [])[:GRID_BOXES]],
+                "boxes": [light_shape(b) for b in revisions.get(member.revision_id, [])[:GRID_BOXES]],
             }
             for member, item in rows
         ],

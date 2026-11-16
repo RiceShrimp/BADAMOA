@@ -49,6 +49,29 @@ class Scan:
     format: str
     classes: list[str]
     entries: list[Entry]
+    # Keypoint (pose) datasets: {"count": K, "names": [...], "skeleton": [[a, b], ...]} (0-based pairs)
+    keypoints: dict[str, Any] | None = None
+
+
+# COCO's 17 body keypoints: the names and limbs used when a dataset gives none for 17 points.
+COCO_KEYPOINTS = [
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip",
+    "left_knee", "right_knee", "left_ankle", "right_ankle",
+]  # fmt: skip
+COCO_SKELETON = [
+    [15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6], [5, 7],
+    [6, 8], [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6],
+]  # fmt: skip
+
+
+def keypoint_info(count: int, names: list[str] | None = None, skeleton: list[list[int]] | None = None) -> dict[str, Any]:
+    names = [str(n) for n in names or []][:count]
+    if not names and count == 17:
+        names, skeleton = COCO_KEYPOINTS, skeleton or COCO_SKELETON
+    names += [str(i + 1) for i in range(len(names), count)]
+    pairs = [[int(a), int(b)] for a, b in skeleton or [] if 0 <= int(a) < count and 0 <= int(b) < count]
+    return {"count": count, "names": names, "skeleton": pairs}
 
 
 # ---- YOLO ----------------------------------------------------------------------
@@ -88,6 +111,11 @@ def parse_yolo_yaml(text: str) -> dict[str, Any]:
                 names, in_names = [], True
         elif key in ("path", "train", "val", "test"):
             data[key] = value.strip("'\"")
+        elif key == "kpt_shape" and value.startswith("["):
+            try:
+                data["kpt_shape"] = [int(v) for v in value.strip("[]").split(",") if v.strip()]
+            except ValueError:
+                pass
     if isinstance(names, dict):
         names = [names[i] for i in sorted(names)]
     data["names"] = names or []
@@ -107,7 +135,12 @@ def _yolo_label_path(image: Path) -> Path:
     return Path(*parts).with_suffix(".txt")
 
 
-def _read_yolo_label(path: Path) -> tuple[str, list[list[float]]]:
+def _clamp(v: float) -> float:
+    return round(min(1.0, max(0.0, v)), 5)
+
+
+def _read_yolo_label(path: Path, kpt_shape: list[int] | None = None) -> tuple[str, list[list[float]]]:
+    """Boxes of a YOLO label file: [class, cx, cy, w, h], then an outline (segmentation) or keypoints (pose)."""
     if not path.is_file():
         return "unlabelled", []
     boxes = []
@@ -117,9 +150,20 @@ def _read_yolo_label(path: Path) -> tuple[str, list[list[float]]]:
             continue
         try:
             cls = int(float(parts[0]))
-            values = [round(min(1.0, max(0.0, float(v))), 5) for v in parts[1:]]
+            raw = [float(v) for v in parts[1:]]
         except ValueError:
             continue
+        if kpt_shape:  # pose: box, then K points of (x, y) or (x, y, visibility)
+            count, dims = kpt_shape[0], (kpt_shape[1] if len(kpt_shape) > 1 else 3)
+            points = raw[4:]
+            keypoints: list[float] = []
+            for k in range(count):
+                x, y = (points[k * dims], points[k * dims + 1]) if len(points) >= (k + 1) * dims else (0.0, 0.0)
+                seen = points[k * dims + 2] if dims >= 3 and len(points) >= (k + 1) * dims else (2.0 if x or y else 0.0)
+                keypoints += [_clamp(x), _clamp(y), float(int(seen))]
+            boxes.append([cls, *(_clamp(v) for v in raw[:4]), *keypoints])
+            continue
+        values = [_clamp(v) for v in raw]
         if len(values) >= 6 and len(values) % 2 == 0:
             # A segmentation label: the outline as x1 y1 x2 y2 …. Stored as its box followed by the outline.
             xs, ys = values[0::2], values[1::2]
@@ -156,10 +200,11 @@ def scan_yolo(root: Path) -> Scan:
         ]
         split_dirs = named or nested or [("", images)]
 
+    kpt_shape = config.get("kpt_shape") or None
     entries = []
     for split, directory in split_dirs:
         for image in _images_under(directory):
-            state, boxes = _read_yolo_label(_yolo_label_path(image))
+            state, boxes = _read_yolo_label(_yolo_label_path(image), kpt_shape)
             entries.append(Entry(path=image, split=split, state=state, boxes=boxes))
 
     classes = list(config.get("names") or [])
@@ -167,7 +212,8 @@ def scan_yolo(root: Path) -> Scan:
         classes = [line.strip() for line in (root / "classes.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     top = max((int(b[0]) for e in entries for b in e.boxes), default=-1)
     classes += [f"class_{i}" for i in range(len(classes), top + 1)]
-    return Scan(format="yolo", classes=classes, entries=entries)
+    keypoints = keypoint_info(kpt_shape[0]) if kpt_shape else None
+    return Scan(format="yolo", classes=classes, entries=entries, keypoints=keypoints)
 
 
 # ---- COCO ----------------------------------------------------------------------
@@ -215,6 +261,7 @@ def _coco_outline(segmentation: Any, width: float, height: float) -> list[float]
 
 def scan_coco(root: Path) -> Scan:
     categories: dict[int, str] = {}
+    keypoints: dict[str, Any] | None = None
     parsed = []
     for path in _coco_files(root):
         try:
@@ -225,6 +272,9 @@ def scan_coco(root: Path) -> Scan:
             continue
         for cat in data.get("categories", []):
             categories[int(cat["id"])] = str(cat.get("name", cat["id"]))
+            if cat.get("keypoints") and keypoints is None:  # 1-based limbs in COCO
+                pairs = [[int(a) - 1, int(b) - 1] for a, b in cat.get("skeleton") or []]
+                keypoints = keypoint_info(len(cat["keypoints"]), list(cat["keypoints"]), pairs)
         parsed.append((path, data))
     class_ids = sorted(categories)
     index = {cid: i for i, cid in enumerate(class_ids)}
@@ -243,8 +293,15 @@ def scan_coco(root: Path) -> Scan:
             x, y, bw, bh = (float(v) for v in bbox[:4])
             box = [index[ann["category_id"]], (x + bw / 2) / w, (y + bh / 2) / h, bw / w, bh / h]
             row = [box[0], *(round(min(1.0, max(0.0, v)), 5) for v in box[1:])]
-            # Kept only in segmentation projects; a detection project uses the box.
-            boxes_by_image.setdefault(ann["image_id"], []).append([*row, *_coco_outline(ann.get("segmentation"), w, h)])
+            if keypoints:  # pose: the points (x, y, visibility), as fractions of the image
+                points = list(ann.get("keypoints") or [])
+                extra: list[float] = []
+                for k in range(keypoints["count"]):
+                    x, y, seen = (points[k * 3 : k * 3 + 3] + [0, 0, 0])[:3]
+                    extra += [_clamp(float(x) / w), _clamp(float(y) / h), float(int(seen))]
+            else:  # kept only in segmentation projects; a detection project uses the box
+                extra = _coco_outline(ann.get("segmentation"), w, h)
+            boxes_by_image.setdefault(ann["image_id"], []).append([*row, *extra])
         for img in data["images"]:
             name = img["file_name"]
             candidates = [root / name, root / "images" / name, root / "images" / split / name, root / split / name]
@@ -255,7 +312,7 @@ def scan_coco(root: Path) -> Scan:
             boxes = boxes_by_image.get(img["id"], [])
             state = "labelled" if boxes else ("background" if has_annotations else "unlabelled")
             entries.append(Entry(path=image, split=split, state=state, boxes=boxes))
-    return Scan(format="coco", classes=[categories[c] for c in class_ids], entries=entries)
+    return Scan(format="coco", classes=[categories[c] for c in class_ids], entries=entries, keypoints=keypoints)
 
 
 # ---- classification: one folder per class ----------------------------------------
@@ -400,7 +457,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(f"Hub가 거부했습니다 ({resp.status_code}): {resp.text[:300]}")
             return resp.json()
 
-        post("/begin", {"classes": found.classes, "total": total, "format": found.format})
+        post("/begin", {"classes": found.classes, "total": total, "format": found.format, "keypoints": found.keypoints})
+        if found.keypoints:
+            print(f"키포인트 {found.keypoints['count']}개 (연결선 {len(found.keypoints['skeleton'])}개)", flush=True)
         # Reading the next batch goes on while the Hub stores the last one.
         outbox: queue.Queue[tuple[list[dict[str, Any]], int] | None] = queue.Queue(maxsize=2)
         failure: list[BaseException] = []

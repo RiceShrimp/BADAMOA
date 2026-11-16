@@ -66,7 +66,7 @@ def _collage(db: Session, settings: HubSettings, release: Release | None, count:
             "url": catalog.media_url(settings, "thumb", item.thumb_key),
             "width": item.width,
             "height": item.height,
-            "boxes": [b[:5] for b in (revision.boxes or [])[:COLLAGE_BOXES]],
+            "boxes": [catalog.light_shape(b) for b in (revision.boxes or [])[:COLLAGE_BOXES]],
         }
         for item, revision in picked
     ]

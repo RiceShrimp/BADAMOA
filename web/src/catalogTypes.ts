@@ -28,6 +28,15 @@ export interface LabelClass {
   id: number;
   name: string;
   color?: string | null; // set on the classes tab; otherwise an automatic colour
+  keypoints?: string[]; // keypoint (pose) projects: the points' names …
+  skeleton?: number[][]; // … and the limbs between them (0-based pairs)
+}
+
+/** The keypoints after a pose label's box: [x, y, visibility] each (0 not labelled, 1 hidden, 2 seen). */
+export function keypointsOf(box: number[]): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  for (let i = 5; i + 2 < box.length; i += 3) out.push([box[i], box[i + 1], box[i + 2]]);
+  return out;
 }
 
 export interface ReleaseStats {

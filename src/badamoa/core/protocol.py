@@ -81,6 +81,7 @@ class ImportBegin(BaseModel):
     classes: list[str]
     total: int = 0
     format: str = ""
+    keypoints: dict[str, Any] | None = None  # pose data: {"count", "names", "skeleton"}
 
 
 class ImportItem(BaseModel):

@@ -195,7 +195,7 @@ def test_classification_project_from_import_to_model_with_files(hub, tmp_path):
     offered = {task: names(task) for task in ("classify", "detect")}
     assert offered == {"classify": ["classify", "tiny-classifier"], "detect": ["yolo", "torchvision"]}
     refused = hub.post("/api/runs", json={"release_id": release["id"], "template": "yolo"})
-    assert refused.status_code == 400 and "detect 템플릿" in refused.json()["detail"]
+    assert refused.status_code == 400 and "객체 탐지용이고 이 프로젝트는 분류용" in refused.json()["detail"]
 
     run = hub.post("/api/runs", json={"release_id": release["id"], "template": "tiny-classifier", "gpus": 0}).json()
     job = _wait(hub, run["job_id"])

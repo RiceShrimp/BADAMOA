@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { SPLIT_LABEL, type TrashInfo, bytesLabel, classColor } from "./catalogTypes";
+import { SPLIT_LABEL, type TrashInfo, bytesLabel, classColor, keypointsOf } from "./catalogTypes";
 import { ImportProgress, useImports } from "./Imports";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
@@ -54,7 +54,7 @@ interface ProjectPageInfo extends ProjectCardInfo {
   sweeps: number;
 }
 
-export const TASK_LABEL: Record<string, string> = { detect: "탐지", segment: "분할", classify: "분류" };
+export const TASK_LABEL: Record<string, string> = { detect: "탐지", segment: "분할", classify: "분류", pose: "키포인트" };
 export const METRIC_NAME: Record<string, string> = { map50_95: "mAP50-95", mask_map50_95: "mask mAP50-95", top1: "Top-1" };
 export const SPLIT_COLOR: Record<string, string> = { train: "var(--series-3)", val: "var(--series-1)", test: "var(--series-7)", "": "var(--idle)" };
 const PROJECT_KEY = "badamoa.project"; // the project other screens open with
@@ -69,7 +69,23 @@ export function rememberProject(id: string) {
 
 // ---- a thumbnail with its boxes, cropped to fill its cell -------------------------------
 
-export function Shot({ shot, colorOf, boxes = true }: { shot: Shot; colorOf: (id: number) => string; boxes?: boolean }) {
+/**
+ * A thumbnail with its labels: boxes; outlines for segmentation; points and limbs for keypoints.
+ * What follows a box ([class, cx, cy, w, h, …]) depends on the project's task.
+ */
+export function Shot({
+  shot,
+  colorOf,
+  boxes = true,
+  task = "detect",
+  skeletonOf,
+}: {
+  shot: Shot;
+  colorOf: (id: number) => string;
+  boxes?: boolean;
+  task?: string;
+  skeletonOf?: (id: number) => number[][] | undefined;
+}) {
   const w = shot.width || 1;
   const h = shot.height || 1;
   const line = Math.max(w, h) / 140;
@@ -77,31 +93,62 @@ export function Shot({ shot, colorOf, boxes = true }: { shot: Shot; colorOf: (id
     <svg className="shot" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid slice" aria-hidden="true">
       <image href={shot.url} width={w} height={h} preserveAspectRatio="xMidYMid slice" />
       {boxes &&
-        shot.boxes.map((b, i) =>
-          b.length >= 5 ? (
-            <rect
-              key={i}
-              x={(b[1] - b[3] / 2) * w}
-              y={(b[2] - b[4] / 2) * h}
-              width={b[3] * w}
-              height={b[4] * h}
-              fill="none"
-              stroke={colorOf(b[0])}
-              strokeWidth={line}
-            />
-          ) : null,
-        )}
+        shot.boxes.map((b, i) => {
+          if (b.length < 5) return null;
+          const color = colorOf(b[0]);
+          const points = task === "pose" ? keypointsOf(b) : [];
+          const outline = task === "segment" && b.length >= 11 ? b.slice(5) : [];
+          return (
+            <g key={i}>
+              {outline.length > 0 && (
+                <polygon
+                  points={outline.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ")}
+                  fill={color}
+                  fillOpacity={0.25}
+                  stroke={color}
+                  strokeWidth={line}
+                />
+              )}
+              <rect
+                x={(b[1] - b[3] / 2) * w}
+                y={(b[2] - b[4] / 2) * h}
+                width={b[3] * w}
+                height={b[4] * h}
+                fill="none"
+                stroke={color}
+                strokeWidth={outline.length || points.length ? line / 2 : line}
+                strokeDasharray={outline.length || points.length ? `${line * 3} ${line * 2}` : undefined}
+              />
+              {(skeletonOf?.(b[0]) ?? []).map(([a, c], n) =>
+                points[a] && points[c] && points[a][2] > 0 && points[c][2] > 0 ? (
+                  <line
+                    key={`l${n}`}
+                    x1={points[a][0] * w}
+                    y1={points[a][1] * h}
+                    x2={points[c][0] * w}
+                    y2={points[c][1] * h}
+                    stroke={color}
+                    strokeWidth={line}
+                  />
+                ) : null,
+              )}
+              {points.map(([x, y, seen], n) =>
+                seen > 0 ? <circle key={`p${n}`} cx={x * w} cy={y * h} r={Math.min(line * 1.6, Math.max(line * 0.6, Math.min(b[3] * w, b[4] * h) * 0.045))} fill={seen === 2 ? color : "none"} stroke={color} strokeWidth={line / 2} /> : null,
+              )}
+            </g>
+          );
+        })}
     </svg>
   );
 }
 
-function Collage({ shots, colorOf, more }: { shots: Shot[]; colorOf: (id: number) => string; more?: number }) {
+function Collage({ shots, colorOf, more, task }: { shots: Shot[]; colorOf: (id: number) => string; more?: number; task?: string }) {
   return (
     <div className="collage">
       {[0, 1, 2, 3].map((i) =>
         shots[i] ? (
           <div key={i} className="collage-cell">
-            <Shot shot={shots[i]} colorOf={colorOf} />
+            <Shot shot={shots[i]} colorOf={colorOf} task={task} />
             {i === 3 && more != null && more > 4 && <span className="collage-more">+{(more - 4).toLocaleString()}</span>}
           </div>
         ) : (
@@ -619,7 +666,7 @@ export function ProjectCard({ card, onEdit, highlight = [] }: { card: ProjectCar
   return (
     <div className="data-card">
       <a href={`#/datasets/project/${card.id}`} onClick={() => rememberProject(card.id)} className="data-card-link">
-        <Collage shots={card.collage} colorOf={classColor} />
+        <Collage shots={card.collage} colorOf={classColor} task={card.task} />
         <div className="data-card-body">
           <div className="data-card-title">
             <strong>{card.name}</strong>
@@ -1057,7 +1104,7 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
           ))}
           {page.dataset_cards.map((d) => (
             <a key={d.id} className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
-              <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />
+              <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} task={page.task} />
               <div className="data-card-body">
                 <div className="data-card-title">
                   <strong>{d.name}</strong>

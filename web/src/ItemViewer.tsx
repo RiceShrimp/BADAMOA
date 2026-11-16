@@ -9,6 +9,7 @@ import {
   STATE_LABEL,
   bytesLabel,
   classColor,
+  keypointsOf,
 } from "./catalogTypes";
 import { Icon } from "./ui";
 
@@ -23,6 +24,8 @@ interface Props {
   colorOf?: (id: number) => string;
   /** This version's classes: labels of other versions are matched to them by name. */
   classes?: LabelClass[];
+  /** The project's task: what follows a box (an outline for segmentation, keypoints for pose). */
+  task?: string;
 }
 
 /** Where a label revision came from, in words: "import:coco v1" → "가져오기 · coco v1". */
@@ -34,7 +37,7 @@ function sourceLabel(source: string): string {
 }
 
 /** Full-screen item view: boxes over the image, label revisions (one or two side by side), where else the image is used. */
-export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor, classes = [] }: Props) {
+export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor, classes = [], task = "detect" }: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -162,9 +165,16 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
           const y = (cy - bh / 2) * h;
           const color = colorIn(r, cls);
           const label = names[cls] ?? String(cls);
-          // A segmentation label carries its outline after the box: x1, y1, x2, y2, …
-          const outline = b.slice(5);
+          // A segmentation label carries its outline after the box (x1, y1, x2, y2, …);
+          // a keypoint label its points (x, y, visibility, …) and the class names them and their limbs.
+          const pose = task === "pose";
+          const keypoints = pose ? keypointsOf(b) : [];
+          const kind = r.classes.find((c) => c.id === cls);
+          const outline = pose ? [] : b.slice(5);
           const points = outline.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ");
+          const thin = outline.length >= 6 || keypoints.length > 0;
+          // dots sized to the person, so a crowd of small people stays readable
+          const dot = Math.min(font * 0.32, Math.max(font * 0.12, Math.min(bw * w, bh * h) * 0.045));
           return (
             <g key={i}>
               {outline.length >= 6 && (
@@ -182,13 +192,43 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                 y={y}
                 width={bw * w}
                 height={bh * h}
-                strokeDasharray={outline.length >= 6 ? "4 3" : undefined}
-                fill={fill && outline.length < 6 ? color : "none"}
+                strokeDasharray={thin ? "4 3" : undefined}
+                fill={fill && !thin ? color : "none"}
                 fillOpacity={0.25}
                 stroke={color}
                 strokeWidth="2"
                 vectorEffect="non-scaling-stroke"
               />
+              {(kind?.skeleton ?? []).map(([a, c], n) =>
+                keypoints[a] && keypoints[c] && keypoints[a][2] > 0 && keypoints[c][2] > 0 ? (
+                  <line
+                    key={`l${n}`}
+                    x1={keypoints[a][0] * w}
+                    y1={keypoints[a][1] * h}
+                    x2={keypoints[c][0] * w}
+                    y2={keypoints[c][1] * h}
+                    stroke={color}
+                    strokeWidth="2.5"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null,
+              )}
+              {keypoints.map(([kx, ky, seen], n) =>
+                seen > 0 ? (
+                  <circle
+                    key={`p${n}`}
+                    cx={kx * w}
+                    cy={ky * h}
+                    r={dot}
+                    fill={seen === 2 ? color : "#0008"}
+                    stroke={seen === 2 ? "#fff" : color}
+                    strokeWidth="1.5"
+                    vectorEffect="non-scaling-stroke"
+                  >
+                    <title>{`${kind?.keypoints?.[n] ?? n + 1}${seen === 1 ? " (가려짐)" : ""}`}</title>
+                  </circle>
+                ) : null,
+              )}
               {showNames && (
                 <>
                   <rect x={x} y={Math.max(0, y - font * 1.35)} width={label.length * font * 0.62 + font * 0.6} height={font * 1.35} fill={color} />

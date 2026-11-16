@@ -225,6 +225,7 @@ function ReleaseView({
   const stats = release.stats;
   const classes = release.label_space.classes;
   const colorOf = colorFor(classes);
+  const skeletonOf = (id: number) => classes.find((c) => c.id === id)?.skeleton;
   const splits = Object.entries(stats.splits ?? {}).sort();
   const pages = Math.max(1, Math.ceil((items?.total ?? 0) / pageSize));
   const present = Object.keys(stats.classes ?? {}).length;
@@ -426,7 +427,13 @@ function ReleaseView({
                 <tr key={item.id} onClick={() => setViewing(page * pageSize + i)} className="clickable">
                   <td className="item-thumb">
                     {item.thumb_url && (
-                      <Shot shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }} colorOf={colorOf} boxes={showBoxes} />
+                      <Shot
+                        shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }}
+                        colorOf={colorOf}
+                        boxes={showBoxes}
+                        task={task}
+                        skeletonOf={skeletonOf}
+                      />
                     )}
                   </td>
                   <td>{item.file_name}</td>
@@ -449,7 +456,13 @@ function ReleaseView({
           <button key={item.id} className="thumb" onClick={() => setViewing(page * pageSize + i)}>
             <span className="thumb-image">
               {item.thumb_url ? (
-                <Shot shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }} colorOf={colorOf} boxes={showBoxes} />
+                <Shot
+                  shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }}
+                  colorOf={colorOf}
+                  boxes={showBoxes}
+                  task={task}
+                  skeletonOf={skeletonOf}
+                />
               ) : (
                 <Icon name="images" size={22} />
               )}
@@ -502,7 +515,16 @@ function ReleaseView({
         />
       )}
       {viewing != null && items && (
-        <ItemViewer releaseId={releaseId} filterQuery={filterQuery} start={viewing} total={items.total} colorOf={colorOf} classes={classes} onClose={() => setViewing(null)} />
+        <ItemViewer
+          releaseId={releaseId}
+          filterQuery={filterQuery}
+          start={viewing}
+          total={items.total}
+          colorOf={colorOf}
+          classes={classes}
+          task={task}
+          onClose={() => setViewing(null)}
+        />
       )}
     </>
   );
@@ -629,6 +651,7 @@ function NewProject({
             <option value="detect">객체 탐지</option>
             <option value="segment">분할</option>
             <option value="classify">분류</option>
+            <option value="pose">키포인트 (자세 · 관절)</option>
           </select>
         </label>
         <div className="field-label">
