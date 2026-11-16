@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, overview, purge, services
+from . import catalog, originals, overview, purge, services
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
 from .models import Node, User
@@ -162,6 +162,12 @@ def project_tree(
 
 
 # ---- import ------------------------------------------------------------------------
+
+
+@router.get("/imports")
+def imports(_: User = Depends(current_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
+    """Dataset imports under way and those that ended in the last half hour, with how far they got."""
+    return catalog.imports(db)
 
 
 class ImportRequest(BaseModel):
@@ -408,7 +414,12 @@ def item_image(
     if not catalog.verify_media(hub.settings, "item", str(item_id), exp, sig):
         raise HTTPException(status_code=403, detail="링크가 만료되었거나 올바르지 않습니다.")
     item = db.get(Item, item_id)
-    path = catalog.item_file(db, item) if item else None
-    if path is None:
-        raise HTTPException(status_code=404, detail="이 머신에서 읽을 수 없는 파일입니다.")
+    if item is None:
+        raise HTTPException(status_code=404, detail="not found")
+    path = catalog.item_file(db, item)
+    if path is None:  # on another server: that node sends it (kept in the cache afterwards)
+        try:
+            path = originals.fetch(db, hub.settings, item)
+        except services.ServiceError as e:
+            raise HTTPException(status_code=e.status, detail=e.message) from e
     return FileResponse(path, headers=_CACHE)

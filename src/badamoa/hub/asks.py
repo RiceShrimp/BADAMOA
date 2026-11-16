@@ -14,7 +14,8 @@ from typing import Any
 from .services import ServiceError
 
 WAIT_S = 15.0
-SINCE = (0, 31, 0)  # node versions from here on answer
+SINCE = (0, 31, 0)  # node versions from here on answer (a folder listing)
+REMOVE_SINCE = (0, 32, 0)  # … and take themselves off their machine when deleted
 
 _lock = threading.Lock()
 _pending: dict[str, list[dict[str, Any]]] = {}  # node id -> questions not yet taken
@@ -22,9 +23,9 @@ _events: dict[str, threading.Event] = {}
 _answers: dict[str, dict[str, Any]] = {}
 
 
-def answers_questions(agent_version: str) -> bool:
+def answers_questions(agent_version: str, since: tuple[int, int, int] = SINCE) -> bool:
     try:
-        return tuple(int(p) for p in agent_version.split(".")) >= SINCE
+        return tuple(int(p) for p in agent_version.split(".")) >= since
     except ValueError:
         return True  # a development build: let it try
 

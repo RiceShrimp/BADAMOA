@@ -116,6 +116,24 @@ def node_update_ps1(request: Request, hub: Hub = Depends(get_hub)) -> str:
     return _render("node-update.ps1", public_base_url(request, hub))
 
 
+@router.get("/node-remove.sh", response_class=PlainTextResponse)
+def node_remove_sh(request: Request, hub: Hub = Depends(get_hub)) -> str:
+    return _render("node-remove.sh", public_base_url(request, hub))
+
+
+@router.get("/node-remove.ps1", response_class=PlainTextResponse)
+def node_remove_ps1(request: Request, hub: Hub = Depends(get_hub)) -> str:
+    return _render("node-remove.ps1", public_base_url(request, hub))
+
+
+def remove_commands(hub_url: str) -> dict[str, str]:
+    """Taking BADAMOA off a machine by hand (the node was off when it was deleted)."""
+    return {
+        "linux": f"curl -fsSL {hub_url}/install/node-remove.sh | sudo bash",
+        "windows": f"irm {hub_url}/install/node-remove.ps1 | iex",
+    }
+
+
 def update_commands(hub_url: str) -> dict[str, str]:
     """For a node installed before it could update itself: the program only, the registration stays."""
     return {

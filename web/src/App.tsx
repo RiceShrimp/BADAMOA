@@ -1,3 +1,4 @@
+import { ImportTray } from "./Imports";
 import { type FormEvent, useEffect, useState } from "react";
 import { Agents } from "./Agents";
 import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./api";
@@ -214,6 +215,7 @@ function Shell({
             <strong>{current?.label}</strong>
           </div>
           <div className="topbar-right">
+            <ImportTray />
             <a className={`pill ${online > 0 ? "ok" : ""}`} href="#/nodes">
               <i />
               노드 {online}/{nodes?.length ?? 0} 온라인

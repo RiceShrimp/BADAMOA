@@ -45,6 +45,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   const [fill, setFill] = useState(false);
   const [onlyHere, setOnlyHere] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set()); // class names
+  const [full, setFull] = useState<"loading" | "ok" | "error">("loading"); // the original image
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
 
@@ -69,6 +70,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
         const detail = await api<ItemDetail>(`/releases/${releaseId}/items/${page.items[0].id}`);
         if (!alive) return;
         setItem(detail);
+        setFull(detail.image_url ? "loading" : "error");
         setRevisionId(detail.revision_id);
         setCompareId(null);
       } catch (e) {
@@ -214,7 +216,18 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
             {(shown.length ? shown : [null]).map((r, n) => (
               <figure key={r?.id ?? n} className="viewer-figure">
                 <div className="viewer-frame" style={frameStyle}>
-                  <img src={item.image_url ?? item.thumb_url ?? ""} alt={item.file_name} />
+                  {/* the thumbnail at once, the original over it as soon as it is here */}
+                  {item.thumb_url && full !== "ok" && <img src={item.thumb_url} alt="" className="placeholder" />}
+                  {item.image_url && full !== "error" && (
+                    <img
+                      key={item.image_url}
+                      src={item.image_url}
+                      alt={item.file_name}
+                      className={full === "ok" ? "" : "loading"}
+                      onLoad={() => setFull("ok")}
+                      onError={() => setFull("error")}
+                    />
+                  )}
                   {showLabels && r && drawBoxes(r)}
                 </div>
                 {pair && r && (
@@ -232,8 +245,11 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
             ))}
           </div>
         )}
-        {item && !item.image_url && (
-          <div className="viewer-note">원본 파일이 다른 노드에 있어 썸네일로 표시합니다.</div>
+        {item && full === "loading" && item.image_local === false && (
+          <div className="viewer-note">원본을 이미지가 있는 노드에서 받는 중… (받은 뒤에는 바로 열림)</div>
+        )}
+        {item && full === "error" && (
+          <div className="viewer-note">원본을 받지 못해 썸네일로 보여 줍니다 (노드가 꺼져 있거나 파일이 바뀌었을 수 있음).</div>
         )}
         <div className="viewer-nav">
           <button className="icon-btn" onClick={() => setIndex(Math.max(0, index - 1))} disabled={index === 0} aria-label="이전">

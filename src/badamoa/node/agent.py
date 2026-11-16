@@ -25,7 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
-from badamoa.node import browse, envs, updater, workdirs
+from badamoa.node import browse, envs, remover, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -155,6 +155,7 @@ class NodeAgent:
         self._updating = False  # moving to the Hub's version: no new jobs meanwhile
         self._update_tried: dict[str, float] = {}  # version -> when (monotonic), to retry a failed one later
         self._told_manual = False
+        self._rejected = False  # the Hub no longer knows this node (deleted): said once, then quiet
         self._sampler = sysinfo.MetricsSampler(str(home))
         self._client = httpx.Client(
             base_url=config.hub_url,
@@ -179,9 +180,15 @@ class NodeAgent:
             try:
                 resp = self._client.post("/api/agent/claim", json={"wait_seconds": CLAIM_WAIT_S})
                 if resp.status_code == 401:
-                    log.error("Hub가 이 노드를 거부했습니다(삭제되었거나 토큰이 바뀜). 다시 join 하세요.")
-                    self.stop_event.wait(30)
+                    if not self._rejected:
+                        self._rejected = True
+                        log.error(
+                            "Hub가 이 노드를 모릅니다(삭제되었거나 토큰이 바뀜). 다시 쓰려면 노드 추가로 다시 붙이고, "
+                            "이 머신에서 지우려면 Hub의 /install/node-remove.sh를 실행하세요. 5분마다 다시 확인합니다."
+                        )
+                    self.stop_event.wait(300)
                     continue
+                self._rejected = False
                 resp.raise_for_status()
                 backoff = 1.0
                 job = resp.json().get("job")
@@ -260,7 +267,7 @@ class NodeAgent:
         while not self.stop_event.is_set():
             try:
                 resp = self._client.post("/api/agent/requests", json={"wait_seconds": CLAIM_WAIT_S})
-                if resp.status_code == 404:  # an older Hub: nothing to ask
+                if resp.status_code in (401, 404):  # deleted on the Hub, or an older Hub: nothing to ask
                     self.stop_event.wait(300)
                     continue
                 if resp.status_code != 200:
@@ -273,16 +280,57 @@ class NodeAgent:
 
     def _answer(self, request: dict[str, Any]) -> None:
         params = request.get("params") or {}
+        kind = request.get("kind")
+        leaving = hard = False
         try:
-            if request.get("kind") != "browse":
-                raise ValueError(f"모르는 요청입니다: {request.get('kind')}")
-            body: dict[str, Any] = {"result": browse.listing(str(params.get("path") or ""), bool(params.get("hidden")))}
+            if kind == "browse":
+                body: dict[str, Any] = {"result": browse.listing(str(params.get("path") or ""), bool(params.get("hidden")))}
+            elif kind == "file":  # an original image the Hub cannot read itself
+                body = {"result": self._send_file(params)}
+            elif kind == "remove":  # deleted on the Hub: take BADAMOA off this machine
+                self._stop_jobs()
+                body = {"result": {"removing": remover.remove(self.home)}}
+                leaving = True
+                hard = updater.layout() is not None  # a helper deletes the files once this process is gone
+            else:
+                raise ValueError(f"모르는 요청입니다: {kind}")
         except Exception as e:  # noqa: BLE001 - the person asking gets the reason
             body = {"error": str(e) or e.__class__.__name__}
         try:
             self._client.post(f"/api/agent/requests/{request['id']}", json=body, timeout=15)
         except httpx.HTTPError as e:
             log.debug("answer %s failed: %s", request.get("id"), e)
+        if leaving:
+            log.warning("Hub에서 이 노드를 지웠습니다. BADAMOA를 정리하고 끝냅니다: %s", body["result"]["removing"])
+            self.stop()
+            if hard:
+                os._exit(0)  # the cleanup helper takes it from here
+
+    def _send_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Upload a registered file, if it is still the one registered (same size)."""
+        path = Path(str(params.get("path") or ""))
+        if not path.is_file():
+            raise ValueError(f"파일이 없습니다: {path}")
+        expected = int(params.get("bytes") or 0)
+        if expected and path.stat().st_size != expected:
+            raise ValueError("등록한 뒤 파일이 바뀌었습니다(크기가 다름).")
+        content = path.read_bytes()
+        resp = self._client.put(f"/api/agent/content/{params['key']}", content=content, timeout=120)
+        resp.raise_for_status()
+        return {"bytes": len(content)}
+
+    def _stop_jobs(self, wait_s: float = 10.0) -> None:
+        """Cancel what runs here (the Hub fails those jobs anyway) so no process is left behind."""
+        with self._lock:
+            events = list(self._running.values())
+        for event in events:
+            event.set()
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            with self._lock:
+                if not self._running:
+                    return
+            time.sleep(0.2)
 
     def _maybe_sweep(self, days: int) -> None:
         """Once an hour, with no job running, remove work folders older than the Hub's retention."""

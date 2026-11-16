@@ -11,6 +11,7 @@ import {
   useFolders,
 } from "./DataBoard";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
+import { ImportProgress, announceImport, useImports } from "./Imports";
 import { ItemViewer } from "./ItemViewer";
 import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
@@ -21,12 +22,53 @@ import {
   type Project,
   type ReleaseInfo,
   SPLIT_LABEL,
+  STATE_HELP,
+  STATE_HINT,
   STATE_LABEL,
   bytesLabel,
 } from "./catalogTypes";
 import { Badge, Icon, Modal, Stat, timeAgo, usePolling } from "./ui";
 
-const PAGE_SIZE = 60;
+const PAGE_SIZES = [30, 60, 100, 200]; // the Hub sends at most 200 at a time
+const PAGE_SIZE_KEY = "badamoa.pageSize";
+
+function rememberedPageSize(): number {
+  try {
+    const n = Number(localStorage.getItem(PAGE_SIZE_KEY));
+    return PAGE_SIZES.includes(n) ? n : 60;
+  } catch {
+    return 60;
+  }
+}
+
+/** The page number typed in: Enter or leaving the box goes there (kept within 1 … pages). */
+function PageJump({ page, pages, onGo }: { page: number; pages: number; onGo: (page: number) => void }) {
+  const [typed, setTyped] = useState(String(page + 1));
+  useEffect(() => setTyped(String(page + 1)), [page]);
+  const go = () => {
+    const n = Math.round(Number(typed));
+    if (!Number.isFinite(n) || typed.trim() === "") return setTyped(String(page + 1));
+    const target = Math.min(pages, Math.max(1, n)) - 1;
+    setTyped(String(target + 1));
+    if (target !== page) onGo(target);
+  };
+  return (
+    <span className="page-jump">
+      <input
+        type="number"
+        min={1}
+        max={pages}
+        value={typed}
+        onChange={(e) => setTyped(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && go()}
+        onBlur={go}
+        aria-label="페이지 번호"
+        style={{ width: `${Math.max(5, String(pages).length + 3)}ch` }}
+      />
+      <span className="num">/ {pages.toLocaleString()}</span>
+    </span>
+  );
+}
 
 /**
  * The data screens: projects as cards (``#/datasets``), a project's datasets as cards
@@ -129,6 +171,16 @@ function ReleaseView({
   const [camera, setCamera] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSizeState] = useState(rememberedPageSize);
+  const setPageSize = (n: number) => {
+    setPage(Math.floor((page * pageSize) / n)); // stay near the images being looked at
+    setPageSizeState(n);
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(n));
+    } catch {
+      /* not remembered */
+    }
+  };
   const [viewing, setViewing] = useState<number | null>(null);
   const [compareWith, setCompareWith] = useState("");
   const [making, setMaking] = useState<"" | "items" | "classes">("");
@@ -159,9 +211,9 @@ function ReleaseView({
   }, [split, state, classId, site, camera, q]);
 
   const { data: items } = usePolling(
-    () => api<ItemPage>(`/releases/${releaseId}/items?${filterQuery}&offset=${page * PAGE_SIZE}&limit=${PAGE_SIZE}`),
+    () => api<ItemPage>(`/releases/${releaseId}/items?${filterQuery}&offset=${page * pageSize}&limit=${pageSize}`),
     release?.status === "building" ? 5000 : 60000,
-    [releaseId, filterQuery, page, release?.status],
+    [releaseId, filterQuery, page, pageSize, release?.status],
   );
 
   if (error && !release) return <div className="error">{error}</div>;
@@ -174,7 +226,7 @@ function ReleaseView({
   const classes = release.label_space.classes;
   const colorOf = colorFor(classes);
   const splits = Object.entries(stats.splits ?? {}).sort();
-  const pages = Math.max(1, Math.ceil((items?.total ?? 0) / PAGE_SIZE));
+  const pages = Math.max(1, Math.ceil((items?.total ?? 0) / pageSize));
   const present = Object.keys(stats.classes ?? {}).length;
 
   const remove = async () => {
@@ -242,6 +294,7 @@ function ReleaseView({
         <Stat icon="alert" label="미라벨" value={(stats.states?.unlabelled ?? 0).toLocaleString()} sub="아직 라벨하지 않음" />
       </div>
 
+      {release.status === "building" && <BuildingBar releaseId={release.id} />}
       {release.note && (
         <details className="card fold">
           <summary>메모</summary>
@@ -284,8 +337,8 @@ function ReleaseView({
         <select value={state} onChange={(e) => setState(e.target.value)} aria-label="라벨 상태">
           <option value="">모든 라벨 상태</option>
           {Object.entries(STATE_LABEL).map(([id, label]) => (
-            <option key={id} value={id}>
-              {label}
+            <option key={id} value={id} title={STATE_HELP[id]}>
+              {STATE_HINT[id] ? `${label} · ${STATE_HINT[id]}` : label}
             </option>
           ))}
         </select>
@@ -339,15 +392,20 @@ function ReleaseView({
         <button onClick={() => setPage(page - 1)} disabled={page === 0} aria-label="이전 페이지">
           ‹
         </button>
-        <span className="num">
-          {page + 1} / {pages.toLocaleString()}
-        </span>
+        <PageJump page={page} pages={pages} onGo={setPage} />
         <button onClick={() => setPage(page + 1)} disabled={page >= pages - 1} aria-label="다음 페이지">
           ›
         </button>
         <button onClick={() => setPage(pages - 1)} disabled={page >= pages - 1} aria-label="마지막 페이지">
           »
         </button>
+        <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} aria-label="한 페이지에 보일 수">
+          {PAGE_SIZES.map((n) => (
+            <option key={n} value={n}>
+              {n}개씩
+            </option>
+          ))}
+        </select>
       </div>
 
       {items && items.items.length === 0 && <div className="card empty">조건에 맞는 항목이 없습니다.</div>}
@@ -365,7 +423,7 @@ function ReleaseView({
             </thead>
             <tbody>
               {items?.items.map((item, i) => (
-                <tr key={item.id} onClick={() => setViewing(page * PAGE_SIZE + i)} className="clickable">
+                <tr key={item.id} onClick={() => setViewing(page * pageSize + i)} className="clickable">
                   <td className="item-thumb">
                     {item.thumb_url && (
                       <Shot shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }} colorOf={colorOf} boxes={showBoxes} />
@@ -388,7 +446,7 @@ function ReleaseView({
       ) : (
       <div className={`thumb-grid ${view}`}>
         {items?.items.map((item, i) => (
-          <button key={item.id} className="thumb" onClick={() => setViewing(page * PAGE_SIZE + i)}>
+          <button key={item.id} className="thumb" onClick={() => setViewing(page * pageSize + i)}>
             <span className="thumb-image">
               {item.thumb_url ? (
                 <Shot shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }} colorOf={colorOf} boxes={showBoxes} />
@@ -447,6 +505,18 @@ function ReleaseView({
         <ItemViewer releaseId={releaseId} filterQuery={filterQuery} start={viewing} total={items.total} colorOf={colorOf} classes={classes} onClose={() => setViewing(null)} />
       )}
     </>
+  );
+}
+
+function BuildingBar({ releaseId }: { releaseId: string }) {
+  const info = useImports().find((i) => i.release_id === releaseId);
+  if (!info) return null;
+  return (
+    <div className="card building-bar">
+      <strong className="small">등록 중</strong>
+      <ImportProgress info={info} />
+      <span className="muted small">들어온 이미지부터 아래에 보입니다. 다른 화면으로 가도 등록은 계속됩니다.</span>
+    </div>
   );
 }
 
@@ -625,12 +695,14 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
     try {
       setError(null);
       setJob(await api<Job>(`/projects/${projectId}/imports`, { body: form }));
+      announceImport();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const releaseId = job?.status === "succeeded" ? (job.result as { release_id?: string } | null)?.release_id : undefined;
+  const progress = useImports().find((i) => i.job_id === job?.id);
 
   return (
     <Modal title="데이터셋 가져오기" onClose={onClose}>
@@ -759,10 +831,16 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
             </div>
           </div>
           {job.wait_reason && job.status === "queued" && <div className="notice">{job.wait_reason}</div>}
+          {progress && <ImportProgress info={progress} />}
           {lastLog && <pre className="json">{lastLog}</pre>}
           {job.error && <div className="error">{job.error} 자세한 내용은 작업 화면의 로그를 확인하세요.</div>}
+          {(job.status === "queued" || job.status === "running") && (
+            <p className="muted small">창을 닫아도 등록은 계속됩니다. 진행 상황은 화면 오른쪽 위 "등록 중"에서 볼 수 있습니다.</p>
+          )}
           <div className="modal-actions">
-            <button onClick={onClose}>닫기</button>
+            <button onClick={onClose} className={job.status === "queued" || job.status === "running" ? "primary" : ""}>
+              {job.status === "queued" || job.status === "running" ? "닫고 다른 작업 하기" : "닫기"}
+            </button>
             {releaseId && (
               <a
                 className="btn primary-link"

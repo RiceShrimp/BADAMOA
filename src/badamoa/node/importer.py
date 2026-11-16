@@ -13,8 +13,13 @@ import hashlib
 import io
 import json
 import os
+import queue
 import re
+import threading
+import time
+from collections import deque
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,7 +28,9 @@ import httpx
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SPLIT_ALIASES = {"train": "train", "val": "val", "valid": "val", "validation": "val", "test": "test"}
-CHUNK = 100
+CHUNK = 200
+WORKERS = min(16, os.cpu_count() or 4)  # images read at once: decoding and hashing let go of the GIL
+REPORT_EVERY_S = 5.0
 THUMB_SIDE = 320
 
 
@@ -314,6 +321,8 @@ def describe(entry: Entry, root: Path) -> dict[str, Any] | None:
         raw = entry.path.read_bytes()
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
+            # JPEG: decode at 1/2 … 1/8 scale straight away, enough for a thumbnail and many times faster
+            image.draft("RGB", (THUMB_SIDE, THUMB_SIDE))
             image.thumbnail((THUMB_SIDE, THUMB_SIDE))
             out = io.BytesIO()
             image.convert("RGB").save(out, format="JPEG", quality=75)
@@ -337,12 +346,27 @@ def describe(entry: Entry, root: Path) -> dict[str, Any] | None:
     }
 
 
-def chunks(scan_result: Scan, root: Path) -> Iterator[tuple[list[dict[str, Any]], int]]:
-    """Yield (items, skipped) batches of CHUNK described images."""
+def chunks(scan_result: Scan, root: Path, workers: int = WORKERS) -> Iterator[tuple[list[dict[str, Any]], int]]:
+    """Yield (items, skipped) batches of CHUNK described images, read ``workers`` at a time, in order."""
+    with ThreadPoolExecutor(max(1, workers)) as pool:
+        yield from _batches(_ordered(pool, lambda entry: describe(entry, root), scan_result.entries, workers * 4))
+
+
+def _ordered(pool: ThreadPoolExecutor, fn: Any, items: list[Any], ahead: int) -> Iterator[Any]:
+    """``pool.map`` that reads only ``ahead`` items ahead: a slow Hub must not pile thumbnails up in memory."""
+    pending: deque[Any] = deque()
+    for item in items:
+        pending.append(pool.submit(fn, item))
+        if len(pending) >= ahead:
+            yield pending.popleft().result()
+    while pending:
+        yield pending.popleft().result()
+
+
+def _batches(described: Iterator[dict[str, Any] | None]) -> Iterator[tuple[list[dict[str, Any]], int]]:
     batch: list[dict[str, Any]] = []
     skipped = 0
-    for entry in scan_result.entries:
-        item = describe(entry, root)
+    for item in described:
         if item is None:
             skipped += 1
             continue
@@ -377,13 +401,44 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             return resp.json()
 
         post("/begin", {"classes": found.classes, "total": total, "format": found.format})
+        # Reading the next batch goes on while the Hub stores the last one.
+        outbox: queue.Queue[tuple[list[dict[str, Any]], int] | None] = queue.Queue(maxsize=2)
+        failure: list[BaseException] = []
         sent = skipped = 0
-        for batch, bad in chunks(found, root):
-            skipped += bad
-            if batch:
-                post("/items", {"items": batch})
-                sent += len(batch)
-                print(f"등록 {sent:,} / {total:,}", flush=True)
+        started = last = time.monotonic()
+
+        def send() -> None:
+            nonlocal sent, skipped, last
+            while (piece := outbox.get()) is not None:
+                if failure:
+                    continue  # drain: the reader stops on its own
+                batch, bad = piece
+                try:
+                    post("/items", {"items": batch, "skipped": bad})
+                except BaseException as e:  # noqa: BLE001 - raised again in the main thread
+                    failure.append(e)
+                    continue
+                sent, skipped = sent + len(batch), skipped + bad
+                now = time.monotonic()
+                if now - last >= REPORT_EVERY_S or sent + skipped >= total:
+                    last = now
+                    rate = sent / max(now - started, 1e-6)
+                    left = (total - sent - skipped) / rate if rate else 0
+                    print(f"등록 {sent:,} / {total:,} · 초당 {rate:,.0f}장 · 남은 시간 약 {left / 60:.0f}분", flush=True)
+
+        sender = threading.Thread(target=send, name="import-send", daemon=True)
+        sender.start()
+        print(f"이미지 {WORKERS}장씩 동시에 읽습니다.", flush=True)
+        for piece in chunks(found, root):
+            if failure:
+                break
+            outbox.put(piece)
+        outbox.put(None)
+        sender.join()
+        if failure:
+            raise failure[0]
+        seconds = time.monotonic() - started
+        print(f"읽기 · 보내기 {seconds:,.0f}초 (초당 {sent / max(seconds, 1e-6):,.0f}장)", flush=True)
         result = post("/finish", {})
     if skipped:
         print(f"읽을 수 없는 파일 {skipped}개는 건너뛰었습니다.")

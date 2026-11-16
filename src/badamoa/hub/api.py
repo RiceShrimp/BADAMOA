@@ -302,10 +302,38 @@ def patch_node(
 
 
 @router.delete("/nodes/{node_id}")
-def delete_node(node_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
+def delete_node(
+    node_id: str,
+    request: Request,
+    cleanup: bool = True,
+    user: User = Depends(admin_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict:
+    """Remove a node; with ``cleanup`` an online node also takes BADAMOA off its machine (data stays).
+
+    When it cannot (off, or a program from before 0.32.0) the answer carries the commands to do it by hand.
+    """
+    from .install import remove_commands
+
+    node = services.get_node(db, node_id)
+    services.require_admin(user)
+    removed, reason = False, ""
+    if cleanup and not node.is_local:
+        if services.node_status(node, hub.settings) == "offline":
+            reason = "노드가 꺼져 있어 서버를 정리하지 못했습니다."
+        elif not asks.answers_questions(node.agent_version or "", asks.REMOVE_SINCE):
+            reason = f"노드 프로그램({node.agent_version})이 스스로 정리하는 기능을 모릅니다."
+        else:
+            try:
+                asks.ask(node.id, "remove", {}, wait=10)
+                removed = True
+            except services.ServiceError as e:
+                reason = f"서버를 정리하지 못했습니다: {e.message}"
     services.delete_node(db, user, node_id)
     db.commit()
-    return {"ok": True}
+    hub_url = address.resolve(request, hub.settings)[0]
+    return {"ok": True, "removed_on_server": removed, "reason": reason, "commands": remove_commands(hub_url)}
 
 
 class JoinTokenRequest(BaseModel):

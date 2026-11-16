@@ -99,6 +99,7 @@ class ImportItem(BaseModel):
 
 class ImportChunk(BaseModel):
     items: list[ImportItem]
+    skipped: int = 0  # files in this stretch that were not readable images
 
 
 class TrainReport(BaseModel):

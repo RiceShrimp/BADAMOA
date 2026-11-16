@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import httpx
 import pytest
@@ -28,6 +29,7 @@ def hub(live_hub, tmp_path, monkeypatch):
         client.node_id = runner.config.node_id
         client.node_home = home
         client.url = live_hub
+        client.runner = runner
         yield client
         runner.stop()
 
@@ -87,3 +89,58 @@ def test_update_helpers(client, admin):
     script = client.get("/install/node-update.sh").text
     assert f'VERSION="{__version__}"' in script and "systemctl restart badamoa-node" in script
     assert "uv tool install --force" in client.get("/install/node-update.ps1").text
+
+
+def test_delete_takes_the_node_off_its_machine(hub):
+    # an old node cannot clean up: the commands to do it by hand come back
+    old = hub.post("/api/nodes/join-tokens", json={}).json()
+    info = {"hostname": "old", "os": "Linux", "cpu_count": 1, "memory_total_mb": 1, "gpus": []}
+    body = {"join_token": old["token"], "agent_version": "0.31.0", "info": info}
+    old_id = httpx.post(f"{hub.url}/api/agent/register", json=body).json()["node_id"]
+    gone = hub.delete(f"/api/nodes/{old_id}").json()
+    assert gone["removed_on_server"] is False and "0.31.0" in gone["reason"]
+    assert gone["commands"]["linux"].endswith("/install/node-remove.sh | sudo bash")
+    script = hub.get("/install/node-remove.sh").text
+    assert "systemctl disable --now badamoa-node" in script and "rm -rf /opt/badamoa /var/lib/badamoa/node" in script
+    assert "schtasks /Delete" in hub.get("/install/node-remove.ps1").text
+
+    # a running node: told first, it forgets its registration (a checkout install: no files removed) and stops
+    config = hub.node_home / "node.json"
+    assert config.is_file()
+    done = hub.delete(f"/api/nodes/{hub.node_id}").json()
+    assert (done["removed_on_server"], done["reason"]) == (True, "")
+    assert not config.exists() and hub.runner.stop_event.is_set()
+    assert all(n["id"] != hub.node_id for n in hub.get("/api/nodes").json())
+
+
+def test_delete_without_cleanup_leaves_the_server_alone(hub):
+    done = hub.delete(f"/api/nodes/{hub.node_id}", params={"cleanup": False}).json()
+    assert (done["removed_on_server"], done["reason"]) == (False, "")
+    assert (hub.node_home / "node.json").is_file() and not hub.runner.stop_event.is_set()
+
+
+def test_imports_show_progress_and_originals_come_from_the_node(hub, tmp_path, monkeypatch):
+    from badamoa.hub import catalog
+
+    project = hub.post("/api/projects", json={"name": "진행", "task": "detect"}).json()
+    body = {"node_id": hub.node_id, "path": str(make_yolo(tmp_path / "a")), "dataset": "street", "version": "v1"}
+    job = hub.post(f"/api/projects/{project['id']}/imports", json=body).json()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and hub.get(f"/api/jobs/{job['id']}").json()["status"] in ("queued", "running"):
+        time.sleep(0.3)
+
+    # ---- the import is listed for every screen, with how far it got
+    (entry,) = [i for i in hub.get("/api/imports").json() if i["job_id"] == job["id"]]
+    assert (entry["status"], entry["done"], entry["total"], entry["dataset"]) == ("done", 8, 8, "street")
+    assert entry["project"]["name"] == "진행" and entry["release_id"]
+    logs = " ".join(line["text"] for line in hub.get(f"/api/jobs/{job['id']}/logs").json())
+    assert "동시에 읽습니다" in logs and "초당" in logs
+
+    # ---- an original the Hub cannot read itself: the node that has it sends it, and it is kept
+    item = hub.get(f"/api/releases/{entry['release_id']}/items").json()["items"][0]
+    detail = hub.get(f"/api/releases/{entry['release_id']}/items/{item['id']}").json()
+    assert detail["image_url"] and detail["image_local"] is True
+    monkeypatch.setattr(catalog, "item_file", lambda db, it: None)  # as if the images were on another server
+    original = hub.get(detail["image_url"], timeout=90)
+    assert original.status_code == 200 and len(original.content) == detail["bytes"]
+    assert hub.get(detail["image_url"]).content == original.content  # from the cache this time

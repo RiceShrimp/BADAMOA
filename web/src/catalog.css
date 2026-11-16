@@ -326,6 +326,17 @@ button.mini {
   height: 100%;
   object-fit: contain;
 }
+.viewer-frame img.placeholder {
+  filter: blur(1px);
+}
+.viewer-frame img.loading,
+.viewer-frame img.placeholder + img {
+  position: absolute;
+  inset: 0;
+}
+.viewer-frame img.loading {
+  opacity: 0;
+}
 .viewer-frame svg {
   position: absolute;
   inset: 0;

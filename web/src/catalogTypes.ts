@@ -102,6 +102,7 @@ export interface ItemDetail {
   release_label_space_id: string;
   thumb_url: string | null;
   image_url: string | null;
+  image_local?: boolean; // false: the original comes from the node that has it
   revisions: Revision[];
   releases: { id: string; dataset: string; version: string; split: string; rev: number | null; current: boolean }[];
 }
@@ -132,6 +133,17 @@ export interface CompareResult {
 
 export const SPLIT_LABEL: Record<string, string> = { train: "train", val: "val", test: "test", "": "미분할" };
 export const STATE_LABEL: Record<string, string> = { labelled: "라벨 있음", background: "배경", unlabelled: "미라벨" };
+/** What each label state means, where they are picked (background and unlabelled are easy to mix up). */
+export const STATE_HINT: Record<string, string> = {
+  labelled: "",
+  background: "물체 없음 확인",
+  unlabelled: "아직 라벨 안 함",
+};
+export const STATE_HELP: Record<string, string> = {
+  labelled: "박스나 클래스 라벨이 있는 이미지",
+  background: "누가 보고 찾을 물체가 없다고 확인한 이미지(빈 라벨 파일). 학습에 '없음'의 예로 들어갑니다.",
+  unlabelled: "라벨 파일이 없는, 아직 아무도 라벨하지 않은 이미지. 물체가 있을 수 있어 학습에서는 기본으로 뺍니다.",
+};
 
 export function classColor(id: number): string {
   return `hsl(${(id * 137.5) % 360} 72% 52%)`;

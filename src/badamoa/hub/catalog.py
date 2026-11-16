@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 from collections import Counter
+from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -643,6 +644,8 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
         batch_id=batch.id,
         job_id=job.id,
         created_by=job.created_by,
+        # How far the import got, for the progress shown on every screen; replaced by the stats at the end.
+        stats={"import": {"total": int(body.total or 0), "done": 0, "skipped": 0}},
     )
     db.add(release)
     db.flush()
@@ -762,7 +765,63 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
                 box_count=rev.box_count,
             )
         )
+    stats = dict(release.stats or {})
+    progress = dict(stats.get("import") or {})
+    total = int(progress.get("total") or 0)
+    done = int(progress.get("done") or 0) + len(chunk.items)
+    progress["done"] = min(done, total) if total else done
+    progress["skipped"] = int(progress.get("skipped") or 0) + chunk.skipped
+    release.stats = {**stats, "import": progress}
     return {"accepted": len(incoming)}
+
+
+# ---- imports under way (every screen shows them) -----------------------------------------
+
+RECENT_IMPORTS_S = 30 * 60  # finished ones stay listed this long
+
+
+def imports(db: Session) -> list[dict[str, Any]]:
+    """Dataset imports that are queued or running, and those that ended in the last half hour."""
+    since = utcnow() - timedelta(seconds=RECENT_IMPORTS_S)
+    jobs = db.scalars(
+        select(Job)
+        .where(Job.type == "data.import")
+        .where((Job.status.in_(ACTIVE)) | (Job.finished_at >= since))
+        .order_by(Job.created_at.desc())
+        .limit(20)
+    ).all()
+    nodes = {n.id: n.name for n in db.scalars(select(Node).where(Node.id.in_([j.node_id for j in jobs if j.node_id])))}
+    out = []
+    for job in jobs:
+        params = job.params or {}
+        project = db.get(Project, params.get("project_id") or "")
+        if project is None or project.deleted_at is not None:
+            continue
+        release = db.scalar(select(Release).where(Release.job_id == job.id))
+        stats = (release.stats if release else None) or {}
+        progress = stats.get("import") or {}
+        status = {"succeeded": "done", "failed": "failed", "canceled": "failed"}.get(job.status, job.status)
+        total = int(progress.get("total") or stats.get("items") or 0)
+        done = total if status == "done" else int(progress.get("done") or 0)
+        out.append(
+            {
+                "job_id": job.id,
+                "status": status,  # queued | running | done | failed
+                "project": {"id": project.id, "name": project.name},
+                "dataset": params.get("dataset", ""),
+                "version": params.get("version", ""),
+                "release_id": release.id if release else None,
+                "node": nodes.get(job.node_id or "", ""),
+                "done": done,
+                "total": total,
+                "skipped": int(progress.get("skipped") or (job.result or {}).get("skipped") or 0),
+                "created_at": iso(job.created_at),
+                "started_at": iso(job.started_at),
+                "finished_at": iso(job.finished_at),
+                "error": job.error or "",
+            }
+        )
+    return out
 
 
 def compute_stats(db: Session, release: Release) -> dict[str, Any]:
@@ -960,7 +1019,9 @@ def item_detail(db: Session, settings: HubSettings, release_id: str, item_id: in
         "revision_id": member.revision_id,
         "release_label_space_id": release.label_space_id,
         "thumb_url": media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
-        "image_url": media_url(settings, "item", str(item.id)) if item_file(db, item) else None,
+        # The original: read here, or asked of the node that has it when the view opens.
+        "image_url": media_url(settings, "item", str(item.id)) if item.location_id else None,
+        "image_local": item_file(db, item) is not None,
         "revisions": [_revision_view(r, spaces, with_boxes=True) for r in revisions],
         "releases": [
             {

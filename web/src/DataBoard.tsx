@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { SPLIT_LABEL, type TrashInfo, bytesLabel, classColor } from "./catalogTypes";
+import { ImportProgress, useImports } from "./Imports";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
 // ---- what the Hub sends ---------------------------------------------------------------
@@ -998,6 +999,9 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
   const { data: page, error, refresh } = usePolling(() => api<ProjectPageInfo>(`/projects/${projectId}/overview`), 15000, [projectId]);
   const [editing, setEditing] = useState(false);
   const { data: folderList } = useFolders();
+  const importing = useImports().filter(
+    (i) => i.project.id === projectId && (i.status === "queued" || i.status === "running"),
+  );
   if (error && !page) return <div className="error">{error}</div>;
   if (!page) return <div className="muted">불러오는 중…</div>;
   const colorOf = (cards: DatasetCardInfo) => (id: number) =>
@@ -1036,6 +1040,21 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
 
       <div className="project-layout">
         <div className="card-grid">
+          {importing.map((i) => (
+            <a key={i.job_id} className="data-card data-card-link importing" href={i.release_id ? `#/datasets/${i.release_id}` : undefined}>
+              <div className="collage importing-face">
+                <span className="spinner" />
+              </div>
+              <div className="data-card-body">
+                <div className="data-card-title">
+                  <strong>{i.dataset}</strong>
+                  <span className="tag">{i.version}</span>
+                </div>
+                <div className="muted small">{i.node}에서 등록 중 · 다른 화면에서 일해도 됩니다</div>
+                <ImportProgress info={i} compact />
+              </div>
+            </a>
+          ))}
           {page.dataset_cards.map((d) => (
             <a key={d.id} className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
               <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />

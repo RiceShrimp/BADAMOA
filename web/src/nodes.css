@@ -475,3 +475,10 @@ details.node-more > summary {
   display: flex;
   gap: 10px;
 }
+
+.consequences {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}

@@ -119,6 +119,27 @@ def _hand_over(where: dict[str, Path], hub_url: str, version: str) -> bool:
     ]
     script = folder / "update.cmd"
     script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\r\n")
+    if not start_outside(script):
+        log.warning("노드 업데이트 도우미를 시작하지 못했습니다.")
+        return False
+    log.info("노드를 %s로 업데이트합니다 (도우미: %s).", version, script)
+    return True
+
+
+def wait_lines(pids: set[int]) -> list[str]:
+    """Batch lines that wait until these processes are gone (ping as the pause: "timeout" needs a console)."""
+    return [
+        f"for %%P in ({' '.join(str(p) for p in pids)}) do call :wait %%P",
+        "goto :after",
+        ":wait",
+        'tasklist /FI "PID eq %1" | find "%1" >nul && (ping -n 2 127.0.0.1 >nul & goto wait)',
+        "exit /b 0",
+        ":after",
+    ]
+
+
+def start_outside(script: Path) -> bool:
+    """Windows: run a .cmd that must outlive this process, started through WMI so it is nobody's child."""
     command = f'cmd /c "{script}"'.replace("'", "''")
     create = (
         "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
@@ -128,21 +149,17 @@ def _hand_over(where: dict[str, Path], hub_url: str, version: str) -> bool:
         done = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", create], capture_output=True, text=True, timeout=60
         )
-        started = done.returncode == 0
+        if done.returncode == 0:
+            return True
     except (OSError, subprocess.TimeoutExpired):
-        started = False
-    if not started:  # no WMI: a detached child that leaves the job when it may
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-        for extra in (breakaway, 0):
-            try:
-                subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags | extra, close_fds=True)
-                started = True
-                break
-            except OSError:
-                continue
-    if not started:
-        log.warning("노드 업데이트 도우미를 시작하지 못했습니다.")
-        return False
-    log.info("노드를 %s로 업데이트합니다 (도우미: %s).", version, script)
-    return True
+        pass
+    # No WMI: a detached child that leaves the job when it may.
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+    for extra in (breakaway, 0):
+        try:
+            subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags | extra, close_fds=True)
+            return True
+        except OSError:
+            continue
+    return False

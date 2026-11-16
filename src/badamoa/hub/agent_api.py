@@ -23,7 +23,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import asks, cleanup, registry, services, sweeps
+from . import asks, cleanup, originals, registry, services, sweeps
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -68,6 +68,16 @@ async def questions(body: QuestionsWait, node: Node = Depends(current_node)) -> 
         if waiting or time.monotonic() >= deadline:
             return {"requests": waiting}
         await anyio.sleep(0.2)
+
+
+@router.put("/content/{key}")
+async def upload_content(
+    key: str, request: Request, _: Node = Depends(current_node), hub: Hub = Depends(get_hub)
+) -> dict[str, int]:
+    """A file a question asked for (an original image), sent before the answer."""
+    content = await request.body()
+    await anyio.to_thread.run_sync(originals.store, hub.settings, key, content)
+    return {"bytes": len(content)}
 
 
 @router.post("/requests/{question_id}")

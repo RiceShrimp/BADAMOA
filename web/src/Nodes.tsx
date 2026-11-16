@@ -550,12 +550,82 @@ function UpdateNode({ node, onClose }: { node: BoardNode; onClose: () => void })
   );
 }
 
+interface Deleted {
+  removed_on_server: boolean;
+  reason: string;
+  commands: { linux: string; windows: string };
+}
+
+/** Deleting a node: what it means, whether BADAMOA leaves the server too, and the command when it could not. */
+function DeleteNode({ node, onBack, onDone }: { node: BoardNode; onBack: () => void; onDone: () => void }) {
+  const [cleanup, setCleanup] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [left, setLeft] = useState<Deleted | null>(null); // deleted, but BADAMOA is still on the server
+  const online = node.status !== "offline";
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      setError(null);
+      const done = await api<Deleted>(`/nodes/${node.id}?cleanup=${cleanup}`, { method: "DELETE" });
+      if (cleanup && !done.removed_on_server) setLeft(done);
+      else onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (left) {
+    return (
+      <Modal title={`${node.name} 삭제됨`} onClose={onDone}>
+        <p>Hub에서 노드를 지웠습니다. {left.reason} 그 서버에서 아래 명령을 실행하면 BADAMOA가 지워집니다(데이터 폴더는 그대로).</p>
+        <CopyBlock label="Ubuntu / Linux" text={left.commands.linux} />
+        <CopyBlock label="Windows (관리자 PowerShell)" text={left.commands.windows} />
+        <p className="muted small">그냥 두어도 해는 없습니다. 지워진 노드는 5분에 한 번만 Hub를 확인하고 작업을 받지 않습니다.</p>
+        <div className="modal-actions">
+          <button onClick={onDone}>닫기</button>
+        </div>
+      </Modal>
+    );
+  }
+  return (
+    <Modal title={`${node.name} 삭제`} onClose={onBack}>
+      <ul className="consequences">
+        <li>Hub의 노드 목록에서 사라지고 이 서버로 작업을 보내지 않습니다.</li>
+        <li>이 서버에서 실행 중인 작업은 실패로 끝납니다.</li>
+        <li>이 서버의 이미지로 등록한 데이터셋은 학습 · 내려받기를 할 수 없게 됩니다(등록 기록은 남음).</li>
+      </ul>
+      <label className="check">
+        <input type="checkbox" checked={cleanup} onChange={(e) => setCleanup(e.target.checked)} />
+        서버에서도 BADAMOA 지우기 <span className="muted small">— 서비스 등록 · 프로그램 · 설정. 데이터 폴더는 그대로</span>
+      </label>
+      {cleanup && !online && (
+        <p className="muted small">노드가 꺼져 있어 지금은 서버를 정리할 수 없습니다. 삭제한 뒤 그 서버에서 실행할 명령을 알려 드립니다.</p>
+      )}
+      <p className="muted small">잠시 쉬게 하려는 것이면 삭제 대신 비활성화하세요.</p>
+      {error && <div className="error">{error}</div>}
+      <div className="modal-actions">
+        <button onClick={onBack} disabled={busy}>
+          취소
+        </button>
+        <button className="danger" onClick={() => void remove()} disabled={busy}>
+          {busy ? "지우는 중…" : "삭제"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
   const [name, setName] = useState(node.name);
   const [roles, setRoles] = useState(node.roles);
   const [enabled, setEnabled] = useState(node.enabled);
   const [kept, setKept] = useState<number[]>(node.gpus.filter((g) => g.reserved).map((g) => g.index));
   const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const run = async (action: () => Promise<unknown>) => {
     try {
@@ -567,6 +637,9 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
   };
 
   return (
+    deleting ? (
+      <DeleteNode node={node} onBack={() => setDeleting(false)} onDone={onClose} />
+    ) : (
     <Modal title={`${node.name} 설정`} onClose={onClose}>
       <label>
         이름
@@ -602,22 +675,7 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
       {error && <div className="error">{error}</div>}
       <div className="modal-actions">
         {!node.is_local && (
-          <button
-            className="danger"
-            onClick={() => {
-              const text = [
-                `노드 "${node.name}"을(를) 삭제할까요?`,
-                "",
-                "- Hub의 노드 목록에서 사라지고 이 서버로 작업을 보내지 않습니다.",
-                "- 이 서버에서 실행 중인 작업은 실패로 끝납니다.",
-                "- 이 서버에 있는 이미지로 등록한 데이터셋은 학습 · 내려받기를 할 수 없게 됩니다(등록 기록은 남음).",
-                "- 서버에 설치된 BADAMOA는 그대로 남습니다. 다시 쓰려면 노드 추가로 다시 붙이세요.",
-                "",
-                "잠시 쉬게 하려는 것이면 삭제 대신 비활성화하세요.",
-              ].join("\n");
-              if (window.confirm(text)) void run(() => api(`/nodes/${node.id}`, { method: "DELETE" }));
-            }}
-          >
+          <button className="danger" onClick={() => setDeleting(true)}>
             노드 삭제
           </button>
         )}
@@ -632,5 +690,6 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
         </button>
       </div>
     </Modal>
+    )
   );
 }
