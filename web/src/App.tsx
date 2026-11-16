@@ -1,8 +1,9 @@
 import { ImportTray } from "./Imports";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, Fragment, useEffect, useState } from "react";
 import { Agents } from "./Agents";
 import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./api";
 import { Datasets } from "./Datasets";
+import { TRASH_EVENT } from "./catalogTypes";
 import { Home } from "./Home";
 import { Jobs } from "./Jobs";
 import { Models } from "./Models";
@@ -151,6 +152,21 @@ function Shell({
   const [notesOpen, setNotesOpen] = useState(false);
   const [unseen, setUnseen] = useState(() => hasUnseenRelease(version));
   const { data: nodes } = usePolling(() => api<NodeInfo[]>("/nodes"), 10000);
+  const { data: binned, refresh: recount } = usePolling(() => api<{ total: number }>("/trash/count"), 30000);
+  useEffect(() => {
+    const again = () => void recount();
+    window.addEventListener(TRASH_EVENT, again);
+    return () => window.removeEventListener(TRASH_EVENT, again);
+  }, [recount]);
+  // The Hub was updated while this page stayed open: its screens are the old ones until reloaded.
+  const { data: running, refresh: recheck } = usePolling(() => api<{ version: string }>("/setup/status"), 60000);
+  useEffect(() => {
+    const back = () => document.visibilityState === "visible" && void recheck(); // coming back to the tab
+    document.addEventListener("visibilitychange", back);
+    return () => document.removeEventListener("visibilitychange", back);
+  }, [recheck]);
+  const updated = running && version && running.version !== version ? running.version : null;
+  const onTrash = page === "datasets" && sub === "trash";
   const current = PAGES.find((p) => p.page === page);
   const online = nodes?.filter((n) => n.status === "online").length ?? 0;
   const isAdmin = user.role === "admin";
@@ -175,7 +191,24 @@ function Shell({
                 </div>
               )}
               {section.items.map((item) =>
-                item.page ? (
+                item.page === "datasets" ? (
+                  // The trash sits under 데이터셋, one click away from every screen.
+                  <Fragment key={item.label}>
+                    <a href="#/datasets" className={`nav-item ${page === "datasets" && !onTrash ? "active" : ""}`}>
+                      <Icon name={item.icon} />
+                      {item.label}
+                    </a>
+                    <a
+                      href="#/datasets/trash"
+                      className={`nav-item nav-sub ${onTrash ? "active" : ""}`}
+                      title="지운 프로젝트와 버전을 되살리거나 완전히 지웁니다"
+                    >
+                      <Icon name="trash" size={14} />
+                      휴지통
+                      {(binned?.total ?? 0) > 0 && <span className="nav-count">{binned?.total}</span>}
+                    </a>
+                  </Fragment>
+                ) : item.page ? (
                   <a key={item.label} href={`#/${item.page}`} className={`nav-item ${page === item.page ? "active" : ""}`}>
                     <Icon name={item.icon} />
                     {item.label}
@@ -241,6 +274,14 @@ function Shell({
             </button>
           </div>
         </header>
+        {updated && (
+          <div className="update-bar" role="status">
+            BADAMOA가 업데이트되었습니다(v{updated}). 새로고침하면 바뀐 화면을 씁니다.
+            <button className="small primary" onClick={() => window.location.reload()}>
+              새로고침
+            </button>
+          </div>
+        )}
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
           {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}

@@ -153,6 +153,10 @@ export const STATE_HELP: Record<string, string> = {
   background: "라벨이 없는 이미지(빈 라벨 파일이거나 라벨 파일이 없음). 찾을 물체가 없는 예로 학습에 들어갑니다.",
 };
 
+/** Something went into or out of the trash: the sidebar's count looks again. */
+export const TRASH_EVENT = "badamoa:trash";
+export const announceTrash = () => window.dispatchEvent(new Event(TRASH_EVENT));
+
 /** Tasks by their short English names; a task a team named is shown as typed. */
 export const TASK_LABEL: Record<string, string> = { detect: "Det", segment: "Seg", pose: "Kpt", classify: "Cls" };
 export const TASK_HINT: Record<string, string> = {

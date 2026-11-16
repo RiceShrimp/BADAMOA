@@ -456,9 +456,11 @@ def test_project_trash_and_restore(hub, tmp_path):
     assert hub.delete(f"/api/releases/{v1}").status_code == 200
     trash = hub.get("/api/trash").json()
     assert [r["id"] for r in trash["releases"]] == [v1] and trash["releases"][0]["project"]["name"] == "지울 것"
+    assert hub.get("/api/trash/count").json() == {"projects": 0, "releases": 1, "total": 1}  # the sidebar's count
     assert hub.delete(f"/api/projects/{project['id']}").status_code == 200
     trash = hub.get("/api/trash").json()
     assert [p["id"] for p in trash["projects"]] == [project["id"]] and trash["releases"] == []
+    assert hub.get("/api/trash/count").json() == {"projects": 1, "releases": 0, "total": 1}
     assert (trash["projects"][0]["items"], trash["projects"][0]["releases"]) == (8, 0)
     assert all(c["id"] != project["id"] for c in hub.get("/api/project-cards").json())
     assert hub.get(f"/api/projects/{project['id']}/overview").status_code == 404
@@ -470,7 +472,7 @@ def test_project_trash_and_restore(hub, tmp_path):
     assert hub.post(f"/api/releases/{v1}/restore").status_code == 200
     page = hub.get(f"/api/projects/{project['id']}/overview").json()
     assert (page["items"], page["releases"]) == (8, 1)
-    assert hub.get("/api/trash").json() == empty
+    assert hub.get("/api/trash").json() == empty and hub.get("/api/trash/count").json()["total"] == 0
     assert hub.delete("/api/projects/no-such").status_code == 404
 
 

@@ -345,6 +345,21 @@ def release_users(db: Session, release_id: str) -> list[str]:
     return [f"{what} {n}개" for what, n in found if n]
 
 
+def trash_count(db: Session) -> dict[str, int]:
+    """How many projects and versions are in the trash (what ``trash`` lists), for the sidebar."""
+    projects = db.scalar(select(func.count(Project.id)).where(Project.deleted_at.is_not(None))) or 0
+    releases = (
+        db.scalar(
+            select(func.count(Release.id))
+            .join(Dataset, Dataset.id == Release.dataset_id)
+            .join(Project, Project.id == Dataset.project_id)
+            .where(Release.deleted_at.is_not(None), Project.deleted_at.is_(None))
+        )
+        or 0
+    )
+    return {"projects": projects, "releases": releases, "total": projects + releases}
+
+
 def trash(db: Session) -> dict[str, Any]:
     """Deleted projects, and deleted versions of projects that are still there."""
     projects = db.scalars(select(Project).where(Project.deleted_at.is_not(None)).order_by(Project.deleted_at.desc())).all()

@@ -28,6 +28,7 @@ import {
   TASK_HINT,
   TASK_LABEL,
   type TreeDataset,
+  announceTrash,
   bytesLabel,
   taskLabel,
 } from "./catalogTypes";
@@ -237,6 +238,7 @@ function ReleaseView({
   const remove = async () => {
     if (!window.confirm(`${release.dataset.name} ${release.version} 버전을 휴지통으로 옮길까요? 휴지통에서 되살릴 수 있고, 이미지 파일은 지워지지 않습니다.`)) return;
     await api(`/releases/${releaseId}`, { method: "DELETE" });
+    announceTrash();
     window.location.hash = `#/datasets/project/${release.project_id}`;
   };
 
@@ -749,7 +751,11 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
   const [layout, setLayout] = useState(""); // what the picked folder looks like
   const node = nodes.find((n) => n.id === form.node_id);
 
-  const existingTask = datasetTasks[form.dataset.trim()]; // a new version keeps its dataset's task
+  // A version of a dataset picked from the list keeps that dataset's task. A new dataset's name must be
+  // new: one already taken is not quietly made its next version (with that dataset's task) but offered as such.
+  const existingTask = picked ? datasetTasks[picked] : undefined;
+  const clash = !picked && form.dataset.trim() !== "" ? datasets.find((d) => d.name === form.dataset.trim()) : undefined;
+  const clashLive = clash ? live.some((d) => d.id === clash.id) : false;
   const task = existingTask ? "" : taskChoice === CUSTOM_TASK ? customTask.trim() : taskChoice;
 
   const submit = async (e: FormEvent) => {
@@ -836,12 +842,20 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
             ) : (
               <input value={form.dataset} onChange={set("dataset")} required placeholder="예: coco" aria-label="데이터셋 이름" />
             )}
-            {picked ? (
-              <span className="muted small field-hint">{picked}의 새 버전으로 들어갑니다. 버전 이름은 바꿀 수 있습니다.</span>
-            ) : (
-              existingTask && (
-                <span className="muted small field-hint">이미 있는 데이터셋 이름입니다. 그 데이터셋의 새 버전으로 들어갑니다.</span>
-              )
+            {picked && <span className="muted small field-hint">{picked}의 새 버전으로 들어갑니다. 버전 이름은 바꿀 수 있습니다.</span>}
+            {clash && (
+              <div className="notice compact">
+                {clashLive ? (
+                  <>
+                    이미 있는 데이터셋 이름입니다(태스크 {taskLabel(clash.task)}). 새 데이터셋이면 다른 이름을 쓰세요.{" "}
+                    <button type="button" className="small" onClick={() => pickDataset(clash.name)}>
+                      그 데이터셋의 새 버전으로
+                    </button>
+                  </>
+                ) : (
+                  <>휴지통에 같은 이름의 데이터셋이 있습니다. 다른 이름을 쓰거나 휴지통에서 되살리세요.</>
+                )}
+              </div>
             )}
           </div>
           <div className="form-row">
@@ -867,7 +881,8 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
                   <option value={existingTask}>{taskLabel(existingTask)}</option>
                 </select>
                 <span className="muted small field-hint">
-                  기존 데이터셋 {form.dataset.trim()}의 새 버전이라 그 태스크({taskLabel(existingTask)}) 그대로입니다.
+                  기존 데이터셋 {picked}의 새 버전이라 그 태스크({taskLabel(existingTask)}) 그대로입니다. 다른 태스크로 가져오려면
+                  데이터셋에서 "새 데이터셋"을 고르세요.
                 </span>
               </>
             ) : (
@@ -944,7 +959,7 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
             <button type="button" onClick={onClose}>
               취소
             </button>
-            <button className="primary" disabled={!form.node_id}>
+            <button className="primary" disabled={!form.node_id || Boolean(clash)}>
               가져오기
             </button>
           </div>

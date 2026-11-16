@@ -1,6 +1,16 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { SPLIT_LABEL, TASK_HINT, TASK_LABEL, type TrashInfo, bytesLabel, classColor, keypointsOf, taskLabel } from "./catalogTypes";
+import {
+  SPLIT_LABEL,
+  TASK_HINT,
+  TASK_LABEL,
+  type TrashInfo,
+  announceTrash,
+  bytesLabel,
+  classColor,
+  keypointsOf,
+  taskLabel,
+} from "./catalogTypes";
 import { ImportProgress, useImports } from "./Imports";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
@@ -384,12 +394,6 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
               </option>
             ))}
           </select>
-          {binned > 0 && (
-            <a className="btn ghost-btn" href="#/datasets/trash" title="지운 프로젝트와 버전을 되살립니다">
-              <Icon name="trash" size={13} />
-              휴지통 {binned}
-            </a>
-          )}
         </div>
       )}
       {filters > 0 && (
@@ -734,6 +738,7 @@ function EditProject({
     if (!window.confirm(`이 프로젝트를 휴지통으로 옮길까요?\n${what}\n\n휴지통에서 되살릴 수 있고, 이미지 파일은 지워지지 않습니다.`)) return;
     try {
       await api(`/projects/${card.id}`, { method: "DELETE" });
+      announceTrash();
       onClose(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -876,6 +881,7 @@ export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
       setFailed(null);
       setEmptied(null);
       await api(path, { method: "POST" });
+      announceTrash();
       await refresh();
     } catch (e) {
       setFailed(e instanceof Error ? e.message : String(e));
@@ -891,6 +897,7 @@ export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
     try {
       setFailed(null);
       setEmptied(await api<Emptied>("/trash/empty", { body }));
+      announceTrash();
       await refresh();
     } catch (e) {
       setFailed(e instanceof Error ? e.message : String(e));
@@ -1047,12 +1054,19 @@ export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
 
 const TASK_HINT_TEXT = (task: string) => (TASK_LABEL[task] ? `${taskLabel(task)}: ${TASK_HINT[task]}` : `${task}: 직접 정한 태스크`);
 
+/** "Det 2 · Kpt 1": how many datasets of each task (each dataset has its own). */
+const tasksCounted = (tasks: string[]) => {
+  const counts = new Map<string, number>();
+  for (const t of tasks) counts.set(t, (counts.get(t) ?? 0) + 1);
+  return [...counts].map(([t, n]) => `${taskLabel(t)} ${n}`).join(" · ");
+};
+
 /** The tasks of a project's datasets as tags (none before its first dataset). */
 function TaskTags({ tasks }: { tasks: string[] }) {
   return (
     <>
       {tasks.map((t) => (
-        <span key={t} className="tag task-tag" title={TASK_HINT_TEXT(t)}>
+        <span key={t} className="tag task-tag" title={`이 프로젝트에 있는 데이터셋의 태스크 — ${TASK_HINT_TEXT(t)}`}>
           {taskLabel(t)}
         </span>
       ))}
@@ -1081,11 +1095,12 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
       <div className="page-head">
         <div>
           <h1 className="with-badge">
-            {page.name} <TaskTags tasks={page.tasks} />
+            {page.name}
           </h1>
           <p className="muted">
-            데이터셋 {page.datasets} · 버전 {page.releases} · 이미지 {page.items.toLocaleString()} · 학습 {page.runs} · 모델{" "}
-            {page.models} · {timeAgo(page.updated_at)} 수정
+            데이터셋 {page.datasets}
+            {page.dataset_cards.length > 0 && ` (${tasksCounted(page.dataset_cards.map((d) => d.task))})`} · 버전 {page.releases} · 이미지{" "}
+            {page.items.toLocaleString()} · 학습 {page.runs} · 모델 {page.models} · {timeAgo(page.updated_at)} 수정
           </p>
           {page.description && <p className="note">{page.description}</p>}
         </div>

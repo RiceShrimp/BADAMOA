@@ -73,6 +73,11 @@ def restore_project(project_id: str, user: User = Depends(current_user), db: Ses
     return {"ok": True}
 
 
+@router.get("/trash/count")
+def trash_count(_: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, int]:
+    return catalog.trash_count(db)
+
+
 @router.get("/trash")
 def trash(_: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
     """Deleted projects and versions, to bring back."""

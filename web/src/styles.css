@@ -1443,3 +1443,40 @@ button.legend-item:hover {
   stroke: var(--accent);
   stroke-opacity: 0.5;
 }
+
+/* the trash, under 데이터셋 in the sidebar */
+.nav-item.nav-sub {
+  padding: 5px 8px 5px 28px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.nav-item.nav-sub.active {
+  color: var(--text);
+}
+.nav-count {
+  margin-left: auto;
+  font: 600 11px/1 var(--mono);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.15));
+  color: var(--text);
+}
+/* the Hub runs a newer version than these screens */
+.update-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft, rgba(45, 180, 200, 0.12));
+  font-size: 13px;
+}
+.update-bar button {
+  margin-left: auto;
+}
+.notice.compact {
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
