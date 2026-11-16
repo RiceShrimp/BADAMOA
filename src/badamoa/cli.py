@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import socket
+import sys
 import threading
+import time
+import webbrowser
 from pathlib import Path
 from typing import Annotated
 
@@ -53,6 +57,28 @@ def _require_hub():
         raise typer.Exit(1) from e
 
 
+def _has_screen() -> bool:
+    """A desktop to open a browser on: Windows and macOS, or Linux with a display (not a server or a service)."""
+    if sys.platform in ("win32", "darwin"):
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _open_when_up(port: int, url: str) -> None:
+    """Open the web UI once the Hub answers (at most a minute after start-up)."""
+    import httpx
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"http://127.0.0.1:{port}/api/health", timeout=2).status_code == 200:
+                webbrowser.open(url)
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.5)
+
+
 def _lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -80,6 +106,14 @@ def hub_run(
         float,
         typer.Option(envvar="BADAMOA_GPU_BUSY_UTIL_PCT", help="GPU 사용률이 이만큼(%) 넘으면 사용 중으로 봄"),
     ] = 50.0,
+    open_browser: Annotated[
+        bool | None,
+        typer.Option(
+            "--open/--no-open",
+            envvar="BADAMOA_OPEN_BROWSER",
+            help="시작하면 웹 UI를 이 PC의 네트워크 주소로 엽니다. 기본: 화면이 있는 PC에서만",
+        ),
+    ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Hub를 실행합니다. 기본값은 All-in-one(이 머신도 노드로 동작)입니다."""
@@ -103,11 +137,21 @@ def hub_run(
     if local_node:
         _start_local_node(application, settings)
 
-    url = public_url or f"http://{_lan_ip()}:{port}"
+    # The address people and servers reach this Hub at: the one set on the screen or at launch, else
+    # this PC's network address. localhost only when the Hub takes no connections from outside.
+    local_only = host in ("127.0.0.1", "localhost", "::1")
+    lan = None if local_only else _lan_ip()
+    saved = settings.extra.get("hub_address")
+    url = saved or public_url or (f"http://{lan}:{port}" if lan and lan != "127.0.0.1" else f"http://localhost:{port}")
     typer.secho(f"\n  BADAMOA Hub {__version__}", bold=True)
-    typer.echo(f"  웹 UI   : http://localhost:{port}   (네트워크: {url})")
+    where = f"   (이 PC에서는 http://localhost:{port} 도 됨)"
+    if local_only:
+        where = "   (이 PC 안에서만 접속됨: --host 127.0.0.1)"
+    typer.echo(f"  웹 UI   : {url}{where}")
     typer.echo(f"  MCP     : {url}/mcp")
     typer.echo(f"  데이터  : {settings.home}\n")
+    if open_browser if open_browser is not None else _has_screen():
+        threading.Thread(target=_open_when_up, args=(port, url), name="open-browser", daemon=True).start()
     uvicorn.run(application, host=host, port=port, log_level="debug" if verbose else "warning")
 
 

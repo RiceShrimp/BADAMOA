@@ -4,14 +4,14 @@
     {
       "name": "badamoa-hub",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/hub", "--port", "8470"],
+      "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/hub", "--port", "8470", "--no-open"],
       "env": { "BADAMOA_GPU_BUSY_MEMORY_PCT": "101", "BADAMOA_GPU_BUSY_UTIL_PCT": "101" },
       "port": 8470
     },
     {
       "name": "badamoa-hub-check",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/check", "--port", "8471", "--host", "127.0.0.1"],
+      "runtimeArgs": ["run", "badamoa", "hub", "run", "--home", ".badamoa/check", "--port", "8471", "--host", "127.0.0.1", "--no-open"],
       "env": { "BADAMOA_GPU_BUSY_MEMORY_PCT": "101", "BADAMOA_GPU_BUSY_UTIL_PCT": "101" },
       "port": 8471
     }

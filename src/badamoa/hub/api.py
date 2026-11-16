@@ -10,9 +10,9 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import admin, gpus, prometheus, resources, services
+from . import address, admin, gpus, prometheus, resources, services
 from .db import iso
-from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub, public_base_url
+from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands
 from .models import User
 from .release_notes import load_release_notes
@@ -294,14 +294,39 @@ def create_join_token(
     token, row = services.create_join_token(db, user, body.roles, body.ttl_minutes)
     services.audit(db, user.id, "ui", "node.join_token", row.id, roles=row.roles)
     db.commit()
-    hub_url = public_base_url(request, hub)
+    where = address.view(request, hub.settings)
+    hub_url = where["url"]
     return {
         "token": token,
         "roles": row.roles,
         "expires_at": iso(row.expires_at),
         "hub_url": hub_url,
+        "address": where,  # where the address came from, and others this machine has
         "commands": join_commands(hub_url, token),
     }
+
+
+class HubAddress(BaseModel):
+    url: str | None = None  # None: find it by itself again
+
+
+@router.get("/settings/hub-address")
+def hub_address(request: Request, _: User = Depends(admin_user), hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """The address nodes are told to reach this Hub at, where it comes from, and the ones this machine has."""
+    return address.view(request, hub.settings)
+
+
+@router.put("/settings/hub-address")
+def set_hub_address(
+    body: HubAddress,
+    request: Request,
+    user: User = Depends(admin_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    address.save(db, user, hub.settings, body.url)
+    db.commit()
+    return address.view(request, hub.settings)
 
 
 # ---- jobs -------------------------------------------------------------------------

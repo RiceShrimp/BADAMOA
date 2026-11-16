@@ -442,3 +442,31 @@ details.node-more > summary {
     transform: rotate(360deg);
   }
 }
+
+/* ---- node-add dialog: the Hub address the commands carry ---- */
+.address-note {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+}
+.address-note.warn {
+  border-color: var(--bad);
+}
+.address-note code {
+  font-weight: 600;
+}
+.address-note .link {
+  margin-left: 8px;
+}
+.address-edit {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.address-edit select,
+.address-edit input {
+  margin-top: 0;
+}

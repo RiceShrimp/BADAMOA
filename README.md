@@ -31,7 +31,7 @@ npm --prefix web run build
 uv run badamoa hub run --home .badamoa/hub
 ```
 
-브라우저에서 <http://localhost:8470> 을 열어 관리자 계정을 만듭니다. Hub를 실행한 머신이 첫 번째 노드로 바로 등록됩니다(All-in-one).
+브라우저가 이 PC의 네트워크 주소(예: `http://192.168.0.10:8470`, 시작 메시지의 "웹 UI")로 열리면 관리자 계정을 만듭니다. 다른 서버를 노드로 붙일 때 그 주소를 쓰므로 `localhost` 대신 이 주소로 접속하세요. Hub를 실행한 머신이 첫 번째 노드로 바로 등록됩니다(All-in-one).
 
 ## 원격 서버를 노드로 추가
 

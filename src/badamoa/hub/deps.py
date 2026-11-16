@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from . import services
+from . import address, services
 from .config import HubSettings
 from .db import Database
 from .models import Node, User
@@ -56,6 +56,5 @@ def current_node(request: Request, db: Session = Depends(db_session)) -> Node:
 
 
 def public_base_url(request: Request, hub: Hub) -> str:
-    if hub.settings.public_url:
-        return hub.settings.public_url.rstrip("/")
-    return str(request.base_url).rstrip("/")
+    """The address other servers reach this Hub at (never localhost when there is a network one)."""
+    return address.resolve(request, hub.settings)[0]

@@ -40,7 +40,7 @@
 - [x] Hub의 wheel 인덱스에서 노드 설치 (`uv tool install --index <hub>/install/simple/`)
 - [x] 테스트 19개(Hub API · 실제 Hub+Node Agent · MCP JSON-RPC), CI(Ubuntu·Windows)
 - [ ] 노드 설치 스크립트(`node.sh` / `node.ps1`)와 부팅 서비스 등록을 실제 원격 머신에서 검증 — 관리자 권한이 필요해 아직 실행해 보지 못함
-- [ ] Hub 설치 스크립트 (지금은 `uv run badamoa hub run`)
+- [ ] Hub 설치 스크립트 · 실행 파일 (지금은 `uv run badamoa hub run`). 설치 · 바로가기는 `badamoa hub run`처럼 이 PC의 네트워크 주소로 브라우저를 열 것(localhost 아님, 0.29.0에 동작 마련)
 - [ ] Claude Code에서 실제로 `claude mcp add` 후 사용 확인 (JSON-RPC 수준에서는 검증됨)
 
 ## Phase 0.5 체크리스트 — 노드 자원 관리 (0.3.0)

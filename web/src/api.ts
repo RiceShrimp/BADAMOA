@@ -230,11 +230,21 @@ export interface LogLine {
   text: string;
 }
 
+/** The address nodes are told to reach the Hub at, and where it came from. */
+export interface HubAddress {
+  url: string;
+  source: "saved" | "launch" | "browser" | "detected" | "local-only";
+  candidates: string[];
+  launch: string | null;
+  listens_locally_only: boolean;
+}
+
 export interface JoinToken {
   token: string;
   roles: string[];
   expires_at: string;
   hub_url: string;
+  address: HubAddress;
   commands: { linux: string; windows: string; dev: string };
 }
 

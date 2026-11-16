@@ -1,6 +1,6 @@
 import { useState } from "react";
 import "./nodes.css";
-import { type JoinToken, api } from "./api";
+import { type HubAddress, type JoinToken, api } from "./api";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
 const ROLES = [
@@ -321,7 +321,7 @@ function AddNode({ onClose }: { onClose: () => void }) {
   const [join, setJoin] = useState<JoinToken | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const create = async () => {
+  const create = async (): Promise<void> => {
     try {
       setJoin(await api<JoinToken>("/nodes/join-tokens", { body: { roles, ttl_minutes: 60 } }));
       setError(null);
@@ -348,17 +348,101 @@ function AddNode({ onClose }: { onClose: () => void }) {
           <p>
             추가할 서버의 터미널에서 아래 명령을 실행하세요. 명령은 <strong>1회용</strong>이고 1시간 뒤 만료됩니다.
           </p>
+          <AddressNote where={join.address} onChange={create} />
           <CopyBlock label="Ubuntu / Linux" text={join.commands.linux} />
           <CopyBlock label="Windows (관리자 PowerShell)" text={join.commands.windows} />
-          <p className="muted small">
-            원격 서버가 이 주소({join.hub_url})로 접속할 수 있어야 합니다. 설치가 끝나면 노드 목록에 자동으로 나타납니다.
-          </p>
+          <p className="muted small">설치가 끝나면 노드 목록에 자동으로 나타납니다.</p>
           <div className="modal-actions">
             <button onClick={onClose}>닫기</button>
           </div>
         </>
       )}
     </Modal>
+  );
+}
+
+const ADDRESS_SOURCE: Record<HubAddress["source"], string> = {
+  detected: "이 PC의 네트워크 주소를 자동으로 넣었습니다 (브라우저는 localhost로 열려 있음)",
+  browser: "지금 브라우저가 연 주소입니다",
+  saved: "설정해 둔 Hub 주소입니다",
+  launch: "Hub 실행 옵션(--public-url)의 주소입니다",
+  "local-only": "다른 서버가 닿을 수 있는 주소가 없습니다",
+};
+const TYPED = "\u0000typed";
+
+/** Which address the commands carry and why; change it when the new server cannot reach it. */
+function AddressNote({ where, onChange }: { where: HubAddress; onChange: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [picked, setPicked] = useState(where.url);
+  const [typed, setTyped] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const others = where.candidates.filter((c) => c !== where.url);
+  const save = async (url: string | null) => {
+    try {
+      setError(null);
+      await api("/settings/hub-address", { method: "PUT", body: url === null ? {} : { url } });
+      await onChange(); // new commands with the new address (the earlier ones simply expire)
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <div className={`address-note ${where.source === "local-only" ? "warn" : ""}`}>
+      <div>
+        Hub 주소 <code>{where.url}</code> <span className="muted small">— {ADDRESS_SOURCE[where.source]}</span>
+        {!editing && (
+          <button className="link small" onClick={() => setEditing(true)}>
+            바꾸기
+          </button>
+        )}
+      </div>
+      {where.listens_locally_only ? (
+        <div className="small">
+          이 Hub는 이 PC 안에서만 접속을 받도록 실행되어 있습니다(--host 127.0.0.1). 다른 서버를 붙이려면 Hub를 --host 0.0.0.0으로 다시
+          실행하세요.
+        </div>
+      ) : (
+        <div className="muted small">
+          추가할 서버가 이 주소로 Hub에 닿아야 합니다. 닿지 않으면 그 서버에서 보이는 주소(사내 DNS 이름, VPN 주소 등)로 바꾸세요.
+        </div>
+      )}
+      {editing && (
+        <div className="address-edit">
+          <select value={picked} onChange={(e) => setPicked(e.target.value)} aria-label="Hub 주소">
+            <option value={where.url}>{where.url} (지금)</option>
+            {others.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+            <option value={TYPED}>직접 입력…</option>
+          </select>
+          {picked === TYPED && (
+            <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="http://서버이름:8470" autoFocus />
+          )}
+          <div className="row-buttons">
+            <button
+              className="small primary"
+              disabled={picked === TYPED ? !typed.trim() : picked === where.url && where.source === "saved"}
+              onClick={() => void save(picked === TYPED ? typed : picked)}
+            >
+              이 주소로 다시 만들기
+            </button>
+            {where.source === "saved" && (
+              <button className="small" onClick={() => void save(null)}>
+                자동으로
+              </button>
+            )}
+            <button className="small" onClick={() => setEditing(false)}>
+              취소
+            </button>
+          </div>
+          <div className="muted small">고른 주소는 저장되어 다음 노드 추가에도 쓰입니다.</div>
+        </div>
+      )}
+      {error && <div className="error">{error}</div>}
+    </div>
   );
 }
 
