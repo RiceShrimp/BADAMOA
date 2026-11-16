@@ -96,3 +96,11 @@ def test_gpu_busy_thresholds_set_on_the_screen(client, admin, settings):
     lee = _headers(_login(client, "lee", "lee-first-pw"))
     assert client.get("/api/settings/gpu-busy", headers=lee).status_code == 200
     assert client.put("/api/settings/gpu-busy", json={"memory_pct": 90, "util_pct": 90}, headers=lee).status_code == 403
+
+
+def test_heartbeat_tells_nodes_how_long_work_folders_stay(client, admin):
+    _, node = _join(client, admin)
+    body = {"agent_version": "0.3.0", "metrics": {"gpus": []}, "running_job_ids": []}
+    assert client.post("/api/agent/heartbeat", json=body, headers=node).json()["workdir_days"] == 30
+    client.put("/api/storage/policy", json={"workdir_days": 0}, headers=admin)
+    assert client.post("/api/agent/heartbeat", json=body, headers=node).json()["workdir_days"] == 0

@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { ProjectBoard, ProjectPage, SPLIT_COLOR, Shot, TrashPage, rememberProject } from "./DataBoard";
+import { FolderPicker, ProjectBoard, ProjectPage, SPLIT_COLOR, Shot, TrashPage, folderNames, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
 import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
@@ -22,12 +22,16 @@ const PAGE_SIZE = 60;
  * (``#/datasets/project/<id>``), and a release with its tabs (``#/datasets/<release>/<tab>``).
  */
 export function Datasets({ sub, arg, isAdmin }: { sub?: string; arg?: string; isAdmin: boolean }) {
-  const { data: projects } = usePolling(() => api<Project[]>("/projects"), 30000);
+  const { data: projects, refresh: refreshProjects } = usePolling(() => api<Project[]>("/projects"), 30000);
   const [creating, setCreating] = useState<string | null>(null); // the folder a new project goes into
+  const newProject = (folder: string) => {
+    void refreshProjects(); // the folder list: one made a moment ago must be there
+    setCreating(folder);
+  };
   const [importing, setImporting] = useState<string | null>(null); // the project a dataset is imported into
 
   let body;
-  if (!sub) body = <ProjectBoard onNewProject={(folder) => setCreating(folder)} />;
+  if (!sub) body = <ProjectBoard onNewProject={newProject} />;
   else if (sub === "trash") body = <TrashPage isAdmin={isAdmin} />;
   else if (sub === "project" && arg) body = <ProjectPage projectId={arg} onImport={() => setImporting(arg)} />;
   else {
@@ -40,6 +44,7 @@ export function Datasets({ sub, arg, isAdmin }: { sub?: string; arg?: string; is
       {creating !== null && (
         <NewProject
           folder={creating}
+          folders={folderNames(projects ?? [])}
           onClose={() => setCreating(null)}
           onCreated={(id) => {
             setCreating(null);
@@ -505,10 +510,12 @@ function CompareCard({ releaseId, otherId, onClose }: { releaseId: string; other
 
 function NewProject({
   folder: initialFolder = "",
+  folders,
   onClose,
   onCreated,
 }: {
   folder?: string;
+  folders: string[];
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
@@ -542,10 +549,10 @@ function NewProject({
             <option value="classify">분류</option>
           </select>
         </label>
-        <label>
-          폴더 (선택)
-          <input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="프로젝트를 묶는 이름" />
-        </label>
+        <div className="field-label">
+          폴더 <span className="muted small">(선택 · 있는 폴더를 고르거나 "새 폴더"로 만들기)</span>
+          <FolderPicker value={folder} folders={folders} onChange={setFolder} />
+        </div>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>

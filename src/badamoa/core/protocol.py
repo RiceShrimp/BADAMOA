@@ -41,6 +41,8 @@ class HeartbeatRequest(BaseModel):
 class HeartbeatResponse(BaseModel):
     cancel_job_ids: list[str] = Field(default_factory=list)
     hub_version: str
+    # Work folders older than this many days that no job is using go (0: keep them).
+    workdir_days: int = 0
 
 
 class ClaimRequest(BaseModel):

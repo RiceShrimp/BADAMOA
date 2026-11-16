@@ -25,7 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
-from badamoa.node import envs
+from badamoa.node import envs, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -127,6 +127,7 @@ class NodeAgent:
         self._envs_changed = threading.Event()
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}  # job_id -> cancel event
+        self._last_sweep = float("-inf")  # when old work folders were last looked at (monotonic)
         self._sampler = sysinfo.MetricsSampler(str(home))
         self._client = httpx.Client(
             base_url=config.hub_url,
@@ -188,10 +189,22 @@ class NodeAgent:
                 resp = self._client.post("/api/agent/heartbeat", json=body, timeout=15)
                 if resp.status_code == 200:
                     sent_info = True
-                    self._request_cancel(resp.json().get("cancel_job_ids", []))
+                    reply = resp.json()
+                    self._request_cancel(reply.get("cancel_job_ids", []))
+                    self._maybe_sweep(int(reply.get("workdir_days") or 0))
             except httpx.HTTPError as e:
                 log.debug("heartbeat failed: %s", e)
             self.stop_event.wait(HEARTBEAT_INTERVAL_S)
+
+    def _maybe_sweep(self, days: int) -> None:
+        """Once an hour, with no job running, remove work folders older than the Hub's retention."""
+        if days <= 0 or time.monotonic() - self._last_sweep < workdirs.SWEEP_EVERY_S:
+            return
+        with self._lock:
+            if self._running:
+                return  # a resumed run may be reading an old folder; wait for a quiet moment
+        self._last_sweep = time.monotonic()
+        threading.Thread(target=workdirs.sweep, args=(self.home, days, set()), name="workdirs", daemon=True).start()
 
     def _request_cancel(self, job_ids: list[str]) -> None:
         with self._lock:

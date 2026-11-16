@@ -71,6 +71,7 @@ const ACTION_LABEL: Record<string, string> = {
   "template.register": "학습 템플릿을 등록했습니다",
   "template.delete": "학습 템플릿을 지웠습니다",
   "storage.cleanup": "저장 공간을 정리했습니다",
+  "trash.empty": "휴지통을 비웠습니다",
   "storage.policy": "보관 기간을 바꿨습니다",
 };
 

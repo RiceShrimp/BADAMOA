@@ -22,7 +22,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import registry, services, sweeps
+from . import cleanup, registry, services, sweeps
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -45,7 +45,8 @@ def heartbeat(
 ) -> HeartbeatResponse:
     cancel_ids = services.heartbeat(db, node, body)
     db.commit()
-    return HeartbeatResponse(cancel_job_ids=cancel_ids, hub_version=services.HUB_VERSION)
+    days = cleanup.get_policy(db)["workdir_days"]
+    return HeartbeatResponse(cancel_job_ids=cancel_ids, hub_version=services.HUB_VERSION, workdir_days=days)
 
 
 def _claim_once(hub: Hub, token: str) -> dict[str, Any] | None | bool:

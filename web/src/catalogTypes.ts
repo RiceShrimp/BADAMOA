@@ -108,7 +108,15 @@ export interface ItemDetail {
 
 export interface TrashInfo {
   projects: { id: string; name: string; task: string; folder: string; deleted_at: string; releases: number; items: number }[];
-  releases: { id: string; dataset: string; version: string; project: { id: string; name: string }; deleted_at: string; items: number }[];
+  releases: {
+    id: string;
+    dataset: string;
+    version: string;
+    project: { id: string; name: string };
+    deleted_at: string;
+    items: number;
+    in_use: string[]; // what still points at it, e.g. "학습 1개": it cannot be removed for good
+  }[];
 }
 
 export interface CompareResult {

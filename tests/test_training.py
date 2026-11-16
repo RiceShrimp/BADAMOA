@@ -807,7 +807,7 @@ def test_storage_policy_and_cleanup(hub, release, settings, monkeypatch):
     database.engine.dispose()
 
     usage = hub.get("/api/storage").json()
-    assert usage["policy"] == {"outputs_days": 0, "checkpoint_days": 0}
+    assert usage["policy"] == {"outputs_days": 0, "checkpoint_days": 0, "trash_days": 0, "workdir_days": 30}
     row = next(p for p in usage["projects"] if p["id"] == project)
     assert row["outputs"] > 0 and row["models"] > 0 and row["checkpoints"] > 0
 

@@ -111,6 +111,8 @@ interface Usage {
 interface Policy {
   outputs_days: number;
   checkpoint_days: number;
+  trash_days: number;
+  workdir_days: number;
 }
 
 interface CleanupReport {
@@ -208,11 +210,20 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
 
 /** How long outputs and checkpoints are kept, and cleaning up now (after seeing what would go). */
 function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Promise<unknown> }) {
-  const [draft, setDraft] = useState({ outputs: String(policy.outputs_days), checkpoints: String(policy.checkpoint_days) });
+  const [draft, setDraft] = useState({
+    outputs: String(policy.outputs_days),
+    checkpoints: String(policy.checkpoint_days),
+    trash: String(policy.trash_days),
+    workdirs: String(policy.workdir_days),
+  });
   const [preview, setPreview] = useState<CleanupReport | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const changed = draft.outputs !== String(policy.outputs_days) || draft.checkpoints !== String(policy.checkpoint_days);
+  const changed =
+    draft.outputs !== String(policy.outputs_days) ||
+    draft.checkpoints !== String(policy.checkpoint_days) ||
+    draft.trash !== String(policy.trash_days) ||
+    draft.workdirs !== String(policy.workdir_days);
 
   const act = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -229,7 +240,12 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
     act(async () => {
       await api("/storage/policy", {
         method: "PUT",
-        body: { outputs_days: Number(draft.outputs) || 0, checkpoint_days: Number(draft.checkpoints) || 0 },
+        body: {
+          outputs_days: Number(draft.outputs) || 0,
+          checkpoint_days: Number(draft.checkpoints) || 0,
+          trash_days: Number(draft.trash) || 0,
+          workdir_days: Number(draft.workdirs) || 0,
+        },
       });
       setPreview(null);
       await onChanged();
@@ -264,9 +280,26 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
           />
         </label>
       </div>
+      <div className="form-row">
+        <label>
+          휴지통 (지운 프로젝트 · 버전) <span className="muted small">{Number(draft.trash) > 0 ? `${draft.trash}일 뒤 완전히 지움` : "비울 때까지 보관"}</span>
+          <input type="number" min={0} max={3650} value={draft.trash} onChange={(e) => setDraft({ ...draft, trash: e.target.value })} />
+        </label>
+        <label>
+          노드의 작업 폴더 <span className="muted small">{days(draft.workdirs)}</span>
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={draft.workdirs}
+            onChange={(e) => setDraft({ ...draft, workdirs: e.target.value })}
+          />
+        </label>
+      </div>
       <p className="muted small">
         0이면 계속 보관합니다. 모델(가중치), 지표, 로그는 기간과 상관없이 남습니다. alias가 붙은 모델의 실행과 "보관" 태그를 붙인
-        실행의 산출물도 남습니다. 지운 실행 · 모델의 파일은 하루가 지나면 정리됩니다.
+        실행의 산출물도 남습니다. 지운 실행 · 모델의 파일은 하루가 지나면 정리됩니다. 노드의 작업 폴더는 실패하거나 멈춘 학습이 남긴
+        것으로, 이어서 실행할 체크포인트는 Hub에도 있어 지워도 이어 갈 수 있습니다. 노드는 작업이 없을 때 한 시간에 한 번 정리합니다.
       </p>
       <div className="head-actions">
         <button onClick={save} disabled={busy || !changed}>

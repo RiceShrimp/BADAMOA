@@ -559,6 +559,15 @@ tr.current-row td {
 .modal-actions .push-left {
   margin-right: auto;
 }
+.folder-picker {
+  display: flex;
+  gap: 8px;
+}
+.folder-picker > * {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ---- settings: accounts, GPU rule ---- */
 a.who {
   color: inherit;

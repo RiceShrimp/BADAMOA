@@ -38,7 +38,7 @@ from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
-from .train_models import Run, Sweep
+from .train_models import ModelJob, ModelVersion, Run, Sweep
 
 TASKS = ("detect", "segment", "classify")
 SPLITS = ("train", "val", "test", "")
@@ -187,6 +187,18 @@ def set_project_deleted(db: Session, user: User, project_id: str, deleted: bool)
     return project
 
 
+def release_users(db: Session, release_id: str) -> list[str]:
+    """What still points at a version, e.g. ["학습 2개", "모델 1개"]: such a version is not removed for good."""
+    counts = [
+        ("학습", select(func.count(Run.id)).where(Run.release_id == release_id)),
+        ("모델", select(func.count(ModelVersion.id)).where(ModelVersion.release_id == release_id)),
+        ("평가", select(func.count(ModelJob.id)).where(ModelJob.release_id == release_id)),
+        ("탐색", select(func.count(Sweep.id)).where(Sweep.release_id == release_id)),
+    ]
+    found = [(what, db.scalar(query) or 0) for what, query in counts]
+    return [f"{what} {n}개" for what, n in found if n]
+
+
 def trash(db: Session) -> dict[str, Any]:
     """Deleted projects, and deleted versions of projects that are still there."""
     projects = db.scalars(select(Project).where(Project.deleted_at.is_not(None)).order_by(Project.deleted_at.desc())).all()
@@ -233,6 +245,7 @@ def trash(db: Session) -> dict[str, Any]:
                 "project": {"id": p.id, "name": p.name},
                 "deleted_at": iso(r.deleted_at),
                 "items": (r.stats or {}).get("items", 0),
+                "in_use": release_users(db, r.id),
             }
             for r, name, p in rows
         ],

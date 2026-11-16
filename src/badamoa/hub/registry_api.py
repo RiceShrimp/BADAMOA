@@ -152,15 +152,17 @@ def storage(
 
 
 class StoragePolicy(BaseModel):
-    outputs_days: int = 0  # 0: keep for ever
-    checkpoint_days: int = 0
+    outputs_days: int | None = None  # 0: keep for ever; left out: as it is
+    checkpoint_days: int | None = None
+    trash_days: int | None = None  # deleted projects and versions, removed for good after this long
+    workdir_days: int | None = None  # work folders runs left on the nodes
 
 
 @router.put("/storage/policy")
 def storage_policy(
     body: StoragePolicy, user: User = Depends(admin_user), db: Session = Depends(db_session)
 ) -> dict[str, Any]:
-    policy = cleanup.set_policy(db, user, body.outputs_days, body.checkpoint_days)
+    policy = cleanup.set_policy(db, user, **body.model_dump(exclude_unset=True))
     db.commit()
     return policy
 

@@ -11,7 +11,9 @@ Three kinds of things can go, each only when it is safe to:
                   (such a run can then no longer be continued)
 
 The Hub runs this every few hours with the saved policy; an admin can look at what it would
-remove and run it now from the storage card in Settings.
+remove and run it now from the storage card in Settings. The same pass empties the trash of
+projects and versions deleted more than ``trash_days`` ago (``purge.py``), and the nodes learn
+``workdir_days`` from their heartbeat to remove old work folders (``node/workdirs.py``).
 """
 
 from __future__ import annotations
@@ -39,7 +41,9 @@ from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, RunFile, Tag, Template
 
 POLICY_KEY = "storage.policy"
-DEFAULT_POLICY = {"outputs_days": 0, "checkpoint_days": 0}
+# trash_days: deleted projects and versions are removed for good after this long (0: until emptied by hand).
+# workdir_days: nodes remove work folders runs left behind (failed or stopped) after this long.
+DEFAULT_POLICY = {"outputs_days": 0, "checkpoint_days": 0, "trash_days": 0, "workdir_days": 30}
 GRACE_S = 24 * 3600  # a younger file may be on its way to being recorded (an upload, an artifact in flight)
 KEEP_TAGS = ("keep", "보관")
 EVERY_S = 6 * 3600  # the Hub's own pass under the saved policy
@@ -53,6 +57,14 @@ def scheduled(database: Any, settings: HubSettings) -> dict[str, Any] | None:
     if not lock.acquire(blocking=False):
         return None
     try:
+        from . import purge  # purge uses this module's live_blobs
+
+        with database.session() as db:
+            days = get_policy(db)["trash_days"]
+            if days > 0:
+                emptied = purge.empty_trash(db, settings, None, older_than_days=days, via="system")
+                if emptied["projects"] or emptied["releases"]:
+                    log.info("trash: %d projects, %d versions removed", emptied["projects"], emptied["releases"])
         with database.session() as db:
             report = cleanup(db, settings, apply=True)
         if report["removed"]["files"]:
@@ -70,11 +82,16 @@ def get_policy(db: Session) -> dict[str, int]:
     return {**DEFAULT_POLICY, **((row.value if row else None) or {})}
 
 
-def set_policy(db: Session, user: User, outputs_days: int, checkpoint_days: int) -> dict[str, int]:
+def set_policy(db: Session, user: User, **days: int | None) -> dict[str, int]:
+    """Change some of the retention periods (``outputs_days``, ``checkpoint_days``, ``trash_days``, ``workdir_days``)."""
     services.require_admin(user)
-    if not (0 <= outputs_days <= 3650 and 0 <= checkpoint_days <= 3650):
-        raise ServiceError(400, "보관 기간은 0(계속 보관)에서 3650일 사이여야 합니다.")
-    value = {"outputs_days": int(outputs_days), "checkpoint_days": int(checkpoint_days)}
+    value = get_policy(db)
+    for key, number in days.items():
+        if key not in DEFAULT_POLICY or number is None:
+            continue
+        if not 0 <= number <= 3650:
+            raise ServiceError(400, "보관 기간은 0(계속 보관)에서 3650일 사이여야 합니다.")
+        value[key] = int(number)
     row = db.get(HubSetting, POLICY_KEY)
     if row is None:
         db.add(HubSetting(key=POLICY_KEY, value=value))

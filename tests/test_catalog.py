@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -556,3 +557,72 @@ def test_dropping_a_class_of_a_classification_version(hub, tmp_path):
     assert (made["items"], made["classes"]) == (12, 1)
     view = hub.get(f"/api/releases/{made['release_id']}").json()
     assert view["stats"]["classes"] == {"0": {"boxes": 12, "items": 12}}
+
+
+def test_empty_the_trash(hub, tmp_path, settings):
+    project = hub.post("/api/projects", json={"name": "비울 것", "task": "detect"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+    v2 = hub.post("/api/releases", json={"sources": [v1], "version": "v2", "filter": {"split": "val"}}).json()["release_id"]
+    thumbs = {i["thumb_url"].split("/")[3].split("?")[0] for i in hub.get(f"/api/releases/{v1}/items").json()["items"]}
+
+    def blob(digest):
+        return settings.storage_dir / "blobs" / digest[:2] / digest[2:4] / digest
+
+    assert thumbs and all(blob(t).is_file() for t in thumbs)
+
+    # ---- a version for good: its image records stay while another version holds them
+    assert hub.delete(f"/api/releases/{v2}").status_code == 200
+    assert hub.get("/api/trash").json()["releases"][0]["in_use"] == []
+    done = hub.post("/api/trash/empty", json={"releases": [v2]}).json()
+    assert (done["projects"], done["releases"], done["kept"]) == (0, 1, [])
+    assert hub.get("/api/trash").json() == {"projects": [], "releases": []}
+    tree = hub.get(f"/api/projects/{project['id']}/datasets", params={"trash": True}).json()
+    assert [r["version"] for d in tree for r in d["releases"]] == ["v1"]
+    assert hub.get(f"/api/releases/{v1}").json()["stats"]["items"] == 8 and all(blob(t).is_file() for t in thumbs)
+    assert hub.post("/api/trash/empty", json={"releases": [v2]}).status_code == 404  # not in the trash any more
+
+    # ---- a version a run trained on stays, with the reason
+    run = hub.post("/api/runs", json={"release_id": v1, "template": "dummy", "params": {"epochs": 1}, "gpus": 0}).json()
+    deadline = time.monotonic() + 120
+    while hub.get(f"/api/jobs/{run['job_id']}").json()["status"] in ("queued", "running") and time.monotonic() < deadline:
+        time.sleep(0.3)
+    assert hub.delete(f"/api/releases/{v1}").status_code == 200
+    (binned,) = hub.get("/api/trash").json()["releases"]
+    assert "학습 1개" in binned["in_use"]
+    kept = hub.post("/api/trash/empty", json={}).json()
+    assert kept["releases"] == 0 and kept["kept"][0]["id"] == v1 and "학습" in kept["kept"][0]["reason"]
+
+    # ---- the whole project: datasets, runs, models and the files only they used
+    listed = hub.get(f"/api/projects/{project['id']}/models").json()
+    model = hub.get(f"/api/models/{listed[0]['id']}").json()
+    assert hub.post(f"/api/releases/{v1}/restore").status_code == 200
+    assert hub.delete(f"/api/projects/{project['id']}").status_code == 200
+    gone = hub.post("/api/trash/empty", json={}).json()
+    assert (gone["projects"], gone["kept"]) == (1, []) and gone["files"] >= len(thumbs) + 1 and gone["bytes"] > 0
+    assert not any(blob(t).exists() for t in thumbs) and not blob(model["sha256"]).exists()
+    assert hub.get("/api/trash").json() == {"projects": [], "releases": []}
+    assert hub.get(f"/api/runs/{run['id']}").status_code == 404
+    assert hub.post("/api/projects", json={"name": "비울 것"}).status_code == 200  # the name is free again
+    actions = [a["action"] for a in hub.get("/api/activity?limit=5").json()]
+    assert "trash.empty" in actions
+
+    # ---- retention: emptied by itself after so many days; work folders on the nodes
+    policy = hub.put("/api/storage/policy", json={"trash_days": 7}).json()
+    assert (policy["trash_days"], policy["workdir_days"], policy["outputs_days"]) == (7, 30, 0)
+    assert hub.put("/api/storage/policy", json={"workdir_days": 4000}).status_code == 400
+
+
+def test_old_work_folders_on_a_node(tmp_path):
+    from badamoa.node import workdirs
+
+    root = tmp_path / "runs"
+    now = time.time()
+    for name, age_days in (("old-failed", 40), ("recent", 2), ("running-old", 40)):
+        out = root / name / "out"
+        out.mkdir(parents=True)
+        (out / "last.pt").write_bytes(b"x" * 1000)
+        for path in (out / "last.pt", out, root / name):
+            os.utime(path, (now - age_days * 86400, now - age_days * 86400))
+    assert workdirs.sweep(tmp_path, 0, set(), now) == (0, 0)  # 0: keep
+    assert workdirs.sweep(tmp_path, 30, {"running-old"}, now) == (1, 1000)
+    assert sorted(p.name for p in root.iterdir()) == ["recent", "running-old"]

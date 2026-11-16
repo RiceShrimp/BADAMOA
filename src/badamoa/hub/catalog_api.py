@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, overview, services
+from . import catalog, overview, purge, services
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
 from .models import Node, User
@@ -77,6 +77,21 @@ def restore_project(project_id: str, user: User = Depends(current_user), db: Ses
 def trash(_: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
     """Deleted projects and versions, to bring back."""
     return catalog.trash(db)
+
+
+class EmptyTrash(BaseModel):
+    projects: list[str] | None = None  # both left out: everything in the trash
+    releases: list[str] | None = None
+
+
+@router.post("/trash/empty")
+def empty_trash(
+    body: EmptyTrash, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Remove deleted projects and versions for good, and the stored files only they used. Cannot be undone."""
+    result = purge.empty_trash(db, hub.settings, user, projects=body.projects, releases=body.releases)
+    db.commit()
+    return result
 
 
 @router.get("/project-cards")
