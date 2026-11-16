@@ -31,8 +31,8 @@ def test_scan_reads_coco128_layout():
     assert len(found.classes) == 80 and found.classes[0] == "person" and found.classes[79] == "toothbrush"
     assert {e.split for e in found.entries} == {"train"}  # from the "train2017" folder
     assert sum(len(e.boxes) for e in found.entries) == 929  # instances in COCO128
-    # two images ship without a label file: nobody recorded that they are empty, so they count as unlabelled
-    assert sum(e.state == "unlabelled" for e in found.entries) == 2
+    # two images ship without a label file: an image without labels is background
+    assert sum(e.state == "background" for e in found.entries) == 2
 
 
 def test_split_comes_from_coco_style_folder_names_without_yaml(tmp_path):
@@ -71,7 +71,7 @@ def test_import_coco128_end_to_end(live_hub, tmp_path, monkeypatch):
             release = hub.get(f"/api/releases/{job['result']['release_id']}").json()
             stats = release["stats"]
             assert stats["items"] == 128 and stats["boxes"] == 929
-            assert stats["states"] == {"labelled": 126, "background": 0, "unlabelled": 2}
+            assert stats["states"] == {"labelled": 126, "background": 2}
             assert len(release["label_space"]["classes"]) == 80
             person = stats["classes"]["0"]
             assert person["boxes"] == 254 and person["items"] == 61  # "person" in COCO128
@@ -128,7 +128,7 @@ def test_train_yolo_on_coco128(live_hub, tmp_path, monkeypatch):
             assert done["history"]["steps"] == [1]  # the closing validation is not a second epoch
             recorded = set(done["history"]["series"])
             assert {"map50_95", "map50", "precision", "recall", "train_box_loss", "val_box_loss"} <= recorded
-            assert done["export"]["items"]["train"] + done["export"]["items"]["val"] == 126  # 2 unlabelled left out
+            assert done["export"]["items"]["train"] + done["export"]["items"]["val"] == 128  # 2 of them background
             assert done["export"]["val_source"] == "holdout" and done["info"]["torch"].endswith("+cpu")
             model = hub.get(f"/api/models/{done['model']['id']}").json()
             assert model["arch"] == "yolo11n" and len(model["classes"]) == 80 and model["bytes"] > 1_000_000

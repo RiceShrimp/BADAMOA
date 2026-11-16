@@ -40,7 +40,7 @@ class Entry:
 
     path: Path
     split: str = ""
-    state: str = "unlabelled"  # labelled | background | unlabelled
+    state: str = "background"  # labelled | background (no labels: nothing to find in it)
     boxes: list[list[float]] = field(default_factory=list)
 
 
@@ -142,7 +142,7 @@ def _clamp(v: float) -> float:
 def _read_yolo_label(path: Path, kpt_shape: list[int] | None = None) -> tuple[str, list[list[float]]]:
     """Boxes of a YOLO label file: [class, cx, cy, w, h], then an outline (segmentation) or keypoints (pose)."""
     if not path.is_file():
-        return "unlabelled", []
+        return "background", []  # no label file: nothing to find in it
     boxes = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.split()
@@ -282,7 +282,6 @@ def scan_coco(root: Path) -> Scan:
     entries = []
     for path, data in parsed:
         split = _split_from_name(path.stem)
-        has_annotations = "annotations" in data
         boxes_by_image: dict[Any, list[list[float]]] = {}
         sizes = {img["id"]: (img.get("width") or 0, img.get("height") or 0) for img in data["images"]}
         for ann in data.get("annotations", []):
@@ -310,7 +309,7 @@ def scan_coco(root: Path) -> Scan:
             if image is None:
                 continue
             boxes = boxes_by_image.get(img["id"], [])
-            state = "labelled" if boxes else ("background" if has_annotations else "unlabelled")
+            state = "labelled" if boxes else "background"
             entries.append(Entry(path=image, split=split, state=state, boxes=boxes))
     return Scan(format="coco", classes=[categories[c] for c in class_ids], entries=entries, keypoints=keypoints)
 
@@ -457,7 +456,18 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(f"Hub가 거부했습니다 ({resp.status_code}): {resp.text[:300]}")
             return resp.json()
 
-        post("/begin", {"classes": found.classes, "total": total, "format": found.format, "keypoints": found.keypoints})
+        # Outlines (segmentation data) are told apart here, so "자동" on the Hub can pick Seg.
+        outlines = not found.keypoints and any(len(b) >= 11 and len(b) % 2 == 1 for e in found.entries for b in e.boxes)
+        post(
+            "/begin",
+            {
+                "classes": found.classes,
+                "total": total,
+                "format": found.format,
+                "keypoints": found.keypoints,
+                "outlines": outlines,
+            },
+        )
         if found.keypoints:
             print(f"키포인트 {found.keypoints['count']}개 (연결선 {len(found.keypoints['skeleton'])}개)", flush=True)
         # Reading the next batch goes on while the Hub stores the last one.

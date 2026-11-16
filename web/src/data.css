@@ -116,6 +116,7 @@
   min-width: 0;
 }
 .data-card-title strong {
+  min-width: 0;
   overflow: hidden;
   font-size: 15px;
   text-overflow: ellipsis;
@@ -225,6 +226,12 @@
   background: transparent;
   color: var(--muted);
   font-weight: 500;
+  white-space: normal; /* buttons keep one line; this one's note wraps inside the tile */
+}
+.add-tile .small {
+  max-width: 100%;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .add-tile:hover {
   border-color: var(--accent);
@@ -1006,4 +1013,37 @@ tr.clickable:hover td {
   width: auto;
   margin: 0 0 0 8px;
   padding: 3px 8px;
+}
+
+/* a dataset's task (Det · Seg · Kpt · Cls, or a name a team gave) */
+.task-tag {
+  font-family: var(--mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+}
+.task-tags,
+.title-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.title-tags {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+.task-tags {
+  margin: 2px 0;
+}
+/* a list to pick from, and beside it a box when the name is typed (the import dialog's dataset and task) */
+.pick-or-type {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  align-items: end;
+}
+.pick-or-type.two {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.pick-or-type > * {
+  width: 100%;
+  min-width: 0;
 }

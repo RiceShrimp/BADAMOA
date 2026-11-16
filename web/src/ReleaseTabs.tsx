@@ -244,12 +244,11 @@ export function ChartsTab({ release }: { release: ReleaseInfo }) {
       </section>
       <section className="card">
         <h3>라벨 상태</h3>
-        <div className="muted small">미라벨은 학습에서 빠집니다 (배경으로 넣도록 고를 수 있음)</div>
+        <div className="muted small">배경(라벨 없음)은 찾을 물체가 없는 예로 학습에 들어갑니다</div>
         <Donut
           parts={[
             { label: STATE_LABEL.labelled, value: data.states.labelled ?? 0, color: "var(--series-3)" },
             { label: STATE_LABEL.background, value: data.states.background ?? 0, color: "var(--series-1)" },
-            { label: STATE_LABEL.unlabelled, value: data.states.unlabelled ?? 0, color: "var(--idle)" },
           ].filter((p) => p.value > 0)}
         />
       </section>

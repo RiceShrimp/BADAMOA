@@ -5,7 +5,7 @@ import { ModelOps } from "./ModelOps";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { ClassTable } from "./Training";
 import { api } from "./api";
-import { bytesLabel } from "./catalogTypes";
+import { bytesLabel, taskLabel } from "./catalogTypes";
 import {
   METRIC_LABEL,
   type ModelDetail,
@@ -53,7 +53,7 @@ function ModelList({
     [projectId, models?.length],
   );
   const [picked, setPicked] = useState<string[]>([]);
-  const metricKeys = keyMetrics(projects?.find((p) => p.id === projectId)?.task);
+  const metricKeys = keyMetrics(projects?.find((p) => p.id === projectId)?.tasks?.[0]);
   const primary = metricKeys[0];
   useEffect(() => {
     setPicked([]);
@@ -420,7 +420,7 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
             {model.name} <span className="version">v{model.version}</span>
           </h1>
           <p className="muted">
-            {model.arch} · {model.task === "classify" ? "분류" : "객체 검출"} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
+            {model.arch} · {taskLabel(model.task)} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
           </p>
         </div>
         <div className="head-actions">

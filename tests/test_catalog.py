@@ -28,7 +28,7 @@ def test_scan_yolo_reads_splits_and_label_states(tmp_path):
     assert found.format == "yolo" and found.classes == CLASSES
     assert [e.split for e in found.entries].count("train") == 6 and [e.split for e in found.entries].count("val") == 2
     states = {e.path.name: e.state for e in found.entries}
-    assert states["train_0001.jpg"] == "background" and states["train_0002.jpg"] == "unlabelled"
+    assert states["train_0001.jpg"] == "background" and states["train_0002.jpg"] == "background"  # no label file
     assert states["train_0000.jpg"] == "labelled"
     assert all(0 <= v <= 1 for e in found.entries for b in e.boxes for v in b[1:])
 
@@ -100,7 +100,7 @@ def test_import_browse_and_compare_releases(hub, tmp_path):
     release = hub.get(f"/api/releases/{v1}").json()
     stats = release["stats"]
     assert stats["items"] == 8 and stats["splits"]["train"]["items"] == 6 and stats["splits"]["val"]["items"] == 2
-    assert stats["states"] == {"labelled": 6, "background": 1, "unlabelled": 1}
+    assert stats["states"] == {"labelled": 6, "background": 2}
     assert stats["sites"] == ["Hangang"] and stats["bytes"] > 0
     assert [c["name"] for c in release["label_space"]["classes"]] == CLASSES and release["base"] is None
     assert sum(c["boxes"] for c in stats["classes"].values()) == stats["boxes"] > 0
@@ -110,8 +110,9 @@ def test_import_browse_and_compare_releases(hub, tmp_path):
         return hub.get(f"/api/releases/{v1}/items", params=params).json()
 
     assert items()["total"] == 8 and items(split="val")["total"] == 2
-    assert [i["file_name"] for i in items(state="background")["items"]] == ["train_0001.jpg"]
-    assert items(state="unlabelled")["items"][0]["box_count"] == 0
+    background = items(state="background")["items"]
+    assert [i["file_name"] for i in background] == ["train_0001.jpg", "train_0002.jpg"]
+    assert {i["box_count"] for i in background} == {0}
     assert items(q="val_")["total"] == 2 and items(site="Hangang")["total"] == 8 and items(site="nowhere")["total"] == 0
     class_id = int(next(iter(stats["classes"])))
     assert items(class_id=class_id)["total"] == stats["classes"][str(class_id)]["items"]
@@ -288,18 +289,18 @@ def test_download_a_release_as_yolo_or_coco(hub, tmp_path, settings):
         assert data.status_code == 200 and "attachment" in data.headers["content-disposition"]
         return listed, zipfile.ZipFile(io.BytesIO(data.content))
 
-    # ---- YOLO with the images: the unlabelled image stays out, the background one has an empty label file
+    # ---- YOLO with the images: an image without labels goes in as background, with an empty label file
     listed, archive = export(format="yolo")
     names = archive.namelist()
-    assert listed["counts"] == {"train": 5, "val": 2} and listed["skipped"] == {"unlabelled": 1, "missing": 0}
+    assert listed["counts"] == {"train": 6, "val": 2} and listed["skipped"] == {"unlabelled": 0, "missing": 0}
     assert listed["file"] == "street-v1-yolo.zip" and listed["expires_at"]
-    assert sum(n.startswith("images/") for n in names) == 7 and sum(n.startswith("labels/") for n in names) == 7
+    assert sum(n.startswith("images/") for n in names) == 8 and sum(n.startswith("labels/") for n in names) == 8
     assert archive.read("labels/train/train_0001.txt") == b""  # background
-    assert "images/train/train_0002.jpg" not in names  # unlabelled
+    assert archive.read("labels/train/train_0002.txt") == b""  # had no label file: background too
     data_yaml = archive.read("data.yaml").decode()
     assert "train: images/train" in data_yaml and "val: images/val" in data_yaml and '0: "person"' in data_yaml
     files = archive.read("files.csv").decode().splitlines()
-    assert files[0] == "split,file,sha256,registered_path" and len(files) == 8
+    assert files[0] == "split,file,sha256,registered_path" and len(files) == 9
     assert "street v1" in archive.read("README.txt").decode()
 
     # ---- COCO, the labels only: pixel boxes, 1-based categories, no images
@@ -307,7 +308,7 @@ def test_download_a_release_as_yolo_or_coco(hub, tmp_path, settings):
     assert not any(n.startswith("images/") for n in archive.namelist()) and listed["file"] == "street-v1-coco-labels.zip"
     train = json.loads(archive.read("annotations/instances_train.json"))
     assert [c["name"] for c in train["categories"]] == CLASSES and train["categories"][0]["id"] == 1
-    assert len(train["images"]) == 5 and train["images"][0]["width"] == 320
+    assert len(train["images"]) == 6 and train["images"][0]["width"] == 320  # the two without labels as background
     box = train["annotations"][0]["bbox"]
     assert len(box) == 4 and 0 <= box[0] <= 320 and box[2] > 1  # pixels, not fractions
 
@@ -421,7 +422,7 @@ def test_cards_and_release_tabs(hub, tmp_path):
     assert (dataset["name"], dataset["release"]["id"], dataset["releases"], dataset["items"], dataset["classes"]) == (
         "street", v1, 1, 8, 3
     )
-    assert dataset["splits"] == {"train": 6, "val": 2} and dataset["states"]["unlabelled"] == 1
+    assert dataset["splits"] == {"train": 6, "val": 2} and dataset["states"] == {"labelled": 6, "background": 2}
     assert [c["name"] for c in dataset["top_classes"]] and page["metric"] == "map50_95" and page["top_models"] == []
 
     # ---- a release's charts: sizes, classes, where the boxes sit

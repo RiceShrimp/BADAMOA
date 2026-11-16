@@ -38,8 +38,8 @@ def _boxes(rng: random.Random, count: int) -> list[list[float]]:
 def make_yolo(root: Path, train: int = 6, val: int = 2, size: tuple[int, int] = (320, 240), seed: int = 0) -> Path:
     """images/{split}/*.jpg + labels/{split}/*.txt + data.yaml.
 
-    In ``train``, the second image has an empty label file (background) and the
-    third has no label file at all (unlabelled).
+    In ``train``, the second image has an empty label file and the third has no label
+    file at all; both are background (nothing to find in them).
     """
     rng = random.Random(seed)
     for split, count in (("train", train), ("val", val)):

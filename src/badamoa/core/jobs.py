@@ -77,6 +77,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "name_pattern": {"type": "string", "default": ""},
                     "note": {"type": "string", "default": ""},
                     "base_release_id": {"type": "string", "default": ""},
+                    "task": {"type": "string", "default": ""},
                 },
             },
         ),

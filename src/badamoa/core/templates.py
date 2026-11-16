@@ -22,8 +22,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from badamoa.core import tasks as task_names
+
 MANIFEST = "badamoa.toml"
-TASKS = ("detect", "segment", "classify")
+TASKS = ("detect", "segment", "classify")  # what the built-in templates train; a template may name any task
 DATA_FORMATS = ("yolo", "yolo-seg", "imagefolder")  # coco and manifest come with the templates that need them
 ENTRYPOINTS = ("train", "eval", "predict", "export")
 PARAM_TYPES = ("string", "integer", "number", "boolean", "object")
@@ -168,8 +170,10 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
         raise TemplateError("name은 영문 소문자·숫자·`-`·`_`·`.`로 2~63자여야 합니다 (예: inhouse-rtdetr).")
     if not manifest.version.strip():
         raise TemplateError("version을 적어 주세요 (예: 1.0.0).")
-    if manifest.task not in TASKS:
-        raise TemplateError(f"task는 {', '.join(TASKS)} 중 하나여야 합니다.")
+    try:  # detect · segment · pose · classify (Det, Seg, Kpt, Cls), or a task a team names, such as ocr
+        manifest.task = task_names.normalize(manifest.task) or "detect"
+    except ValueError as e:
+        raise TemplateError(f"task: {e}") from e
     if manifest.data_format not in DATA_FORMATS:
         raise TemplateError(f"data_format은 지금 {', '.join(DATA_FORMATS)}만 지원합니다.")
     unknown = set(manifest.entrypoints) - set(ENTRYPOINTS)

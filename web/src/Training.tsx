@@ -9,7 +9,7 @@ import { EpochChart, type EpochSeries } from "./EpochChart";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { RunTable } from "./RunTable";
 import { type Job, type LogLine, type MetricHistory, api } from "./api";
-import type { LabelClass, ReleaseInfo, TreeDataset } from "./catalogTypes";
+import { type LabelClass, type ReleaseInfo, type TreeDataset, taskLabel } from "./catalogTypes";
 import {
   ACTIVE,
   type Environment,
@@ -104,7 +104,8 @@ function RunList({
   );
   const [picked, setPicked] = useState<string[] | null>(null); // null: follow the newest runs
   const [creating, setCreating] = useState(startWith !== undefined);
-  const task = projects?.find((p) => p.id === projectId)?.task ?? "detect";
+  // Columns and charts follow the project's first dataset's task; a run of another task shows its own.
+  const task = projects?.find((p) => p.id === projectId)?.tasks?.[0] ?? "detect";
   const metricKeys = keyMetrics(task);
   const primary = metricKeys[0];
 
@@ -514,7 +515,7 @@ function RunView({ runId }: { runId: string }) {
                 {leftOut === 0
                   ? "없음"
                   : [
-                      excluded.unlabelled ? `미라벨 ${excluded.unlabelled}` : "",
+                      excluded.unlabelled ? `라벨 없음 ${excluded.unlabelled}` : "",
                       excluded.partial ? `일부 클래스만 라벨 ${excluded.partial}` : "",
                       excluded.missing ? `파일 없음 ${excluded.missing}` : "",
                     ]
@@ -557,8 +558,6 @@ function RunView({ runId }: { runId: string }) {
                   ? `GPU ${run.config.gpus}개 요청`
                   : "CPU"}
             </dd>
-            <dt>라벨 없는 이미지</dt>
-            <dd>{run.config.unlabelled === "background" ? "배경으로 사용" : "제외"}</dd>
             {info.ultralytics && (
               <>
                 <dt>라이브러리</dt>
@@ -895,8 +894,7 @@ function NewRun({
   const [values, setValues] = useState<Record<string, FormValue>>({});
   const [classes, setClasses] = useState<LabelClass[]>([]);
   const [chosen, setChosen] = useState<number[]>([]); // empty = all classes
-  const [unlabelledCount, setUnlabelledCount] = useState(0);
-  const [extra, setExtra] = useState({ environment: "", gpus: "", unlabelled: "exclude", name: "", model_name: "", base: "" });
+  const [extra, setExtra] = useState({ environment: "", gpus: "", name: "", model_name: "", base: "" });
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -905,7 +903,9 @@ function NewRun({
   const [method, setMethod] = useState<SweepMethod>("grid");
   const [drawCount, setDrawCount] = useState(10);
   const [parallel, setParallel] = useState(1);
-  const [goalMetric, setGoalMetric] = useState(keyMetrics(task)[0]);
+  // What the chosen version's dataset is labelled for decides the templates on offer.
+  const runTask = tree?.find((d) => d.releases.some((r) => r.id === release))?.task ?? task;
+  const [goalMetric, setGoalMetric] = useState(keyMetrics(runTask)[0]);
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -913,23 +913,25 @@ function NewRun({
       const ready = data.flatMap((d) => d.releases).filter((r) => r.status === "ready");
       setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
     });
-    void api<Template[]>(`/templates?task=${task}`).then((list) => {
+    void api<Environment[]>("/environments").then(setEnvironments);
+    void api<ModelInfo[]>(`/projects/${projectId}/models`).then(setModels);
+  }, [projectId]);
+
+  useEffect(() => {
+    setTemplates(null);
+    setGoalMetric(keyMetrics(runTask)[0]);
+    void api<Template[]>(`/templates?task=${encodeURIComponent(runTask)}`).then((list) => {
       setTemplates(list);
       const first = list.find((t) => t.name === defaultTemplate) ?? list[0];
       setTemplateName(first?.name ?? "");
       setValues(initialValues(first));
     });
-    void api<Environment[]>("/environments").then(setEnvironments);
-    void api<ModelInfo[]>(`/projects/${projectId}/models`).then(setModels);
-  }, [projectId, task, defaultTemplate]);
+  }, [runTask, defaultTemplate]);
 
   useEffect(() => {
     setChosen([]);
     if (!release) return setClasses([]);
-    void api<ReleaseInfo>(`/releases/${release}`).then((info) => {
-      setClasses(info.label_space.classes);
-      setUnlabelledCount(info.stats.states?.unlabelled ?? 0);
-    });
+    void api<ReleaseInfo>(`/releases/${release}`).then((info) => setClasses(info.label_space.classes));
   }, [release]);
 
   const template = templates?.find((t) => t.name === templateName);
@@ -992,7 +994,6 @@ function NewRun({
             parallel,
             metric: goalMetric,
             gpus: extra.gpus === "" ? null : Number(extra.gpus),
-            unlabelled: extra.unlabelled,
             classes: chosen,
             name: extra.name,
             base_model_id: extra.base,
@@ -1008,7 +1009,6 @@ function NewRun({
           environment: extra.environment,
           params,
           gpus: extra.gpus === "" ? null : Number(extra.gpus),
-          unlabelled: extra.unlabelled,
           classes: chosen,
           name: extra.name,
           model_name: extra.model_name,
@@ -1042,7 +1042,7 @@ function NewRun({
             버전
             <select value={release} onChange={(e) => setRelease(e.target.value)} required>
               {tree?.map((d) => (
-                <optgroup key={d.id} label={d.name}>
+                <optgroup key={d.id} label={`${d.name} · ${taskLabel(d.task)}`}>
                   {d.releases
                     .filter((r) => r.status === "ready" && !r.deleted_at)
                     .map((r) => (
@@ -1054,6 +1054,14 @@ function NewRun({
               ))}
             </select>
           </label>
+          {templates && templates.length === 0 && (
+            <div className="notice">
+              이 데이터셋의 태스크({taskLabel(runTask)})를 학습하는 모델 템플릿이 없습니다.{" "}
+              {runTask === "pose"
+                ? "Kpt 학습은 아직 없습니다. 박스로 학습하려면 같은 폴더를 태스크 Det에 두고 새 데이터셋으로 가져오세요."
+                : "이 태스크를 적은 템플릿을 등록하세요."}
+            </div>
+          )}
           {templates && templates.length > 1 && (
             <label>
               모델 종류
@@ -1099,13 +1107,6 @@ function NewRun({
               <label>
                 GPU 수
                 <input type="number" min={0} max={16} value={extra.gpus} onChange={setExtraField("gpus")} placeholder="자동" />
-              </label>
-              <label>
-                라벨 없는 이미지{unlabelledCount > 0 ? ` (${unlabelledCount.toLocaleString()}장)` : ""}
-                <select value={extra.unlabelled} onChange={setExtraField("unlabelled")}>
-                  <option value="exclude">제외</option>
-                  <option value="background">배경으로 사용</option>
-                </select>
               </label>
             </div>
             {classes.length > 0 && (

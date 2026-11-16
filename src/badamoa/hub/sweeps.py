@@ -306,8 +306,8 @@ def start_sweep(
     release = catalog.get_release(db, release_id)
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
-    fallback = registry.DEFAULT_BY_TASK.get(project.task, registry.DEFAULT_TEMPLATE)
-    row = registry.get_template(db, template or (project.settings or {}).get("template") or fallback)
+    task = catalog.dataset_task(dataset)
+    row = registry.template_for(db, project.settings, task, template)
     manifest = registry.manifest_of(row)
     fixed = {k: v for k, v in (params or {}).items() if k not in space}
     try:
@@ -318,7 +318,7 @@ def start_sweep(
     _check_used(manifest, resolve_params(manifest, fixed), clean)
     if not 1 <= max_runs <= MAX_RUNS:
         raise ServiceError(400, f"실행 수는 1~{MAX_RUNS}이어야 합니다.")
-    metric = metric.strip() or training.PRIMARY_METRIC.get(project.task, "map50_95")
+    metric = metric.strip() or training.PRIMARY_METRIC.get(task, "map50_95")
     goal = goal or ("minimize" if "loss" in metric else "maximize")
     if goal not in ("maximize", "minimize"):
         raise ServiceError(400, "goal은 maximize 또는 minimize입니다.")
@@ -500,7 +500,7 @@ def sweep_view(db: Session, settings: HubSettings, sweep: Sweep, detail: bool = 
         "id": sweep.id,
         "name": sweep.name,
         "project_id": sweep.project_id,
-        "task": (project.task if (project := catalog.get_project(db, sweep.project_id)) else "detect"),
+        "task": catalog.dataset_task(dataset),
         "status": sweep.status,
         "error": sweep.error or None,
         "method": sweep.method,

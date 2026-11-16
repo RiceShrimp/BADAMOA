@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.orm import Session
 
+from badamoa.core import tasks as task_names
 from badamoa.core.protocol import ImportBegin, ImportChunk
 from badamoa.core.storage import Storage
 
@@ -41,10 +42,12 @@ from .models import HubSetting, Job, Node, User
 from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, Sweep
 
-TASKS = ("detect", "segment", "classify", "pose")
-KIND_NAME = {"detect": "객체 탐지", "classify": "분류", "segment": "분할", "pose": "키포인트"}
+TASKS = task_names.BUILTIN
 SPLITS = ("train", "val", "test", "")
-STATES = ("labelled", "background", "unlabelled")
+# An image without labels is background: nothing to find in it. ("unlabelled" from older nodes is read as that.)
+STATES = ("labelled", "background")
+# Data that may go into a dataset of another task: outlines kept as boxes, keypoints kept as boxes.
+_FITS = {("segment", "detect"), ("detect", "segment"), ("detect", "pose")}
 MAX_PAGE = 200
 GRID_BOXES = 30  # boxes drawn over a grid thumbnail; the item view shows all
 OUTLINE_POINTS = 48  # points of an outline drawn over a thumbnail
@@ -68,16 +71,13 @@ def light_shape(box: list[float]) -> list[float]:
 # ---- projects ------------------------------------------------------------------
 
 
-def create_project(
-    db: Session, user: User, name: str, task: str = "detect", folder: str = "", description: str = ""
-) -> Project:
+def create_project(db: Session, user: User, name: str, folder: str = "", description: str = "") -> Project:
+    """A project groups datasets that share a class system; each dataset has its own task."""
     name = name.strip()
     if not 1 <= len(name) <= 128:
         raise ServiceError(400, "프로젝트 이름은 1~128자여야 합니다.")
-    if task not in TASKS:
-        raise ServiceError(400, f"task는 {', '.join(TASKS)} 중 하나여야 합니다.")
     _name_free(db, name)
-    project = Project(name=name, task=task, folder=folder.strip()[:128], description=description, created_by=user.id)
+    project = Project(name=name, task="", folder=folder.strip()[:128], description=description, created_by=user.id)
     db.add(project)
     db.flush()
     _remember_folder(db, project.folder)
@@ -203,8 +203,35 @@ def get_project(db: Session, project_id: str) -> Project:
     return project
 
 
+def dataset_task(dataset: Dataset | None) -> str:
+    return (dataset.task if dataset is not None else "") or "detect"
+
+
+def release_task(db: Session, release: Release | str | None) -> str:
+    """The task of the dataset a release belongs to."""
+    if isinstance(release, str):
+        release = db.get(Release, release)
+    return dataset_task(db.get(Dataset, release.dataset_id) if release is not None else None)
+
+
+def project_tasks(db: Session) -> dict[str, list[str]]:
+    """The tasks of each project's datasets that have a version out of the trash, oldest dataset first."""
+    rows = db.execute(
+        select(Dataset.project_id, Dataset.task)
+        .where(Dataset.id.in_(select(Release.dataset_id).where(Release.deleted_at.is_(None))))
+        .order_by(Dataset.created_at)
+    ).all()
+    found: dict[str, list[str]] = {}
+    for project_id, task in rows:
+        listed = found.setdefault(project_id, [])
+        if (task or "detect") not in listed:
+            listed.append(task or "detect")
+    return found
+
+
 def list_projects(db: Session) -> list[dict[str, Any]]:
     projects = db.scalars(select(Project).where(Project.deleted_at.is_(None)).order_by(Project.folder, Project.name)).all()
+    tasks = project_tasks(db)
     counts = dict(
         db.execute(
             select(Dataset.project_id, func.count(Release.id))
@@ -218,7 +245,8 @@ def list_projects(db: Session) -> list[dict[str, Any]]:
         {
             "id": p.id,
             "name": p.name,
-            "task": p.task,
+            "tasks": tasks.get(p.id, []),
+            "task": (tasks.get(p.id) or [""])[0],  # the first dataset's task, for older readers
             "folder": p.folder,
             "description": p.description,
             "settings": p.settings or {},
@@ -346,7 +374,6 @@ def trash(db: Session) -> dict[str, Any]:
             {
                 "id": p.id,
                 "name": p.name,
-                "task": p.task,
                 "folder": p.folder,
                 "created_by": p.created_by,
                 "deleted_at": iso(p.deleted_at),
@@ -384,6 +411,7 @@ def tree(db: Session, project_id: str, include_deleted: bool = False) -> list[di
             {
                 "id": dataset.id,
                 "name": dataset.name,
+                "task": dataset_task(dataset),
                 "releases": [
                     {
                         "id": r.id,
@@ -420,12 +448,18 @@ def start_import(
     name_pattern: str = "",
     note: str = "",
     base_release_id: str = "",
+    task: str = "",
     via: str = "api",
 ) -> Job:
+    """Import a node's folder as a dataset version. ``task``: Det/Seg/Kpt/Cls, a named task, or "" (from the data)."""
     get_project(db, project_id)
     dataset, version, path = dataset.strip(), version.strip(), path.strip()
     if not dataset or not version or not path:
         raise ServiceError(400, "데이터셋 이름, 버전, 경로는 비워 둘 수 없습니다.")
+    try:
+        task = task_names.normalize(task)
+    except ValueError as e:
+        raise ServiceError(400, str(e)) from e
     if fmt not in ("auto", "yolo", "coco", "imagefolder"):
         raise ServiceError(400, "형식은 auto, yolo, coco, imagefolder 중 하나여야 합니다.")
     if name_pattern.strip():
@@ -433,7 +467,14 @@ def start_import(
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
     if existing and db.scalar(select(Release).where(Release.dataset_id == existing.id, Release.version == version)):
         raise ServiceError(409, f"{dataset} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
+    if existing and task and not task_names.same(task, dataset_task(existing)):
+        raise ServiceError(
+            400,
+            f"데이터셋 {dataset}의 태스크는 {task_names.short(dataset_task(existing))}입니다. "
+            "다른 태스크로 가져오려면 새 데이터셋 이름을 쓰세요.",
+        )
     params = {
+        "task": task,
         "project_id": project_id,
         "dataset": dataset,
         "version": version,
@@ -627,13 +668,19 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
         return {"release_id": release.id}
     p = job.params
     project = get_project(db, p["project_id"])
+    dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == p["dataset"]))
     found = "classify" if body.format == "imagefolder" else "pose" if body.keypoints else "detect"
-    # Allowed besides the same task: boxes (or outlines) into segmentation, keypoint data into detection (boxes kept).
-    fits = project.task == found or (project.task, found) in (("segment", "detect"), ("detect", "pose"))
-    if not fits:
-        kinds = KIND_NAME
-        mismatch = f"이 폴더는 {kinds[found]} 데이터인데 프로젝트는 {kinds[project.task]}용입니다."
-        raise ServiceError(400, f"{mismatch} {kinds[found]} 프로젝트에 가져오세요.")
+    found = "segment" if found == "detect" and body.outlines else found
+    # The dataset's task when it has versions already, else the one chosen, else what the folder holds.
+    task = (dataset.task if dataset is not None and dataset.task else "") or p.get("task") or found
+    # A named task takes the labels as they are; a built-in one only data it can use.
+    if task in TASKS and task != found and (task, found) not in _FITS:
+        short = task_names.short
+        raise ServiceError(
+            400,
+            f"태스크가 맞지 않습니다: 폴더는 {short(found)} 데이터, 가져오려는 태스크는 {short(task)}. "
+            f"태스크를 자동이나 {short(found)}에 두고 가져오세요.",
+        )
     location = db.scalar(
         select(StorageLocation).where(StorageLocation.node_id == node.id, StorageLocation.root == p["path"])
     )
@@ -650,13 +697,14 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
         created_by=job.created_by,
     )
     db.add(batch)
-    keypoints = body.keypoints if project.task == "pose" else None
+    keypoints = body.keypoints if task == "pose" else None
     space = _label_space(db, project.id, body.classes, p.get("label_space", ""), keypoints)
-    dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == p["dataset"]))
     if dataset is None:
-        dataset = Dataset(project_id=project.id, name=p["dataset"])
+        dataset = Dataset(project_id=project.id, name=p["dataset"], task=task)
         db.add(dataset)
         db.flush()
+    elif not dataset.task:
+        dataset.task = task
     base_id = p.get("base_release_id") or db.scalar(
         select(Release.id)
         .where(Release.dataset_id == dataset.id, Release.status == "ready", Release.deleted_at.is_(None))
@@ -697,7 +745,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     site, camera = job.params.get("site", ""), job.params.get("camera", "")
     rule = name_rule(job.params["name_pattern"]) if job.params.get("name_pattern") else None
     class_ids = [c["id"] for c in space.classes]
-    segment = get_project(db, project_id).task in ("segment", "pose")  # outlines or keypoints follow the box
+    # Outlines (Seg), keypoints (Kpt) or whatever a named task's labels hold follow the box; Det keeps the box.
+    whole = release_task(db, release) not in ("detect", "classify")
     incoming = {item.sha256: item for item in chunk.items}  # a file listed twice counts once
 
     items = {
@@ -745,13 +794,13 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     for sha, data in incoming.items():
         item = items[sha]
         # A box is [class, cx, cy, w, h]; a classification label is just [class]; a segmentation
-        # label is a box followed by its outline (x1, y1, x2, y2, …), kept only in segmentation projects.
+        # label is a box followed by its outline (x1, y1, x2, y2, …), kept unless the dataset is Det.
         boxes = [
-            [int(b[0]), *(b[1:] if segment else b[1:5])]
+            [int(b[0]), *(b[1:] if whole else b[1:5])]
             for b in data.boxes
             if (len(b) == 1 or len(b) >= 5) and int(b[0]) in class_ids
         ]
-        state = data.state if boxes or data.state != "labelled" else "background"
+        state = "labelled" if boxes else "background"  # no labels: nothing to find in it
         digest = _digest(space.id, state, boxes)
         history = revisions.get(item.id, [])
         same = next((r for r in history if r.digest == digest), None)
@@ -865,6 +914,7 @@ def compute_stats(db: Session, release: Release) -> dict[str, Any]:
         bucket = stats["splits"].setdefault(split, {"items": 0, "bytes": 0})
         bucket["items"] += count
         bucket["bytes"] += size or 0
+        state = state if state in STATES else "background"
         stats["states"][state] = stats["states"].get(state, 0) + count
         stats["items"] += count
         stats["bytes"] += size or 0
@@ -928,6 +978,7 @@ def release_view(db: Session, release_id: str) -> dict[str, Any]:
         "created_at": iso(release.created_at),
         "project_id": dataset.project_id,
         "dataset": {"id": dataset.id, "name": dataset.name},
+        "task": dataset_task(dataset),
         "label_space": {"id": space.id, "name": space.name, "classes": space.classes},
         "base": {"id": base.id, "version": base.version} if base and base.deleted_at is None else None,
         "stats": release.stats or {},
@@ -1296,6 +1347,8 @@ def new_release(
             raise ServiceError(400, "다른 프로젝트의 버전은 합칠 수 없습니다.")
         if other.label_space_id != first.label_space_id:
             raise ServiceError(400, "클래스 목록(라벨 공간)이 다른 버전은 합칠 수 없습니다.")
+        if not task_names.same(release_task(db, other), dataset_task(first_dataset)):
+            raise ServiceError(400, "태스크가 다른 버전은 합칠 수 없습니다.")
     if group_by not in SPLIT_GROUPS:
         raise ServiceError(400, "split을 묶는 기준은 site 또는 camera입니다.")
     old_space = db.get(LabelSpace, first.label_space_id)
@@ -1325,7 +1378,7 @@ def new_release(
             rows = [r for r in rows if (r.item_id in matched) != exclude]
         for row in rows:
             members.setdefault(row.item_id, row)
-    if plan and get_project(db, project_id).task == "classify":
+    if plan and dataset_task(first_dataset) == "classify":
         members = _without_dropped(db, members, list(plan[1]))
     items = {}
     if ratios:
@@ -1353,8 +1406,12 @@ def new_release(
     taken = select(Release).where(Release.dataset_id == target.id, Release.version == version) if target else None
     if taken is not None and db.scalar(taken):
         raise ServiceError(409, f"{name} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
+    if target is not None and not task_names.same(dataset_task(target), dataset_task(first_dataset)):
+        raise ServiceError(
+            400, f"데이터셋 {name}의 태스크는 {task_names.short(dataset_task(target))}입니다. 다른 데이터셋 이름을 쓰세요."
+        )
     if target is None:
-        target = Dataset(project_id=project_id, name=name)
+        target = Dataset(project_id=project_id, name=name, task=dataset_task(first_dataset))
         db.add(target)
         db.flush()
     space = _space_for(db, project_id, plan[0]) if plan else old_space

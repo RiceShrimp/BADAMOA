@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ _ADDED_COLUMNS = [
     ("run_files", "caption", "VARCHAR(255) DEFAULT ''"),
     ("nodes", "reserved_gpus", "JSON DEFAULT '[]'"),
     ("users", "disabled_at", "DATETIME"),
+    ("datasets", "task", "VARCHAR(32) DEFAULT ''"),
 ]
 
 
@@ -82,6 +84,28 @@ class Database:
                     added.add((table, column))
             if ("model_versions", "aliases") in added:  # the one alias a version could have had before
                 conn.execute(text("""UPDATE model_versions SET aliases = '["' || alias || '"]' WHERE alias != ''"""))
+            if ("datasets", "task") in added:  # 0.34.0: the task moved from the project to each dataset
+                conn.execute(
+                    text("UPDATE datasets SET task = (SELECT task FROM projects WHERE projects.id = datasets.project_id)")
+                )
+            self._unlabelled_is_background(conn)
+
+    @staticmethod
+    def _unlabelled_is_background(conn) -> None:
+        """0.34.0: an image without labels is background; "unlabelled" (no label file) is no more."""
+        if not conn.execute(text("SELECT 1 FROM release_items WHERE state = 'unlabelled' LIMIT 1")).first():
+            return
+        conn.execute(text("UPDATE release_items SET state = 'background' WHERE state = 'unlabelled'"))
+        conn.execute(text("UPDATE label_revisions SET state = 'background' WHERE state = 'unlabelled'"))
+        for release_id, raw in conn.execute(text("SELECT id, stats FROM releases WHERE stats LIKE '%unlabelled%'")).all():
+            stats = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+            states = stats.get("states") or {}
+            if "unlabelled" in states:
+                states["background"] = int(states.get("background") or 0) + int(states.pop("unlabelled") or 0)
+                conn.execute(
+                    text("UPDATE releases SET stats = :stats WHERE id = :id"),
+                    {"stats": json.dumps(stats, ensure_ascii=False), "id": release_id},
+                )
 
     @contextmanager
     def session(self) -> Iterator[Session]:

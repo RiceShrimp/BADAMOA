@@ -26,7 +26,7 @@ media_router = APIRouter(prefix="/media")
 
 class NewProject(BaseModel):
     name: str
-    task: str = "detect"
+    task: str = ""  # ignored since 0.34.0: each dataset has its own task, chosen when importing
     folder: str = ""
     description: str = ""
 
@@ -38,7 +38,7 @@ def list_projects(_: User = Depends(current_user), db: Session = Depends(db_sess
 
 @router.post("/projects")
 def create_project(body: NewProject, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
-    project = catalog.create_project(db, user, body.name, body.task, body.folder, body.description)
+    project = catalog.create_project(db, user, body.name, body.folder, body.description)
     db.commit()
     return next(p for p in catalog.list_projects(db) if p["id"] == project.id)
 
@@ -182,6 +182,7 @@ class ImportRequest(BaseModel):
     name_pattern: str = ""  # e.g. "{site}_{camera}_*": site and camera read from each file name
     note: str = ""
     base_release_id: str = ""
+    task: str = ""  # Det · Seg · Kpt · Cls, a named task, or "" to read it from the folder
 
 
 @router.post("/projects/{project_id}/imports")
@@ -207,6 +208,7 @@ def start_import(
         name_pattern=body.name_pattern,
         note=body.note,
         base_release_id=body.base_release_id,
+        task=body.task,
         via="ui",
     )
     db.commit()

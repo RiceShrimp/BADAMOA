@@ -61,12 +61,14 @@ def _collage(db: Session, settings: HubSettings, release: Release | None, count:
         .limit(count * step)
     ).all()
     picked = rows[::step][:count] or rows[:count]
+    task = catalog.release_task(db, release)  # how to draw what follows each box
     return [
         {
             "url": catalog.media_url(settings, "thumb", item.thumb_key),
             "width": item.width,
             "height": item.height,
             "boxes": [catalog.light_shape(b) for b in (revision.boxes or [])[:COLLAGE_BOXES]],
+            "task": task,
         }
         for item, revision in picked
     ]
@@ -90,6 +92,7 @@ def dataset_card(db: Session, settings: HubSettings, dataset: Dataset) -> dict[s
     return {
         "id": dataset.id,
         "name": dataset.name,
+        "task": catalog.dataset_task(dataset),
         "release": {"id": latest.id, "version": latest.version, "created_at": iso(latest.created_at), "note": latest.note},
         "releases": releases or 0,
         "items": stats.get("items", 0),
@@ -111,11 +114,11 @@ def dataset_card(db: Session, settings: HubSettings, dataset: Dataset) -> dict[s
 
 
 def _best_model(db: Session, project: Project) -> dict[str, Any] | None:
-    metric = training.PRIMARY_METRIC.get(project.task, "map50_95")
     best = None
     for model in db.scalars(
         select(ModelVersion).where(ModelVersion.project_id == project.id, ModelVersion.deleted_at.is_(None))
     ):
+        metric = training.PRIMARY_METRIC.get(model.task, "map50_95")
         value = (model.metrics or {}).get(metric)
         if isinstance(value, int | float) and (best is None or value > best["value"]):
             best = {"id": model.id, "name": f"{model.name} v{model.version}", "metric": metric, "value": value}
@@ -155,7 +158,8 @@ def _project_card(db: Session, settings: HubSettings, project: Project, counts: 
     return {
         "id": project.id,
         "name": project.name,
-        "task": project.task,
+        "tasks": (tasks := catalog.project_tasks(db).get(project.id, [])),
+        "task": (tasks or [""])[0],  # the first dataset's task, for older readers
         "folder": project.folder,
         "description": project.description,
         "created_at": iso(project.created_at),
@@ -220,9 +224,15 @@ def project_page(db: Session, settings: HubSettings, project_id: str) -> dict[st
     card = _project_card(db, settings, project, _counts(db))
     datasets = db.scalars(select(Dataset).where(Dataset.project_id == project.id).order_by(Dataset.name)).all()
     cards = [c for c in (dataset_card(db, settings, d) for d in datasets) if c is not None]
-    metric = training.PRIMARY_METRIC.get(project.task, "map50_95")
+    tasks = card["tasks"] or ["detect"]
+    metric = training.PRIMARY_METRIC.get(tasks[0], "map50_95")  # the first dataset's; a model of another task shows its own
     models = [
-        {"id": m.id, "name": f"{m.name} v{m.version}", "value": (m.metrics or {}).get(metric), "aliases": m.aliases or []}
+        {
+            "id": m.id,
+            "name": f"{m.name} v{m.version}",
+            "value": (m.metrics or {}).get(training.PRIMARY_METRIC.get(m.task, "map50_95")),
+            "aliases": m.aliases or [],
+        }
         for m in db.scalars(
             select(ModelVersion).where(ModelVersion.project_id == project.id, ModelVersion.deleted_at.is_(None))
         )
@@ -258,7 +268,7 @@ def home(db: Session, settings: HubSettings) -> dict[str, Any]:
     ).all()
     runs = []
     for run, status, project in rows:
-        metric = training.PRIMARY_METRIC.get(project.task, "map50_95")
+        metric = training.PRIMARY_METRIC.get(catalog.release_task(db, run.release_id), "map50_95")
         runs.append(
             {
                 "id": run.id,
@@ -278,8 +288,7 @@ def home(db: Session, settings: HubSettings) -> dict[str, Any]:
 def release_models(db: Session, settings: HubSettings, release_id: str) -> list[dict[str, Any]]:
     """The runs that trained on a release, newest first, with the model each one made."""
     release = catalog.get_release(db, release_id)
-    project = db.get(Project, db.get(Dataset, release.dataset_id).project_id)
-    metric = training.PRIMARY_METRIC.get(project.task, "map50_95")
+    metric = training.PRIMARY_METRIC.get(catalog.release_task(db, release), "map50_95")
     runs = db.scalars(
         select(Run).where(Run.release_id == release.id, Run.deleted_at.is_(None)).order_by(Run.created_at.desc()).limit(100)
     ).all()

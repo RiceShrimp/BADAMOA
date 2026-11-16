@@ -395,7 +395,7 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     }  # fmt: skip
     assert settings["weight_decay"]["changed"] is True and settings["augment"]["value"] is True
     assert "모델 large · 학습률 0.001" in _logs(hub, job["id"])  # hp.* in the code got the chosen values
-    assert "학습 이미지 5장" in _logs(hub, job["id"])
+    assert "학습 이미지 6장" in _logs(hub, job["id"])
     cached = list((hub.node_home / "cache" / "templates").iterdir())
     assert len(cached) == 1 and (cached[0] / "train.py").is_file()
 

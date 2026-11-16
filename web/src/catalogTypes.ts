@@ -1,7 +1,9 @@
 export interface Project {
   id: string;
   name: string;
-  task: string;
+  /** The tasks of its datasets, oldest dataset first (a project has none of its own). */
+  tasks: string[];
+  task: string; // the first of them
   folder: string;
   settings: { template?: string };
   releases: number;
@@ -21,6 +23,7 @@ export interface TreeRelease {
 export interface TreeDataset {
   id: string;
   name: string;
+  task: string;
   releases: TreeRelease[];
 }
 
@@ -58,6 +61,7 @@ export interface ReleaseInfo {
   created_at: string;
   project_id: string;
   dataset: { id: string; name: string };
+  task: string; // the dataset's
   label_space: { id: string; name: string; classes: LabelClass[] };
   base: { id: string; version: string } | null;
   stats: ReleaseStats;
@@ -70,7 +74,7 @@ export interface GridItem {
   width: number;
   height: number;
   split: string;
-  state: "labelled" | "background" | "unlabelled";
+  state: "labelled" | "background";
   box_count: number;
   thumb_url: string | null;
   boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
@@ -117,7 +121,7 @@ export interface ItemDetail {
 }
 
 export interface TrashInfo {
-  projects: { id: string; name: string; task: string; folder: string; deleted_at: string; releases: number; items: number }[];
+  projects: { id: string; name: string; folder: string; deleted_at: string; releases: number; items: number }[];
   releases: {
     id: string;
     dataset: string;
@@ -141,18 +145,23 @@ export interface CompareResult {
 }
 
 export const SPLIT_LABEL: Record<string, string> = { train: "train", val: "val", test: "test", "": "미분할" };
-export const STATE_LABEL: Record<string, string> = { labelled: "라벨 있음", background: "배경", unlabelled: "미라벨" };
-/** What each label state means, where they are picked (background and unlabelled are easy to mix up). */
-export const STATE_HINT: Record<string, string> = {
-  labelled: "",
-  background: "물체 없음 확인",
-  unlabelled: "아직 라벨 안 함",
-};
+export const STATE_LABEL: Record<string, string> = { labelled: "라벨 있음", background: "배경" };
+/** What each label state means, where they are picked. */
+export const STATE_HINT: Record<string, string> = { labelled: "", background: "라벨 없음" };
 export const STATE_HELP: Record<string, string> = {
   labelled: "박스나 클래스 라벨이 있는 이미지",
-  background: "누가 보고 찾을 물체가 없다고 확인한 이미지(빈 라벨 파일). 학습에 '없음'의 예로 들어갑니다.",
-  unlabelled: "라벨 파일이 없는, 아직 아무도 라벨하지 않은 이미지. 물체가 있을 수 있어 학습에서는 기본으로 뺍니다.",
+  background: "라벨이 없는 이미지(빈 라벨 파일이거나 라벨 파일이 없음). 찾을 물체가 없는 예로 학습에 들어갑니다.",
 };
+
+/** Tasks by their short English names; a task a team named is shown as typed. */
+export const TASK_LABEL: Record<string, string> = { detect: "Det", segment: "Seg", pose: "Kpt", classify: "Cls" };
+export const TASK_HINT: Record<string, string> = {
+  detect: "박스",
+  segment: "윤곽 · 마스크",
+  pose: "키포인트 · 관절",
+  classify: "이미지 분류",
+};
+export const taskLabel = (task: string | undefined | null) => (task ? (TASK_LABEL[task] ?? task) : "Det");
 
 export function classColor(id: number): string {
   return `hsl(${(id * 137.5) % 360} 72% 52%)`;

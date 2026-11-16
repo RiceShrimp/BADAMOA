@@ -11,12 +11,13 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from badamoa.core import tasks as task_names
 from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
 from badamoa.core.storage import Storage
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
 from . import catalog, registry, resources, services
-from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Project, Release, ReleaseItem, StorageLocation
+from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Release, ReleaseItem, StorageLocation
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
@@ -108,19 +109,12 @@ def start_run(
         raise ServiceError(409, "아직 등록 중인 버전입니다.")
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
-    if project.task == "pose":
-        raise ServiceError(
-            400,
-            "키포인트 학습은 아직 없습니다(지금은 가져오기 · 보기까지). "
-            "박스로 학습하려면 같은 폴더를 객체 탐지 프로젝트로 가져오세요.",
-        )
-    fallback = registry.DEFAULT_BY_TASK.get(project.task, registry.DEFAULT_TEMPLATE)
-    row = registry.get_template(db, template or (project.settings or {}).get("template") or fallback)
+    task = catalog.dataset_task(dataset)
+    row = registry.template_for(db, project.settings, task, template)
     manifest = registry.manifest_of(row)
-    if manifest.task != project.task:
-        kinds = catalog.KIND_NAME
-        made_for, used_for = kinds.get(manifest.task, manifest.task), kinds.get(project.task, project.task)
-        raise ServiceError(400, f"{row.title} 템플릿은 {made_for}용이고 이 프로젝트는 {used_for}용입니다.")
+    if not task_names.same(manifest.task, task):
+        short = task_names.short
+        raise ServiceError(400, f"{row.title} 템플릿은 {short(manifest.task)}용이고 이 데이터셋은 {short(task)}입니다.")
     try:
         settings = resolve_params(manifest, params or {})
     except TemplateError as e:
@@ -392,7 +386,7 @@ def report(db: Session, node: Node, job_id: str, body: TrainReport) -> dict[str,
     elif body.event == "info":
         run.info = {**(run.info or {}), **data}
     elif body.event == "epoch":
-        primary = PRIMARY_METRIC.get(db.get(Project, run.project_id).task, "map50_95")
+        primary = PRIMARY_METRIC.get(catalog.release_task(db, run.release_id), "map50_95")
         rows: dict[int, RunMetric] = {}
         # One entry, or several the node gathered while the code logged faster than once a second.
         for entry in data["batch"] if isinstance(data.get("batch"), list) else [data]:
@@ -535,7 +529,6 @@ def finish(
         return {"run_id": run.id, "model": None}
     release = db.get(Release, run.release_id)
     dataset = db.get(Dataset, release.dataset_id)
-    project = db.get(Project, run.project_id)
     variant = (run.template or {}).get("variant") or Path(str(run.config.get("model", ""))).stem or run.trainer
     name = run.config.get("model_name") or _slug(f"{dataset.name}-{variant}")
     latest = db.scalar(
@@ -548,7 +541,7 @@ def finish(
         version=(latest or 0) + 1,
         run_id=run.id,
         release_id=run.release_id,
-        task=project.task,
+        task=catalog.dataset_task(dataset),
         arch=variant,
         trainer=run.trainer,
         template=run.template or {},
@@ -620,12 +613,11 @@ def run_view(
     job_data = services.job_view(db, settings, job, node_names) if job else None
     status = job_data["status"] if job_data else "failed"
     template = _template_of(run)
-    project = db.get(Project, run.project_id)
     view: dict[str, Any] = {
         "id": run.id,
         "name": run.name,
         "project_id": run.project_id,
-        "task": project.task if project else "detect",
+        "task": catalog.dataset_task(dataset),
         "template": {k: template.get(k, "") for k in ("id", "name", "title", "version", "variant")},
         "trainer_title": template.get("title") or run.trainer,
         "environment": {k: v for k, v in (run.environment or {"kind": "auto", "name": "자동 설치"}).items() if k != "path"},

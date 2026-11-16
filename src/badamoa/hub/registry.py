@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from badamoa import templates as shipped
+from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
 from badamoa.core.templates import TemplateError, TemplateManifest, load_manifest, read_bundle
 
@@ -71,6 +72,35 @@ def register_template(db: Session, user: User, data: bytes, storage: Storage, vi
     db.flush()
     services.audit(db, user.id, via, "template.register", row.id, name=row.name, version=row.version)
     return row
+
+
+def template_for(db: Session, settings: dict[str, Any] | None, task: str, ref: str = "") -> Template:
+    """The template a run on data of ``task`` uses when none is named: the project's last choice
+    if it trains that task, else the task's built-in one, else any template that declares the task."""
+    if ref:
+        return get_template(db, ref)
+    saved = (settings or {}).get("template")
+    if saved:
+        try:
+            row = get_template(db, saved)
+        except ServiceError:
+            row = None
+        if row is not None and task_names.same(row.task, task):
+            return row
+    if task in DEFAULT_BY_TASK:
+        return get_template(db, DEFAULT_BY_TASK[task])
+    offered = list_templates(db, task=task)
+    if offered:
+        return get_template(db, offered[0]["id"])
+    if task == "pose":
+        raise ServiceError(
+            400,
+            "Kpt 학습 템플릿은 아직 없습니다(지금은 가져오기 · 보기까지). "
+            "박스로 학습하려면 같은 폴더를 태스크 Det에 두고 새 데이터셋으로 가져오세요.",
+        )
+    raise ServiceError(
+        400, f"{task_names.short(task)} 태스크를 학습하는 템플릿이 없습니다. 이 태스크를 적은 모델 템플릿을 등록하세요."
+    )
 
 
 def get_template(db: Session, ref: str) -> Template:
@@ -137,7 +167,9 @@ def list_templates(db: Session, include_hidden: bool = False, task: str = "") ->
             .group_by(ModelVersion.trainer)
         ).all()
     )
-    shown = [t for t in newest.values() if (include_hidden or not t.hidden) and (not task or t.task == task)]
+    shown = [
+        t for t in newest.values() if (include_hidden or not t.hidden) and (not task or task_names.same(t.task, task))
+    ]
     first = list(dict.fromkeys(DEFAULT_BY_TASK.values()))  # each task's default template leads, detection first
     shown.sort(key=lambda t: (first.index(t.name) if t.name in first else len(first), not t.builtin, t.title.lower()))
     return [template_view(db, t, counts[t.name], models.get(t.name, 0)) for t in shown]

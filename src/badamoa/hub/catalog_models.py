@@ -29,7 +29,8 @@ class Project(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(128), unique=True)
-    task: Mapped[str] = mapped_column(String(16), default="detect")  # detect | segment | classify
+    # Before 0.34.0 a project had one task; it is now each dataset's (``Dataset.task``) and this stays empty.
+    task: Mapped[str] = mapped_column(String(16), default="")
     folder: Mapped[str] = mapped_column(String(128), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # dialog defaults, e.g. {"template": "yolo"}
@@ -109,7 +110,7 @@ class LabelRevision(Base):
     rev: Mapped[int] = mapped_column(Integer)
     label_space_id: Mapped[str] = mapped_column(String(32))
     source: Mapped[str] = mapped_column(String(255), default="")  # import:<batch name> | human | autolabel:<model>
-    state: Mapped[str] = mapped_column(String(12))  # labelled | background | unlabelled
+    state: Mapped[str] = mapped_column(String(12))  # labelled | background (no labels: nothing to find)
     box_count: Mapped[int] = mapped_column(Integer, default=0)
     boxes: Mapped[list[list[float]]] = mapped_column(JSON, default=list)
     # Classes that were labelled exhaustively: a missing box of these means "not there",
@@ -140,6 +141,8 @@ class Dataset(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
+    # What its labels are for: detect | segment | pose | classify, or a task a team named (badamoa.core.tasks)
+    task: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

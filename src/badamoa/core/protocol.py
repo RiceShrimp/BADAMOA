@@ -82,6 +82,7 @@ class ImportBegin(BaseModel):
     total: int = 0
     format: str = ""
     keypoints: dict[str, Any] | None = None  # pose data: {"count", "names", "skeleton"}
+    outlines: bool = False  # some labels carry an outline (segmentation data)
 
 
 class ImportItem(BaseModel):

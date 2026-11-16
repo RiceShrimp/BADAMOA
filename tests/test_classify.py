@@ -171,11 +171,12 @@ def test_classification_project_from_import_to_model_with_files(hub, tmp_path):
     (folder / "train.py").write_text(TRAIN, encoding="utf-8")
     assert hub.post("/api/templates", content=fmt.bundle(folder)).status_code == 200
 
-    project = hub.post("/api/projects", json={"name": "반려동물", "task": "classify"}).json()
+    project = hub.post("/api/projects", json={"name": "반려동물"}).json()
     data = make_imagefolder(tmp_path / "pets")
-    job = _import(hub, project["id"], data)
+    job = _import(hub, project["id"], data)  # the task left to the folder: class folders are Cls
     assert job["status"] == "succeeded" and job["result"]["format"] == "imagefolder", _logs(hub, job["id"])
     release = hub.get(f"/api/releases/{job['result']['release_id']}").json()
+    assert release["task"] == "classify"
     assert [c["name"] for c in release["label_space"]["classes"]] == ["bird", "cat", "dog"]
     assert release["stats"]["items"] == 18 and release["stats"]["states"]["labelled"] == 18
     assert {k: v["items"] for k, v in release["stats"]["classes"].items()} == {"0": 6, "1": 6, "2": 6}
@@ -184,18 +185,24 @@ def test_classification_project_from_import_to_model_with_files(hub, tmp_path):
     detail = hub.get(f"/api/releases/{release['id']}/items/{cats['items'][0]['id']}").json()
     assert detail["revisions"][0]["boxes"] == [[1]]  # a label without geometry
 
-    # Detection data does not go into a classification project, and the other way round.
-    wrong = _import(hub, project["id"], make_yolo(tmp_path / "boxes"), dataset="boxes")
-    assert wrong["status"] == "failed" and "객체 탐지 데이터인데 프로젝트는 분류용" in _logs(hub, wrong["id"])
-    detect = hub.post("/api/projects", json={"name": "검출"}).json()
-    assert "분류 데이터인데" in _logs(hub, _import(hub, detect["id"], data)["id"])
+    # Boxes are not imported as Cls, nor class folders as Det; a dataset keeps the task it has.
+    wrong = _import(hub, project["id"], make_yolo(tmp_path / "boxes"), dataset="boxes", task="Cls")
+    assert wrong["status"] == "failed" and "폴더는 Det 데이터, 가져오려는 태스크는 Cls" in _logs(hub, wrong["id"])
+    assert "폴더는 Cls 데이터" in _logs(hub, _import(hub, project["id"], data, dataset="as-boxes", task="det")["id"])
+    again = {"node_id": hub.node_id, "path": str(data), "dataset": "pets", "version": "v2", "task": "Det"}
+    refused = hub.post(f"/api/projects/{project['id']}/imports", json=again)
+    assert refused.status_code == 400 and "데이터셋 pets의 태스크는 Cls입니다" in refused.json()["detail"]
+    boxes = _import(hub, project["id"], make_yolo(tmp_path / "boxes2"), dataset="boxes")
+    assert boxes["status"] == "succeeded"  # one project, datasets of two tasks
+    listed = next(p for p in hub.get("/api/projects").json() if p["id"] == project["id"])
+    assert listed["tasks"] == ["classify", "detect"]
 
     # Templates are offered by task; a detection template is refused here.
     names = lambda task: [t["name"] for t in hub.get("/api/templates", params={"task": task}).json()]  # noqa: E731
     offered = {task: names(task) for task in ("classify", "detect")}
     assert offered == {"classify": ["classify", "tiny-classifier"], "detect": ["yolo", "torchvision"]}
     refused = hub.post("/api/runs", json={"release_id": release["id"], "template": "yolo"})
-    assert refused.status_code == 400 and "객체 탐지용이고 이 프로젝트는 분류용" in refused.json()["detail"]
+    assert refused.status_code == 400 and "Det용이고 이 데이터셋은 Cls입니다" in refused.json()["detail"]
 
     run = hub.post("/api/runs", json={"release_id": release["id"], "template": "tiny-classifier", "gpus": 0}).json()
     job = _wait(hub, run["job_id"])
@@ -266,16 +273,19 @@ def test_segmentation_labels_keep_their_outline_from_import_to_export(tmp_path):
     assert det[0] == "2 0.300000 0.400000 0.400000 0.400000" and boxes["boxes"] == seg["boxes"]  # a detector gets the box
 
 
-def test_outlines_are_kept_in_segmentation_projects_only(hub, tmp_path):
+def test_outlines_are_kept_in_segmentation_datasets_only(hub, tmp_path):
     root = _make_seg(tmp_path / "ds")
     stored = {}
-    for name, task in (("분할", "segment"), ("검출", "detect")):
-        project = hub.post("/api/projects", json={"name": name, "task": task}).json()
-        job = _import(hub, project["id"], root)
+    project = hub.post("/api/projects", json={"name": "분할"}).json()
+    for dataset, task in (("auto", ""), ("boxes", "Det")):  # left to the folder, outlines make it Seg
+        job = _import(hub, project["id"], root, dataset=dataset, task=task)
         assert job["status"] == "succeeded", _logs(hub, job["id"])
         release = job["result"]["release_id"]
+        task = hub.get(f"/api/releases/{release}").json()["task"]
         item = hub.get(f"/api/releases/{release}/items", params={"q": "train_0000"}).json()["items"][0]
-        stored[task] = hub.get(f"/api/releases/{release}/items/{item['id']}").json()["revisions"][0]["boxes"]
+        detail = hub.get(f"/api/releases/{release}/items/{item['id']}").json()
+        # one image, two datasets: each version pins its own revision of the labels
+        stored[task] = next(r["boxes"] for r in detail["revisions"] if r["id"] == detail["revision_id"])
     assert stored["segment"][0] == [2, 0.3, 0.4, 0.4, 0.4, 0.1, 0.2, 0.5, 0.2, 0.5, 0.6, 0.1, 0.6]
     assert stored["detect"] == [[2, 0.3, 0.4, 0.4, 0.4], [1, 0.7, 0.7, 0.2, 0.2]]
     offered = [t["name"] for t in hub.get("/api/templates", params={"task": "segment"}).json()]

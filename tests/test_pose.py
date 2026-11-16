@@ -79,8 +79,8 @@ def hub(live_hub, tmp_path, monkeypatch):
         runner.stop()
 
 
-def _import(hub, project_id, path, version="v1"):
-    body = {"node_id": hub.node_id, "path": str(path), "dataset": "people", "version": version}
+def _import(hub, project_id, path, dataset="people", task=""):
+    body = {"node_id": hub.node_id, "path": str(path), "dataset": dataset, "version": "v1", "task": task}
     resp = hub.post(f"/api/projects/{project_id}/imports", json=body)
     assert resp.status_code == 200, resp.text
     job = resp.json()
@@ -91,26 +91,45 @@ def _import(hub, project_id, path, version="v1"):
     return job
 
 
-def test_pose_project_end_to_end(hub, tmp_path):
-    pose = hub.post("/api/projects", json={"name": "자세", "task": "pose"}).json()
-    job = _import(hub, pose["id"], make_yolo_pose(tmp_path / "pose"))
+def test_keypoint_datasets_end_to_end(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "자세"}).json()
+    job = _import(hub, project["id"], make_yolo_pose(tmp_path / "pose"))  # kpt_shape: Kpt, without being told
     assert job["status"] == "succeeded", job.get("error")
     release = hub.get(f"/api/releases/{job['result']['release_id']}").json()
+    assert release["task"] == "pose"
     (cls,) = release["label_space"]["classes"]
     assert (cls["name"], cls["keypoints"], cls["skeleton"]) == ("person", ["1", "2", "3"], [])
     item = hub.get(f"/api/releases/{release['id']}/items").json()["items"][0]
     assert len(item["boxes"][0]) == 5 + 9  # the grid gets the keypoints too
     detail = hub.get(f"/api/releases/{release['id']}/items/{item['id']}").json()
     assert detail["revisions"][0]["boxes"][0][5:8] == [0.4, 0.3, 2.0]
-    # no keypoint training yet: said plainly, with the way to train the boxes
+    # no keypoint template yet: said plainly, with the way to train the boxes
     resp = hub.post("/api/runs", json={"release_id": release["id"]})
-    assert resp.status_code == 400 and "키포인트 학습은 아직" in resp.json()["detail"]
+    assert resp.status_code == 400 and "Kpt 학습 템플릿은 아직" in resp.json()["detail"]
 
-    # keypoint data into a detection project: the boxes; plain boxes into a keypoint project: refused
-    detect = hub.post("/api/projects", json={"name": "탐지", "task": "detect"}).json()
-    job = _import(hub, detect["id"], make_yolo_pose(tmp_path / "pose2"))
+    # keypoint data imported as Det keeps the boxes; plain boxes are not imported as Kpt
+    job = _import(hub, project["id"], make_yolo_pose(tmp_path / "pose2"), "boxes", "Det")
     item = hub.get(f"/api/releases/{job['result']['release_id']}/items").json()["items"][0]
     assert len(item["boxes"][0]) == 5
-    refused = _import(hub, pose["id"], make_yolo(tmp_path / "plain"), "v2")
+    refused = _import(hub, project["id"], make_yolo(tmp_path / "plain"), "plain", "Kpt")
     logs = " ".join(line["text"] for line in hub.get(f"/api/jobs/{refused['id']}/logs").json())
-    assert refused["status"] == "failed" and "프로젝트는 키포인트용" in logs
+    assert refused["status"] == "failed" and "폴더는 Det 데이터, 가져오려는 태스크는 Kpt" in logs
+    cards = hub.get(f"/api/projects/{project['id']}/overview").json()
+    assert cards["tasks"] == ["pose", "detect"] and {d["name"]: d["task"] for d in cards["dataset_cards"]} == {
+        "people": "pose",
+        "boxes": "detect",
+    }
+
+    # a task the team names: labels kept whole, trained only by a template that declares it
+    job = _import(hub, project["id"], make_yolo_pose(tmp_path / "ocr"), "plates", "OCR")
+    release = hub.get(f"/api/releases/{job['result']['release_id']}").json()
+    assert release["task"] == "OCR"
+    item = hub.get(f"/api/releases/{release['id']}/items").json()["items"][0]
+    assert len(item["boxes"][0]) == 5 + 9
+    resp = hub.post("/api/runs", json={"release_id": release["id"]})
+    assert resp.status_code == 400 and "OCR 태스크를 학습하는 템플릿이 없습니다" in resp.json()["detail"]
+    bad = hub.post(
+        f"/api/projects/{project['id']}/imports",
+        json={"node_id": hub.node_id, "path": str(tmp_path), "dataset": "x", "version": "v1", "task": "문자 인식"},
+    )
+    assert bad.status_code == 400 and "태스크 이름은" in bad.json()["detail"]

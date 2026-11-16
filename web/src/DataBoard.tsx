@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { SPLIT_LABEL, type TrashInfo, bytesLabel, classColor, keypointsOf } from "./catalogTypes";
+import { SPLIT_LABEL, TASK_HINT, TASK_LABEL, type TrashInfo, bytesLabel, classColor, keypointsOf, taskLabel } from "./catalogTypes";
 import { ImportProgress, useImports } from "./Imports";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
@@ -11,12 +11,13 @@ export interface Shot {
   width: number;
   height: number;
   boxes: number[][]; // [class, cx, cy, w, h] as fractions
+  task?: string; // its dataset's: what follows each box (an outline, keypoints)
 }
 
 export interface ProjectCardInfo {
   id: string;
   name: string;
-  task: string;
+  tasks: string[]; // its datasets' tasks, oldest dataset first
   folder: string;
   description: string;
   created_at: string;
@@ -35,6 +36,7 @@ export interface ProjectCardInfo {
 interface DatasetCardInfo {
   id: string;
   name: string;
+  task: string;
   release: { id: string; version: string; created_at: string; note: string };
   releases: number;
   items: number;
@@ -54,7 +56,6 @@ interface ProjectPageInfo extends ProjectCardInfo {
   sweeps: number;
 }
 
-export const TASK_LABEL: Record<string, string> = { detect: "탐지", segment: "분할", classify: "분류", pose: "키포인트" };
 export const METRIC_NAME: Record<string, string> = { map50_95: "mAP50-95", mask_map50_95: "mask mAP50-95", top1: "Top-1" };
 export const SPLIT_COLOR: Record<string, string> = { train: "var(--series-3)", val: "var(--series-1)", test: "var(--series-7)", "": "var(--idle)" };
 const PROJECT_KEY = "badamoa.project"; // the project other screens open with
@@ -77,7 +78,7 @@ export function Shot({
   shot,
   colorOf,
   boxes = true,
-  task = "detect",
+  task = shot.task ?? "detect",
   skeletonOf,
 }: {
   shot: Shot;
@@ -142,13 +143,13 @@ export function Shot({
   );
 }
 
-function Collage({ shots, colorOf, more, task }: { shots: Shot[]; colorOf: (id: number) => string; more?: number; task?: string }) {
+function Collage({ shots, colorOf, more }: { shots: Shot[]; colorOf: (id: number) => string; more?: number }) {
   return (
     <div className="collage">
       {[0, 1, 2, 3].map((i) =>
         shots[i] ? (
           <div key={i} className="collage-cell">
-            <Shot shot={shots[i]} colorOf={colorOf} task={task} />
+            <Shot shot={shots[i]} colorOf={colorOf} />
             {i === 3 && more != null && more > 4 && <span className="collage-more">+{(more - 4).toLocaleString()}</span>}
           </div>
         ) : (
@@ -296,7 +297,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
     const list = (cards ?? []).filter(
       (c) =>
         (folder === null || c.folder === folder) &&
-        (!task || c.task === task) &&
+        (!task || c.tasks.includes(task)) &&
         hasAll(c, wanted) &&
         (!needle || `${c.name} ${c.description} ${c.folder}`.toLowerCase().includes(needle)),
     );
@@ -315,10 +316,11 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   // The tasks there are, with how many projects each: the filter lists only those.
   const tasks = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const c of cards ?? []) counts.set(c.task, (counts.get(c.task) ?? 0) + 1);
-    return Object.keys(TASK_LABEL)
-      .filter((t) => counts.has(t))
-      .map((t): [string, number] => [t, counts.get(t) ?? 0]);
+    for (const c of cards ?? []) for (const t of c.tasks) counts.set(t, (counts.get(t) ?? 0) + 1);
+    const order = Object.keys(TASK_LABEL); // the built-in ones first, then named ones
+    return [...counts.entries()].sort(
+      ([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99) || a.localeCompare(b),
+    );
   }, [cards]);
 
   if (error && !cards) return <div className="error">{error}</div>;
@@ -394,7 +396,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
         <div className="active-filters">
           {task && (
             <button onClick={() => setTask("")} title="이 조건 빼기">
-              {TASK_LABEL[task] ?? task} <Icon name="x" size={11} />
+              {taskLabel(task)} <Icon name="x" size={11} />
             </button>
           )}
           {wanted.map((w) => (
@@ -582,7 +584,7 @@ function FilterPanel({
         </button>
         {tasks.map(([t, n]) => (
           <button key={t} className={task === t ? "active" : ""} onClick={() => onTask(t)}>
-            {TASK_LABEL[t] ?? t} <span className="muted">{n}</span>
+            {taskLabel(t)} <span className="muted">{n}</span>
           </button>
         ))}
       </div>
@@ -666,12 +668,16 @@ export function ProjectCard({ card, onEdit, highlight = [] }: { card: ProjectCar
   return (
     <div className="data-card">
       <a href={`#/datasets/project/${card.id}`} onClick={() => rememberProject(card.id)} className="data-card-link">
-        <Collage shots={card.collage} colorOf={classColor} task={card.task} />
+        <Collage shots={card.collage} colorOf={classColor} />
         <div className="data-card-body">
           <div className="data-card-title">
             <strong>{card.name}</strong>
-            <span className="tag">{TASK_LABEL[card.task] ?? card.task}</span>
           </div>
+          {card.tasks.length > 0 && (
+            <div className="task-tags">
+              <TaskTags tasks={card.tasks} />
+            </div>
+          )}
           <div className="muted small">
             {card.folder ? `${card.folder} · ` : ""}데이터셋 {card.datasets} · 버전 {card.releases} · 이미지{" "}
             {card.items.toLocaleString()}
@@ -748,7 +754,6 @@ function EditProject({
           설명
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
         </label>
-        <p className="muted small">태스크({TASK_LABEL[card.task] ?? card.task})는 바꿀 수 없습니다. 라벨과 학습이 그 태스크에 맞춰져 있습니다.</p>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="danger push-left" onClick={() => void remove()}>
@@ -945,7 +950,6 @@ export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
             <thead>
               <tr>
                 <th>이름</th>
-                <th>태스크</th>
                 <th className="right">버전</th>
                 <th className="right">이미지</th>
                 <th>지운 때</th>
@@ -959,7 +963,6 @@ export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
                     <strong>{p.name}</strong>
                     {p.folder && <span className="muted small"> · {p.folder}</span>}
                   </td>
-                  <td>{TASK_LABEL[p.task] ?? p.task}</td>
                   <td className="num right">{p.releases}</td>
                   <td className="num right">{p.items.toLocaleString()}</td>
                   <td>{timeAgo(p.deleted_at)}</td>
@@ -1042,6 +1045,21 @@ export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
 
 // ---- a project: its datasets as cards ------------------------------------------------------
 
+const TASK_HINT_TEXT = (task: string) => (TASK_LABEL[task] ? `${taskLabel(task)}: ${TASK_HINT[task]}` : `${task}: 직접 정한 태스크`);
+
+/** The tasks of a project's datasets as tags (none before its first dataset). */
+function TaskTags({ tasks }: { tasks: string[] }) {
+  return (
+    <>
+      {tasks.map((t) => (
+        <span key={t} className="tag task-tag" title={TASK_HINT_TEXT(t)}>
+          {taskLabel(t)}
+        </span>
+      ))}
+    </>
+  );
+}
+
 export function ProjectPage({ projectId, onImport }: { projectId: string; onImport: () => void }) {
   const { data: page, error, refresh } = usePolling(() => api<ProjectPageInfo>(`/projects/${projectId}/overview`), 15000, [projectId]);
   const [editing, setEditing] = useState(false);
@@ -1063,7 +1081,7 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
       <div className="page-head">
         <div>
           <h1 className="with-badge">
-            {page.name} <span className="tag">{TASK_LABEL[page.task] ?? page.task}</span>
+            {page.name} <TaskTags tasks={page.tasks} />
           </h1>
           <p className="muted">
             데이터셋 {page.datasets} · 버전 {page.releases} · 이미지 {page.items.toLocaleString()} · 학습 {page.runs} · 모델{" "}
@@ -1104,11 +1122,16 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
           ))}
           {page.dataset_cards.map((d) => (
             <a key={d.id} className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
-              <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} task={page.task} />
+              <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />
               <div className="data-card-body">
                 <div className="data-card-title">
                   <strong>{d.name}</strong>
-                  <span className="tag">{d.release.version}</span>
+                  <span className="title-tags">
+                    <span className="tag task-tag" title={TASK_HINT_TEXT(d.task)}>
+                      {taskLabel(d.task)}
+                    </span>
+                    <span className="tag">{d.release.version}</span>
+                  </span>
                 </div>
                 <div className="muted small">
                   버전 {d.releases} · 클래스 {d.classes} · 이미지 {d.items.toLocaleString()} · {bytesLabel(d.bytes)} ·{" "}
@@ -1124,14 +1147,13 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
                   {d.classes > d.top_classes.length && <em>+{d.classes - d.top_classes.length}</em>}
                 </div>
                 <SplitBar splits={d.splits} />
-                {(d.states.unlabelled ?? 0) > 0 && <div className="muted small">미라벨 {d.states.unlabelled.toLocaleString()}장</div>}
               </div>
             </a>
           ))}
           <button className="add-tile" onClick={onImport}>
             <Icon name="plus" size={18} />
             데이터셋 가져오기
-            <span className="muted small">노드에 있는 YOLO · COCO · 클래스별 폴더를 복사 없이 등록</span>
+            <span className="muted small">노드의 폴더를 복사 없이 등록 · Det · Seg · Kpt · Cls</span>
           </button>
         </div>
 

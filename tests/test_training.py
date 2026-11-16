@@ -187,9 +187,9 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     assert done["history"]["steps"] == [1, 2, 3, 4, 5]
     curve = done["history"]["series"]["map50_95"]
     assert curve == sorted(curve) and done["metrics"]["map50_95"] == curve[-1]
-    # 8 images: one unlabelled is left out, the background one stays; val comes from the release
-    assert done["export"]["items"] == {"train": 5, "val": 2, "test": 0}
-    assert done["export"]["excluded"]["unlabelled"] == 1 and done["export"]["val_source"] == "release"
+    # 8 images: the two without labels go in as background; val comes from the release
+    assert done["export"]["items"] == {"train": 6, "val": 2, "test": 0}
+    assert done["export"]["excluded"]["unlabelled"] == 0 and done["export"]["val_source"] == "release"
     assert [c["name"] for c in done["class_metrics"]] == CLASSES
     assert not (hub.node_home / "runs" / job["id"]).exists()  # the working folder is cleaned up
 

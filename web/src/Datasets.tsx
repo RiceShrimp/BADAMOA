@@ -25,7 +25,11 @@ import {
   STATE_HELP,
   STATE_HINT,
   STATE_LABEL,
+  TASK_HINT,
+  TASK_LABEL,
+  type TreeDataset,
   bytesLabel,
+  taskLabel,
 } from "./catalogTypes";
 import { Badge, Icon, Modal, Stat, timeAgo, usePolling } from "./ui";
 
@@ -220,7 +224,7 @@ function ReleaseView({
   if (!release) return <div className="muted">불러오는 중…</div>;
 
   const project = projects.find((p) => p.id === release.project_id);
-  const task = project?.task ?? "detect";
+  const task = release.task ?? "detect"; // the dataset's: how labels are drawn, trained and exported
   const unit = task === "classify" ? "라벨" : "박스";
   const stats = release.stats;
   const classes = release.label_space.classes;
@@ -250,6 +254,9 @@ function ReleaseView({
         <div>
           <h1 className="with-badge">
             <span className="muted-strong">{release.dataset.name}</span> {release.version}
+            <span className="tag task-tag" title={TASK_HINT[task] ?? "직접 정한 태스크"}>
+              {taskLabel(task)}
+            </span>
             {release.status === "building" && <Badge kind="running">등록 중</Badge>}
           </h1>
           <p className="muted">
@@ -274,7 +281,7 @@ function ReleaseView({
             </button>
           )}
           {release.status === "ready" && (
-            <a className="btn primary-link" href={`#/training/new/${release.id}`}>
+            <a className="btn primary-link" href={`#/training/new/${release.id}`} onClick={() => rememberProject(release.project_id)}>
               이 버전으로 학습
             </a>
           )}
@@ -291,8 +298,13 @@ function ReleaseView({
         {splits.map(([name, s]) => (
           <Stat key={name} icon="database" label={SPLIT_LABEL[name] ?? name} value={s.items.toLocaleString()} sub={bytesLabel(s.bytes)} />
         ))}
-        <Stat icon="review" label="배경" value={(stats.states?.background ?? 0).toLocaleString()} sub="확인됨 · 박스 없음" />
-        <Stat icon="alert" label="미라벨" value={(stats.states?.unlabelled ?? 0).toLocaleString()} sub="아직 라벨하지 않음" />
+        <Stat
+          icon="check"
+          label="라벨 있음"
+          value={(stats.states?.labelled ?? 0).toLocaleString()}
+          sub={`${unit} ${(stats.boxes ?? 0).toLocaleString()}개`}
+        />
+        <Stat icon="review" label="배경" value={(stats.states?.background ?? 0).toLocaleString()} sub="라벨 없음 · 찾을 물체 없음" />
       </div>
 
       {release.status === "building" && <BuildingBar releaseId={release.id} />}
@@ -624,14 +636,13 @@ function NewProject({
   onCreated: (id: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [task, setTask] = useState("detect");
   const [folder, setFolder] = useState(initialFolder);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      const project = await api<Project>("/projects", { body: { name, task, folder } });
+      const project = await api<Project>("/projects", { body: { name, folder } });
       onCreated(project.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -645,20 +656,12 @@ function NewProject({
           이름
           <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus placeholder="예: 한강 감시" />
         </label>
-        <label>
-          태스크
-          <select value={task} onChange={(e) => setTask(e.target.value)}>
-            <option value="detect">객체 탐지</option>
-            <option value="segment">분할</option>
-            <option value="classify">분류</option>
-            <option value="pose">키포인트 (자세 · 관절)</option>
-          </select>
-        </label>
         <div className="field-label">
           폴더 <span className="muted small">(선택)</span>
           <FolderPicker value={folder} folders={folders} onChange={setFolder} />
           <span className="muted small field-hint">{FOLDER_HINT}</span>
         </div>
+        <p className="muted small">태스크(Det · Seg · Kpt · Cls 등)는 데이터셋을 가져올 때 데이터셋마다 정합니다.</p>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>
@@ -669,6 +672,17 @@ function NewProject({
       </form>
     </Modal>
   );
+}
+
+const CUSTOM_TASK = "\u0000custom"; // the "직접 입력" choice; never a task's name
+
+/** The version after a dataset's newest: v1, v2 → v3 (names in the trash count as taken). */
+function nextVersion(d: TreeDataset): string {
+  const taken = new Set(d.releases.map((r) => r.version.toLowerCase()));
+  const numbers = d.releases.map((r) => /^v(\d+)$/i.exec(r.version)?.[1]).filter(Boolean).map(Number);
+  let n = (numbers.length ? Math.max(...numbers) : d.releases.length) + 1;
+  while (taken.has(`v${n}`)) n++;
+  return `v${n}`;
 }
 
 function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
@@ -687,6 +701,22 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
   const [job, setJob] = useState<Job | null>(null);
   const [lastLog, setLastLog] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // The task: "" (자동: from the folder), a built-in one, a name used before, or CUSTOM (typed).
+  const [taskChoice, setTaskChoice] = useState("");
+  const [customTask, setCustomTask] = useState("");
+  const [named, setNamed] = useState<string[]>([]); // tasks teams named, anywhere on the Hub
+  // This project's datasets (versions in the trash too: their names are taken), and the one picked ("" = a new one).
+  const [datasets, setDatasets] = useState<TreeDataset[]>([]);
+  const [picked, setPicked] = useState("");
+  const live = datasets.filter((d) => d.releases.some((r) => !r.deleted_at));
+  const datasetTasks: Record<string, string> = Object.fromEntries(datasets.map((d) => [d.name, d.task]));
+
+  useEffect(() => {
+    void api<TreeDataset[]>(`/projects/${projectId}/datasets?trash=true`).then(setDatasets);
+    void api<Project[]>("/projects").then((list) =>
+      setNamed([...new Set(list.flatMap((p) => p.tasks ?? []))].filter((t) => !TASK_LABEL[t]).sort()),
+    );
+  }, [projectId]);
 
   useEffect(() => {
     void api<NodeInfo[]>("/nodes").then((list) => {
@@ -709,15 +739,24 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
   }, [job]);
 
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
+  // A dataset picked from the list gets its next version; a new one starts at v1.
+  const pickDataset = (name: string) => {
+    setPicked(name);
+    const d = datasets.find((x) => x.name === name);
+    setForm((f) => ({ ...f, dataset: name, version: d ? nextVersion(d) : "v1" }));
+  };
   const [browsing, setBrowsing] = useState(false);
   const [layout, setLayout] = useState(""); // what the picked folder looks like
   const node = nodes.find((n) => n.id === form.node_id);
+
+  const existingTask = datasetTasks[form.dataset.trim()]; // a new version keeps its dataset's task
+  const task = existingTask ? "" : taskChoice === CUSTOM_TASK ? customTask.trim() : taskChoice;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
       setError(null);
-      setJob(await api<Job>(`/projects/${projectId}/imports`, { body: form }));
+      setJob(await api<Job>(`/projects/${projectId}/imports`, { body: { ...form, task } }));
       announceImport();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -778,11 +817,34 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
             {layout && <span className="muted small field-hint">{LAYOUT_NAME[layout] ?? layout} 형식으로 보입니다. 형식은 자동 감지로 두면 됩니다.</span>}
             {node && node.status !== "online" && <span className="muted small field-hint">노드가 꺼져 있어 폴더를 볼 수 없습니다. 경로를 직접 적으세요.</span>}
           </div>
+          <div className="field-label">
+            데이터셋
+            {live.length > 0 ? (
+              <div className={picked ? "pick-or-type" : "pick-or-type two"}>
+                <select value={picked} onChange={(e) => pickDataset(e.target.value)} aria-label="데이터셋">
+                  <option value="">새 데이터셋 (이름 입력)</option>
+                  {live.map((d) => (
+                    <option key={d.id} value={d.name}>
+                      {d.name} · {taskLabel(d.task)} · 최근 {d.releases.find((r) => !r.deleted_at)?.version}
+                    </option>
+                  ))}
+                </select>
+                {!picked && (
+                  <input value={form.dataset} onChange={set("dataset")} required placeholder="예: coco" aria-label="새 데이터셋 이름" />
+                )}
+              </div>
+            ) : (
+              <input value={form.dataset} onChange={set("dataset")} required placeholder="예: coco" aria-label="데이터셋 이름" />
+            )}
+            {picked ? (
+              <span className="muted small field-hint">{picked}의 새 버전으로 들어갑니다. 버전 이름은 바꿀 수 있습니다.</span>
+            ) : (
+              existingTask && (
+                <span className="muted small field-hint">이미 있는 데이터셋 이름입니다. 그 데이터셋의 새 버전으로 들어갑니다.</span>
+              )
+            )}
+          </div>
           <div className="form-row">
-            <label>
-              데이터셋 이름
-              <input value={form.dataset} onChange={set("dataset")} required placeholder="예: coco" />
-            </label>
             <label>
               버전
               <input value={form.version} onChange={set("version")} required />
@@ -793,9 +855,61 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
                 <option value="auto">자동 감지</option>
                 <option value="yolo">YOLO</option>
                 <option value="coco">COCO</option>
-                <option value="imagefolder">분류 (클래스별 폴더)</option>
+                <option value="imagefolder">클래스별 폴더</option>
               </select>
             </label>
+          </div>
+          <div className="field-label">
+            태스크
+            {existingTask ? (
+              <>
+                <select value={existingTask} disabled aria-label="태스크">
+                  <option value={existingTask}>{taskLabel(existingTask)}</option>
+                </select>
+                <span className="muted small field-hint">
+                  기존 데이터셋 {form.dataset.trim()}의 새 버전이라 그 태스크({taskLabel(existingTask)}) 그대로입니다.
+                </span>
+              </>
+            ) : (
+              <>
+                <div className={taskChoice === CUSTOM_TASK ? "pick-or-type two" : "pick-or-type"}>
+                  <select value={taskChoice} onChange={(e) => setTaskChoice(e.target.value)} aria-label="태스크">
+                    <option value="">자동 · 폴더를 보고 정함</option>
+                    {Object.entries(TASK_LABEL).map(([id, short]) => (
+                      <option key={id} value={id}>
+                        {short} · {TASK_HINT[id]}
+                      </option>
+                    ))}
+                    {named.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_TASK}>직접 입력…</option>
+                  </select>
+                  {taskChoice === CUSTOM_TASK && (
+                    <input
+                      value={customTask}
+                      onChange={(e) => setCustomTask(e.target.value)}
+                      required
+                      maxLength={24}
+                      pattern="[A-Za-z][A-Za-z0-9_\-]*"
+                      title="영문으로 시작하는 영문 · 숫자 · - · _"
+                      placeholder="예: OCR, Depth"
+                      aria-label="태스크 이름"
+                      autoFocus
+                    />
+                  )}
+                </div>
+                <span className="muted small field-hint">
+                  {taskChoice === ""
+                    ? "클래스별 폴더는 Cls, kpt_shape · keypoints가 있으면 Kpt, 윤곽이 있으면 Seg, 그 밖은 Det."
+                    : taskChoice === CUSTOM_TASK
+                      ? "라벨 값을 그대로 둡니다. 학습은 이 태스크를 적은 모델 템플릿으로 합니다."
+                      : "폴더의 라벨이 이 태스크에 맞지 않으면 가져오지 않고 이유를 알립니다."}
+                </span>
+              </>
+            )}
           </div>
           <details className="advanced" open={Boolean(form.site || form.camera || form.name_pattern)}>
             <summary>

@@ -308,10 +308,13 @@ def template_init(
     import re
 
     from badamoa import templates
-    from badamoa.core.templates import MANIFEST, TASKS
+    from badamoa.core import tasks as task_names
+    from badamoa.core.templates import MANIFEST
 
-    if task not in TASKS:
-        raise _fail(f"task는 {', '.join(TASKS)} 중 하나여야 합니다.")
+    try:
+        task = task_names.normalize(task) or "detect"
+    except ValueError as e:
+        raise _fail(str(e)) from e
     if folder.exists() and any(folder.iterdir()):
         raise _fail(f"{folder} 폴더가 비어 있지 않습니다.")
     title = name or folder.resolve().name
