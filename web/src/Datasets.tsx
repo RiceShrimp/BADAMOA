@@ -1,5 +1,15 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { FolderPicker, ProjectBoard, ProjectPage, SPLIT_COLOR, Shot, TrashPage, folderNames, rememberProject } from "./DataBoard";
+import {
+  FOLDER_HINT,
+  FolderPicker,
+  ProjectBoard,
+  ProjectPage,
+  SPLIT_COLOR,
+  Shot,
+  TrashPage,
+  rememberProject,
+  useFolders,
+} from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
 import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
@@ -22,10 +32,11 @@ const PAGE_SIZE = 60;
  * (``#/datasets/project/<id>``), and a release with its tabs (``#/datasets/<release>/<tab>``).
  */
 export function Datasets({ sub, arg, isAdmin }: { sub?: string; arg?: string; isAdmin: boolean }) {
-  const { data: projects, refresh: refreshProjects } = usePolling(() => api<Project[]>("/projects"), 30000);
+  const { data: projects } = usePolling(() => api<Project[]>("/projects"), 30000);
+  const { data: folderList, refresh: refreshFolders } = useFolders();
   const [creating, setCreating] = useState<string | null>(null); // the folder a new project goes into
   const newProject = (folder: string) => {
-    void refreshProjects(); // the folder list: one made a moment ago must be there
+    void refreshFolders(); // a folder made a moment ago must be in the list
     setCreating(folder);
   };
   const [importing, setImporting] = useState<string | null>(null); // the project a dataset is imported into
@@ -44,7 +55,7 @@ export function Datasets({ sub, arg, isAdmin }: { sub?: string; arg?: string; is
       {creating !== null && (
         <NewProject
           folder={creating}
-          folders={folderNames(projects ?? [])}
+          folders={(folderList ?? []).map((f) => f.name)}
           onClose={() => setCreating(null)}
           onCreated={(id) => {
             setCreating(null);
@@ -550,8 +561,9 @@ function NewProject({
           </select>
         </label>
         <div className="field-label">
-          폴더 <span className="muted small">(선택 · 있는 폴더를 고르거나 "새 폴더"로 만들기)</span>
+          폴더 <span className="muted small">(선택)</span>
           <FolderPicker value={folder} folders={folders} onChange={setFolder} />
+          <span className="muted small field-hint">{FOLDER_HINT}</span>
         </div>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">

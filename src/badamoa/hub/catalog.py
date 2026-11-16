@@ -36,7 +36,7 @@ from .catalog_models import (
 )
 from .config import HubSettings
 from .db import iso, utcnow
-from .models import Job, Node, User
+from .models import HubSetting, Job, Node, User
 from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, Sweep
 
@@ -59,9 +59,10 @@ def create_project(
     if task not in TASKS:
         raise ServiceError(400, f"task는 {', '.join(TASKS)} 중 하나여야 합니다.")
     _name_free(db, name)
-    project = Project(name=name, task=task, folder=folder.strip(), description=description, created_by=user.id)
+    project = Project(name=name, task=task, folder=folder.strip()[:128], description=description, created_by=user.id)
     db.add(project)
     db.flush()
+    _remember_folder(db, project.folder)
     services.audit(db, user.id, "api", "project.create", project.id, name=name)
     return project
 
@@ -72,6 +73,104 @@ def _name_free(db: Session, name: str, other_than: str = "") -> None:
         raise ServiceError(409, "휴지통에 같은 이름의 프로젝트가 있습니다. 되살리거나 다른 이름을 쓰세요.")
     if taken is not None:
         raise ServiceError(409, "같은 이름의 프로젝트가 이미 있습니다.")
+
+
+# ---- folders ------------------------------------------------------------------------
+#
+# A folder is the name in ``Project.folder``. The names are also kept on their own (a Hub
+# setting), so a folder can be made before anything is in it and stays when it empties;
+# it goes only when someone removes it.
+
+FOLDERS_KEY = "catalog.folders"
+
+
+def _kept_folders(db: Session) -> list[str]:
+    row = db.get(HubSetting, FOLDERS_KEY)
+    return list((row.value or {}).get("names", [])) if row else []
+
+
+def _set_folders(db: Session, names: set[str]) -> None:
+    value = {"names": sorted(n for n in names if n)}
+    row = db.get(HubSetting, FOLDERS_KEY)
+    if row is None:
+        db.add(HubSetting(key=FOLDERS_KEY, value=value))
+    else:
+        row.value = value
+
+
+def _remember_folder(db: Session, name: str) -> None:
+    if name and name not in _kept_folders(db):
+        _set_folders(db, {*_kept_folders(db), name})
+
+
+def _folder_name(name: str) -> str:
+    name = name.strip()
+    if not 1 <= len(name) <= 128:
+        raise ServiceError(400, "폴더 이름은 1~128자여야 합니다.")
+    return name
+
+
+def list_folders(db: Session) -> list[dict[str, Any]]:
+    """Every folder with how many projects (not in the trash) are in it, empty ones included."""
+    counts = dict(
+        db.execute(
+            select(Project.folder, func.count(Project.id))
+            .where(Project.deleted_at.is_(None), Project.folder != "")
+            .group_by(Project.folder)
+        ).all()
+    )
+    names = set(_kept_folders(db)) | set(counts)
+    return [{"name": n, "projects": counts.get(n, 0)} for n in sorted(names)]
+
+
+def _projects_in(db: Session, name: str) -> list[Project]:
+    return list(db.scalars(select(Project).where(Project.folder == name)))
+
+
+def create_folder(db: Session, user: User, name: str, projects: list[str] | None = None) -> dict[str, Any]:
+    """A new folder, empty or with the chosen projects moved into it."""
+    name = _folder_name(name)
+    if any(f["name"] == name for f in list_folders(db)):
+        raise ServiceError(409, "같은 이름의 폴더가 이미 있습니다.")
+    moving = [get_project(db, pid) for pid in dict.fromkeys(projects or [])]
+    for project in moving:
+        _may_edit(project, user)
+    _remember_folder(db, name)
+    for project in moving:
+        project.folder = name
+    services.audit(db, user.id, "ui", "folder.create", "", name=name, projects=len(moving))
+    return {"name": name, "projects": len(moving)}
+
+
+def rename_folder(db: Session, user: User, name: str, new_name: str) -> dict[str, Any]:
+    """Rename a folder; the projects in it move along. Needs the right to change each of them."""
+    if not any(f["name"] == name for f in list_folders(db)):
+        raise ServiceError(404, "폴더를 찾을 수 없습니다.")
+    new_name = _folder_name(new_name)
+    if new_name != name and any(f["name"] == new_name for f in list_folders(db)):
+        raise ServiceError(409, "같은 이름의 폴더가 이미 있습니다.")
+    inside = _projects_in(db, name)
+    for project in inside:
+        _may_edit(project, user)
+    for project in inside:
+        project.folder = new_name
+    _set_folders(db, (set(_kept_folders(db)) - {name}) | {new_name})
+    services.audit(db, user.id, "ui", "folder.rename", "", name=new_name, old=name)
+    return {"name": new_name, "projects": sum(1 for p in inside if p.deleted_at is None)}
+
+
+def delete_folder(db: Session, user: User, name: str) -> dict[str, Any]:
+    """Remove a folder. Its projects are not touched beyond leaving the folder ("no folder")."""
+    if not any(f["name"] == name for f in list_folders(db)):
+        raise ServiceError(404, "폴더를 찾을 수 없습니다.")
+    inside = _projects_in(db, name)
+    for project in inside:
+        _may_edit(project, user)
+    for project in inside:
+        project.folder = ""
+    _set_folders(db, set(_kept_folders(db)) - {name})
+    services.audit(db, user.id, "ui", "folder.delete", "", name=name, projects=len(inside))
+    return {"name": name, "projects": sum(1 for p in inside if p.deleted_at is None)}
 
 
 def _may_edit(project: Project, user: User) -> None:
@@ -133,6 +232,7 @@ def update_project(
         project.name = name
     if folder is not None:
         project.folder = folder.strip()[:128]
+        _remember_folder(db, project.folder)
     if description is not None:
         project.description = description.strip()[:2000]
     services.audit(db, user.id, "api", "project.update", project.id, name=name, folder=folder)

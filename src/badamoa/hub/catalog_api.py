@@ -94,6 +94,44 @@ def empty_trash(
     return result
 
 
+class NewFolder(BaseModel):
+    name: str
+    projects: list[str] = []  # moved into it; none: an empty folder
+
+
+class FolderRename(BaseModel):
+    name: str
+    new_name: str
+
+
+@router.get("/folders")
+def list_folders(_: User = Depends(current_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
+    """Every folder, empty ones included, with how many projects are in it."""
+    return catalog.list_folders(db)
+
+
+@router.post("/folders")
+def create_folder(body: NewFolder, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    result = catalog.create_folder(db, user, body.name, body.projects)
+    db.commit()
+    return result
+
+
+@router.patch("/folders")
+def rename_folder(body: FolderRename, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    result = catalog.rename_folder(db, user, body.name, body.new_name)
+    db.commit()
+    return result
+
+
+@router.delete("/folders")
+def delete_folder(name: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """The folder goes; its projects stay, outside any folder. (The name is a query parameter: any text works.)"""
+    result = catalog.delete_folder(db, user, name)
+    db.commit()
+    return result
+
+
 @router.get("/project-cards")
 def project_cards(
     _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
