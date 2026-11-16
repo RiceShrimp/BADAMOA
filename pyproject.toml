@@ -22,6 +22,7 @@ hub = [
     "uvicorn>=0.30",
     "sqlalchemy>=2.0.30",
     "mcp>=2.0,<3",
+    "optuna>=4.0,<5",  # Bayesian search (TPE) for sweeps
 ]
 
 [project.scripts]

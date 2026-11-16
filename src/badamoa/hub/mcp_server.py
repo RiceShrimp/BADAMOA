@@ -416,7 +416,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
         space: 시험할 설정. 값 목록 {"lr0": {"values": [0.01, 0.001]}}
         또는 범위 {"lr0": {"min": 0.0001, "max": 0.01, "log": true}}.
-        method: grid(값 목록의 모든 조합) 또는 random(max_runs번 무작위로 뽑음, 범위는 random에서만).
+        method: grid(값 목록의 모든 조합), random(max_runs번 무작위로 뽑음) 또는 bayes(처음 몇 번은 무작위,
+        그다음은 앞선 결과를 보고 고름 — 같은 횟수로 더 좋은 설정을 찾기 쉬움). 범위는 random · bayes에서만.
         params: 모든 실행이 같이 쓰는 설정 (예: {"model": "yolo11n.pt", "epochs": 30}).
         metric · goal: 무엇이 좋은지 (비우면 과제의 주 지표, 손실이면 minimize). parallel: 동시에 돌릴 실행 수.
         실행은 Hub가 차례로 시작합니다. get_sweep으로 진행과 최고 설정을 확인하세요.

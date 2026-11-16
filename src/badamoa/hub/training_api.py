@@ -82,7 +82,7 @@ class NewSweep(BaseModel):
     template: str = ""
     environment: str = ""
     params: dict[str, Any] = Field(default_factory=dict)  # the settings every run shares
-    method: str = "grid"  # grid | random
+    method: str = "grid"  # grid | random | bayes
     metric: str = ""  # empty: the task's main metric
     goal: str = ""  # maximize | minimize; empty: minimize for a loss, else maximize
     max_runs: int = 10  # random: how many draws
@@ -440,7 +440,7 @@ def run_file(file_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: 
     storage = catalog.storage_for(str(hub.settings.storage_dir))
     if not storage.has_blob(row.blob):
         raise HTTPException(status_code=404, detail="파일이 저장소에 없습니다.")
-    return blob_response(storage, row.blob, row.name, row.kind == "image")
+    return blob_response(storage, row.blob, row.name, row.kind in ("image", "table-image"))
 
 
 def blob_response(storage, blob: str, name: str, image: bool) -> StreamingResponse:

@@ -68,6 +68,8 @@ def main(argv: list[str]) -> int:
                 step=epoch,
                 caption=f"epoch {epoch}",
             )
+            if epoch == 1:  # a picture a table cell draws boxes on (bm.overlay): recorded once, with the tables
+                emit("artifact", path=str(out / "media" / "sample.png"), name="tables/00001-sample.png", media="table-image")
             table = out / "media" / f"table-{epoch}.json"
             rows = [[f"samples/{epoch:06d}-sample.png", "car", round(0.5 + epoch / 100, 3)]]
             table.write_text(json.dumps({"columns": ["image", "prediction", "score"], "rows": rows}), encoding="utf-8")

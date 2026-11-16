@@ -1,6 +1,6 @@
 import { LineageGraph } from "./Lineage";
 import { MediaPanel } from "./Media";
-import { SweepFields, SweepList, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
+import { SweepFields, SweepList, type SweepMethod, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
 import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
 import { FileList, fileSize } from "./Files";
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -483,11 +483,14 @@ function RunView({ runId }: { runId: string }) {
 
       <MediaPanel
         media={run.media}
-        images={Object.fromEntries(
-          [...run.files, ...run.media.flatMap((m) => m.steps.flatMap((s) => s.files))]
-            .filter((f) => f.kind === "image")
-            .map((f) => [f.name, f.url]),
-        )}
+        images={{
+          ...Object.fromEntries(
+            [...run.files, ...run.media.flatMap((m) => m.steps.flatMap((s) => s.files))]
+              .filter((f) => f.kind === "image")
+              .map((f) => [f.name, f.url]),
+          ),
+          ...(run.table_images ?? {}),
+        }}
       />
 
       <div className="two-col">
@@ -899,7 +902,7 @@ function NewRun({
   const [busy, setBusy] = useState(false);
   // A search: the settings to try, and how.
   const [trials, setTrials] = useState<Trial[]>([]);
-  const [method, setMethod] = useState<"grid" | "random">("grid");
+  const [method, setMethod] = useState<SweepMethod>("grid");
   const [drawCount, setDrawCount] = useState(10);
   const [parallel, setParallel] = useState(1);
   const [goalMetric, setGoalMetric] = useState(keyMetrics(task)[0]);
@@ -984,7 +987,7 @@ function NewRun({
             environment: extra.environment,
             params,
             space,
-            method: ranged ? "random" : method,
+            method: ranged && method === "grid" ? "random" : method,
             max_runs: drawCount,
             parallel,
             metric: goalMetric,

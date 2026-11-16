@@ -141,6 +141,7 @@ export interface RunDetail extends Run {
   files_url: string | null; // everything below as one zip
   metrics_csv_url: string | null; // every logged step, not thinned out
   media: RunMedia[]; // per-step pictures and tables, by key
+  table_images?: Record<string, string>; // pictures table cells draw boxes on (bm.overlay), by name
   settings: { name: string; label: string; value: unknown; group: string; advanced: boolean; changed: boolean }[];
 }
 

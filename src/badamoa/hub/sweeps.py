@@ -5,6 +5,8 @@ A sweep names the settings to try (``space``) and how to pick them:
     grid    every combination of the listed values
     random  ``max_runs`` draws: a listed value, or a number between ``min`` and ``max``
             (on a log scale with ``log``, the usual choice for learning rates)
+    bayes   like random for the first few runs, then each next setting is chosen from the
+            results so far by Optuna's TPE sampler (Tree-structured Parzen Estimator)
 
 The Hub starts the runs itself, ``parallel`` at a time, and starts the next as one ends
 (``advance_all``, from the Hub's background loop). Every run is an ordinary run with the
@@ -13,11 +15,12 @@ sweep's id in its config, so it shows up, compares and registers its model like 
 
 from __future__ import annotations
 
-import itertools
+import hashlib
 import logging
 import math
 import random
 import threading
+import warnings
 from typing import Any
 
 from sqlalchemy import select
@@ -36,7 +39,7 @@ from .train_models import Run, Sweep, Template
 
 log = logging.getLogger("badamoa.hub.sweeps")
 
-METHODS = ("grid", "random")
+METHODS = ("grid", "random", "bayes")
 MAX_RUNS = 100
 MAX_PARALLEL = 8
 MAX_VALUES = 50
@@ -72,8 +75,10 @@ def _check_space(manifest: Any, params: dict[str, Any], space: dict[str, Any], m
                     raise ServiceError(400, str(e)) from e
             clean[name] = {"values": list(dict.fromkeys(checked))}
         elif "min" in spec and "max" in spec:
-            if method != "random":
-                raise ServiceError(400, f"{name}: 범위는 무작위 탐색에서만 쓸 수 있습니다. 모든 조합에는 값을 나열하세요.")
+            if method == "grid":
+                raise ServiceError(
+                    400, f"{name}: 범위는 무작위 · 베이지안 탐색에서만 쓸 수 있습니다. 모든 조합에는 값을 나열하세요."
+                )
             if declared.type not in ("integer", "number"):
                 raise ServiceError(400, f"{name}: 범위는 숫자 설정에만 쓸 수 있습니다.")
             try:
@@ -110,28 +115,163 @@ def _check_used(manifest: Any, fixed: dict[str, Any], space: dict[str, dict[str,
                 )
 
 
-def total_of(sweep: Sweep) -> int:
-    if sweep.method == "grid":
+def _combinations(sweep: Sweep) -> int | None:
+    """How many different settings there are, when every setting lists its values (None with a range)."""
+    if all("values" in spec for spec in sweep.space.values()):
         return math.prod(len(spec["values"]) for spec in sweep.space.values())
-    return sweep.max_runs
+    return None
 
 
-def settings_for(sweep: Sweep, index: int, types: dict[str, str]) -> dict[str, Any]:
-    """The settings of the sweep's ``index``-th run. The same index always gives the same settings."""
+def total_of(sweep: Sweep) -> int:
+    combinations = _combinations(sweep)
     if sweep.method == "grid":
-        names = list(sweep.space)
-        combo = next(itertools.islice(itertools.product(*(sweep.space[n]["values"] for n in names)), index, None))
-        return dict(zip(names, combo, strict=True))
+        return combinations or 0
+    # Draws among listed values only: never more runs than there are different settings.
+    return min(sweep.max_runs, combinations) if combinations else sweep.max_runs
+
+
+def startup_runs(sweep: Sweep) -> int:
+    """Bayes: how many results there must be before they guide the choice; until then the draws are random."""
+    return max(3, min(10, sweep.max_runs // 4))
+
+
+def _combination(sweep: Sweep, number: int) -> dict[str, Any]:
+    """The ``number``-th of all combinations, in the order of ``itertools.product``."""
+    out: dict[str, Any] = {}
+    for name in reversed(list(sweep.space)):
+        values = sweep.space[name]["values"]
+        number, at = divmod(number, len(values))
+        out[name] = values[at]
+    return {name: out[name] for name in sweep.space}
+
+
+def _number(value: float, kind: str | None) -> int | float:
+    return int(round(value)) if kind == "integer" else float(f"{value:.4g}")
+
+
+def settings_for(
+    sweep: Sweep,
+    index: int,
+    types: dict[str, str],
+    history: list[tuple[dict[str, Any], float]] | None = None,
+    tried: list[dict[str, Any]] | None = None,
+    running: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The settings of the sweep's ``index``-th run.
+
+    Grid and random: the same index always gives the same settings. Bayes: the same results so
+    far (``history``: settings and the value of the sweep's metric; ``running``: settings of the
+    runs going) give the same next settings; ``tried`` are not chosen again when it can be helped.
+    """
+    if sweep.method == "grid":
+        return _combination(sweep, index)
     rng = random.Random(f"{sweep.id}:{index}")
+    if sweep.method == "bayes" and len(history or []) >= startup_runs(sweep):
+        return _suggest(sweep, index, types, history or [], tried or [], running or [])
+    combinations = _combinations(sweep)
+    if combinations is not None:  # listed values only: a random order of all combinations, none twice
+        order = random.Random(sweep.id).sample(range(combinations), total_of(sweep))
+        return _combination(sweep, order[index % len(order)])
+    # A range is cut into as many equal parts as there are random draws and each part is drawn
+    # once (a Latin hypercube): a few draws spread over the range instead of landing together.
+    draws = startup_runs(sweep) if sweep.method == "bayes" else total_of(sweep)
     out: dict[str, Any] = {}
     for name, spec in sweep.space.items():
         if "values" in spec:
             out[name] = rng.choice(spec["values"])
             continue
-        low, high = spec["min"], spec["max"]
-        value = math.exp(rng.uniform(math.log(low), math.log(high))) if spec.get("log") else rng.uniform(low, high)
-        out[name] = int(round(value)) if types.get(name) == "integer" else float(f"{value:.4g}")
+        part = random.Random(f"{sweep.id}:{name}").sample(range(draws), draws)[index % draws]
+        share = (part + rng.random()) / draws
+        low, high = (math.log(spec["min"]), math.log(spec["max"])) if spec.get("log") else (spec["min"], spec["max"])
+        value = low + share * (high - low)
+        out[name] = _number(math.exp(value) if spec.get("log") else value, types.get(name))
     return out
+
+
+# ---- bayes: Optuna's TPE ------------------------------------------------------------------
+#
+# The Hub keeps no Optuna storage: each time a run is to start, a study is rebuilt in memory
+# from the sweep's runs (finished ones with their value, running ones as running) and asked for
+# the next settings. TPE splits the results into good and the rest and draws where the good ones
+# are dense and the rest are not; with ``constant_liar`` the runs going count as not-so-good, so
+# runs started side by side spread out instead of trying the same place.
+
+
+def _same(a: Any, b: Any) -> bool:
+    return a == b and isinstance(a, bool) == isinstance(b, bool)
+
+
+def _distributions(sweep: Sweep, types: dict[str, str]) -> dict[str, Any]:
+    from optuna.distributions import CategoricalDistribution, FloatDistribution, IntDistribution
+
+    out: dict[str, Any] = {}
+    for name, spec in sweep.space.items():
+        if "values" in spec:
+            out[name] = CategoricalDistribution(tuple(spec["values"]))
+        elif types.get(name) == "integer":
+            low, high = math.ceil(spec["min"]), math.floor(spec["max"])
+            out[name] = IntDistribution(low, max(low, high), log=bool(spec.get("log")) and low > 0)
+        else:
+            out[name] = FloatDistribution(spec["min"], spec["max"], log=bool(spec.get("log")))
+    return out
+
+
+def _as_params(settings: dict[str, Any], space: dict[str, Any]) -> dict[str, Any] | None:
+    """A run's settings as Optuna params: numbers kept inside their range, None when a listed value is not listed."""
+    from optuna.distributions import CategoricalDistribution, IntDistribution
+
+    params: dict[str, Any] = {}
+    for name, dist in space.items():
+        value = settings.get(name)
+        if isinstance(dist, CategoricalDistribution):
+            match = next((c for c in dist.choices if _same(c, value)), None)
+            if match is None and not any(_same(c, value) for c in dist.choices):
+                return None
+            params[name] = match
+        else:
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                return None
+            value = min(dist.high, max(dist.low, value))
+            params[name] = int(round(value)) if isinstance(dist, IntDistribution) else float(value)
+    return params
+
+
+def _suggest(
+    sweep: Sweep,
+    index: int,
+    types: dict[str, str],
+    history: list[tuple[dict[str, Any], float]],
+    tried: list[dict[str, Any]],
+    running: list[dict[str, Any]],
+) -> dict[str, Any]:
+    import optuna
+    from optuna.trial import TrialState, create_trial
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    space = _distributions(sweep, types)
+    seed = int(hashlib.sha256(f"{sweep.id}:{index}".encode()).hexdigest()[:8], 16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # multivariate and constant_liar are marked experimental
+        sampler = optuna.samplers.TPESampler(
+            seed=seed, n_startup_trials=startup_runs(sweep), multivariate=True, constant_liar=True
+        )
+        study = optuna.create_study(direction=sweep.goal, sampler=sampler)
+        for settings, value in history:
+            if (params := _as_params(settings, space)) is not None:
+                study.add_trial(create_trial(params=params, distributions=space, value=value))
+        for settings in running:
+            if (params := _as_params(settings, space)) is not None:
+                study.add_trial(create_trial(params=params, distributions=space, state=TrialState.RUNNING))
+        chosen: dict[str, Any] = {}
+        for _ in range(5):  # settings already tried would only repeat a result: ask again (the ask counts as running)
+            trial = study.ask(space)
+            chosen = {
+                name: _number(value, types.get(name)) if isinstance(value, float) else value
+                for name, value in trial.params.items()
+            }
+            if not any(all(_same(t.get(k), v) for k, v in chosen.items()) for t in tried):
+                break
+    return chosen
 
 
 # ---- start, advance, stop -------------------------------------------------------------------
@@ -162,7 +302,7 @@ def start_sweep(
     via: str = "api",
 ) -> Sweep:
     if method not in METHODS:
-        raise ServiceError(400, "method는 grid(모든 조합) 또는 random(무작위)입니다.")
+        raise ServiceError(400, "method는 grid(모든 조합), random(무작위) 또는 bayes(베이지안)입니다.")
     release = catalog.get_release(db, release_id)
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
@@ -209,7 +349,9 @@ def start_sweep(
     )
     total = total_of(sweep)
     if total > MAX_RUNS:
-        raise ServiceError(400, f"조합이 {total}개입니다. {MAX_RUNS}개 이하가 되게 값을 줄이거나 무작위 탐색을 쓰세요.")
+        raise ServiceError(
+            400, f"조합이 {total}개입니다. {MAX_RUNS}개 이하가 되게 값을 줄이거나 무작위 · 베이지안 탐색을 쓰세요."
+        )
     db.add(sweep)
     db.flush()
     _start_next(db, sweep, via)  # the first runs right away: the person sees them start, mistakes show at once
@@ -255,8 +397,22 @@ def _start_next(db: Session, sweep: Sweep, via: str = "sweep") -> None:
     manifest = registry.manifest_of(row)
     types = {name: spec.type for name, spec in manifest.params.items()}
     s = sweep.settings
+    history: list[tuple[dict[str, Any], float]] = []
+    tried: list[dict[str, Any]] = []
+    running: list[dict[str, Any]] = []
+    if sweep.method == "bayes":  # what was tried so far, how the finished ones did, which are going
+        for r in runs:
+            settings = {k: (r.config or {}).get(k) for k in sweep.space}
+            tried.append(settings)
+            status, value = _status(db, r), (r.summary or {}).get(sweep.metric)
+            if status == "succeeded" and isinstance(value, int | float) and math.isfinite(value):
+                history.append((settings, float(value)))
+            elif status not in TERMINAL_STATUSES:
+                running.append(settings)
     while active < sweep.parallel and started < total:
-        chosen = settings_for(sweep, started, types)
+        chosen = settings_for(sweep, started, types, history, tried, running)
+        tried.append(chosen)
+        running.append(chosen)
         try:
             training.start_run(
                 db,
@@ -348,6 +504,7 @@ def sweep_view(db: Session, settings: HubSettings, sweep: Sweep, detail: bool = 
         "status": sweep.status,
         "error": sweep.error or None,
         "method": sweep.method,
+        "startup": startup_runs(sweep) if sweep.method == "bayes" else None,  # drawn at random before results guide
         "metric": sweep.metric,
         "goal": sweep.goal,
         "space": sweep.space,

@@ -217,12 +217,77 @@ def test_sdk_records_images_and_tables_by_step(tmp_path, capsys, monkeypatch):
     bm.load_config([])
 
 
+def test_sdk_overlay_cells_draw_boxes_on_images(tmp_path, capsys, monkeypatch):
+    import importlib
+    import json
+
+    monkeypatch.syspath_prepend(str(shipped.SDK))
+    bm = importlib.import_module("badamoa_sdk")
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"params": {}, "out": str(tmp_path / "o"), "classes": ["person", "car"]}))
+    bm.load_config(["train.py", "--config", str(config)])
+    run = bm.init()
+    picture = run.out / "a.jpg"
+    picture.write_bytes(b"jpg")
+    ring = [v for i in range(1000) for v in (0.5 + 0.1 * (i % 2), 0.5)]  # 1000 points: thinned, not cut off
+    cell = bm.overlay(
+        picture,
+        boxes=[[0, 0.912345, 0.5, 0.5, 0.2, 0.3], ["bad"], [1, 0.5, 0.1]],
+        truth=[[0, 0.5, 0.5, 0.2, 0.3]],
+        outlines=[[1, 0.8, ring], [1, 0.8, [0.1, 0.1]]],
+    )
+    assert cell["boxes"] == [[0, 0.9123, 0.5, 0.5, 0.2, 0.3]] and cell["truth"] == [[0, 0.5, 0.5, 0.2, 0.3]]
+    assert len(cell["outlines"]) == 1 and len(cell["outlines"][0][2]) == 2 * 334  # every third of 1000 points
+    assert "truth_outlines" not in cell  # not given: unknown, rather than "none"
+    for step in (1, 2):  # the image goes with the table once, whatever number of steps show it
+        bm.log_table("val", ["image", "missed"], [[cell, 0]], step=step)
+    events = [json.loads(line[10:]) for line in capsys.readouterr().out.splitlines() if line.startswith("@@badamoa ")]
+    image, first, second = [e for e in events if e["event"] == "artifact"]
+    assert (image["media"], image["name"]) == ("table-image", "tables/00001-a.jpg") and "key" not in image
+    stored = json.loads(Path(second["path"]).read_text(encoding="utf-8"))
+    assert stored["classes"] == ["person", "car"] and stored["rows"][0][0]["image"] == "tables/00001-a.jpg"
+    assert stored["rows"][0][0]["boxes"] == cell["boxes"]
+    bm.load_config([])
+
+
+def test_yolo_samples_read_labels_and_count_found_boxes(tmp_path, monkeypatch):
+    import importlib.util
+
+    monkeypatch.syspath_prepend(str(shipped.SDK))
+    spec = importlib.util.spec_from_file_location("yolo_train_for_test", shipped.builtin()["yolo"] / "train.py")
+    yolo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(yolo)
+
+    root = tmp_path / "data"
+    for i in range(10):
+        (root / "images" / "val").mkdir(parents=True, exist_ok=True)
+        (root / "images" / "val" / f"{i:02d}.jpg").write_bytes(b"jpg")
+    (root / "labels" / "val").mkdir(parents=True)
+    (root / "labels" / "val" / "03.txt").write_text("0 0.5 0.5 0.2 0.2\n1 0.2 0.2 0.4 0.2 0.4 0.4 0.2 0.4\n")
+    boxes, outlines = yolo.truth_of(root / "images" / "val" / "03.jpg")
+    assert boxes[0] == [0, 0.5, 0.5, 0.2, 0.2] and boxes[1] == pytest.approx([1, 0.3, 0.3, 0.2, 0.2])
+    assert outlines == [[1, [0.2, 0.2, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4]]]
+    assert yolo.truth_of(root / "images" / "val" / "00.jpg") == ([], [])
+    predicted = [
+        [0, 0.9, 0.51, 0.5, 0.2, 0.2],  # found
+        [0, 0.8, 0.5, 0.5, 0.2, 0.2],  # the same object again: extra
+        [1, 0.7, 0.5, 0.5, 0.2, 0.2],  # wrong class: extra
+    ]
+    assert yolo.match(predicted, boxes) == (1, 1, 2)
+    assert yolo.match([], boxes) == (0, 2, 0)
+
+    val = str(root / "images" / "val")  # as the trainer resolves it
+    picked = yolo.sample_images(val, 4)
+    assert [p.name for p in picked] == ["00.jpg", "02.jpg", "04.jpg", "06.jpg"]  # spread over the split
+    assert yolo.sample_images([val], 0) == [] and yolo.sample_images(None, 4) == []
+
+
 def test_yolo_hyperparameters_are_detailed_settings():
     manifest = fmt.load_manifest(shipped.builtin()["yolo"])
     basic = [name for name, spec in manifest.params.items() if not spec.advanced]
     assert basic == ["model", "epochs"]
     groups = {spec.group for spec in manifest.params.values() if spec.advanced and spec.type != "object"}
-    assert groups == {"학습", "최적화", "증강"}
+    assert groups == {"학습", "최적화", "증강", "기록"}
     chosen = fmt.resolve_params(manifest, {"lr0": "0.002", "optimizer": "AdamW", "mosaic": 0})
     assert (chosen["lr0"], chosen["optimizer"], chosen["mosaic"], chosen["momentum"]) == (0.002, "AdamW", 0.0, 0.937)
     with pytest.raises(fmt.TemplateError, match="옵티마이저"):

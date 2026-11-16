@@ -1,6 +1,6 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "8"
+version = "9"
 description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
 task = "detect"
 data_format = "yolo"
@@ -251,6 +251,17 @@ minimum = 0
 maximum = 1
 advanced = true
 group = "증강"
+
+# ---- 세부 설정: 기록 ----
+[params.samples]
+type = "integer"
+label = "예측을 남길 검증 이미지 수"
+default = 16
+minimum = 0
+maximum = 64
+advanced = true
+group = "기록"
+help = "epoch마다 같은 검증 이미지에 예측한 박스를 남겨, 실행 화면에서 epoch를 넘기며 봅니다. 0이면 남기지 않습니다."
 
 [params.extra]
 type = "object"

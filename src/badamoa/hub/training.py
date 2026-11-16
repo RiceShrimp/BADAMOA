@@ -463,7 +463,8 @@ def add_file(
 ) -> dict[str, Any]:
     """Attach a file to its run: one the code recorded, or one the node found in the output folder.
 
-    With a ``key`` it is a per-step image or (``media="table"``) table. Recording the same name again replaces it.
+    With a ``key`` it is a per-step image or (``media="table"``) table. ``media="table-image"`` is a
+    picture a table cell draws on (``bm.overlay``): shown in its table only. Recording the same name again replaces it.
     """
     _, run = _running(db, node, job_id)
     name = clean_file_name(name)
@@ -475,7 +476,13 @@ def add_file(
         row = RunFile(run_id=run.id, name=name)
         db.add(row)
     row.blob, row.bytes = blob, size
-    row.kind = "table" if media == "table" else "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"
+    picture = name.lower().endswith(IMAGE_SUFFIXES)
+    if media == "table":
+        row.kind = "table"
+    elif media == "table-image" and picture:
+        row.kind = "table-image"
+    else:
+        row.kind = "image" if picture else "file"
     row.key, row.step, row.caption = key.strip()[:64], step, caption.strip()[:255]
     db.flush()
     return {"id": row.id, "name": row.name}
@@ -654,11 +661,15 @@ def run_view(
         stored = db.scalars(select(RunFile).where(RunFile.run_id == run.id).order_by(RunFile.created_at, RunFile.name)).all()
         url = {f.id: catalog.media_url(settings, "file", f.id) for f in stored}
         view["files"] = [
-            {"id": f.id, "name": f.name, "kind": f.kind, "bytes": f.bytes, "url": url[f.id]} for f in stored if not f.key
+            {"id": f.id, "name": f.name, "kind": f.kind, "bytes": f.bytes, "url": url[f.id]}
+            for f in stored
+            if not f.key and f.kind != "table-image"
         ]
+        # Pictures that table cells draw on: found by name from the tables, not listed on their own.
+        view["table_images"] = {f.name: url[f.id] for f in stored if f.kind == "table-image"}
         # Per-step images and tables, by key and step (W&B media panels, MLflow logged images and tables).
         media: dict[str, dict[int, list[dict[str, Any]]]] = {}
-        for f in sorted((f for f in stored if f.key), key=lambda f: (f.step or 0, f.name)):
+        for f in sorted((f for f in stored if f.key and f.kind != "table-image"), key=lambda f: (f.step or 0, f.name)):
             media.setdefault(f.key, {}).setdefault(f.step or 0, []).append(
                 {"name": f.name, "kind": f.kind, "caption": f.caption, "url": url[f.id]}
             )

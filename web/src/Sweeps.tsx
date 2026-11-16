@@ -18,7 +18,8 @@ export interface Sweep {
   task: string;
   status: "running" | "finished" | "stopped";
   error: string | null;
-  method: "grid" | "random";
+  method: SweepMethod;
+  startup: number | null; // bayes: runs drawn at random before the results guide the choice
   metric: string;
   goal: "maximize" | "minimize";
   space: Record<string, SweepSpec>;
@@ -39,7 +40,8 @@ export interface Sweep {
 
 const STATUS_KIND: Record<Sweep["status"], string> = { running: "running", finished: "succeeded", stopped: "canceled" };
 const STATUS_TEXT: Record<Sweep["status"], string> = { running: "진행 중", finished: "끝남", stopped: "멈춤" };
-export const METHOD_LABEL: Record<string, string> = { grid: "모든 조합", random: "무작위" };
+export type SweepMethod = "grid" | "random" | "bayes";
+export const METHOD_LABEL: Record<string, string> = { grid: "모든 조합", random: "무작위", bayes: "베이지안" };
 
 const show = (v: unknown) => (typeof v === "number" ? String(Number(v.toPrecision(4))) : String(v));
 export const settingsText = (settings: Record<string, unknown>) =>
@@ -110,8 +112,8 @@ export function SweepFields({
   task: string;
   trials: Trial[];
   onTrials: (t: Trial[]) => void;
-  method: "grid" | "random";
-  onMethod: (m: "grid" | "random") => void;
+  method: SweepMethod;
+  onMethod: (m: SweepMethod) => void;
   runs: number;
   onRuns: (n: number) => void;
   parallel: number;
@@ -124,6 +126,8 @@ export function SweepFields({
   const ranged = parsed.some((p) => typeof p !== "string" && p.min !== undefined);
   const combos = parsed.reduce((n, p) => n * (typeof p === "string" ? 1 : (p.values?.length ?? 1)), 1);
   const used = new Set(trials.map((t) => t.name));
+  const shown: SweepMethod = ranged && method === "grid" ? "random" : method; // a range cannot be listed out
+  const startup = Math.max(3, Math.min(10, Math.floor(runs / 4)));
   const update = (i: number, change: Partial<Trial>) => onTrials(trials.map((t, j) => (j === i ? { ...t, ...change } : t)));
   const add = () => {
     const next = tunable.find((p) => !used.has(p.name));
@@ -172,12 +176,15 @@ export function SweepFields({
         <div className="form-row">
           <label>
             방식
-            <select value={ranged ? "random" : method} onChange={(e) => onMethod(e.target.value as "grid" | "random")} disabled={ranged}>
-              <option value="grid">모든 조합 ({combos}회)</option>
+            <select value={shown} onChange={(e) => onMethod(e.target.value as SweepMethod)}>
+              <option value="grid" disabled={ranged}>
+                모든 조합 ({combos}회)
+              </option>
               <option value="random">무작위로 뽑기</option>
+              <option value="bayes">베이지안 (앞선 결과를 보고 고르기)</option>
             </select>
           </label>
-          {(ranged || method === "random") && (
+          {shown !== "grid" && (
             <label>
               실행 수
               <input type="number" min={1} max={100} value={runs} onChange={(e) => onRuns(Number(e.target.value))} />
@@ -198,6 +205,12 @@ export function SweepFields({
             </select>
           </label>
         </div>
+      )}
+      {trials.length > 0 && shown === "bayes" && (
+        <p className="muted small">
+          처음 {startup}회는 무작위로 뽑고, 그다음부터는 끝난 실행의 결과를 보고 좋았던 설정 근처를 고릅니다. 동시에 돌리는 수가
+          적을수록 앞선 결과를 더 많이 참고합니다.
+        </p>
       )}
     </details>
   );
@@ -376,7 +389,7 @@ export function SweepView({ sweepId }: { sweepId: string }) {
           </h1>
           <p className="muted">
             {sweep.release ? `${sweep.release.dataset} ${sweep.release.version}` : "삭제된 릴리스"} · {sweep.template.title} ·{" "}
-            {METHOD_LABEL[sweep.method]} {sweep.total}회 · {label} {sweep.goal === "maximize" ? "높은" : "낮은"} 것이 좋음 ·{" "}
+            {METHOD_LABEL[sweep.method]} {sweep.total}회{sweep.startup ? ` (처음 ${sweep.startup}회 무작위)` : ""} · {label} {sweep.goal === "maximize" ? "높은" : "낮은"} 것이 좋음 ·{" "}
             {timeAgo(sweep.created_at)}
           </p>
         </div>

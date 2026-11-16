@@ -24,6 +24,7 @@ BADAMOA가 코드를 실행할 때는 이 모듈을 자동으로 import할 수 �
     bm.log_artifact("confusion.png")      # (선택) 그림·파일 → 실행 화면의 "산출물"
     bm.log_image("pred.jpg", key="예측", step=epoch)   # (선택) 단계별 그림 → step을 넘기며 봄
     bm.log_table("val", ["image", "pred"], rows)       # (선택) 표 → 정렬·검색되는 표
+    bm.overlay("a.jpg", boxes=[[0, 0.9, 0.5, 0.5, 0.2, 0.3]])  # (선택) 표 칸: 이미지 위에 박스를 겹쳐 그림
     bm.log_model(run.out / "best.pt")     # 4. 모델로 등록할 가중치
     bm.finish({"map50_95": best})         # 5. 최종 지표와 함께 끝냄
 
@@ -43,7 +44,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__version__ = "6"
+__version__ = "7"
 
 
 # ---- 설정 선언 ---------------------------------------------------------------------------
@@ -184,6 +185,7 @@ class Run:
         self._step = 0
         self._weights = ""
         self._class_metrics: list[dict[str, Any]] = []
+        self._table_images: dict[tuple[str, int, int], str] = {}
         self._finished = False
         self.out.mkdir(parents=True, exist_ok=True)
 
@@ -326,6 +328,8 @@ def log_artifact(path: str | Path, name: str | None = None) -> None:
 
 
 MAX_TABLE_ROWS = 10000
+MAX_SHAPES = 300  # boxes or outlines per kind in one overlay cell
+MAX_POINTS = 400  # points of one outline
 
 
 def _key(key: str) -> str:
@@ -362,15 +366,97 @@ def _cell(value: Any) -> Any:
     return round(number_value, 6) if number_value == number_value and abs(number_value) != float("inf") else None
 
 
-def log_table(key: str, columns: list[str], rows: list[list[Any]], step: int | None = None) -> None:
+def _shapes(rows: Any, scored: bool, outline: bool) -> list[list[Any]]:
+    """Boxes ``[class, (score,) cx, cy, w, h]`` or outlines ``[class, (score,) [x1, y1, …]]``, cleaned; bad rows dropped."""
+    out: list[list[Any]] = []
+    for row in list(rows or [])[:MAX_SHAPES]:
+        try:
+            row = list(row)
+            head: list[Any] = [int(row[0])] + ([round(float(row[1]), 4)] if scored else [])
+            if outline:
+                flat = list(row[len(head)])
+                pairs = [flat[i : i + 2] for i in range(0, len(flat) - 1, 2)]
+                pairs = pairs[:: -(-len(pairs) // MAX_POINTS)] if pairs else []  # a long outline thinned evenly
+                points = [round(float(v), 5) for pair in pairs for v in pair]
+                if len(points) >= 6:
+                    out.append([*head, points])
+            else:
+                coords = [round(float(v), 5) for v in row[len(head) : len(head) + 4]]
+                if len(coords) == 4:
+                    out.append([*head, *coords])
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+def overlay(
+    image: str | Path,
+    boxes: list[list[Any]] | None = None,
+    truth: list[list[Any]] | None = None,
+    outlines: list[list[Any]] | None = None,
+    truth_outlines: list[list[Any]] | None = None,
+) -> dict[str, Any]:
+    """표 칸 하나: 이미지 위에 예측(과 정답)을 겹쳐 그립니다 (W&B의 `wandb.Image(boxes=…, masks=…)`).
+
+        bm.log_table("val", ["image", "missed"], [[bm.overlay("a.jpg", boxes=[[0, 0.91, 0.5, 0.5, 0.2, 0.3]]), 0]])
+
+    image: 이미지 파일 경로(표와 함께 기록됨) 또는 log_image가 돌려준 이름
+    boxes: 예측 박스 [[클래스 번호, 확신도, cx, cy, w, h], …] — 좌표는 이미지 크기에 대한 비율(0~1), YOLO 라벨과 같음
+    truth: 정답 박스 [[클래스 번호, cx, cy, w, h], …]
+    outlines: 분할 예측 [[클래스 번호, 확신도, [x1, y1, x2, y2, …]], …] (비율 좌표)
+    truth_outlines: 분할 정답 [[클래스 번호, [x1, y1, …]], …]
+
+    화면에서 정답을 함께 보거나 확신도로 거를 수 있고, 클래스 이름은 log_table의 classes(기본: 학습 클래스)에서 옵니다.
+    """
+    cell: dict[str, Any] = {"image": str(image)}
+    for field, rows, scored, outline in (
+        ("boxes", boxes, True, False),
+        ("truth", truth, False, False),
+        ("outlines", outlines, True, True),
+        ("truth_outlines", truth_outlines, False, True),
+    ):
+        if rows is not None:
+            cell[field] = _shapes(rows, scored, outline)
+    return cell
+
+
+def _table_image(run: Run, cell: dict[str, Any]) -> dict[str, Any]:
+    """An overlay whose image is a file: record the file with the table (once, however many steps show it)."""
+    source = Path(str(cell["image"]))
+    if not source.is_file():
+        return cell  # a name log_image returned
+    resolved = source.resolve()
+    stamp = (str(resolved), resolved.stat().st_size, resolved.stat().st_mtime_ns)
+    name = run._table_images.get(stamp)
+    if name is None:
+        name = f"tables/{len(run._table_images) + 1:05d}-{_key(source.name)}"
+        run._table_images[stamp] = name
+        _emit("artifact", path=str(resolved), name=name, media="table-image")
+    return {**cell, "image": name}
+
+
+def log_table(
+    key: str, columns: list[str], rows: list[list[Any]], step: int | None = None, classes: list[str] | None = None
+) -> None:
     """표를 기록합니다 — 샘플별 예측, 클래스별 결과처럼 행이 많은 결과 (W&B Tables, MLflow log_table).
 
     칸에는 숫자·글자를 넣고, 이 실행에 log_image로 기록한 이미지의 이름을 넣으면 화면에서 그림으로 보입니다.
+    bm.overlay(…)를 넣으면 이미지 위에 박스·윤곽을 겹쳐 그립니다.
     같은 key로 step마다 기록하면 실행 화면에서 step을 넘기며 봅니다. 행은 최대 10,000개까지 남습니다.
+    classes: 박스의 클래스 번호 → 이름 (생략하면 학습 클래스)
     """
     run = _current()
     at = run._step if step is None else int(step)
-    data = {"columns": [str(c) for c in columns], "rows": [[_cell(v) for v in row] for row in rows[:MAX_TABLE_ROWS]]}
+    data: dict[str, Any] = {
+        "columns": [str(c) for c in columns],
+        "rows": [
+            [_table_image(run, v) if isinstance(v, dict) and "image" in v else _cell(v) for v in row]
+            for row in rows[:MAX_TABLE_ROWS]
+        ],
+    }
+    names = run.classes if classes is None else classes
+    if names:
+        data["classes"] = [str(c) for c in names]
     folder = run.out / ".badamoa"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{_key(key)}-{at:06d}.table.json"

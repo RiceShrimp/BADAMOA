@@ -14,6 +14,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import badamoa_sdk as bm
+
 # Settings handed to Ultralytics under the same name (see badamoa.toml).
 HYPERPARAMETERS = (
     "patience", "seed", "optimizer", "lr0", "lrf", "momentum", "weight_decay", "warmup_epochs", "cos_lr",
@@ -48,6 +50,156 @@ def clean(metrics: dict) -> dict[str, float]:
         if math.isfinite(number):
             out[NAMES.get(key) or key.replace("(B)", "").replace("/", "_")] = round(number, 6)
     return out
+
+
+# ---- predictions on a few validation images, epoch by epoch --------------------------------
+
+SAMPLES_KEY = "val_predictions"
+SAMPLE_CONF = 0.25
+SAMPLE_SIDE = 640  # the stored copy of each image; boxes are fractions, so they fit any size
+MAX_RECORDS = 100  # longer runs record every n-th epoch
+MAX_OUTLINE = 200  # points kept of one predicted outline
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+
+
+def sample_images(val: str | list[str] | None, count: int) -> list[Path]:
+    """The same few validation images every epoch, spread over the split.
+
+    ``val``: the validation folder(s) as the trainer resolved them (``trainer.data["val"]``).
+    """
+    if count <= 0 or not val:
+        return []
+    files: list[Path] = []
+    for folder in val if isinstance(val, list) else [val]:
+        where = Path(str(folder))
+        if where.is_dir():
+            files += sorted(p for p in where.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES)
+    return files[:: max(1, len(files) // count)][:count]
+
+
+def truth_of(image: Path) -> tuple[list[list[float]], list[list]]:
+    """The image's label file (the Ultralytics layout: ``images/`` → ``labels/``) as boxes, and outlines for segments."""
+    images, labels = f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"
+    label = Path(labels.join(str(image).rsplit(images, 1))).with_suffix(".txt")
+    boxes: list[list[float]] = []
+    outlines: list[list] = []
+    if not label.is_file():
+        return boxes, outlines
+    for line in label.read_text(encoding="utf-8").splitlines():
+        try:
+            values = [float(v) for v in line.split()]
+        except ValueError:
+            continue
+        if len(values) == 5:
+            boxes.append([int(values[0]), *values[1:]])
+        elif len(values) >= 7 and len(values) % 2 == 1:  # a polygon: class x1 y1 x2 y2 …
+            xs, ys = values[1::2], values[2::2]
+            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+            boxes.append([int(values[0]), (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0])
+            outlines.append([int(values[0]), values[1:]])
+    return boxes, outlines
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    """Overlap of two ``cx, cy, w, h`` boxes."""
+    ax0, ay0, ax1, ay1 = a[0] - a[2] / 2, a[1] - a[3] / 2, a[0] + a[2] / 2, a[1] + a[3] / 2
+    bx0, by0, bx1, by1 = b[0] - b[2] / 2, b[1] - b[3] / 2, b[0] + b[2] / 2, b[1] + b[3] / 2
+    inner = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+    union = a[2] * a[3] + b[2] * b[3] - inner
+    return inner / union if union > 0 else 0.0
+
+
+def match(predicted: list[list[float]], truth: list[list[float]]) -> tuple[int, int, int]:
+    """Found, missed and extra boxes: a prediction finds a true box of its class it overlaps by half (IoU 0.5)."""
+    left = list(range(len(truth)))
+    found = 0
+    for box in sorted(predicted, key=lambda b: -b[1]):
+        best, at = 0.5, None
+        for i in left:
+            if truth[i][0] == box[0] and (overlap := _iou(box[2:6], truth[i][1:5])) >= best:
+                best, at = overlap, i
+        if at is not None:
+            left.remove(at)
+            found += 1
+    return found, len(truth) - found, len(predicted) - found
+
+
+class Samples:
+    """Predictions of each epoch's weights on the same validation images, as a table of pictures with boxes."""
+
+    def __init__(self, count: int, out: Path, imgsz: int, device: str) -> None:
+        self.count, self.out, self.imgsz = count, out, imgsz
+        self.device = device.split(",")[0]  # predictions need one device
+        self.picked: list[dict] | None = None
+        self.off = count <= 0
+
+    def prepare(self, val: str | list[str] | None) -> list[dict]:
+        from PIL import Image, ImageOps
+
+        if self.picked is None:
+            folder = self.out / ".badamoa" / "samples"
+            folder.mkdir(parents=True, exist_ok=True)
+            self.picked = []
+            for index, image in enumerate(sample_images(val, self.count)):
+                copy = folder / f"{index:03d}-{image.stem[:40]}.jpg"
+                with Image.open(image) as opened:
+                    picture = ImageOps.exif_transpose(opened).convert("RGB")
+                    picture.thumbnail((SAMPLE_SIDE, SAMPLE_SIDE))
+                    picture.save(copy, quality=85)
+                boxes, outlines = truth_of(image)
+                self.picked.append({"image": image, "copy": copy, "truth": boxes, "outlines": outlines})
+        return self.picked
+
+    def record(self, weights: Path, epoch: int, val: str | list[str] | None) -> None:
+        if self.off or not weights.is_file():
+            return
+        try:
+            self._record(weights, epoch, val)
+        except Exception as e:  # pictures are a help, never a reason for a run to fail
+            self.off = True
+            print(f"검증 이미지 예측을 남기지 못해 이번 실행에서는 더 남기지 않습니다: {e}", flush=True)
+
+    def _record(self, weights: Path, epoch: int, val: str | list[str] | None) -> None:
+        import torch
+        from ultralytics import YOLO
+
+        picked = self.prepare(val)
+        if not picked:
+            self.off = True
+            return
+        model = YOLO(str(weights))
+        results = model.predict(
+            [str(p["image"]) for p in picked],
+            imgsz=self.imgsz,
+            device=self.device,
+            conf=SAMPLE_CONF,
+            verbose=False,
+            save=False,
+        )
+        rows = []
+        for sample, result in zip(picked, results, strict=True):
+            boxes, outlines = [], []
+            if result.boxes is not None and len(result.boxes):
+                classes, scores = result.boxes.cls.tolist(), result.boxes.conf.tolist()
+                for cls, conf, xywh in zip(classes, scores, result.boxes.xywhn.tolist(), strict=True):
+                    boxes.append([int(cls), conf, *xywh])
+                if result.masks is not None:
+                    for cls, conf, points in zip(classes, scores, result.masks.xyn, strict=False):
+                        flat = points[:: max(1, -(-len(points) // MAX_OUTLINE))].reshape(-1).tolist()
+                        outlines.append([int(cls), conf, flat])
+            found, missed, extra = match(boxes, sample["truth"])
+            cell = bm.overlay(
+                sample["copy"],
+                boxes=boxes,
+                truth=sample["truth"],
+                outlines=outlines if sample["outlines"] or outlines else None,
+                truth_outlines=sample["outlines"] or None,
+            )
+            rows.append([cell, len(sample["truth"]), len(boxes), found, missed, extra])
+        bm.log_table(SAMPLES_KEY, ["image", "truth", "predicted", "found", "missed", "extra"], rows, step=epoch)
+        del model, results
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def continue_here(checkpoint: Path, out: Path) -> Path:
@@ -99,7 +251,7 @@ def main(argv: list[str]) -> int:
         )
         return 3
     gpus = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if device != "cpu" else []
-    emit("info", ultralytics=ultralytics.__version__, torch=torch.__version__, device=device, gpus=gpus)
+    bm.init(ultralytics=ultralytics.__version__, torch=torch.__version__, gpus=gpus)
 
     weights = params["model"]
     if cfg.get("init_weights"):
@@ -113,6 +265,7 @@ def main(argv: list[str]) -> int:
         # The interrupted run's checkpoint carries its epoch, optimizer state and settings.
         weights = str(continue_here(last, Path(cfg["out"])))
     model = YOLO(weights)
+    samples = Samples(int(params.get("samples", 16)), Path(cfg["out"]), params.get("imgsz", 640), device)
 
     training_epoch = False
 
@@ -128,6 +281,9 @@ def main(argv: list[str]) -> int:
         epoch = trainer.epoch + 1
         metrics = {**trainer.label_loss_items(trainer.tloss, prefix="train"), **trainer.metrics, **trainer.lr}
         emit("epoch", epoch=epoch, epochs=trainer.epochs, metrics=clean(metrics))
+        every = max(1, math.ceil(trainer.epochs / MAX_RECORDS))
+        if epoch % every == 0 or epoch >= trainer.epochs or trainer.stop:
+            samples.record(Path(trainer.last), epoch, (trainer.data or {}).get("val"))
 
     def on_model_save(trainer) -> None:  # last.pt holds everything needed to continue: tell the node where it is
         emit("checkpoint", path=str(trainer.last), epoch=trainer.epoch + 1)

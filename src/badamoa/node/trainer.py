@@ -44,6 +44,7 @@ CHECKPOINT_EVERY_S = 300.0
 MANIFEST_PAGE = 2000
 # Output files are kept one by one up to this many; a job that leaves more gets the rest as one archive.
 KEEP_SEPARATELY = 150
+SNAPSHOT_BYTES = 64 * 1024**2  # a recorded file up to this size is read whole before it is sent
 UPLOADED = "uploaded.txt"  # the files of a job's working folder that are on the Hub already
 
 
@@ -139,8 +140,13 @@ def put_run_file(client: httpx.Client, base: str, path: Path, name: str, **media
     ``media``: ``key``, ``step``, ``caption`` and ``media`` ("table") of a per-step image or table.
     """
     query = {"name": name, "kind": "file", **{k: v for k, v in media.items() if v not in (None, "")}}
-    with path.open("rb") as stream:
-        resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=3600)
+    if path.stat().st_size <= SNAPSHOT_BYTES:
+        # Read it first: code that rewrites the file every epoch may be writing it right now,
+        # and a body that grows while it is sent breaks the upload.
+        resp = client.put(f"{base}/artifact", params=query, content=path.read_bytes(), timeout=3600)
+    else:
+        with path.open("rb") as stream:
+            resp = client.put(f"{base}/artifact", params=query, content=stream, timeout=3600)
     if resp.status_code != 200:
         print(f"파일을 기록하지 못했습니다 ({name}): {resp.text[:200]}", flush=True)
     return resp.status_code == 200
@@ -374,8 +380,11 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
                 return
             media = {k: event.get(k) for k in ("key", "step", "caption", "media")}
-            if put_run_file(client, base, path, str(event.get("name") or path.name), **media):
-                note_uploaded(work, path)
+            try:
+                if put_run_file(client, base, path, str(event.get("name") or path.name), **media):
+                    note_uploaded(work, path)
+            except (OSError, httpx.HTTPError) as e:
+                print(f"파일을 기록하지 못했습니다 ({path.name}): {e}", flush=True)
 
         sent_checkpoint = time.monotonic()
 

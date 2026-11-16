@@ -322,7 +322,11 @@ def test_images_and_tables_by_step(hub, release):
     rows = httpx.get(str(hub.base_url).rstrip("/") + table["url"]).json()
     assert rows == {"columns": ["image", "prediction", "score"], "rows": [["samples/000001-sample.png", "car", 0.51]]}
     # The per-step records are not repeated among the outputs, but the whole-run download has them.
-    assert not any(f["name"].startswith(("samples/", "predictions/")) for f in done["files"])
+    assert not any(f["name"].startswith(("samples/", "predictions/", "tables/")) for f in done["files"])
+    # A picture table cells draw on is found by its name, not listed on its own.
+    assert list(done["table_images"]) == ["tables/00001-sample.png"]
+    drawn = httpx.get(str(hub.base_url).rstrip("/") + done["table_images"]["tables/00001-sample.png"])
+    assert drawn.headers["content-type"] == "image/png" and "inline" in drawn.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(httpx.get(str(hub.base_url).rstrip("/") + done["files_url"]).content)) as archive:
         assert "samples/000002-sample.png" in archive.namelist() and "predictions/000003.table.json" in archive.namelist()
 
@@ -635,6 +639,16 @@ def test_hyperparameter_search(hub, release):
         assert 0.2 <= settings["ceiling"] <= 0.8 and settings["epochs"] in (1, 2) and 0.001 <= settings["sleep"] <= 0.01
     assert len({p["settings"]["ceiling"] for p in drawn["points"]}) == 3
 
+    # ---- bayes: random at first, then guided by the results; ranges allowed
+    guided = hub.post(
+        "/api/sweeps",
+        json={**body, "space": {"ceiling": {"min": 0.2, "max": 0.8}}, "method": "bayes", "max_runs": 5},
+    )
+    assert guided.status_code == 200, guided.text
+    guided = _sweep_done(hub, guided.json()["id"])
+    assert (guided["method"], guided["startup"], guided["status"], guided["finished"]) == ("bayes", 3, "finished", 5)
+    assert all(0.2 <= p["settings"]["ceiling"] <= 0.8 for p in guided["points"])
+
     # ---- mistakes are refused before anything starts
     refuse = lambda **extra: hub.post("/api/sweeps", json={**body, **extra})  # noqa: E731
     assert "없는 설정" in refuse(space={"nope": {"values": [1]}}).json()["detail"]
@@ -661,6 +675,57 @@ def test_hyperparameter_search(hub, release):
     time.sleep(3)
     after = hub.get(f"/api/sweeps/{slow['id']}").json()
     assert after["started"] == 1 and after["active"] == 0 and after["status"] == "stopped"
+
+
+def test_bayes_search_moves_toward_what_worked():
+    import math
+
+    from badamoa.hub import sweeps
+    from badamoa.hub.train_models import Sweep
+
+    space = {"lr": {"min": 0.0001, "max": 0.1, "log": True}, "opt": {"values": ["SGD", "Adam", "AdamW"]}}
+    types = {"lr": "number", "opt": "string"}
+
+    def score(s):  # best at lr 0.01 with Adam
+        return 1 - abs(math.log10(s["lr"]) + 2) / 3 - (0 if s["opt"] == "Adam" else 0.3)
+
+    def search(method):
+        sweep = Sweep(id=f"s-{method}", method=method, metric="map50_95", goal="maximize", max_runs=24, space=space)
+        history, tried = [], []
+        for index in range(sweep.max_runs):
+            chosen = sweeps.settings_for(sweep, index, types, history, tried)
+            assert 0.0001 <= chosen["lr"] <= 0.1 and chosen["opt"] in ("SGD", "Adam", "AdamW")
+            tried.append(chosen)
+            history.append((chosen, score(chosen)))
+        return tried
+
+    guided = search("bayes")[sweeps.startup_runs(Sweep(max_runs=24)) :]
+    near = [s for s in guided if s["opt"] == "Adam" and 0.002 <= s["lr"] <= 0.05]
+    assert len(near) >= len(guided) // 2, guided  # most guided runs are close to the best
+    drawn = search("random")
+    assert sum(1 for s in drawn if s["opt"] == "Adam" and 0.002 <= s["lr"] <= 0.05) < len(near)
+
+    # minimizing a loss: the same, the other way round
+    low = Sweep(
+        id="s-min", method="bayes", metric="val_loss", goal="minimize", max_runs=16, space={"x": {"min": 0, "max": 10}}
+    )
+    history, tried = [], []
+    for index in range(16):
+        chosen = sweeps.settings_for(low, index, {"x": "number"}, history, tried)
+        tried.append(chosen)
+        history.append((chosen, (chosen["x"] - 7) ** 2))
+    assert sum(abs(s["x"] - 7) < 2 for s in tried[sweeps.startup_runs(low) :]) >= 6
+
+    # random draws over a range spread out: each of four equal parts (on the log scale) gets one of four draws
+    spread = Sweep(id="s-spread", method="random", max_runs=4, space={"lr": {"min": 0.0001, "max": 1.0, "log": True}})
+    parts = sorted(int(math.log10(sweeps.settings_for(spread, i, {"lr": "number"})["lr"]) + 4) for i in range(4))
+    assert parts == [0, 1, 2, 3]
+
+    # listed values only: never the same settings twice, never more runs than there are combinations
+    listed = Sweep(id="s-listed", method="random", max_runs=10, space={"a": {"values": [1, 2]}, "b": {"values": ["x", "y"]}})
+    assert sweeps.total_of(listed) == 4
+    combos = [sweeps.settings_for(listed, i, {"a": "integer", "b": "string"}) for i in range(4)]
+    assert sorted((c["a"], c["b"]) for c in combos) == [(1, "x"), (1, "y"), (2, "x"), (2, "y")]
 
 
 def test_a_search_goes_on_when_a_built_in_template_moves_to_a_new_version(hub, release, settings):
