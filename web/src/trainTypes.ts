@@ -29,7 +29,14 @@ export interface Template {
   data_format: string;
   entrypoints: string[];
   params: TemplateParam[];
-  environment: { default: string; requirements: string[] };
+  environment: {
+    default: string;
+    requirements: string[];
+    installs: boolean; // an automatically installed environment, which can be prepared ahead
+    ready: string[]; // servers where it is installed
+    preparing: string[];
+    nodes?: number;
+  };
   bytes: number;
   models: number;
   created_at: string;
@@ -185,6 +192,8 @@ export interface ModelOp {
     predictions?: { image: string; boxes?: number[][]; top?: [number, number][] }[];
   };
   files: { name: string; kind: "image" | "file"; bytes: number; url: string }[];
+  tables?: { name: string; kind: "table"; caption: string; url: string }[]; // per-image results the code recorded
+  table_images?: Record<string, string>; // pictures those tables draw on, by name
 }
 
 export interface ModelDetail extends ModelInfo {

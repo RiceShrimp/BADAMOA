@@ -25,6 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
+from badamoa.node import envs
 
 log = logging.getLogger("badamoa.node")
 
@@ -123,6 +124,7 @@ class NodeAgent:
         # GPU jobs are limited by the GPUs the Hub hands out; this caps everything else.
         self.max_jobs = max_jobs or max(4, len(sysinfo.gpus()))
         self.stop_event = threading.Event()
+        self._envs_changed = threading.Event()
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}  # job_id -> cancel event
         self._sampler = sysinfo.MetricsSampler(str(home))
@@ -170,6 +172,9 @@ class NodeAgent:
     def _heartbeat_loop(self) -> None:
         sent_info = False
         while not self.stop_event.is_set():
+            if self._envs_changed.is_set():  # a job may have built an environment: tell the Hub what is ready now
+                self._envs_changed.clear()
+                sent_info = False
             try:
                 with self._lock:
                     running = list(self._running)
@@ -179,7 +184,7 @@ class NodeAgent:
                     "running_job_ids": running,
                 }
                 if not sent_info:
-                    body["info"] = sysinfo.static_info()
+                    body["info"] = {**sysinfo.static_info(), "envs": envs.listing(self.home)}
                 resp = self._client.post("/api/agent/heartbeat", json=body, timeout=15)
                 if resp.status_code == 200:
                     sent_info = True
@@ -238,7 +243,7 @@ class NodeAgent:
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
                     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
-                if job["type"].startswith(("data.", "train.", "model.")):
+                if job["type"].startswith(("data.", "train.", "model.", "env.prepare")):
                     # These jobs exchange data with the Hub themselves (import chunks, metrics, weights).
                     env["BADAMOA_HUB_URL"] = self.config.hub_url
                     env["BADAMOA_NODE_TOKEN"] = self.config.node_token
@@ -293,6 +298,8 @@ class NodeAgent:
                     break
                 time.sleep(0.5)
             self._complete(job_id, status, result, error)
+            if job["type"].startswith(("env.", "train.", "model.")):
+                self._envs_changed.set()
             with self._lock:
                 self._running.pop(job_id, None)
             log.info("job %s %s", job_id, status)

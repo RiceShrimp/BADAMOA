@@ -141,7 +141,16 @@ def blob(
 
 
 @agent_router.put("/file")
-async def put_file(job_id: str, request: Request, name: str = "file", hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+async def put_file(
+    job_id: str,
+    request: Request,
+    name: str = "file",
+    media: str = "",
+    caption: str = "",
+    key: str = "",
+    step: int | None = None,
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
     """A result file (an exported model, an annotated image), streamed to disk and stored by content hash."""
     token = bearer_token(request)
     incoming = hub.settings.storage_dir / "incoming"
@@ -155,7 +164,7 @@ async def put_file(job_id: str, request: Request, name: str = "file", hub: Hub =
                 if size > MAX_FILE_BYTES:
                     raise HTTPException(status_code=413, detail="파일이 너무 큽니다.")
                 out.write(chunk)
-        key = await anyio.to_thread.run_sync(_storage(hub).put_blob_file, temp)
+        blob = await anyio.to_thread.run_sync(_storage(hub).put_blob_file, temp)
     finally:
         Path(temp).unlink(missing_ok=True)
 
@@ -164,7 +173,7 @@ async def put_file(job_id: str, request: Request, name: str = "file", hub: Hub =
             node = services.authenticate_node(db, token)
             if node is None:
                 raise HTTPException(status_code=401, detail="노드 인증 실패")
-            return modelops.add_file(db, node, job_id, name, key, size)
+            return modelops.add_file(db, node, job_id, name, blob, size, media, caption)
 
     return await anyio.to_thread.run_sync(record)
 
@@ -189,4 +198,4 @@ def op_file(key: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Sessi
     storage = _storage(hub)
     if not storage.has_blob(entry["blob"]):
         raise HTTPException(status_code=404, detail="파일이 저장소에 없습니다.")
-    return blob_response(storage, entry["blob"], entry["name"], entry["kind"] == "image")
+    return blob_response(storage, entry["blob"], entry["name"], entry["kind"] in ("image", "table-image"))

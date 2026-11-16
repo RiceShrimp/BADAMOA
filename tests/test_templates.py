@@ -247,6 +247,13 @@ def test_sdk_overlay_cells_draw_boxes_on_images(tmp_path, capsys, monkeypatch):
     stored = json.loads(Path(second["path"]).read_text(encoding="utf-8"))
     assert stored["classes"] == ["person", "car"] and stored["rows"][0][0]["image"] == "tables/00001-a.jpg"
     assert stored["rows"][0][0]["boxes"] == cell["boxes"]
+    # a long file name (exported images are named by their hash) keeps its suffix, so the Hub knows it is a picture
+    hashed = run.out / f"{'ab' * 32}.jpg"
+    hashed.write_bytes(b"jpg")
+    bm.log_table("val", ["image"], [[bm.overlay(hashed)]], step=3)
+    events = [json.loads(line[10:]) for line in capsys.readouterr().out.splitlines() if line.startswith("@@badamoa ")]
+    long_name = next(e for e in events if e.get("media") == "table-image")["name"]
+    assert long_name == f"tables/00002-{'ab' * 20}.jpg"
     bm.load_config([])
 
 

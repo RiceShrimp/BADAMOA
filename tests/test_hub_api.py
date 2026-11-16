@@ -167,3 +167,42 @@ def test_install_scripts_and_wheel_index(client, settings):
     assert client.get("/install/wheels/badamoa-0.1.0-py3-none-any.whl").content == b"wheel"
     assert client.get("/install/simple/other/").status_code == 404
     assert client.get("/install/wheels/..%2Fhub.db").status_code == 404
+
+
+def test_template_environments_ready_and_prepared_ahead(client, admin, tmp_path):
+    import json
+
+    from badamoa.node import envs
+
+    # what a node reports: the environments it has built (requirements, Python, torch)
+    marker = tmp_path / "envs" / "abc123" / "badamoa-env.json"
+    marker.parent.mkdir(parents=True)
+    yolo_needs = ["ultralytics>=8.3,<9", "onnx>=1.12", "onnxslim", "onnxruntime"]
+    marker.write_text(json.dumps({"requirements": list(reversed(yolo_needs)), "python": "3.12", "torch": True}))
+    (tmp_path / "envs" / "broken").mkdir()
+    reported = envs.listing(tmp_path)
+    assert reported == [{"requirements": sorted(yolo_needs), "python": "3.12", "torch": True}]
+
+    ready_id, ready_auth = _join(client, admin)
+    other_id, _ = _join(client, admin)
+    beat = {"agent_version": "0.1.0", "info": {**INFO, "envs": reported}}
+    assert client.post("/api/agent/heartbeat", json=beat, headers=ready_auth).status_code == 200
+    names = {n["id"]: n["name"] for n in client.get("/api/nodes", headers=admin).json()}
+
+    def yolo():
+        return next(t for t in client.get("/api/templates", headers=admin).json() if t["name"] == "yolo")
+
+    env = yolo()["environment"]
+    assert env["installs"] and env["ready"] == [names[ready_id]] and env["preparing"] == [] and env["nodes"] == 2
+
+    # prepared ahead on the other server: a job there, shown as under way
+    started = client.post(f"/api/templates/{yolo()['id']}/prepare", json={"node_ids": [other_id]}, headers=admin)
+    assert started.status_code == 200, started.text
+    job = client.get(f"/api/jobs/{started.json()['jobs'][0]}", headers=admin).json()
+    assert job["type"] == "env.prepare" and job["target_node_id"] == other_id
+    assert job["params"]["environment"]["requirements"] == yolo_needs and job["params"]["environment"]["torch"] is True
+    assert yolo()["environment"]["preparing"] == [names[other_id]]
+
+    # nothing to prepare for code that needs no packages
+    refused = client.post("/api/templates/dummy/prepare", json={}, headers=admin)
+    assert refused.status_code == 400 and "설치할 환경이 없습니다" in refused.json()["detail"]

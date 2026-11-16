@@ -80,6 +80,21 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             },
         ),
         JobTypeSpec(
+            type="data.export",
+            title="릴리스 내보내기",
+            description="릴리스를 YOLO · COCO · 클래스별 폴더 형식의 zip으로 묶어 Hub에 올립니다 (내려받기용).",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "release_id": {"type": "string"},
+                    "format": {"type": "string", "default": "yolo"},  # yolo | coco | imagefolder
+                    "images": {"type": "boolean", "default": True},  # False: the labels only
+                    "task": {"type": "string", "default": "detect"},
+                },
+            },
+        ),
+        JobTypeSpec(
             type="train.run",
             title="학습",
             description="릴리스를 학습 형식으로 풀고 모델 템플릿의 학습 코드를 실행해 지표와 모델을 Hub에 기록합니다.",
@@ -118,6 +133,20 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             params_schema={
                 "type": "object",
                 "properties": {"environment_id": {"type": "string"}, "python": {"type": "string"}},
+            },
+        ),
+        JobTypeSpec(
+            type="env.prepare",
+            title="환경 미리 준비",
+            description="모델 종류의 학습 환경을 첫 학습 전에 미리 설치합니다.",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "template": {"type": "string"},
+                    "version": {"type": "string"},
+                    "environment": {"type": "object"},  # kind=auto: requirements, python, torch
+                },
             },
         ),
         JobTypeSpec(

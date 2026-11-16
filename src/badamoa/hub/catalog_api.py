@@ -180,6 +180,40 @@ def compare(
     return catalog.compare(db, release_id, other)
 
 
+class NewRelease(BaseModel):
+    sources: list[str]
+    version: str = ""
+    dataset: str = ""  # empty: the first source's dataset (a new version of it)
+    note: str = ""
+    filter: dict[str, Any] | None = None  # the release screen's filters: split, state, class_id, site, camera, q
+    exclude: bool = False  # all items but those matching the filter
+    split: dict[str, float] | None = None  # deal out again, e.g. {"train": 80, "val": 10, "test": 10}
+    group_by: str = ""  # "", "site" or "camera": one group, one split
+    dry_run: bool = False
+
+
+@router.post("/releases")
+def new_release(body: NewRelease, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """A release made from the items of existing ones, or with ``dry_run`` how many items it would hold per split."""
+    result = catalog.new_release(
+        db,
+        user,
+        sources=body.sources,
+        version=body.version,
+        dataset=body.dataset,
+        note=body.note,
+        match=body.filter,
+        exclude=body.exclude,
+        split=body.split,
+        group_by=body.group_by,
+        dry_run=body.dry_run,
+        via="ui",
+    )
+    if not body.dry_run:
+        db.commit()
+    return result
+
+
 @router.delete("/releases/{release_id}")
 def delete_release(release_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
     catalog.set_release_deleted(db, user, release_id, True)

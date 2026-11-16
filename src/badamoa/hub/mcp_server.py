@@ -283,6 +283,45 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         with hub.db.session() as db:
             return catalog.compare(db, release_id, other_release_id)
 
+    @mcp.tool(title="릴리스 만들기", annotations=WRITE)
+    @guarded
+    def create_release(
+        sources: list[str],
+        version: str,
+        ctx: Context,
+        dataset: str = "",
+        note: str = "",
+        filter: dict[str, Any] | None = None,
+        exclude: bool = False,
+        split: dict[str, float] | None = None,
+        group_by: str = "",
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """기존 릴리스의 항목으로 새 릴리스를 만듭니다. 이미지는 옮기지 않습니다.
+
+        sources: 담을 릴리스 id들(여러 개면 합침, 같은 항목은 앞의 것의 split · 라벨). 클래스 목록이 같아야 합니다.
+        dataset: 비우면 첫 릴리스의 데이터셋에 새 버전으로. filter: {"split", "state", "class_id", "site", "camera",
+        "q"} 중 일부 — 맞는 항목만(exclude=true면 맞는 항목을 뺀 나머지). split: {"train": 80, "val": 10, "test": 10}처럼
+        주면 다시 나눔(해시로 정해 같은 항목은 늘 같은 쪽). group_by: "camera" 또는 "site"면 같은 카메라 · 사이트는 같은
+        split으로. dry_run=true면 만들지 않고 split별 항목 수만 반환합니다.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.new_release(
+                db,
+                user,
+                sources=sources,
+                version=version,
+                dataset=dataset,
+                note=note,
+                match=filter,
+                exclude=exclude,
+                split=split,
+                group_by=group_by,
+                dry_run=dry_run,
+                via="mcp",
+            )
+
     @mcp.tool(title="데이터셋 가져오기", annotations=WRITE)
     @guarded
     def import_dataset(
@@ -381,6 +420,18 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         user_of(ctx)
         with hub.db.session() as db:
             return registry.list_templates(db, task=task)
+
+    @mcp.tool(title="모델 종류의 환경 미리 준비", annotations=WRITE)
+    @guarded
+    def prepare_environment(template: str, ctx: Context, node_ids: list[str] | None = None) -> dict[str, Any]:
+        """모델 종류(템플릿)의 학습 환경을 첫 학습 전에 서버에 미리 설치합니다 (관리자).
+
+        node_ids를 비우면 켜져 있는 모든 서버에. 준비된 서버는 list_model_templates의 environment.ready에 나옵니다.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            jobs = registry.prepare_environment(db, user, template, node_ids, via="mcp")
+            return {"jobs": [services.job_view(db, hub.settings, j) for j in jobs]}
 
     @mcp.tool(title="학습 실행 목록", annotations=READ_ONLY)
     @guarded

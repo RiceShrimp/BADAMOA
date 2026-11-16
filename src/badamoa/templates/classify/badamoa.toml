@@ -1,6 +1,6 @@
 name = "classify"
 title = "torchvision 분류"
-version = "4"
+version = "5"
 description = "이미지 분류: ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin (torchvision, ImageNet 사전학습)"
 task = "classify"
 data_format = "imagefolder"

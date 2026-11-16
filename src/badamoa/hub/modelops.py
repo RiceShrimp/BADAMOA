@@ -215,10 +215,17 @@ def blob_for(db: Session, node: Node, job_id: str, what: str, index: int = 0) ->
     return images[index]["blob"]
 
 
-def add_file(db: Session, node: Node, job_id: str, name: str, blob: str, size: int) -> dict[str, Any]:
+def add_file(
+    db: Session, node: Node, job_id: str, name: str, blob: str, size: int, media: str = "", caption: str = ""
+) -> dict[str, Any]:
+    """A file the job recorded. ``media``: ``table`` (bm.log_table) or ``table-image`` (a picture a table draws on)."""
     op, _ = _running(db, node, job_id)
     name = training.clean_file_name(name)
-    entry = {"name": name, "blob": blob, "bytes": size, "kind": "image" if name.lower().endswith(IMAGE_SUFFIXES) else "file"}
+    picture = name.lower().endswith(IMAGE_SUFFIXES)
+    kind = "image" if picture else "file"
+    if media == "table" or (media == "table-image" and picture):
+        kind = media
+    entry = {"name": name, "blob": blob, "bytes": size, "kind": kind, "caption": caption[:255]}
     files = [f for f in (op.files or []) if f["name"] != name]
     if len(files) >= MAX_RESULT_ITEMS:
         raise ServiceError(400, "기록할 수 있는 파일 수를 넘었습니다.")
@@ -248,6 +255,7 @@ def get_op(db: Session, op_id: str) -> ModelJob:
 def op_view(db: Session, settings: HubSettings, op: ModelJob, node_names: dict[str, str] | None = None) -> dict[str, Any]:
     job = db.get(Job, op.job_id) if op.job_id else None
     data = services.job_view(db, settings, job, node_names) if job else None
+    listed = [(f, catalog.media_url(settings, "op", f"{op.id}-{n}")) for n, f in enumerate(op.files or [])]
     release = db.get(Release, op.release_id) if op.release_id else None
     dataset = db.get(Dataset, release.dataset_id) if release else None
     return {
@@ -264,9 +272,17 @@ def op_view(db: Session, settings: HubSettings, op: ModelJob, node_names: dict[s
         "params": {k: v for k, v in (op.params or {}).items() if k != "images"},
         "result": op.result or {},
         "files": [
-            {**{k: f[k] for k in ("name", "kind", "bytes")}, "url": catalog.media_url(settings, "op", f"{op.id}-{n}")}
-            for n, f in enumerate(op.files or [])
+            {**{k: f[k] for k in ("name", "kind", "bytes")}, "url": url}
+            for f, url in listed
+            if f["kind"] not in ("table", "table-image")
         ],
+        # Tables the code recorded (per-image results), and the pictures their cells draw on
+        "tables": [
+            {"name": f["name"], "kind": "table", "caption": f.get("caption", ""), "url": url}
+            for f, url in listed
+            if f["kind"] == "table"
+        ],
+        "table_images": {f["name"]: url for f, url in listed if f["kind"] == "table-image"},
     }
 
 

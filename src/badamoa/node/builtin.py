@@ -66,6 +66,12 @@ def data_import(params: dict[str, Any]) -> dict[str, Any]:
     return importer.run(params)
 
 
+def data_export(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import exporter
+
+    return exporter.run_download(params)
+
+
 def train_run(params: dict[str, Any]) -> dict[str, Any]:
     from badamoa.node import trainer
 
@@ -91,14 +97,31 @@ def env_check(params: dict[str, Any]) -> dict[str, Any]:
     return found
 
 
+def env_prepare(params: dict[str, Any]) -> dict[str, Any]:
+    """Build a template's environment ahead of its first training, so that one does not wait for the install."""
+    from badamoa.node import envs
+
+    home = os.environ.get("BADAMOA_NODE_HOME")
+    if not home:
+        raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
+    started = time.monotonic()
+    python = envs.resolve(Path(home).resolve(), params.get("environment") or {})
+    installed = envs.packages(python)
+    took = time.monotonic() - started
+    print(f"{params.get('template', '')} 환경 준비됨: {python} (패키지 {len(installed)}개, {took:.0f}초)")
+    return {"python": str(python), "packages": len(installed)}
+
+
 HANDLERS = {
     "system.info": system_info,
     "system.gpu": system_gpu,
     "debug.sleep": debug_sleep,
     "data.import": data_import,
+    "data.export": data_export,
     "train.run": train_run,
     "model.run": model_run,
     "env.check": env_check,
+    "env.prepare": env_prepare,
 }
 
 

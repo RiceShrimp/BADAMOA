@@ -2,10 +2,53 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import badamoa_sdk as bm
 from train import MEAN, STD, build, evaluate, save_confusion
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+FAILURES = 48  # the most confident mistakes, kept as pictures
+COLUMNS = ["image", "truth", "prediction", "confidence", "correct"]
+
+
+def per_image(model, data, loader, device, run) -> None:
+    """Every image of the evaluated split with its prediction, mistakes first; the most confident mistakes as pictures."""
+    import torch
+    from PIL import Image, ImageOps
+
+    try:  # the exported images are named by their hash: show the names they were registered under
+        registered = json.loads((run.data_dir / "files.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        registered = {}
+    rows, wrong, index = [], [], 0
+    with torch.no_grad():
+        for images, targets in loader:
+            scores, guesses = torch.softmax(model(images.to(device)), dim=1).max(1)
+            for score, guess, truth in zip(scores.tolist(), guesses.tolist(), targets.tolist(), strict=True):
+                path = Path(data.samples[index][0])
+                index += 1
+                name = Path(registered.get(path.stem, path.name)).name
+                row = [name, run.classes[truth], run.classes[guess], round(score, 4), "O" if guess == truth else "X"]
+                rows.append(row)
+                if guess != truth:
+                    wrong.append((score, path, row))
+    rows.sort(key=lambda r: (r[4] == "O", -r[3]))
+    bm.log_table("per_image", COLUMNS, rows)
+    folder = run.out / ".badamoa" / "failures"
+    folder.mkdir(parents=True, exist_ok=True)
+    cells = []
+    for n, (_, path, row) in enumerate(sorted(wrong, key=lambda w: -w[0])[:FAILURES]):
+        copy = folder / f"{n:03d}.jpg"
+        with Image.open(path) as opened:
+            picture = ImageOps.exif_transpose(opened).convert("RGB")
+            picture.thumbnail((256, 256))
+            picture.save(copy, quality=85)
+        cells.append([bm.overlay(copy), *row[1:]])
+    if cells:
+        bm.log_table("failures", COLUMNS, cells)
+    print(f"틀린 이미지 {len(wrong):,}장 / {len(rows):,}장 (그림으로 남긴 것 {len(cells)}장)")
 
 
 def main() -> None:
@@ -38,6 +81,10 @@ def main() -> None:
         if len(run.classes) <= 60:
             save_confusion(confusion, run.classes, run.out / "confusion_matrix.png")
             bm.log_artifact(run.out / "confusion_matrix.png")
+        try:
+            per_image(model, data, loader, device, run)
+        except Exception as e:  # the metrics stand without it
+            print(f"이미지별 결과를 남기지 못했습니다: {e}", flush=True)
         bm.finish(scores, classes=per_class)
     elif action == "export":
         example = torch.zeros(1, 3, size, size)

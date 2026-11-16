@@ -426,6 +426,16 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     assert evaluation["result"]["metrics"] == {"map50_95": 0.4, "map50": 0.6, "images": 2.0}
     assert [c["name"] for c in evaluation["result"]["classes"]] == CLASSES
     assert "'imgsz': 320" in _logs(hub, evaluation["job_id"])
+    # per-image results: tables apart from the files, named by the registered file names, pictures found by name
+    assert sorted(t["name"] for t in evaluation["tables"]) == ["failures/000000.table.json", "per_image/000000.table.json"]
+    assert not any(f["name"].startswith(("tables/", "failures/", "per_image/")) for f in evaluation["files"])
+    table = {t["name"].split("/")[0]: t["url"] for t in evaluation["tables"]}
+    per_image = httpx.get(str(hub.base_url).rstrip("/") + table["per_image"]).json()
+    assert sorted(r[0] for r in per_image["rows"]) == ["val_0000.jpg", "val_0001.jpg"]
+    worst = httpx.get(str(hub.base_url).rstrip("/") + table["failures"]).json()
+    assert worst["rows"][0][0]["image"] in evaluation["table_images"] and worst["classes"] == CLASSES
+    shown = httpx.get(str(hub.base_url).rstrip("/") + evaluation["table_images"][worst["rows"][0][0]["image"]])
+    assert shown.status_code == 200 and "inline" in shown.headers["content-disposition"]
     assert hub.post(f"/api/models/{model_id}/eval", json={"release_id": release["id"], "split": "dev"}).status_code == 400
     assert hub.post(f"/api/models/{model_id}/eval", json={"release_id": "nope"}).status_code == 404
 

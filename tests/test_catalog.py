@@ -189,3 +189,192 @@ def test_import_of_missing_folder_fails_with_a_clear_log(hub, tmp_path):
     assert "폴더를 찾을 수 없습니다" in logs
     assert hub.get(f"/api/projects/{project['id']}/datasets").json() == []
     assert "data.import" not in [t["type"] for t in hub.get("/api/job-types").json()]
+
+
+def test_new_releases_from_existing_ones(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "새 릴리스", "task": "detect"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1", camera="cam1")
+    more = _import(hub, project["id"], make_yolo(tmp_path / "b", train=4, val=0, seed=5), "more", camera="cam2")
+
+    def make(**body):
+        return hub.post("/api/releases", json={"sources": [v1], **body})
+
+    def splits_of(release_id):
+        items = hub.get(f"/api/releases/{release_id}/items", params={"limit": 200}).json()["items"]
+        return {i["id"]: i["split"] for i in items}
+
+    def releases():
+        tree = hub.get(f"/api/projects/{project['id']}/datasets").json()
+        return {d["name"]: [r["version"] for r in d["releases"]] for d in tree}
+
+    # ---- a dry run counts and makes nothing
+    assert make(dry_run=True, filter={"state": "labelled"}).json() == {"items": 6, "splits": {"train": 4, "val": 2}}
+    stats = hub.get(f"/api/releases/{v1}").json()["stats"]
+    assert make(dry_run=True, filter={"class_id": "0"}).json()["items"] == stats["classes"]["0"]["items"]
+    assert releases() == {"street": ["more", "v1"]}
+
+    # ---- only what matches a filter, in the splits it had
+    labelled = make(version="v1-labelled", filter={"state": "labelled"}, note="라벨 있는 것만").json()
+    view = hub.get(f"/api/releases/{labelled['release_id']}").json()
+    assert view["stats"]["items"] == 6 and view["stats"]["states"]["labelled"] == 6
+    assert view["base"] == {"id": v1, "version": "v1"} and view["note"] == "라벨 있는 것만"
+    assert all(splits_of(v1)[k] == v for k, v in splits_of(labelled["release_id"]).items())
+    # all but what matches
+    assert make(version="no-val", filter={"split": "val"}, exclude=True).json()["splits"] == {"train": 6}
+
+    # ---- dealt out again by a hash: the same item lands in the same split every time
+    first = make(version="resplit-a", split={"train": 50, "val": 50}).json()
+    second = make(version="resplit-b", split={"train": 50, "val": 50, "test": 0}).json()
+    assert first["items"] == 8 and set(first["splits"]) <= {"train", "val"}
+    assert splits_of(first["release_id"]) == splits_of(second["release_id"])
+
+    # ---- two releases into a new dataset, split by camera: each camera's images stay together
+    merged = hub.post(
+        "/api/releases",
+        json={
+            "sources": [v1, more],
+            "version": "v1",
+            "dataset": "street-all",
+            "split": {"train": 70, "val": 30},
+            "group_by": "camera",
+        },
+    ).json()
+    assert merged["items"] == 12 and merged["dataset"] == "street-all"
+    together = splits_of(merged["release_id"])
+    assert len({together[i] for i in splits_of(v1)}) == 1 and len({together[i] for i in splits_of(more)}) == 1
+    assert releases()["street-all"] == ["v1"]
+
+    # ---- refused, with the reason
+    assert make(version="v1").status_code == 409  # that version exists
+    assert make(version="empty", filter={"q": "no-such-file"}).status_code == 400
+    assert make(version="bad", split={"train": -1}).status_code == 400
+    assert make(version="bad", group_by="weather").status_code == 400
+    assert hub.post("/api/releases", json={"sources": [], "version": "x"}).status_code == 400
+    other_root = make_yolo(tmp_path / "c", train=2, val=0, seed=9)
+    (other_root / "data.yaml").write_text("path: .\ntrain: images/train\nnames:\n  0: a\n  1: b\n  2: c\n", encoding="utf-8")
+    other = _import(hub, project["id"], other_root, "other-classes")
+    mixed = hub.post("/api/releases", json={"sources": [v1, other], "version": "mixed"})
+    assert mixed.status_code == 400 and "클래스" in mixed.json()["detail"]
+
+
+def _wait_job(hub, job):
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        job = hub.get(f"/api/jobs/{job['id']}").json()
+        if job["status"] in {"succeeded", "failed", "canceled"}:
+            return job
+        time.sleep(0.3)
+    raise AssertionError(job)
+
+
+def test_download_a_release_as_yolo_or_coco(hub, tmp_path, settings):
+    import io
+    import json
+    import zipfile
+
+    project = hub.post("/api/projects", json={"name": "내려받기", "task": "detect"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+
+    def export(**body):
+        resp = hub.post(f"/api/releases/{v1}/exports", json=body)
+        assert resp.status_code == 200, resp.text
+        job = _wait_job(hub, resp.json())
+        logs = "\n".join(line["text"] for line in hub.get(f"/api/jobs/{job['id']}/logs").json())
+        assert job["status"] == "succeeded", logs
+        listed = next(e for e in hub.get(f"/api/releases/{v1}/exports").json() if e["job_id"] == job["id"])
+        data = httpx.get(str(hub.base_url).rstrip("/") + listed["download_url"])
+        assert data.status_code == 200 and "attachment" in data.headers["content-disposition"]
+        return listed, zipfile.ZipFile(io.BytesIO(data.content))
+
+    # ---- YOLO with the images: the unlabelled image stays out, the background one has an empty label file
+    listed, archive = export(format="yolo")
+    names = archive.namelist()
+    assert listed["counts"] == {"train": 5, "val": 2} and listed["skipped"] == {"unlabelled": 1, "missing": 0}
+    assert listed["file"] == "street-v1-yolo.zip" and listed["expires_at"]
+    assert sum(n.startswith("images/") for n in names) == 7 and sum(n.startswith("labels/") for n in names) == 7
+    assert archive.read("labels/train/train_0001.txt") == b""  # background
+    assert "images/train/train_0002.jpg" not in names  # unlabelled
+    data_yaml = archive.read("data.yaml").decode()
+    assert "train: images/train" in data_yaml and "val: images/val" in data_yaml and '0: "person"' in data_yaml
+    files = archive.read("files.csv").decode().splitlines()
+    assert files[0] == "split,file,sha256,registered_path" and len(files) == 8
+    assert "street v1" in archive.read("README.txt").decode()
+
+    # ---- COCO, the labels only: pixel boxes, 1-based categories, no images
+    listed, archive = export(format="coco", images=False)
+    assert not any(n.startswith("images/") for n in archive.namelist()) and listed["file"] == "street-v1-coco-labels.zip"
+    train = json.loads(archive.read("annotations/instances_train.json"))
+    assert [c["name"] for c in train["categories"]] == CLASSES and train["categories"][0]["id"] == 1
+    assert len(train["images"]) == 5 and train["images"][0]["width"] == 320
+    box = train["annotations"][0]["bbox"]
+    assert len(box) == 4 and 0 <= box[0] <= 320 and box[2] > 1  # pixels, not fractions
+
+    # ---- refused: a format the task does not have
+    assert hub.post(f"/api/releases/{v1}/exports", json={"format": "imagefolder"}).status_code == 400
+
+    # ---- a zip is offered for a week, then the link is gone and the storage cleanup may take it
+    from badamoa.hub import exports
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import Job
+
+    database = Database(settings.database_url)
+    with database.session() as db:
+        assert len(exports.kept_blobs(db)) == 2
+        for job in db.query(Job).filter(Job.type == "data.export"):
+            job.finished_at = job.finished_at - exports.timedelta(days=exports.KEEP_DAYS + 1)
+    with database.session() as db:
+        assert exports.kept_blobs(db) == set()
+    database.engine.dispose()
+    assert all(e["download_url"] is None for e in hub.get(f"/api/releases/{v1}/exports").json())
+
+
+def test_download_layouts_for_segments_and_classes(tmp_path):
+    import json
+    import zipfile
+
+    from badamoa.node import exporter
+
+    image = tmp_path / "pics" / "a.jpg"
+    image.parent.mkdir()
+    image.write_bytes(b"jpeg")
+    header = {
+        "dataset": "d",
+        "version": "v1",
+        "classes": [{"id": 0, "name": "cat"}, {"id": 1, "name": "dog"}],
+        "locations": {"loc": str(tmp_path / "pics")},
+    }
+
+    def item(boxes, split="train", state="labelled"):
+        return {
+            "sha256": "ab" * 32,
+            "rel_path": "a.jpg",
+            "bytes": 4,
+            "width": 200,
+            "height": 100,
+            "location_id": "loc",
+            "split": split,
+            "state": state,
+            "boxes": boxes,
+        }
+
+    outline = [1, 0.5, 0.5, 0.2, 0.2, 0.4, 0.4, 0.6, 0.4, 0.6, 0.6]  # a box, then its outline
+    rows = [item([outline, [0, 0.5, 0.5, 0.2, 0.2]], split="")]
+    seg = exporter.write_archive(rows, header, tmp_path / "seg.zip", "yolo", "segment")
+    with zipfile.ZipFile(tmp_path / "seg.zip") as archive:
+        lines = archive.read("labels/train/a.txt").decode().splitlines()
+    assert lines[0].split() == ["1", "0.400000", "0.400000", "0.600000", "0.400000", "0.600000", "0.600000"]
+    assert len(lines[1].split()) == 9  # a box without an outline: its four corners
+    assert seg["unsplit"] == 1 and seg["counts"] == {"train": 1}
+
+    exporter.write_archive([item([outline])], header, tmp_path / "seg-coco.zip", "coco", "segment")
+    with zipfile.ZipFile(tmp_path / "seg-coco.zip") as archive:
+        note = json.loads(archive.read("annotations/instances_train.json"))["annotations"][0]
+    assert note["segmentation"] == [[80.0, 40.0, 120.0, 40.0, 120.0, 60.0]] and note["area"] == 400.0
+    assert note["category_id"] == 2 and note["bbox"] == [80.0, 40.0, 40.0, 20.0]
+
+    folders = exporter.write_archive([item([[1]], split="val")], header, tmp_path / "cls.zip", "imagefolder", "classify")
+    with zipfile.ZipFile(tmp_path / "cls.zip") as archive:
+        assert "val/dog/a.jpg" in archive.namelist()
+    assert folders["counts"] == {"val": 1}
+    with pytest.raises(ValueError, match="담을 항목"):
+        exporter.write_archive([item([], state="unlabelled")], header, tmp_path / "none.zip", "yolo")

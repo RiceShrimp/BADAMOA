@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 
 import badamoa_sdk as bm
@@ -13,6 +14,12 @@ if action == "eval":
     images = len([p for p in (run.data_dir / "images" / run.split).iterdir() if p.is_file()])
     print(f"평가: {run.split} split {images}장 · 학습 때 설정 {run.train_params}")
     per_class = [{"id": i, "name": name, "map50_95": 0.4, "map50": 0.6} for i, name in enumerate(run.classes)]
+    # per-image results as the real templates record them: all images by name, the worst as pictures with boxes
+    pictures = sorted(p for p in (run.data_dir / "images" / run.split).iterdir() if p.is_file())
+    registered = json.loads((run.data_dir / "files.json").read_text(encoding="utf-8"))
+    columns = ["image", "truth", "predicted", "found", "missed", "extra"]
+    bm.log_table("per_image", columns, [[registered.get(p.stem, p.name).split("/")[-1], 1, 1, 1, 0, 0] for p in pictures])
+    bm.log_table("failures", columns, [[bm.overlay(pictures[0], boxes=[[0, 0.9, 0.5, 0.5, 0.2, 0.2]]), 1, 1, 0, 1, 1]])
     bm.finish({"map50_95": 0.4, "map50": 0.6, "images": images}, classes=per_class)
 elif action == "export":
     exported = run.out / f"model.{run.config.get('format', 'onnx')}"

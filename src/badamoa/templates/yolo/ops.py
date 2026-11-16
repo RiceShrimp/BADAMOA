@@ -2,12 +2,83 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
 
 import badamoa_sdk as bm
-from train import clean  # the same metric names as during training
+from train import IMAGE_SUFFIXES, MAX_OUTLINE, SAMPLE_CONF, SAMPLE_SIDE, clean, match, truth_of
+
+FAILURES = 48  # images with the most mistakes, kept as pictures with their boxes
+COLUMNS = ["image", "truth", "predicted", "found", "missed", "extra"]
+
+
+def per_image(run, model) -> None:
+    """Every image of the evaluated split: true, predicted, found, missed and extra boxes (a prediction finds a
+    true box of its class it overlaps by half). The ones with the most mistakes also as pictures with the boxes.
+    """
+    from PIL import Image, ImageOps
+
+    data = Path(run.data).parent
+    folder = data / "images" / run.split
+    images = sorted(p for p in folder.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES) if folder.is_dir() else []
+    if not images:
+        return
+    try:  # the exported images are named by their hash: show the names they were registered under
+        registered = json.loads((data / "files.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        registered = {}
+    print(f"이미지별 결과: {len(images):,}장을 확신도 {SAMPLE_CONF} 이상으로 예측합니다")
+    rows, scored = [], []
+    results = model.predict(
+        [str(p) for p in images],
+        stream=True,
+        conf=SAMPLE_CONF,
+        imgsz=run.train_params.get("imgsz", 640),
+        device=run.device,
+        verbose=False,
+    )
+    for image, result in zip(images, results, strict=True):
+        truth, true_outlines = truth_of(image)
+        boxes, outlines = [], []
+        if result.boxes is not None and len(result.boxes):
+            classes, scores = result.boxes.cls.tolist(), result.boxes.conf.tolist()
+            boxes = [[int(c), s, *xywh] for c, s, xywh in zip(classes, scores, result.boxes.xywhn.tolist(), strict=True)]
+            if result.masks is not None:
+                for c, s, points in zip(classes, scores, result.masks.xyn, strict=False):
+                    outlines.append([int(c), s, points[:: max(1, -(-len(points) // MAX_OUTLINE))].reshape(-1).tolist()])
+        found, missed, extra = match(boxes, truth)
+        name = Path(registered.get(image.stem, image.name)).name
+        rows.append([name, len(truth), len(boxes), found, missed, extra])
+        if missed + extra:
+            scored.append((missed + extra, image, name, boxes, truth, outlines, true_outlines, rows[-1]))
+    rows.sort(key=lambda r: (-(r[4] + r[5]), r[0]))
+    bm.log_table("per_image", COLUMNS, rows)
+
+    pictures = run.out / ".badamoa" / "failures"
+    pictures.mkdir(parents=True, exist_ok=True)
+    cells = []
+    for n, (_, image, name, boxes, truth, outlines, true_outlines, row) in enumerate(
+        sorted(scored, key=lambda s: -s[0])[:FAILURES]
+    ):
+        copy = pictures / f"{n:03d}-{Path(name).stem[:40]}.jpg"
+        with Image.open(image) as opened:
+            picture = ImageOps.exif_transpose(opened).convert("RGB")
+            picture.thumbnail((SAMPLE_SIDE, SAMPLE_SIDE))
+            picture.save(copy, quality=85)
+        cell = bm.overlay(
+            copy,
+            boxes=boxes,
+            truth=truth,
+            outlines=outlines if outlines or true_outlines else None,
+            truth_outlines=true_outlines or None,
+        )
+        cells.append([cell, *row[1:]])
+    if cells:
+        bm.log_table("failures", COLUMNS, cells)
+    wrong = sum(1 for r in rows if r[4] + r[5])
+    print(f"틀린 것이 있는 이미지 {wrong:,}장 / {len(rows):,}장 (그림으로 남긴 것 {len(cells)}장)")
 
 
 def evaluate(run, model) -> None:
@@ -38,6 +109,10 @@ def evaluate(run, model) -> None:
                     "map50_95": round(float(box.ap[i]), 6),
                 }
             )
+    try:
+        per_image(run, model)
+    except Exception as e:  # the metrics stand without it
+        print(f"이미지별 결과를 남기지 못했습니다: {e}", flush=True)
     bm.finish(clean(getattr(results, "results_dict", {}) or {}), classes=per_class)
 
 

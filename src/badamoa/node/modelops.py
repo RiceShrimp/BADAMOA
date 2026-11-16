@@ -139,8 +139,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 path = path if path.is_absolute() else code / path
                 if path.is_file():
                     query = {"name": str(event.get("name") or path.name)}
-                    with path.open("rb") as stream:
-                        sent = client.put(f"{base}/file", params=query, content=stream, timeout=3600)
+                    fields = ("key", "step", "caption", "media")
+                    query.update({k: event[k] for k in fields if event.get(k) not in (None, "")})
+                    sent = client.put(f"{base}/file", params=query, content=path.read_bytes(), timeout=3600)
                     if sent.status_code != 200:
                         raise RuntimeError(f"결과 파일을 올리지 못했습니다 ({path.name}): {sent.text[:200]}")
                     trainer.note_uploaded(work, path)

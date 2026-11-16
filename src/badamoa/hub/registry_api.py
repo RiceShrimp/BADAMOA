@@ -110,6 +110,20 @@ def update_environment(
     return registry.environment_view(db, hub.settings, env)
 
 
+class PrepareBody(BaseModel):
+    node_ids: list[str] = []  # empty: every enabled server
+
+
+@router.post("/templates/{template_id}/prepare")
+def prepare_environment(
+    template_id: str, body: PrepareBody, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Install the template's environment on servers now, so their first training does not wait for it."""
+    jobs = registry.prepare_environment(db, user, template_id, body.node_ids or None, via="ui")
+    db.commit()
+    return {"jobs": [job.id for job in jobs]}
+
+
 @router.post("/environments/{env_id}/check")
 def check_environment(
     env_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)

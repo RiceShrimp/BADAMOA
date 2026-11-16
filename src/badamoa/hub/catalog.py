@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, insert, select
 from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
@@ -633,6 +633,183 @@ def compare(db: Session, release_id: str, other_id: str) -> dict[str, Any]:
         "label_space_changed": current.label_space_id != other.label_space_id,
         "classes": classes,
     }
+
+
+# ---- new releases from existing ones ---------------------------------------------------
+#
+# A release is a list of (item, split, label revision). A new one is made on the Hub alone:
+# pick items of one or more releases (all, those matching a filter, or all but those), and
+# keep their splits or deal them out again. Nothing on the nodes changes; the images stay put.
+
+SPLIT_GROUPS = ("", "site", "camera")
+
+
+def _share(seed: str) -> float:
+    return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) / 0x100000000
+
+
+def _split_of(item: Item, ratios: list[tuple[str, float]], group_by: str) -> str:
+    """Train, val or test for an item, decided by a hash: the same item (or group) always lands in the same split.
+
+    So a later release that adds items keeps the earlier ones where they were, and with
+    ``group_by`` every image of one camera (or site) lands together, keeping near-identical
+    frames out of both train and val.
+    """
+    group = getattr(item, group_by, "") if group_by else ""
+    point = _share(f"{group_by}:{group}") if group else _share(item.sha256)
+    edge = 0.0
+    for name, ratio in ratios:
+        edge += ratio
+        if point < edge:
+            return name
+    return ratios[-1][0]
+
+
+def _ratios(split: dict[str, Any] | None) -> list[tuple[str, float]] | None:
+    if not split:
+        return None
+    try:
+        values = [(name, float(split.get(name) or 0)) for name in ("train", "val", "test")]
+    except (TypeError, ValueError) as e:
+        raise ServiceError(400, "split 비율은 숫자여야 합니다.") from e
+    if any(v < 0 for _, v in values) or sum(v for _, v in values) <= 0:
+        raise ServiceError(400, "split 비율은 0 이상이고, 합이 0보다 커야 합니다.")
+    total = sum(v for _, v in values)
+    return [(name, v / total) for name, v in values if v > 0]
+
+
+def new_release(
+    db: Session,
+    user: User,
+    *,
+    sources: list[str],
+    version: str,
+    dataset: str = "",
+    note: str = "",
+    match: dict[str, Any] | None = None,
+    exclude: bool = False,
+    split: dict[str, Any] | None = None,
+    group_by: str = "",
+    dry_run: bool = False,
+    via: str = "api",
+) -> dict[str, Any]:
+    """Make a release from the items of existing ones; ``dry_run`` only counts what it would hold.
+
+    ``match`` takes the release screen's filters (split, state, class_id, site, camera, q): only
+    the items matching it, or with ``exclude`` all but those. With several sources an item that is
+    in more than one keeps the split and labels of the first. ``split``: ratios such as
+    {"train": 80, "val": 10, "test": 10} to deal the items out again (otherwise they keep theirs).
+    """
+    if not sources:
+        raise ServiceError(400, "새 릴리스에 담을 릴리스를 하나 이상 고르세요.")
+    releases = [get_release(db, rid) for rid in dict.fromkeys(sources)]
+    if any(r.status != "ready" for r in releases):
+        raise ServiceError(409, "아직 등록 중인 릴리스가 있습니다. 끝난 뒤에 다시 시도하세요.")
+    first = releases[0]
+    first_dataset = db.get(Dataset, first.dataset_id)
+    project_id = first_dataset.project_id
+    for other in releases[1:]:
+        if db.get(Dataset, other.dataset_id).project_id != project_id:
+            raise ServiceError(400, "다른 프로젝트의 릴리스는 합칠 수 없습니다.")
+        if other.label_space_id != first.label_space_id:
+            raise ServiceError(400, "클래스 목록(라벨 공간)이 다른 릴리스는 합칠 수 없습니다.")
+    if group_by not in SPLIT_GROUPS:
+        raise ServiceError(400, "split을 묶는 기준은 site 또는 camera입니다.")
+    ratios = _ratios(split)
+    wanted = match or {}
+    class_id = wanted.get("class_id")
+    try:
+        class_id = int(class_id) if class_id not in (None, "") else None
+    except (TypeError, ValueError) as e:
+        raise ServiceError(400, "class_id는 숫자여야 합니다.") from e
+
+    members: dict[int, ReleaseItem] = {}
+    for release in releases:
+        rows = db.scalars(select(ReleaseItem).where(ReleaseItem.release_id == release.id)).all()
+        if match:
+            matched_query = _item_filter(
+                release.id,
+                wanted.get("split"),
+                wanted.get("state") or "",
+                class_id,
+                wanted.get("site") or "",
+                wanted.get("camera") or "",
+                str(wanted.get("q") or "").strip(),
+            ).with_only_columns(ReleaseItem.item_id)
+            matched = set(db.scalars(matched_query))
+            rows = [r for r in rows if (r.item_id in matched) != exclude]
+        for row in rows:
+            members.setdefault(row.item_id, row)
+    items = {}
+    if ratios:
+        ids = list(members)
+        for start in range(0, len(ids), 5000):
+            for item in db.scalars(select(Item).where(Item.id.in_(ids[start : start + 5000]))):
+                items[item.id] = item
+
+    splits = {
+        item_id: _split_of(items[item_id], ratios, group_by) if ratios else row.split for item_id, row in members.items()
+    }
+    counts: dict[str, int] = {}
+    for value in splits.values():
+        counts[value] = counts.get(value, 0) + 1
+    summary = {"items": len(members), "splits": counts}
+    if dry_run:
+        return summary
+    if not members:
+        raise ServiceError(400, "고른 조건에 맞는 항목이 없어 릴리스를 만들 수 없습니다.")
+
+    version, name = version.strip(), (dataset.strip() or first_dataset.name)
+    if not version:
+        raise ServiceError(400, "버전 이름을 적으세요.")
+    target = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == name))
+    taken = select(Release).where(Release.dataset_id == target.id, Release.version == version) if target else None
+    if taken is not None and db.scalar(taken):
+        raise ServiceError(409, f"{name} {version} 릴리스가 이미 있습니다. 다른 버전 이름을 쓰세요.")
+    if target is None:
+        target = Dataset(project_id=project_id, name=name)
+        db.add(target)
+        db.flush()
+    release = Release(
+        dataset_id=target.id,
+        version=version,
+        label_space_id=first.label_space_id,
+        base_release_id=first.id,
+        note=note.strip(),
+        status="building",
+        created_by=user.id,
+    )
+    db.add(release)
+    db.flush()
+    rows = [
+        {
+            "release_id": release.id,
+            "item_id": item_id,
+            "split": splits[item_id],
+            "revision_id": row.revision_id,
+            "state": row.state,
+            "box_count": row.box_count,
+        }
+        for item_id, row in members.items()
+    ]
+    for start in range(0, len(rows), 5000):
+        db.execute(insert(ReleaseItem), rows[start : start + 5000])
+    db.flush()
+    release.stats = compute_stats(db, release)
+    release.status = "ready"
+    services.audit(
+        db,
+        user.id,
+        via,
+        "release.create",
+        release.id,
+        name=name,
+        version=version,
+        sources=[r.id for r in releases],
+        items=len(members),
+        resplit=bool(ratios),
+    )
+    return {**summary, "release_id": release.id, "dataset": name, "version": version}
 
 
 def set_release_deleted(db: Session, user: User, release_id: str, deleted: bool) -> Release:

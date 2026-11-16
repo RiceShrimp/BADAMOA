@@ -112,6 +112,7 @@ def template_view(db: Session, row: Template, versions: int = 1, models: int = 0
         "environment": {
             "default": manifest.environment.default,
             "requirements": manifest.environment.requirements,
+            **environment_status(db, row, manifest),
         },
         "bytes": row.bytes,
         "models": models,
@@ -231,6 +232,61 @@ def environment_view(db: Session, settings: HubSettings, env: Environment) -> di
             for node_id, entry in (env.nodes or {}).items()
         ],
     }
+
+
+# ---- automatically installed environments, ahead of the first training ------------------
+
+
+def _auto_spec(manifest: TemplateManifest) -> dict[str, Any]:
+    return {**AUTO, **manifest.environment.model_dump(exclude={"default"})}
+
+
+def _same_env(found: dict[str, Any], spec: dict[str, Any]) -> bool:
+    """An environment a node reported is the one a template installs (older reports carry no torch flag)."""
+    return (
+        sorted(found.get("requirements") or []) == sorted(spec.get("requirements") or [])
+        and (found.get("python") or "3.12") == (spec.get("python") or "3.12")
+        and found.get("torch") in (None, bool(spec.get("torch")))
+    )
+
+
+def environment_status(db: Session, row: Template, manifest: TemplateManifest | None = None) -> dict[str, Any]:
+    """Where a template's automatically installed environment is ready, and where it is being prepared.
+
+    ``installs``: whether there is anything to install at all (a template that names an
+    environment an admin registered, or needs only the standard library, has nothing to prepare).
+    """
+    manifest = manifest or manifest_of(row)
+    spec = _auto_spec(manifest)
+    if manifest.environment.default or not spec.get("requirements"):
+        return {"installs": False, "ready": [], "preparing": []}
+    nodes = [n for n in db.scalars(select(Node).order_by(Node.name)) if n.enabled]
+    ready = [n.name for n in nodes if any(_same_env(e, spec) for e in (n.info or {}).get("envs") or [])]
+    active = db.scalars(select(Job).where(Job.type == "env.prepare", Job.status.in_(("queued", "running"))))
+    names = {n.id: n.name for n in nodes}
+    mine = [j for j in active if (j.params or {}).get("template") == row.name]
+    preparing = sorted({names.get(j.target_node_id or j.node_id or "", "") for j in mine} - {""})
+    return {"installs": True, "ready": ready, "preparing": preparing, "nodes": len(nodes)}
+
+
+def prepare_environment(
+    db: Session, user: User, template_id: str, node_ids: list[str] | None = None, via: str = "api"
+) -> list[Job]:
+    """Install a template's environment on servers before anyone trains with it (all enabled ones by default)."""
+    services.require_admin(user)
+    row = get_template(db, template_id)
+    manifest = manifest_of(row)
+    if not environment_status(db, row, manifest)["installs"]:
+        reason = "등록된 환경이나 서버의 Python을 씁니다"
+        raise ServiceError(400, f"{row.title}은(는) 자동으로 설치할 환경이 없습니다 ({reason}).")
+    nodes = [db.get(Node, n) for n in node_ids] if node_ids else list(db.scalars(select(Node).order_by(Node.name)))
+    nodes = [n for n in nodes if n is not None and n.enabled]
+    if not nodes:
+        raise ServiceError(400, "환경을 준비할 서버가 없습니다.")
+    params = {"template": row.name, "version": row.version, "environment": _auto_spec(manifest)}
+    jobs = [services.create_job(db, user, "env.prepare", params, n.id, via=via, gpus=0) for n in nodes]
+    services.audit(db, user.id, via, "environment.prepare", row.id, template=row.name, nodes=[n.name for n in nodes])
+    return jobs
 
 
 def list_environments(db: Session, settings: HubSettings) -> list[dict[str, Any]]:

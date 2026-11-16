@@ -125,11 +125,24 @@ def ensure(
         if torch:
             install += ["--torch-backend", torch_backend()]
         _run(install + requirements, log)
-        ready.write_text(json.dumps({"requirements": requirements, "python": python}), encoding="utf-8")
+        ready.write_text(json.dumps({"requirements": requirements, "python": python, "torch": torch}), encoding="utf-8")
         log(f"환경 준비 완료 ({time.monotonic() - started:.0f}초)")
         return python_of(env)
     finally:
         shutil.rmtree(lock, ignore_errors=True)
+
+
+def listing(home: Path) -> list[dict[str, Any]]:
+    """The automatically installed environments ready on this node (what defines each, not where it is)."""
+    found = []
+    for marker in sorted((home / "envs").glob("*/badamoa-env.json")):
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        requirements = sorted(data.get("requirements") or [])
+        found.append({"requirements": requirements, "python": data.get("python"), "torch": data.get("torch")})
+    return found
 
 
 def existing(path: str) -> Path:

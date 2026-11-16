@@ -1085,3 +1085,11 @@ button.overlay-picture:hover {
 .overlay-lightbox-foot button:disabled {
   opacity: 0.35;
 }
+
+/* ---- per-image results of an evaluation ---- */
+.op-table {
+  margin: 4px 0 16px;
+}
+.op-table > .eyebrow {
+  margin-bottom: 6px;
+}

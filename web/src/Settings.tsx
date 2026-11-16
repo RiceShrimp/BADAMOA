@@ -1,4 +1,4 @@
-import { type FormEvent, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { fileSize } from "./Files";
 import { type NodeInfo, api, apiUpload } from "./api";
 import type { Project } from "./catalogTypes";
@@ -241,7 +241,10 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
 // ---- model templates -----------------------------------------------------------------
 
 function Templates({ isAdmin }: { isAdmin: boolean }) {
-  const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), 20000);
+  const [watching, setWatching] = useState(false);
+  const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), watching ? 3000 : 20000, [watching]);
+  const preparing = templates?.some((t) => t.environment.preparing.length > 0) ?? false;
+  useEffect(() => setWatching(preparing), [preparing]);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [guide, setGuide] = useState(false);
@@ -260,6 +263,17 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
     } finally {
       setBusy(false);
       if (picker.current) picker.current.value = "";
+    }
+  };
+  const prepare = async (t: Template) => {
+    setMessage(null);
+    try {
+      await api(`/templates/${t.id}/prepare`, { body: { node_ids: [] } });
+      setMessage({ kind: "ok", text: `${t.title}의 환경을 서버에 설치하기 시작했습니다. 첫 학습이 설치를 기다리지 않게 됩니다.` });
+      setWatching(true);
+      await refresh();
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     }
   };
   const remove = async (t: Template) => {
@@ -319,10 +333,31 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
                     </span>
                   ))}
                 </td>
-                <td>{t.environment.default || "자동 설치"}</td>
+                <td>
+                  {t.environment.default || "자동 설치"}
+                  {t.environment.installs && (
+                    <div className="muted small">
+                      {t.environment.preparing.length > 0
+                        ? `준비 중: ${t.environment.preparing.join(", ")}`
+                        : t.environment.ready.length > 0
+                          ? `준비됨: ${t.environment.ready.join(", ")}`
+                          : "아직 설치한 서버 없음 (첫 학습 때 설치)"}
+                    </div>
+                  )}
+                </td>
                 <td className="num right">{t.models}</td>
                 {isAdmin && (
                   <td className="right">
+                    {t.environment.installs && t.environment.ready.length < (t.environment.nodes ?? 1) && (
+                      <button
+                        className="mini"
+                        onClick={() => void prepare(t)}
+                        disabled={t.environment.preparing.length > 0}
+                        title="모든 서버에 이 모델 종류의 학습 환경을 지금 설치합니다"
+                      >
+                        미리 준비
+                      </button>
+                    )}{" "}
                     {!t.builtin && (
                       <button className="mini" onClick={() => void remove(t)}>
                         지우기

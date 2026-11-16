@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { ItemViewer } from "./ItemViewer";
+import { ExportDialog, type ItemFilter, NewReleaseDialog } from "./ReleaseMaker";
 import { type Job, type NodeInfo, api } from "./api";
 import {
   type CompareResult,
@@ -157,7 +158,9 @@ export function Datasets({ releaseId, isAdmin }: { releaseId?: string; isAdmin: 
             releaseId={releaseId}
             isAdmin={isAdmin}
             unit={project?.task === "classify" ? "라벨" : "박스"}
+            task={project?.task ?? "detect"}
             onDeleted={() => void refreshTree()}
+            onCreated={() => void refreshTree()}
           />
         ) : (
           <div className="card empty-state">
@@ -198,12 +201,16 @@ function ReleaseView({
   releaseId,
   isAdmin,
   unit,
+  task,
   onDeleted,
+  onCreated,
 }: {
   releaseId: string;
   isAdmin: boolean;
   unit: string;
+  task: string;
   onDeleted: () => void;
+  onCreated: () => void;
 }) {
   const { data: release, error } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 10000, [releaseId]);
   const [split, setSplit] = useState("all");
@@ -215,6 +222,8 @@ function ReleaseView({
   const [page, setPage] = useState(0);
   const [viewing, setViewing] = useState<number | null>(null);
   const [compareWith, setCompareWith] = useState("");
+  const [making, setMaking] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const filterQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -227,6 +236,17 @@ function ReleaseView({
     return params.toString();
   }, [split, state, classId, site, camera, q]);
   useEffect(() => setPage(0), [filterQuery]);
+  // The same filters as the Hub takes them for a new release.
+  const filter = useMemo(() => {
+    const out: ItemFilter = {};
+    if (split !== "all") out.split = split === "none" ? "" : split;
+    if (state) out.state = state;
+    if (classId) out.class_id = classId;
+    if (site) out.site = site;
+    if (camera) out.camera = camera;
+    if (q.trim()) out.q = q.trim();
+    return out;
+  }, [split, state, classId, site, camera, q]);
 
   const { data: items } = usePolling(
     () => api<ItemPage>(`/releases/${releaseId}/items?${filterQuery}&offset=${page * PAGE_SIZE}&limit=${PAGE_SIZE}`),
@@ -272,6 +292,16 @@ function ReleaseView({
           </p>
         </div>
         <div className="head-actions">
+          {release.status === "ready" && (
+            <button onClick={() => setMaking(true)} title="이 릴리스의 항목을 골라 새 릴리스를 만들거나 split을 다시 나눕니다">
+              새 릴리스
+            </button>
+          )}
+          {release.status === "ready" && (
+            <button onClick={() => setExporting(true)} title="YOLO · COCO 형식의 zip으로 받습니다">
+              내려받기
+            </button>
+          )}
           {release.status === "ready" && (
             <a className="btn primary-link" href={`#/training/new/${release.id}`}>
               이 릴리스로 학습
@@ -420,6 +450,20 @@ function ReleaseView({
         ))}
       </div>
 
+      {exporting && <ExportDialog release={release} task={task} onClose={() => setExporting(false)} />}
+      {making && (
+        <NewReleaseDialog
+          release={release}
+          filter={filter}
+          filtered={items?.total ?? 0}
+          onClose={() => setMaking(false)}
+          onCreated={(id) => {
+            setMaking(false);
+            onCreated();
+            window.location.hash = `#/datasets/${id}`;
+          }}
+        />
+      )}
       {viewing != null && items && (
         <ItemViewer releaseId={releaseId} filterQuery={filterQuery} start={viewing} total={items.total} onClose={() => setViewing(null)} />
       )}
@@ -609,7 +653,7 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
           <div className="form-row">
             <label>
               데이터셋 이름
-              <input value={form.dataset} onChange={set("dataset")} required placeholder="예: OD_Sur_Dev" />
+              <input value={form.dataset} onChange={set("dataset")} required placeholder="예: coco" />
             </label>
             <label>
               버전

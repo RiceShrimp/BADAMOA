@@ -478,3 +478,12 @@ dl.info .path {
     border-top: 1px solid var(--border);
   }
 }
+
+/* ---- release downloads ---- */
+.export-list {
+  margin-top: 14px;
+  width: 100%;
+}
+.export-list td {
+  vertical-align: top;
+}

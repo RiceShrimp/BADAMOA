@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import services
+from . import exports, services
 from .catalog_models import Item
 from .config import HubSettings
 from .db import utcnow
@@ -182,6 +182,7 @@ def live_blobs(
         live.update(i["blob"] for i in (op.params or {}).get("images") or [] if i.get("blob"))
     for params in db.scalars(select(Job.params).where(Job.status.not_in(TERMINAL_STATUSES))):
         live.update(_blobs_in(params))
+    live.update(exports.kept_blobs(db))  # release downloads, for their few days
     return live
 
 

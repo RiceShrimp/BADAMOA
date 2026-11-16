@@ -429,7 +429,8 @@ def _table_image(run: Run, cell: dict[str, Any]) -> dict[str, Any]:
     stamp = (str(resolved), resolved.stat().st_size, resolved.stat().st_mtime_ns)
     name = run._table_images.get(stamp)
     if name is None:
-        name = f"tables/{len(run._table_images) + 1:05d}-{_key(source.name)}"
+        # The suffix tells the Hub it is a picture: keep it even when the name is long (hash-named exports).
+        name = f"tables/{len(run._table_images) + 1:05d}-{_key(source.stem)[:40]}{source.suffix.lower()}"
         run._table_images[stamp] = name
         _emit("artifact", path=str(resolved), name=name, media="table-image")
     return {**cell, "image": name}

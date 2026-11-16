@@ -1,4 +1,5 @@
 import { FileList } from "./Files";
+import { LoggedTable } from "./Media";
 import { type FormEvent, Fragment, useEffect, useState } from "react";
 import { api, apiUpload } from "./api";
 import type { ReleaseInfo, TreeDataset } from "./catalogTypes";
@@ -86,9 +87,13 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                           <OpStatus op={op} />
                         </td>
                         <td>
-                          {op.files.length > 0 ? (
+                          {op.files.length + (op.tables?.length ?? 0) > 0 ? (
                             <button className="link" onClick={() => setShown(shown === op.id ? null : op.id)}>
-                              {shown === op.id ? "접기" : `파일 ${op.files.length}개`}
+                              {shown === op.id
+                                ? "접기"
+                                : op.tables?.length
+                                  ? `이미지별 결과 · 파일 ${op.files.length}개`
+                                  : `파일 ${op.files.length}개`}
                             </button>
                           ) : (
                             <span className="muted">–</span>
@@ -99,7 +104,27 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                       {shown === op.id && (
                         <tr className="op-files">
                           <td colSpan={metricKeys.length + 4}>
-                            <FileList files={op.files} />
+                            {[...(op.tables ?? [])]
+                              .sort((a, b) => (a.name.startsWith("failures") ? -1 : 1) - (b.name.startsWith("failures") ? -1 : 1))
+                              .map((t) => (
+                                <div key={t.name} className="op-table">
+                                  <div className="eyebrow">
+                                    {t.name.startsWith("failures")
+                                      ? "틀린 것이 많은 이미지"
+                                      : t.name.startsWith("per_image")
+                                        ? "이미지별 결과 (틀린 것 먼저)"
+                                        : t.name}
+                                  </div>
+                                  <LoggedTable
+                                    file={t}
+                                    images={{
+                                      ...Object.fromEntries(op.files.filter((f) => f.kind === "image").map((f) => [f.name, f.url])),
+                                      ...(op.table_images ?? {}),
+                                    }}
+                                  />
+                                </div>
+                              ))}
+                            {op.files.length > 0 && <FileList files={op.files} />}
                           </td>
                         </tr>
                       )}

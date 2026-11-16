@@ -108,6 +108,12 @@ function MediaKey({ entry, images }: { entry: RunMedia; images: Record<string, s
   );
 }
 
+/** One recorded table on its own (an evaluation's per-image results), with its own view choices. */
+export function LoggedTable({ file, images }: { file: MediaFile; images: Record<string, string> }) {
+  const [view, setView] = useState<ViewChoice>(FIRST_VIEW);
+  return <TableView file={file} images={images} view={view} onView={(change) => setView({ ...view, ...change })} />;
+}
+
 // ---- pictures with boxes ------------------------------------------------------------------
 
 const pointsOf = (flat: number[], w: number, h: number) => flat.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ");
