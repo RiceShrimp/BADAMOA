@@ -45,13 +45,13 @@ export function Training({ runId, arg }: { runId?: string; arg?: string }) {
         <div className="page-head">
           <div>
             <h1>학습</h1>
-            <p className="muted">릴리스를 골라 모델을 학습하고, 실행끼리 지표를 비교합니다.</p>
+            <p className="muted">데이터셋 버전을 골라 모델을 학습하고, 실행끼리 지표를 비교합니다.</p>
           </div>
         </div>
         <div className="card empty-state">
           <Icon name="chart" size={28} />
           <strong>먼저 데이터셋을 등록하세요</strong>
-          <p className="muted">학습은 프로젝트의 릴리스에서 시작합니다. 프로젝트를 만들고 데이터셋을 가져온 뒤 다시 오세요.</p>
+          <p className="muted">학습은 프로젝트의 데이터셋 버전에서 시작합니다. 프로젝트를 만들고 데이터셋을 가져온 뒤 다시 오세요.</p>
           <a className="btn primary-link" href="#/datasets">
             데이터셋으로 <Icon name="arrow" size={14} />
           </a>
@@ -138,7 +138,7 @@ function RunList({
       <div className="page-head">
         <div>
           <h1>학습</h1>
-          <p className="muted">릴리스를 골라 모델을 학습합니다. 표에서 실행을 체크하면 지표 곡선을 겹쳐 비교할 수 있습니다.</p>
+          <p className="muted">데이터셋 버전을 골라 모델을 학습합니다. 표에서 실행을 체크하면 지표 곡선을 겹쳐 비교할 수 있습니다.</p>
         </div>
         <div className="head-actions">
           <ProjectPicker projects={projects} projectId={projectId} onChange={onProject} />
@@ -292,8 +292,8 @@ const DETAIL_CHARTS: { title: string; keys: string[] }[] = [
   { title: "dfl loss", keys: ["train_dfl_loss", "val_dfl_loss"] },
 ];
 const VAL_SOURCE: Record<string, string> = {
-  release: "릴리스의 val split",
-  test: "릴리스의 test split",
+  release: "버전의 val split",
+  test: "버전의 test split",
   holdout: "train에서 떼어 냄",
   train: "train으로 검증 (지표가 높게 나옴)",
 };
@@ -384,7 +384,7 @@ function RunView({ runId }: { runId: string }) {
                 {run.release.dataset} {run.release.version}
               </a>
             ) : (
-              "삭제된 릴리스"
+              "삭제된 버전"
             )}{" "}
             · {run.template.title}
             {run.template.variant && run.template.variant !== run.template.name ? ` ${run.template.variant}` : ""} ·{" "}
@@ -410,7 +410,7 @@ function RunView({ runId }: { runId: string }) {
               이어서 실행
             </button>
           )}
-          <button disabled={working} onClick={again} title="같은 릴리스와 설정으로 새 실행을 시작합니다">
+          <button disabled={working} onClick={again} title="같은 버전과 설정으로 새 실행을 시작합니다">
             다시 실행
           </button>
           {!active && (
@@ -529,7 +529,7 @@ function RunView({ runId }: { runId: string }) {
               )}
             </dl>
           ) : (
-            <p className="muted">학습이 시작되면 릴리스에서 실제로 쓴 이미지 수가 표시됩니다.</p>
+            <p className="muted">학습이 시작되면 버전에서 실제로 쓴 이미지 수가 표시됩니다.</p>
           )}
         </section>
         <section className="card">
@@ -1029,7 +1029,7 @@ function NewRun({
     <Modal title="새 학습" onClose={onClose}>
       {none ? (
         <>
-          <p className="muted">이 프로젝트에는 학습할 릴리스가 없습니다. 먼저 데이터셋을 가져오세요.</p>
+          <p className="muted">이 프로젝트에는 학습할 버전이 없습니다. 먼저 데이터셋을 가져오세요.</p>
           <div className="modal-actions">
             <a className="btn primary-link" href="#/datasets" onClick={onClose}>
               데이터셋으로 <Icon name="arrow" size={14} />
@@ -1039,7 +1039,7 @@ function NewRun({
       ) : (
         <form onSubmit={submit}>
           <label>
-            릴리스
+            버전
             <select value={release} onChange={(e) => setRelease(e.target.value)} required>
               {tree?.map((d) => (
                 <optgroup key={d.id} label={d.name}>

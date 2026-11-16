@@ -27,6 +27,7 @@ export interface TreeDataset {
 export interface LabelClass {
   id: number;
   name: string;
+  color?: string | null; // set on the classes tab; otherwise an automatic colour
 }
 
 export interface ReleaseStats {
@@ -63,6 +64,7 @@ export interface GridItem {
   state: "labelled" | "background" | "unlabelled";
   box_count: number;
   thumb_url: string | null;
+  boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
 }
 
 export interface ItemPage {

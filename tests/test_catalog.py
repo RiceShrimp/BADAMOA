@@ -378,3 +378,62 @@ def test_download_layouts_for_segments_and_classes(tmp_path):
     assert folders["counts"] == {"val": 1}
     with pytest.raises(ValueError, match="담을 항목"):
         exporter.write_archive([item([], state="unlabelled")], header, tmp_path / "none.zip", "yolo")
+
+
+def test_home_totals(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "홈", "task": "detect"}).json()
+    _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+    home = hub.get("/api/home").json()
+    totals = home["totals"]
+    assert (totals["projects"], totals["datasets"], totals["releases"], totals["items"], totals["runs"]) == (1, 1, 1, 8, 0)
+    assert totals["boxes"] > 0
+    assert home["projects"][0]["id"] == project["id"] and home["projects"][0]["collage"]
+    assert home["runs"] == []
+
+
+def test_cards_and_release_tabs(hub, tmp_path):
+    project = hub.post("/api/projects", json={"name": "카드", "task": "detect", "folder": "감시"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+
+    # ---- project cards: counts, a collage of labelled images with their boxes
+    card = next(c for c in hub.get("/api/project-cards").json() if c["id"] == project["id"])
+    assert (card["folder"], card["datasets"], card["releases"], card["items"], card["runs"], card["models"]) == (
+        "감시", 1, 1, 8, 0, 0
+    )
+    assert 1 <= len(card["collage"]) <= 4
+    assert all(c["boxes"] and c["url"].startswith("/media/thumb/") for c in card["collage"])
+    assert card["best"] is None and card["updated_at"]
+
+    # ---- moved to another folder, renamed
+    moved = hub.patch(f"/api/projects/{project['id']}", json={"folder": "공장", "name": "카드-2"})
+    assert moved.status_code == 200 and (moved.json()["folder"], moved.json()["name"]) == ("공장", "카드-2")
+    assert hub.patch(f"/api/projects/{project['id']}", json={"name": ""}).status_code == 400
+
+    # ---- the project page: datasets as cards
+    page = hub.get(f"/api/projects/{project['id']}/overview").json()
+    (dataset,) = page["dataset_cards"]
+    assert (dataset["name"], dataset["release"]["id"], dataset["releases"], dataset["items"], dataset["classes"]) == (
+        "street", v1, 1, 8, 3
+    )
+    assert dataset["splits"] == {"train": 6, "val": 2} and dataset["states"]["unlabelled"] == 1
+    assert [c["name"] for c in dataset["top_classes"]] and page["metric"] == "map50_95" and page["top_models"] == []
+
+    # ---- a release's charts: sizes, classes, where the boxes sit
+    charts = hub.get(f"/api/releases/{v1}/charts").json()
+    assert charts["sizes"]["images"] == 8 and charts["sizes"]["mean_width"] == 320.0
+    assert sum(sum(row) for row in charts["sizes"]["grid"]) == 8
+    boxes = sum(c["boxes"] for c in charts["classes"])
+    assert charts["boxes"]["boxes"] == boxes == sum(sum(row) for row in charts["boxes"]["centres"])
+    assert charts["boxes"]["sampled_items"] == 6  # the labelled ones that have boxes
+    assert hub.get(f"/api/releases/{v1}/models").json() == []
+
+    # ---- a class's colour, kept with the label space
+    assert hub.put(f"/api/releases/{v1}/classes/1", json={"color": "#FF0000"}).json() == {"id": 1, "color": "#ff0000"}
+    assert next(c for c in hub.get(f"/api/releases/{v1}/charts").json()["classes"] if c["id"] == 1)["color"] == "#ff0000"
+    assert hub.put(f"/api/releases/{v1}/classes/1", json={"color": "red"}).status_code == 400
+    assert hub.put(f"/api/releases/{v1}/classes/9", json={"color": "#00ff00"}).status_code == 404
+    assert hub.put(f"/api/releases/{v1}/classes/1", json={"color": ""}).json()["color"] is None
+
+    # ---- grid items carry their boxes
+    items = hub.get(f"/api/releases/{v1}/items").json()["items"]
+    assert any(i["boxes"] for i in items) and all(len(i["boxes"]) == i["box_count"] for i in items if i["box_count"] <= 30)

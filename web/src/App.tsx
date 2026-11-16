@@ -241,7 +241,7 @@ function Shell({
         </header>
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
-          {page === "datasets" && <Datasets releaseId={sub} isAdmin={isAdmin} />}
+          {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "training" && <Training runId={sub} arg={arg} />}
           {page === "models" && <Models modelId={sub} isAdmin={isAdmin} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}

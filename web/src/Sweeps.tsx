@@ -388,7 +388,7 @@ export function SweepView({ sweepId }: { sweepId: string }) {
             <Badge kind={STATUS_KIND[sweep.status]}>{STATUS_TEXT[sweep.status]}</Badge>
           </h1>
           <p className="muted">
-            {sweep.release ? `${sweep.release.dataset} ${sweep.release.version}` : "삭제된 릴리스"} · {sweep.template.title} ·{" "}
+            {sweep.release ? `${sweep.release.dataset} ${sweep.release.version}` : "삭제된 버전"} · {sweep.template.title} ·{" "}
             {METHOD_LABEL[sweep.method]} {sweep.total}회{sweep.startup ? ` (처음 ${sweep.startup}회 무작위)` : ""} · {label} {sweep.goal === "maximize" ? "높은" : "낮은"} 것이 좋음 ·{" "}
             {timeAgo(sweep.created_at)}
           </p>

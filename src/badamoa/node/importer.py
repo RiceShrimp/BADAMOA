@@ -387,5 +387,5 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         result = post("/finish", {})
     if skipped:
         print(f"읽을 수 없는 파일 {skipped}개는 건너뛰었습니다.")
-    print(f"완료: 릴리스 {result.get('version')} · 항목 {result.get('items'):,}개")
+    print(f"완료: 버전 {result.get('version')} · 항목 {result.get('items'):,}개")
     return {**result, "skipped": skipped, "format": found.format}

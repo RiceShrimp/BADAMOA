@@ -41,6 +41,7 @@ TASKS = ("detect", "segment", "classify")
 SPLITS = ("train", "val", "test", "")
 STATES = ("labelled", "background", "unlabelled")
 MAX_PAGE = 200
+GRID_BOXES = 30  # boxes drawn over a grid thumbnail; the item view shows all
 
 
 # ---- projects ------------------------------------------------------------------
@@ -95,6 +96,34 @@ def list_projects(db: Session) -> list[dict[str, Any]]:
         }
         for p in projects
     ]
+
+
+def update_project(
+    db: Session,
+    user: User,
+    project_id: str,
+    *,
+    name: str | None = None,
+    folder: str | None = None,
+    description: str | None = None,
+) -> Project:
+    """Rename a project, move it into a folder (a new folder is just a new name), or change its description."""
+    project = get_project(db, project_id)
+    if user.role != "admin" and project.created_by != user.id:
+        raise ServiceError(403, "프로젝트를 만든 사람이나 관리자만 바꿀 수 있습니다.")
+    if name is not None:
+        name = name.strip()
+        if not 1 <= len(name) <= 128:
+            raise ServiceError(400, "프로젝트 이름은 1~128자여야 합니다.")
+        if db.scalar(select(Project).where(Project.name == name, Project.id != project.id)):
+            raise ServiceError(409, "같은 이름의 프로젝트가 이미 있습니다.")
+        project.name = name
+    if folder is not None:
+        project.folder = folder.strip()[:128]
+    if description is not None:
+        project.description = description.strip()[:2000]
+    services.audit(db, user.id, "api", "project.update", project.id, name=name, folder=folder)
+    return project
 
 
 def update_project_settings(db: Session, user: User, project_id: str, settings: dict[str, Any]) -> Project:
@@ -165,7 +194,7 @@ def start_import(
         raise ServiceError(400, "형식은 auto, yolo, coco, imagefolder 중 하나여야 합니다.")
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
     if existing and db.scalar(select(Release).where(Release.dataset_id == existing.id, Release.version == version)):
-        raise ServiceError(409, f"{dataset} {version} 릴리스가 이미 있습니다. 다른 버전 이름을 쓰세요.")
+        raise ServiceError(409, f"{dataset} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
     params = {
         "project_id": project_id,
         "dataset": dataset,
@@ -430,7 +459,7 @@ def import_finish(db: Session, node: Node, job_id: str) -> dict[str, Any]:
 def get_release(db: Session, release_id: str, allow_deleted: bool = False) -> Release:
     release = db.get(Release, release_id)
     if release is None or (release.deleted_at is not None and not allow_deleted):
-        raise ServiceError(404, "릴리스를 찾을 수 없습니다.")
+        raise ServiceError(404, "버전을 찾을 수 없습니다.")
     return release
 
 
@@ -496,6 +525,10 @@ def list_items(
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     limit = max(1, min(limit, MAX_PAGE))
     rows = db.execute(query.order_by(ReleaseItem.item_id).offset(max(0, offset)).limit(limit)).all()
+    revisions = {
+        rev.id: rev.boxes or []
+        for rev in db.scalars(select(LabelRevision).where(LabelRevision.id.in_([m.revision_id for m, _ in rows])))
+    }
     return {
         "total": total,
         "offset": max(0, offset),
@@ -510,6 +543,7 @@ def list_items(
                 "state": member.state,
                 "box_count": member.box_count,
                 "thumb_url": media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
+                "boxes": [b[:5] for b in revisions.get(member.revision_id, [])[:GRID_BOXES]],
             }
             for member, item in rows
         ],
@@ -540,7 +574,7 @@ def item_detail(db: Session, settings: HubSettings, release_id: str, item_id: in
     member = db.get(ReleaseItem, (release_id, item_id))
     item = db.get(Item, item_id)
     if member is None or item is None:
-        raise ServiceError(404, "이 릴리스에 없는 항목입니다.")
+        raise ServiceError(404, "이 버전에 없는 항목입니다.")
     spaces = {s.id: s for s in db.scalars(select(LabelSpace).where(LabelSpace.project_id == item.project_id))}
     revisions = db.scalars(select(LabelRevision).where(LabelRevision.item_id == item_id).order_by(LabelRevision.rev)).all()
     rev_numbers = {r.id: r.rev for r in revisions}
@@ -701,18 +735,18 @@ def new_release(
     {"train": 80, "val": 10, "test": 10} to deal the items out again (otherwise they keep theirs).
     """
     if not sources:
-        raise ServiceError(400, "새 릴리스에 담을 릴리스를 하나 이상 고르세요.")
+        raise ServiceError(400, "새 버전에 담을 버전을 하나 이상 고르세요.")
     releases = [get_release(db, rid) for rid in dict.fromkeys(sources)]
     if any(r.status != "ready" for r in releases):
-        raise ServiceError(409, "아직 등록 중인 릴리스가 있습니다. 끝난 뒤에 다시 시도하세요.")
+        raise ServiceError(409, "아직 등록 중인 버전이 있습니다. 끝난 뒤에 다시 시도하세요.")
     first = releases[0]
     first_dataset = db.get(Dataset, first.dataset_id)
     project_id = first_dataset.project_id
     for other in releases[1:]:
         if db.get(Dataset, other.dataset_id).project_id != project_id:
-            raise ServiceError(400, "다른 프로젝트의 릴리스는 합칠 수 없습니다.")
+            raise ServiceError(400, "다른 프로젝트의 버전은 합칠 수 없습니다.")
         if other.label_space_id != first.label_space_id:
-            raise ServiceError(400, "클래스 목록(라벨 공간)이 다른 릴리스는 합칠 수 없습니다.")
+            raise ServiceError(400, "클래스 목록(라벨 공간)이 다른 버전은 합칠 수 없습니다.")
     if group_by not in SPLIT_GROUPS:
         raise ServiceError(400, "split을 묶는 기준은 site 또는 camera입니다.")
     ratios = _ratios(split)
@@ -757,7 +791,7 @@ def new_release(
     if dry_run:
         return summary
     if not members:
-        raise ServiceError(400, "고른 조건에 맞는 항목이 없어 릴리스를 만들 수 없습니다.")
+        raise ServiceError(400, "고른 조건에 맞는 항목이 없어 버전을 만들 수 없습니다.")
 
     version, name = version.strip(), (dataset.strip() or first_dataset.name)
     if not version:
@@ -765,7 +799,7 @@ def new_release(
     target = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == name))
     taken = select(Release).where(Release.dataset_id == target.id, Release.version == version) if target else None
     if taken is not None and db.scalar(taken):
-        raise ServiceError(409, f"{name} {version} 릴리스가 이미 있습니다. 다른 버전 이름을 쓰세요.")
+        raise ServiceError(409, f"{name} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
     if target is None:
         target = Dataset(project_id=project_id, name=name)
         db.add(target)

@@ -83,7 +83,7 @@ function columnsFor(runs: Run[], task: string): Column[] {
     },
     {
       key: "i:release",
-      label: "릴리스",
+      label: "버전",
       group: "정보",
       value: (r) => (r.release ? `${r.release.dataset} ${r.release.version}` : null),
     },
@@ -306,7 +306,7 @@ export function RunTable({
             {runs?.length === 0 && (
               <tr>
                 <td colSpan={(onCompare ? 3 : 2) + visible.length} className="empty">
-                  {filtered ? "찾는 실행이 없습니다." : '아직 학습한 적이 없습니다. "새 학습"으로 릴리스를 골라 시작하세요.'}
+                  {filtered ? "찾는 실행이 없습니다." : '아직 학습한 적이 없습니다. "새 학습"으로 데이터셋 버전을 골라 시작하세요.'}
                 </td>
               </tr>
             )}
@@ -331,7 +331,7 @@ export function RunTable({
                   <td>
                     <strong>{run.name}</strong> <TagList tags={run.tags} />
                     <div className="muted small">
-                      {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 릴리스"} ·{" "}
+                      {run.release ? `${run.release.dataset} ${run.release.version}` : "삭제된 버전"} ·{" "}
                       {run.template.variant || run.template.title}
                       {run.sweep && (
                         <>

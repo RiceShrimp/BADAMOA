@@ -35,12 +35,12 @@ LISTED = 10
 def start_export(db: Session, user: User, release_id: str, fmt: str, images: bool = True, via: str = "api") -> Job:
     release = catalog.get_release(db, release_id)
     if release.status != "ready":
-        raise ServiceError(409, "아직 등록 중인 릴리스입니다. 끝난 뒤에 내려받으세요.")
+        raise ServiceError(409, "아직 등록 중인 버전입니다. 끝난 뒤에 내려받으세요.")
     project = db.get(Project, db.get(Dataset, release.dataset_id).project_id)
     formats = FORMATS.get(project.task, ("yolo",))
     if fmt not in formats:
         offered = ", ".join(FORMAT_LABEL[f] for f in formats)
-        raise ServiceError(400, f"이 프로젝트의 릴리스는 {offered} 형식으로 받을 수 있습니다.")
+        raise ServiceError(400, f"이 프로젝트의 버전은 {offered} 형식으로 받을 수 있습니다.")
     node = training.data_node(db, release.id)
     params = {"release_id": release.id, "format": fmt, "images": bool(images), "task": project.task}
     job = services.create_job(db, user, "data.export", params, node.id, via=via)

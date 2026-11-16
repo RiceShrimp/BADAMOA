@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, services
+from . import catalog, overview, services
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
 from .models import Node, User
@@ -41,6 +41,43 @@ def create_project(body: NewProject, user: User = Depends(current_user), db: Ses
     project = catalog.create_project(db, user, body.name, body.task, body.folder, body.description)
     db.commit()
     return next(p for p in catalog.list_projects(db) if p["id"] == project.id)
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = None
+    folder: str | None = None  # "" takes it out of its folder
+    description: str | None = None
+
+
+@router.patch("/projects/{project_id}")
+def update_project(
+    project_id: str, body: ProjectPatch, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    catalog.update_project(db, user, project_id, **body.model_dump(exclude_unset=True))
+    db.commit()
+    return next(p for p in catalog.list_projects(db) if p["id"] == project_id)
+
+
+@router.get("/project-cards")
+def project_cards(
+    _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> list[dict[str, Any]]:
+    """Every project as a card: collage, task, counts, the best model."""
+    return overview.project_cards(db, hub.settings)
+
+
+@router.get("/home")
+def home(_: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """Totals, the projects touched last and the latest runs, for the home screen."""
+    return overview.home(db, hub.settings)
+
+
+@router.get("/projects/{project_id}/overview")
+def project_page(
+    project_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """A project with its datasets as cards and its best models."""
+    return overview.project_page(db, hub.settings, project_id)
 
 
 @router.get("/projects/{project_id}/datasets")
@@ -211,6 +248,33 @@ def new_release(body: NewRelease, user: User = Depends(current_user), db: Sessio
     )
     if not body.dry_run:
         db.commit()
+    return result
+
+
+@router.get("/releases/{release_id}/charts")
+def release_charts(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """Split and label states, classes, image sizes, where the boxes sit and how big they are."""
+    return overview.release_charts(db, release_id)
+
+
+@router.get("/releases/{release_id}/models")
+def release_models(
+    release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> list[dict[str, Any]]:
+    """The runs that trained on this release and the models they made."""
+    return overview.release_models(db, hub.settings, release_id)
+
+
+class ClassColor(BaseModel):
+    color: str = ""  # #rrggbb; empty: back to the automatic colour
+
+
+@router.put("/releases/{release_id}/classes/{class_id}")
+def class_color(
+    release_id: str, class_id: int, body: ClassColor, _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    result = overview.set_class_color(db, release_id, class_id, body.color)
+    db.commit()
     return result
 
 

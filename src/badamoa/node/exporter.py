@@ -162,7 +162,7 @@ def build(
         box_total += len(boxes)
 
     if counts["train"] == 0 and not options.keep_splits:
-        raise ValueError("학습에 쓸 이미지가 없습니다. 릴리스의 라벨 상태와 파일 위치를 확인하세요.")
+        raise ValueError("학습에 쓸 이미지가 없습니다. 버전의 라벨 상태와 파일 위치를 확인하세요.")
 
     lines = [f"path: {json.dumps(out.resolve().as_posix(), ensure_ascii=False)}", "train: images/train"]
     lines.append(f"val: images/{'val' if counts['val'] else 'train'}")
@@ -252,7 +252,7 @@ def build_imagefolder(
         registered[item["sha256"]] = item["rel_path"]
         counts[split] += 1
     if counts["train"] == 0 and not options.keep_splits:
-        raise ValueError("학습에 쓸 이미지가 없습니다. 릴리스의 라벨 상태와 파일 위치를 확인하세요.")
+        raise ValueError("학습에 쓸 이미지가 없습니다. 버전의 라벨 상태와 파일 위치를 확인하세요.")
     out.mkdir(parents=True, exist_ok=True)
     (out / "files.json").write_text(json.dumps(registered, ensure_ascii=False), encoding="utf-8")
     for split in ("train", "val"):  # every class folder exists in both, so class indices line up
@@ -407,7 +407,7 @@ def write_archive(
             counts[split] = counts.get(split, 0) + 1
 
         if not counts:
-            raise ValueError("담을 항목이 없습니다. 릴리스의 라벨 상태와 이미지 파일 위치를 확인하세요.")
+            raise ValueError("담을 항목이 없습니다. 버전의 라벨 상태와 이미지 파일 위치를 확인하세요.")
         ordered = [names[cid] for cid in sorted(names)]
         if fmt == "yolo":
             lines = [f"{s}: images/{s}" for s in SPLITS if counts.get(s)]
@@ -468,5 +468,5 @@ def run_download(params: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(f"Hub에 올리지 못했습니다 ({resp.status_code}): {resp.text[:300]}")
         stored = resp.json()
     shutil.rmtree(work, ignore_errors=True)
-    print("Hub에 올렸습니다. 릴리스 화면에서 내려받을 수 있습니다.", flush=True)
+    print("Hub에 올렸습니다. 버전 화면에서 내려받을 수 있습니다.", flush=True)
     return {**summary, **stored}

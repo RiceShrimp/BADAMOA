@@ -64,12 +64,12 @@ def data_node(db: Session, release_id: str) -> Node:
         .distinct()
     ).all()
     if not node_ids:
-        raise ServiceError(400, "이 릴리스의 이미지가 어느 노드에 있는지 알 수 없습니다.")
+        raise ServiceError(400, "이 버전의 이미지가 어느 노드에 있는지 알 수 없습니다.")
     if len(node_ids) > 1:
-        raise ServiceError(400, "이 릴리스의 이미지가 여러 노드에 흩어져 있습니다. 한 노드에 모인 릴리스만 학습할 수 있습니다.")  # noqa: E501
+        raise ServiceError(400, "이 버전의 이미지가 여러 노드에 흩어져 있습니다. 한 노드에 모인 버전만 학습할 수 있습니다.")  # noqa: E501
     node = db.get(Node, node_ids[0])
     if node is None:
-        raise ServiceError(400, "이 릴리스의 이미지가 있던 노드가 삭제되었습니다.")
+        raise ServiceError(400, "이 버전의 이미지가 있던 노드가 삭제되었습니다.")
     return node
 
 
@@ -105,7 +105,7 @@ def start_run(
     """
     release = catalog.get_release(db, release_id)
     if release.status != "ready":
-        raise ServiceError(409, "아직 등록 중인 릴리스입니다.")
+        raise ServiceError(409, "아직 등록 중인 버전입니다.")
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
     fallback = registry.DEFAULT_BY_TASK.get(project.task, registry.DEFAULT_TEMPLATE)

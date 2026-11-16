@@ -18,7 +18,7 @@ interface Lineage {
 }
 
 const KIND_LABEL: Record<LineageNode["kind"], string> = {
-  release: "릴리스",
+  release: "버전",
   run: "학습 실행",
   model: "모델",
   eval: "평가",

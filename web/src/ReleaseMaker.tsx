@@ -128,16 +128,16 @@ export function NewReleaseDialog({
     ...((release.stats.sites?.length ?? 0) > 0 ? [["site", "같은 사이트끼리"]] : []),
   ];
   return (
-    <Modal title="새 릴리스 만들기" onClose={onClose}>
+    <Modal title="새 버전 만들기" onClose={onClose}>
       <form onSubmit={submit}>
         <p className="muted">
-          {release.dataset.name} {release.version}의 항목으로 새 릴리스를 만듭니다. 라벨은 이 릴리스의 것을 그대로 쓰고, 이미지는
+          {release.dataset.name} {release.version}의 항목으로 새 버전을 만듭니다. 라벨은 이 버전의 것을 그대로 쓰고, 이미지는
           옮기거나 복사하지 않습니다.
         </p>
         <label>
           담을 항목
           <select value={take} onChange={(e) => setTake(e.target.value as typeof take)}>
-            <option value="all">이 릴리스 전체 ({total.toLocaleString()}개)</option>
+            <option value="all">이 버전 전체 ({total.toLocaleString()}개)</option>
             {filtering && (
               <>
                 <option value="match">
@@ -148,7 +148,7 @@ export function NewReleaseDialog({
             )}
           </select>
         </label>
-        {!filtering && <p className="muted small">일부만 담으려면 먼저 릴리스 화면에서 필터를 고르세요.</p>}
+        {!filtering && <p className="muted small">일부만 담으려면 먼저 버전 화면에서 필터를 고르세요.</p>}
         <div className="form-row">
           <label>
             데이터셋
@@ -207,7 +207,7 @@ export function NewReleaseDialog({
         {others.length > 0 && (
           <details className="advanced" open={extra.length > 0}>
             <summary>
-              다른 릴리스 더하기 <span className="muted">(클래스 목록이 같은 릴리스)</span>
+              다른 버전 더하기 <span className="muted">(클래스 목록이 같은 버전)</span>
             </summary>
             {others.map((o) => (
               <label key={o.id} className="check">
@@ -219,16 +219,16 @@ export function NewReleaseDialog({
                 {o.label} <span className="muted">({o.items.toLocaleString()}개, 전체)</span>
               </label>
             ))}
-            <p className="muted small">같은 이미지가 여러 릴리스에 있으면 이 릴리스의 split과 라벨을 씁니다.</p>
+            <p className="muted small">같은 이미지가 여러 버전에 있으면 이 버전의 split과 라벨을 씁니다.</p>
           </details>
         )}
         <label>
           메모 (선택)
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="이 릴리스에서 달라진 점" />
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="이 버전에서 달라진 점" />
         </label>
         <div className="notice">
           {preview
-            ? `새 릴리스: 항목 ${preview.items.toLocaleString()}개 · ${splitText(preview.splits)}`
+            ? `새 버전: 항목 ${preview.items.toLocaleString()}개 · ${splitText(preview.splits)}`
             : error
               ? null
               : "항목 수를 세는 중…"}
@@ -307,10 +307,10 @@ export function ExportDialog({ release, task, onClose }: { release: ReleaseInfo;
 
   const size = release.stats.bytes ?? 0;
   return (
-    <Modal title="릴리스 내려받기" onClose={onClose}>
+    <Modal title="버전 내려받기" onClose={onClose}>
       <form onSubmit={start}>
         <p className="muted">
-          이미지가 있는 서버가 zip을 만들어 Hub에 올립니다. 라벨은 이 릴리스에 기록된 것을 그대로 담고, 아직 라벨하지 않은 이미지는
+          이미지가 있는 서버가 zip을 만들어 Hub에 올립니다. 라벨은 이 버전에 기록된 것을 그대로 담고, 아직 라벨하지 않은 이미지는
           뺍니다. 만든 zip은 {7}일 동안 받을 수 있습니다.
         </p>
         <label>

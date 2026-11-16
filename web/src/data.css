@@ -1,0 +1,590 @@
+/* Data screens as cards: folders, projects, datasets, and a release's tabs. */
+
+/* ---- breadcrumbs inside a page (the top bar has its own .crumbs) ---- */
+.page-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.page-crumbs > * + *::before {
+  content: "›";
+  margin-right: 6px;
+  color: var(--border-strong);
+}
+.page-crumbs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.page-crumbs strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- folders and the card grid ---- */
+.board-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.board-tools input[type="search"] {
+  width: min(240px, 100%);
+}
+.board-tools select {
+  width: auto;
+}
+.folder-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.folder-chips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.folder-chips button.active {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.folder-chips em {
+  font-style: normal;
+  opacity: 0.75;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+  align-content: start;
+}
+.data-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  transition: border-color 0.12s;
+}
+.data-card:hover {
+  border-color: var(--accent);
+}
+.data-card-link {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  color: inherit;
+  text-decoration: none;
+}
+.data-card-menu {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--surface);
+  opacity: 0;
+}
+.data-card:hover .data-card-menu,
+.data-card-menu:focus-visible {
+  opacity: 1;
+}
+.data-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px 12px;
+}
+.data-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.data-card-title strong {
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.data-card-body p {
+  margin: 0;
+}
+
+/* four pictures on top of a card */
+.collage {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  height: 92px;
+  background: var(--border);
+}
+.collage-cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.collage-cell.empty {
+  grid-column: 1 / -1;
+}
+.collage-cell .shot {
+  width: 100%;
+  height: 100%;
+}
+.collage-more {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+  font-size: 11px;
+}
+.shot {
+  display: block;
+}
+
+.card-classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 12px;
+}
+.card-classes span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.card-classes i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.card-classes em {
+  font-style: normal;
+  color: var(--muted);
+}
+.split-bar {
+  display: flex;
+  height: 5px;
+  margin-top: 3px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.split-bar i {
+  display: block;
+  height: 100%;
+}
+.split-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.split-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.split-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.add-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 200px;
+  padding: 16px;
+  border: 1px dashed var(--border-strong);
+  text-align: center;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+.add-tile:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- a project: its datasets beside its best models ---- */
+.project-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+.project-layout > aside {
+  margin: 0;
+}
+.project-models ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.project-models li {
+  padding: 4px 0;
+  font-size: 13px;
+}
+.project-models li a {
+  margin-right: 4px;
+  color: var(--text);
+}
+.project-models li .num {
+  float: right;
+}
+.project-models > * + * {
+  margin-top: 6px;
+}
+.project-models h3 {
+  margin: 0;
+}
+.scroll-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+/* ---- a release: tabs ---- */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 4px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+.tabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.tabs a:hover {
+  color: var(--text);
+}
+.tabs a.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+.tabs em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---- images: grid sizes, boxes over thumbnails, the list view ---- */
+.thumb-grid.large {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.thumb-grid.small {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.thumb-grid.small .thumb-name,
+.thumb-grid.small .thumb-meta {
+  display: none;
+}
+.thumb-image {
+  position: relative;
+}
+.thumb-image .shot {
+  width: 100%;
+  height: 100%;
+}
+.split-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.thumb-image .split-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  margin: 0;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.75);
+}
+.inline-check {
+  margin: 0;
+  white-space: nowrap;
+}
+.filters .inline-check input {
+  flex: none;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+.item-list .item-thumb {
+  width: 76px;
+}
+.item-list .item-thumb .shot {
+  width: 64px;
+  height: 40px;
+  border-radius: 4px;
+}
+.item-list tr.clickable {
+  cursor: pointer;
+}
+.item-list tr.clickable:hover td {
+  background: var(--surface-2);
+}
+
+/* ---- classes: table with a colour you can pick ---- */
+.class-table td {
+  vertical-align: middle;
+}
+.swatch-pick {
+  position: relative;
+  display: inline-flex;
+  margin: 0;
+  cursor: pointer;
+}
+.swatch-pick i {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15);
+}
+.swatch-pick input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.reset-color {
+  margin-left: 8px;
+  padding: 0;
+}
+.share-bar {
+  display: inline-block;
+  width: 110px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--surface-2);
+  vertical-align: middle;
+}
+.share-bar i {
+  display: block;
+  height: 100%;
+}
+tr.current-row td {
+  background: var(--accent-soft);
+}
+
+/* ---- charts ---- */
+.chart-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.chart-cards .card {
+  margin: 0;
+}
+.chart-cards .card.wide {
+  grid-column: 1 / -1;
+}
+.donut {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 10px;
+}
+.donut svg {
+  flex: none;
+  width: 130px;
+  height: 130px;
+}
+.donut ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.donut li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.donut li i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.donut li strong {
+  margin-left: auto;
+  padding-left: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+}
+.hbar {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) 72px 64px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.hbar-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hbar-track {
+  height: 10px;
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+.hbar-track i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+.hbar .num {
+  text-align: right;
+}
+.vbars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 140px;
+  margin-top: 12px;
+}
+.vbar-group {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+}
+.vbar-group i {
+  flex: 1;
+  min-height: 1px;
+  border-radius: 3px 3px 0 0;
+}
+.vbar-group i.w,
+.w-swatch {
+  background: var(--series-1);
+}
+.vbar-group i.h,
+.h-swatch {
+  background: var(--series-3);
+}
+.w-swatch,
+.h-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 2px;
+}
+.vbar-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 6px 0;
+}
+.heat svg {
+  display: block;
+  width: 100%;
+  max-width: 300px;
+  aspect-ratio: 1;
+  margin: 10px auto 6px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.heat .muted {
+  text-align: center;
+}
+.aspect-line {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+@media (max-width: 900px) {
+  .project-layout,
+  .chart-cards {
+    grid-template-columns: 1fr;
+  }
+  .hbar {
+    grid-template-columns: 90px minmax(0, 1fr) 60px;
+  }
+  .hbar > :last-child {
+    display: none;
+  }
+}
+
+/* ---- home ---- */
+.stats.six {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.home-block {
+  margin-bottom: 16px;
+}
+.home-block > .card-head {
+  margin-bottom: 10px;
+}
+.home-block .card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+.card-head > .muted.small:not(:last-child) {
+  margin-left: auto;
+}
+tr.clickable {
+  cursor: pointer;
+}
+tr.clickable:hover td {
+  background: var(--surface-2);
+}
+@media (max-width: 1200px) {
+  .stats.six {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .stats.six {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

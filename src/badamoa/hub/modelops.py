@@ -129,20 +129,20 @@ def start_eval(
     model = training.get_model(db, model_id)
     release = catalog.get_release(db, release_id)
     if release.status != "ready":
-        raise ServiceError(409, "아직 등록 중인 릴리스입니다.")
+        raise ServiceError(409, "아직 등록 중인 버전입니다.")
     dataset = db.get(Dataset, release.dataset_id)
     if dataset.project_id != model.project_id:
-        raise ServiceError(400, "다른 프로젝트의 릴리스로는 평가할 수 없습니다.")
+        raise ServiceError(400, "다른 프로젝트의 버전으로는 평가할 수 없습니다.")
     if split not in ("val", "test", "train"):
         raise ServiceError(400, "split은 val, test, train 중 하나여야 합니다.")
     space = db.get(LabelSpace, release.label_space_id)
     ids = {str(c["name"]): int(c["id"]) for c in space.classes}
     missing = [name for name in model.classes or [] if name not in ids]
     if missing:
-        raise ServiceError(400, f"이 릴리스에는 모델의 클래스가 없습니다: {', '.join(missing[:5])}")
+        raise ServiceError(400, f"이 버전에는 모델의 클래스가 없습니다: {', '.join(missing[:5])}")
     class_ids = [ids[name] for name in model.classes or []]
     if class_ids != sorted(class_ids):
-        raise ServiceError(400, "이 릴리스의 클래스 순서가 모델과 달라 평가할 수 없습니다.")
+        raise ServiceError(400, "이 버전의 클래스 순서가 모델과 달라 평가할 수 없습니다.")
     node = training.data_node(db, release.id)
     gpus = (1 if node.info.get("gpus") else 0) if gpus is None else gpus
     extra = {"release_id": release.id, "split": split, "class_ids": class_ids}
@@ -198,7 +198,7 @@ def manifest(db: Session, node: Node, job_id: str, after: int = 0, limit: int = 
     op, _ = _running(db, node, job_id)
     release = db.get(Release, op.release_id) if op.release_id else None
     if release is None:
-        raise ServiceError(404, "이 작업은 릴리스를 쓰지 않습니다.")
+        raise ServiceError(404, "이 작업은 버전을 쓰지 않습니다.")
     return training.release_manifest(db, node, release, after, limit)
 
 

@@ -238,7 +238,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         # 1. dataset
         stage("data")
         header, items = manifest_stream(client, base)
-        print(f"릴리스 {header['dataset']} {header['version']} 를 학습 형식으로 준비합니다: {work / 'data'}")
+        print(f"{header['dataset']} {header['version']} 버전을 학습 형식으로 준비합니다: {work / 'data'}")
         options = exporter.ExportOptions(
             classes=[int(c) for c in params.get("classes") or []],
             unlabelled=params.get("unlabelled") or "exclude",
@@ -256,9 +256,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             f"{'라벨' if data_format == 'imagefolder' else '박스'} {summary['boxes']:,} · 클래스 {len(summary['classes'])}개"
         )
         if summary["val_source"] == "holdout":
-            print(f"릴리스에 val split이 없어 train의 {options.val_fraction:.0%}를 검증용으로 떼었습니다.")
+            print(f"버전에 val split이 없어 train의 {options.val_fraction:.0%}를 검증용으로 떼었습니다.")
         elif summary["val_source"] == "test":
-            print("릴리스에 val split이 없어 test split으로 검증합니다.")
+            print("버전에 val split이 없어 test split으로 검증합니다.")
         elif summary["val_source"] == "train":
             print("검증용으로 뗄 이미지가 부족해 train으로 검증합니다. 지표가 실제보다 높게 나옵니다.")
         if any(left_out.values()):

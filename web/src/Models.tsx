@@ -220,7 +220,7 @@ function CompareModels({ ids, onClose }: { ids: string[]; onClose: () => void })
       </div>
       {!sameData && (
         <div className="notice">
-          두 모델은 서로 다른 릴리스로 학습·검증했습니다. 검증 데이터가 다르면 지표를 그대로 비교할 수 없습니다.
+          두 모델은 서로 다른 버전으로 학습·검증했습니다. 검증 데이터가 다르면 지표를 그대로 비교할 수 없습니다.
         </div>
       )}
       <table>
@@ -330,7 +330,7 @@ function SharedEvaluations({ a, b, metricKeys }: { a: ModelDetail; b: ModelDetai
   if (rows.length === 0) {
     return (
       <p className="muted small">
-        두 모델을 같은 릴리스로 평가한 기록이 없습니다. 각 모델 화면의 "평가"에서 같은 릴리스와 같은 부분으로 평가하면 여기에 나란히
+        두 모델을 같은 버전으로 평가한 기록이 없습니다. 각 모델 화면의 "평가"에서 같은 버전과 같은 부분으로 평가하면 여기에 나란히
         나옵니다.
       </p>
     );
@@ -341,7 +341,7 @@ function SharedEvaluations({ a, b, metricKeys }: { a: ModelDetail; b: ModelDetai
       <table>
         <thead>
           <tr>
-            <th>릴리스 · 부분 / 지표</th>
+            <th>버전 · 부분 / 지표</th>
             <th className="right">
               {a.name} v{a.version}
             </th>

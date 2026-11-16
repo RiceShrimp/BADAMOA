@@ -644,7 +644,7 @@ function ProjectDefaults() {
         {projects.map((project) => (
           <label className="env-path" key={project.id}>
             <span>
-              {project.name} <span className="muted small">릴리스 {project.releases}개</span>
+              {project.name} <span className="muted small">버전 {project.releases}개</span>
             </span>
             <select value={project.settings?.template ?? ""} onChange={(e) => void change(project, e.target.value)}>
               <option value="">정하지 않음 ({templates?.[0]?.title ?? "기본 제공"})</option>

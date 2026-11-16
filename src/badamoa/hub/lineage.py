@@ -55,7 +55,7 @@ class _Graph:
             f"release:{release.id}",
             kind="release",
             label=f"{dataset.name if dataset else '?'} {release.version}",
-            sub=f"{items:,}장" if isinstance(items, int) else "릴리스",
+            sub=f"{items:,}장" if isinstance(items, int) else "버전",
             href=None if release.deleted_at else f"#/datasets/{release.id}",
         )
 
@@ -89,7 +89,7 @@ class _Graph:
         if op.kind == "eval":
             release = self.db.get(Release, op.release_id) if op.release_id else None
             dataset = self.db.get(Dataset, release.dataset_id) if release else None
-            where = f"{dataset.name} {release.version}" if release and dataset else "삭제된 릴리스"
+            where = f"{dataset.name} {release.version}" if release and dataset else "삭제된 버전"
             value = (op.result or {}).get("metrics", {}).get(metric)
             label = f"{where} {SPLIT.get(str(op.params.get('split')), op.params.get('split', ''))}"
             sub = f"{metric} {value:.3f}" if isinstance(value, int | float) else _status_text(status)

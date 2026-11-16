@@ -10,10 +10,12 @@ interface Props {
   start: number;
   total: number;
   onClose: () => void;
+  /** Colour of a class: the one picked in the classes tab, or the automatic one. */
+  colorOf?: (id: number) => string;
 }
 
 /** Full-screen item view: boxes over the image, label revisions, where else the image is used. */
-export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Props) {
+export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor }: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +75,13 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
   }, [onClose, total]);
 
   const revision = item?.revisions.find((r) => r.id === revisionId) ?? null;
-  const names = useMemo(() => Object.fromEntries((revision?.classes ?? []).map((c) => [c.id, c.name])), [revision]);
+  const currentRev = item?.revisions.find((r) => r.id === item.revision_id)?.rev ?? null;
+  // A label revision goes by the versions that carry it; the bare revision number means nothing to people.
+  const versionsOf = (rev: number) => {
+    const here = item?.releases.find((r) => r.current)?.dataset;
+    return (item?.releases ?? []).filter((r) => r.rev === rev).map((r) => (r.dataset === here ? r.version : `${r.dataset} ${r.version}`));
+  };
+  const names =useMemo(() => Object.fromEntries((revision?.classes ?? []).map((c) => [c.id, c.name])), [revision]);
   const counts = useMemo(() => {
     const map = new Map<number, number>();
     for (const box of revision?.boxes ?? []) map.set(box[0], (map.get(box[0]) ?? 0) + 1);
@@ -110,7 +118,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
                     const [cls, cx = 0.5, cy = 0.5, bw = 1, bh = 1] = b;
                     const x = (cx - bw / 2) * w;
                     const y = (cy - bh / 2) * h;
-                    const color = classColor(cls);
+                    const color = colorOf(cls);
                     const label = names[cls] ?? String(cls);
                     // A segmentation label carries its outline after the box: x1, y1, x2, y2, …
                     const outline = b.slice(5);
@@ -192,7 +200,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
           <div className="class-chips">
             {counts.map(([id, n]) => (
               <button key={id} className={`class-chip ${hidden.has(id) ? "off" : ""}`} onClick={() => toggleClass(id)} aria-pressed={!hidden.has(id)}>
-                <i style={{ background: classColor(id) }} />
+                <i style={{ background: colorOf(id) }} />
                 {names[id] ?? id} <span>{n}</span>
               </button>
             ))}
@@ -208,15 +216,15 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
         {item && (
           <>
             <section>
-              <div className="eyebrow">라벨 개정</div>
+              <div className="eyebrow">버전별 라벨</div>
               {item.revisions.map((r) => (
                 <label key={r.id} className={`revision ${r.id === revisionId ? "active" : ""}`}>
                   <input type="radio" name="revision" checked={r.id === revisionId} onChange={() => setRevisionId(r.id)} />
                   <div>
                     <div>
-                      <strong>rev {r.rev}</strong> · {r.state === "labelled" ? `박스 ${r.box_count}개` : STATE_LABEL[r.state]} ·{" "}
+                      <strong title={`라벨 개정 ${r.rev}`}>{versionsOf(r.rev).join(" · ") || "버전에 없는 라벨"}</strong> ·{r.state === "labelled" ? `박스 ${r.box_count}개` : STATE_LABEL[r.state]} ·{" "}
                       {r.label_space.name}
-                      {r.id === item.revision_id && <span className="tag accent">이 릴리스</span>}
+                      {r.id === item.revision_id && <span className="tag accent">이 버전</span>}
                     </div>
                     <div className="muted small">
                       {r.source} · {r.created_at.slice(0, 10)}
@@ -255,7 +263,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
             </section>
 
             <section>
-              <div className="eyebrow">포함된 릴리스 ({item.releases.length})</div>
+              <div className="eyebrow">포함된 버전 ({item.releases.length})</div>
               <ul className="release-list">
                 {item.releases.map((r) => (
                   <li key={r.id}>
@@ -263,7 +271,8 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose }: Pr
                       {r.dataset} {r.version}
                     </a>
                     <span className="muted small">
-                      {SPLIT_LABEL[r.split] ?? r.split} · rev {r.rev ?? "?"}
+                      {SPLIT_LABEL[r.split] ?? r.split}
+                      {r.rev !== currentRev && " · 라벨이 다름"}
                     </span>
                   </li>
                 ))}

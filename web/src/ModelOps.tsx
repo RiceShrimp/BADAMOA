@@ -59,7 +59,7 @@ export function ModelOps({ model }: { model: ModelDetail }) {
               <table className="plain">
                 <thead>
                   <tr>
-                    <th>릴리스 · split</th>
+                    <th>버전 · split</th>
                     {metricKeys.map((k) => (
                       <th key={k} className="right">
                         {METRIC_LABEL[k] ?? k}
@@ -75,7 +75,7 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                     <Fragment key={op.id}>
                       <tr>
                         <td>
-                          {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 릴리스"} ·{" "}
+                          {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 버전"} ·{" "}
                           {SPLIT_LABEL[String(op.params.split)] ?? String(op.params.split)}
                         </td>
                         {metricKeys.map((k) => (
@@ -288,12 +288,12 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
     <Modal title="모델 평가" onClose={onClose}>
       <form onSubmit={onSubmit}>
         <p className="muted">
-          고른 릴리스로 이 모델의 지표를 잽니다. 서로 다른 데이터로 학습한 모델도 같은 릴리스로 평가하면 공정하게 비교할 수
+          고른 버전으로 이 모델의 지표를 잽니다. 서로 다른 데이터로 학습한 모델도 같은 버전으로 평가하면 공정하게 비교할 수
           있습니다.
         </p>
         <div className="form-row">
           <label>
-            릴리스
+            버전
             <select value={release} onChange={(e) => setRelease(e.target.value)} required>
               {tree?.map((d) => (
                 <optgroup key={d.id} label={d.name}>
@@ -302,7 +302,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
                     .map((r) => (
                       <option key={r.id} value={r.id}>
                         {d.name} {r.version}
-                        {r.id === model.release?.id ? " (학습에 쓴 릴리스)" : ""}
+                        {r.id === model.release?.id ? " (학습에 쓴 버전)" : ""}
                       </option>
                     ))}
                 </optgroup>

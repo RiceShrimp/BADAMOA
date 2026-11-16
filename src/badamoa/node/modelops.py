@@ -75,9 +75,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             summary = build(items, header["classes"], header["locations"], work / "data", options)
             split = params.get("split") or "val"
             if not summary["items"].get(split):
-                raise RuntimeError(f"이 릴리스에는 {split} split의 이미지가 없습니다.")
+                raise RuntimeError(f"이 버전에는 {split} split의 이미지가 없습니다.")
             name = f"{header['dataset']} {header['version']}"
-            print(f"릴리스 {name} 의 {split} split {summary['items'][split]:,}장으로 평가합니다.")
+            print(f"{name} 버전의 {split} split {summary['items'][split]:,}장으로 평가합니다.")
             config.update(data=summary["data_yaml"], data_dir=str(work / "data"), split=split)
         elif action == "predict":
             source = work / "inputs"
