@@ -69,6 +69,8 @@ class Node(Base):
     agent_version: Mapped[str] = mapped_column(String(32), default="")
     is_local: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # GPU indices kept for people: BADAMOA never places a job on them
+    reserved_gpus: Mapped[list[int]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -125,6 +127,26 @@ class NodeMetric(Base):
     res: Mapped[str] = mapped_column(String(4))  # 1m | 10m | 1h
     ts: Mapped[datetime] = mapped_column(DateTime)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class GpuSpan(Base):
+    """A stretch of time a person's processes held a GPU (BADAMOA's own jobs are known from the jobs table).
+
+    Written as heartbeats arrive: the open span of the same people is stretched, anything else
+    starts a new one. Kept as long as the coarsest resource history.
+    """
+
+    __tablename__ = "gpu_spans"
+    __table_args__ = (Index("ix_gpu_spans_node_end", "node_id", "ended_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(String(32))
+    gpu_index: Mapped[int] = mapped_column(Integer)
+    who: Mapped[str] = mapped_column(String(255), default="")  # user names, "" when the processes' owner is unknown
+    programs: Mapped[str] = mapped_column(String(255), default="")  # process names
+    memory_mb: Mapped[int] = mapped_column(Integer, default=0)  # the most it held
+    started_at: Mapped[datetime] = mapped_column(DateTime)
+    ended_at: Mapped[datetime] = mapped_column(DateTime)
 
 
 class AuditLog(Base):

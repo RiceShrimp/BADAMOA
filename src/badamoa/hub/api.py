@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import resources, services
+from . import gpus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, current_user, db_session, get_hub, public_base_url
 from .install import join_commands
@@ -160,6 +160,25 @@ class NodePatch(BaseModel):
     roles: list[str] | None = None
     enabled: bool | None = None
     labels: dict[str, Any] | None = None
+    reserved_gpus: list[int] | None = None  # GPU indices kept for people
+
+
+@router.get("/gpu-board")
+def gpu_board(_: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)) -> dict:
+    """Every GPU of every server with what holds it, and the jobs waiting for one."""
+    return gpus.board(db, hub.settings)
+
+
+@router.get("/nodes/{node_id}/timeline")
+def node_timeline(
+    node_id: str,
+    range: str = "24h",
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """One server's GPUs over time: utilization, and the BADAMOA jobs and people that held each."""
+    return gpus.timeline(db, hub.settings, services.get_node(db, node_id), range)
 
 
 @router.patch("/nodes/{node_id}")

@@ -114,6 +114,9 @@ def test_mcp_tools_drive_a_job_end_to_end(hub, node):
 
     nodes = call("list_nodes")["structuredContent"]["result"]
     assert nodes[0]["name"] == "test-node" and nodes[0]["status"] == "online"
+    board = call("get_gpu_board")["structuredContent"]
+    assert board["nodes"][0]["name"] == "test-node" and "waiting" in board
+    assert tools["get_gpu_board"]["annotations"]["readOnlyHint"] is True
 
     job = call("run_job", {"type": "system.info"})["structuredContent"]
     assert job["created_via"] == "mcp"

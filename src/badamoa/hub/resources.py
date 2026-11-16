@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .config import HubSettings
 from .db import iso, utcnow
-from .models import Job, Node, NodeMetric
+from .models import GpuSpan, Job, Node, NodeMetric
 
 RESOLUTIONS = {"1m": 60, "10m": 600, "1h": 3600}
 RETENTION = {"1m": timedelta(hours=24), "10m": timedelta(days=7), "1h": timedelta(days=30)}
@@ -177,6 +177,8 @@ def prune(db: Session, now: datetime | None = None) -> int:
     for res, keep in RETENTION.items():
         result = db.execute(delete(NodeMetric).where(NodeMetric.res == res, NodeMetric.ts < now - keep))
         removed += result.rowcount or 0
+    oldest = now - max(RETENTION.values())
+    removed += db.execute(delete(GpuSpan).where(GpuSpan.ended_at < oldest)).rowcount or 0
     return removed
 
 
@@ -220,8 +222,10 @@ def assignments(db: Session) -> dict[str, dict[int, str]]:
 
 
 def gpu_states(node: Node, settings: HubSettings, assigned: dict[int, str] | None = None) -> list[dict[str, Any]]:
-    """State of every GPU on a node: ``job`` (reserved by BADAMOA), ``busy`` (someone else), ``free``."""
+    """State of every GPU on a node: ``job`` (a BADAMOA job has it), ``busy`` (someone else is using it),
+    ``reserved`` (kept for people, idle now) or ``free``."""
     assigned = assigned or {}
+    kept = set(node.reserved_gpus or [])
     live = {g.get("index"): g for g in (node.metrics or {}).get("gpus") or []}
     states = []
     for gpu in (node.info or {}).get("gpus") or []:
@@ -234,6 +238,8 @@ def gpu_states(node: Node, settings: HubSettings, assigned: dict[int, str] | Non
             state = "job"
         elif memory_pct >= settings.gpu_busy_memory_pct or util >= settings.gpu_busy_util_pct:
             state = "busy"
+        elif index in kept:
+            state = "reserved"
         else:
             state = "free"
         states.append(
@@ -243,9 +249,44 @@ def gpu_states(node: Node, settings: HubSettings, assigned: dict[int, str] | Non
                 "job_id": assigned.get(index),
                 "users": now.get("users") or [],
                 "memory_total_mb": total,
+                "reserved": index in kept,
             }
         )
     return states
+
+
+SPAN_GAP_S = 180  # a person's use continues across a missed heartbeat or two
+SPAN_WRITE_S = 20  # how often an open span's end is moved forward
+
+
+def record_people(db: Session, node: Node, assigned: dict[int, str] | None, now: datetime) -> None:
+    """Note who holds each GPU outside BADAMOA's own jobs, as spans of time (see ``GpuSpan``)."""
+    assigned = assigned or {}
+    for gpu in (node.metrics or {}).get("gpus") or []:
+        index = gpu.get("index")
+        processes = gpu.get("processes") or []
+        if index is None or index in assigned or not processes:
+            continue
+        who = ", ".join(gpu.get("users") or [])[:255]
+        programs = ", ".join(sorted({str(p.get("name")) for p in processes if p.get("name")}))[:255]
+        memory = int(sum(p.get("memory_mb") or 0 for p in processes))
+        span = db.scalar(
+            select(GpuSpan)
+            .where(GpuSpan.node_id == node.id, GpuSpan.gpu_index == index)
+            .where(GpuSpan.ended_at >= now - timedelta(seconds=SPAN_GAP_S))
+            .order_by(GpuSpan.ended_at.desc())
+            .limit(1)
+        )
+        if span is not None and span.who == who:
+            span.memory_mb = max(span.memory_mb or 0, memory)
+            if programs and programs not in span.programs:
+                span.programs = ", ".join(sorted(set(filter(None, (span.programs + ", " + programs).split(", ")))))[:255]
+            if (now - span.ended_at).total_seconds() >= SPAN_WRITE_S:
+                span.ended_at = now
+            continue
+        span = GpuSpan(node_id=node.id, gpu_index=index, who=who, programs=programs, memory_mb=memory)
+        span.started_at = span.ended_at = now
+        db.add(span)
 
 
 def free_gpus(

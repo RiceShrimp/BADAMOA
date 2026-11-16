@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { LineChart, type Series } from "./Chart";
+import { GpuTimeline } from "./GpuTimeline";
 import { type MetricHistory, type NodeDetailInfo, api } from "./api";
 import { Badge, Icon, Meter, STATUS_LABEL, Stat, duration, gb, timeAgo, usePolling } from "./ui";
 
@@ -26,6 +27,7 @@ function size(gbValue?: number | null): string {
 
 function occupant(state: NodeDetailInfo["gpu_states"][number] | undefined): string {
   if (!state || state.state === "free") return "비어 있음";
+  if (state.state === "reserved") return "사람 전용 (비어 있음)";
   if (state.state === "job") return "BADAMOA 작업";
   return state.users.length ? state.users.join(", ") : "다른 프로세스";
 }
@@ -101,6 +103,36 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
         </div>
       </div>
 
+      <div className="now-line">
+        <span>
+          지금 <strong>CPU {Math.round(m.cpu_pct ?? 0)}%</strong>
+        </span>
+        <span>
+          <strong>RAM {memPct ?? "–"}%</strong> ({gb(m.memory_used_mb)} / {gb(m.memory_total_mb)})
+        </span>
+        {gpuTotal > 0 && (
+          <span>
+            GPU 메모리 <strong>{(gpuUsed / 1024).toFixed(1)}</strong> / {Math.round(gpuTotal / 1024)} GB
+          </span>
+        )}
+        {totalPower != null && <span>전력 {Math.round(totalPower)} W</span>}
+        <span>업타임 {uptime(m.uptime_s)}</span>
+        {(m.disks ?? [])
+          .filter((d) => d.pct >= 90 || ((forecast[d.mount]?.days_until_full ?? 999) <= 14))
+          .map((d) => (
+            <span key={d.mount} className="bad-text">
+              {d.mount} {Math.round(d.pct)}%
+              {forecast[d.mount]?.days_until_full != null ? ` · ${forecast[d.mount].days_until_full}일 뒤 가득 참` : ""}
+            </span>
+          ))}
+      </div>
+
+      <GpuTimeline nodeId={nodeId} />
+
+      <details className="node-more">
+        <summary>
+          자세한 그래프와 표 <span className="muted small">(CPU · 메모리 · GPU · 전력 · 디스크 · 사용자 · 로그인 세션)</span>
+        </summary>
       <div className="stats five">
         <Stat
           icon="chip"
@@ -383,6 +415,8 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
           </table>
         </section>
       </div>
+
+      </details>
 
       <section className="card table-wrap">
         <div className="card-head">

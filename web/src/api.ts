@@ -94,9 +94,10 @@ export interface GpuMetric {
 
 export interface GpuState {
   index: number;
-  state: "job" | "busy" | "free";
+  state: "job" | "busy" | "free" | "reserved";
   job_id: string | null;
   users: string[];
+  reserved?: boolean; // kept for people: no job is sent to it
 }
 
 export interface DiskMetric {

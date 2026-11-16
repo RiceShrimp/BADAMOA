@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, lineage, registry, resources, services, sweeps, training
+from . import catalog, gpus, lineage, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -125,6 +125,17 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         user_of(ctx)
         with hub.db.session() as db:
             return services.node_view(db, hub.settings, services.get_node(db, node_id))
+
+    @mcp.tool(title="GPU 자리표", annotations=READ_ONLY)
+    @guarded
+    def get_gpu_board(ctx: Context) -> dict[str, Any]:
+        """모든 서버의 GPU를 한 번에: GPU마다 state(free · job · busy · reserved · offline)와 주인
+        (BADAMOA 실행의 이름 · epoch · 남은 초 eta_s / 사람의 사용자 · 프로그램), 메모리 · 사용률.
+        대기 중인 작업과 그 이유, 가장 먼저 끝날 학습(next_free)도 함께. "지금 어디서 돌릴 수 있나"를 볼 때 씁니다.
+        """
+        user_of(ctx)
+        with hub.db.session() as db:
+            return gpus.board(db, hub.settings)
 
     @mcp.tool(title="노드 자원 이력", annotations=READ_ONLY)
     @guarded

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Sparkline } from "./Chart";
-import { type GpuState, type Job, type JoinToken, type MetricHistory, type NodeInfo, api } from "./api";
-import { Badge, CopyBlock, Icon, Meter, Modal, STATUS_LABEL, Stat, gb, timeAgo, usePolling } from "./ui";
+import "./nodes.css";
+import { type JoinToken, api } from "./api";
+import { CopyBlock, Icon, Modal, gb, timeAgo, usePolling } from "./ui";
 
 const ROLES = [
   { id: "compute", label: "학습·오토라벨" },
@@ -9,27 +9,81 @@ const ROLES = [
   { id: "inference", label: "추론" },
 ];
 
-function occupantLabel(state: GpuState | undefined, jobs: Job[] | null): string {
-  if (!state || state.state === "free") return "비어 있음";
-  if (state.state === "job") {
-    const job = jobs?.find((j) => j.id === state.job_id);
-    return job ? `작업: ${job.title}` : "BADAMOA 작업";
-  }
-  return state.users.length ? state.users.join(", ") : "다른 프로세스";
+// ---- what the Hub sends (/api/gpu-board) ----------------------------------------------------
+
+interface Occupant {
+  kind: "job" | "person";
+  job_id?: string;
+  label?: string;
+  href?: string;
+  epoch?: number;
+  epochs?: number;
+  eta_s?: number;
+  who?: string;
+  programs?: string;
+  light?: boolean; // a person's light use beside which a job can still run
 }
 
-export function Nodes({ isAdmin }: { isAdmin: boolean }) {
-  const { data: nodes, error, refresh } = usePolling(() => api<NodeInfo[]>("/nodes"), 5000);
-  const { data: running } = usePolling(() => api<Job[]>("/jobs?status=running&limit=100"), 5000);
-  const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<NodeInfo | null>(null);
+interface BoardGpu {
+  index: number;
+  name: string | null;
+  memory_total_mb: number | null;
+  memory_used_mb: number | null;
+  utilization_pct: number | null;
+  temperature_c: number | null;
+  power_w: number | null;
+  state: "free" | "job" | "busy" | "reserved" | "offline";
+  reserved: boolean;
+  occupant: Occupant | null;
+}
 
-  const online = nodes?.filter((n) => n.status === "online") ?? [];
-  const states = online.flatMap((n) => n.gpu_states);
-  const inUse = states.filter((s) => s.state !== "free").length;
-  const utils = online.flatMap((n) => (n.metrics.gpus ?? []).map((g) => g.utilization_pct ?? 0));
-  const avgUtil = utils.length ? Math.round(utils.reduce((a, b) => a + b, 0) / utils.length) : null;
-  const workers = [...new Set(online.flatMap((n) => (n.metrics.users ?? []).filter((u) => u.active).map((u) => u.user)))];
+export interface BoardNode {
+  id: string;
+  name: string;
+  status: "online" | "offline" | "disabled";
+  enabled: boolean;
+  is_local: boolean;
+  roles: string[];
+  gpu_name: string | null;
+  cpu_pct: number | null;
+  memory_pct: number | null;
+  disk: { mount: string; pct: number; free_gb: number } | null;
+  last_seen_at: string | null;
+  gpus: BoardGpu[];
+}
+
+interface Board {
+  nodes: BoardNode[];
+  counts: { free: number; job: number; busy: number; reserved: number; offline: number; waiting: number };
+  waiting: { job_id: string; label: string; href: string; gpus: number; min_vram_mb: number; reason: string }[];
+  next_free: { node: string; label: string; eta_s: number; gpus: number[] } | null;
+}
+
+export function duration(seconds: number): string {
+  if (seconds < 90) return "1분 안에";
+  if (seconds < 3600) return `약 ${Math.round(seconds / 60)}분 뒤`;
+  const hours = seconds / 3600;
+  return hours < 24 ? `약 ${hours.toFixed(hours < 10 ? 1 : 0)}시간 뒤` : `약 ${Math.round(hours / 24)}일 뒤`;
+}
+
+/** "13분 남음": short enough for a GPU tile. */
+function left(seconds: number): string {
+  if (seconds < 90) return "곧 끝";
+  if (seconds < 3600) return `${Math.round(seconds / 60)}분 남음`;
+  const hours = seconds / 3600;
+  return hours < 24 ? `${hours.toFixed(hours < 10 ? 1 : 0)}시간 남음` : `${Math.round(hours / 24)}일 남음`;
+}
+
+/**
+ * Every GPU of every server on one board: what holds it (a BADAMOA run, a person, nobody, kept for
+ * people) and how full its memory is, the height of the fill. Above it, the jobs waiting for a GPU.
+ */
+export function Nodes({ isAdmin }: { isAdmin: boolean }) {
+  const { data: board, error, refresh } = usePolling(() => api<Board>("/gpu-board"), 5000);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<BoardNode | null>(null);
+  const c = board?.counts;
+  const total = c ? c.free + c.job + c.busy + c.reserved : 0;
 
   return (
     <>
@@ -37,8 +91,8 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
         <div>
           <h1>노드</h1>
           <p className="muted">
-            Hub에 연결된 서버입니다. 다른 사람이 쓰고 있는 GPU에는 작업을 배정하지 않습니다. 이름을 누르면 자원 이력을 볼 수
-            있습니다.
+            연결된 서버의 GPU를 한 판에 보여 줍니다. 칸이 차오른 높이는 GPU 메모리이고, 사람이 쓰는 GPU와 사람 전용으로 둔
+            GPU에는 작업을 보내지 않습니다.
           </p>
         </div>
         {isAdmin && (
@@ -49,57 +103,85 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
         )}
       </div>
 
-      <div className="stats">
-        <Stat
-          icon="server"
-          label="온라인 서버"
-          value={
-            <>
-              {online.length}
-              <small> / {nodes?.length ?? 0}</small>
-            </>
-          }
-          sub={nodes && online.length === nodes.length ? "모두 정상" : "오프라인 서버 있음"}
-        />
-        <Stat
-          icon="chip"
-          label="사용 중인 GPU"
-          value={
-            <>
-              {inUse}
-              <small> / {states.length}</small>
-            </>
-          }
-          sub={`${states.length - inUse}개 여유`}
-        />
-        <Stat
-          icon="activity"
-          label="평균 GPU 사용률"
-          value={avgUtil == null ? "–" : <>{avgUtil}<small>%</small></>}
-          sub="온라인 서버 전체 GPU 기준"
-        />
-        <Stat
-          icon="bot"
-          label="작업 중인 사용자"
-          value={<>{workers.length}<small>명</small></>}
-          sub={workers.length ? workers.slice(0, 4).join(", ") + (workers.length > 4 ? " 외" : "") : "없음"}
-        />
-      </div>
+      {c && (
+        <div className="board-counts">
+          <span className="board-count">
+            빈 GPU <strong>{c.free}</strong> / {total}
+          </span>
+          <span className="board-count">
+            <i className="swatch job" />
+            BADAMOA {c.job}
+          </span>
+          <span className="board-count">
+            <i className="swatch busy" />
+            사람 {c.busy}
+          </span>
+          {c.reserved > 0 && (
+            <span className="board-count">
+              <i className="swatch reserved" />
+              사람 전용 {c.reserved}
+            </span>
+          )}
+          {c.offline > 0 && <span className="board-count">연결 끊김 {c.offline}</span>}
+          <span className="board-count">대기 {c.waiting}</span>
+        </div>
+      )}
+
+      {board && board.waiting.length > 0 && (
+        <div className="board-queue">
+          {board.waiting.slice(0, 3).map((w) => (
+            <div key={w.job_id} className="queue-row">
+              <Icon name="clock" size={14} />
+              <span>
+                대기 · <a href={w.href}>{w.label}</a> · GPU {w.gpus}개
+                {w.min_vram_mb ? ` · ${gb(w.min_vram_mb)} 이상` : ""}
+              </span>
+              <span className="muted">{w.reason}</span>
+            </div>
+          ))}
+          {board.waiting.length > 3 && <div className="muted small">외 {board.waiting.length - 3}개 · 작업 화면에서 확인</div>}
+          {board.next_free && (
+            <div className="muted small">
+              가장 먼저 끝날 학습: {board.next_free.label} ({board.next_free.node} GPU {board.next_free.gpus.join(", ")}){" "}
+              {duration(board.next_free.eta_s)}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && <div className="error">{error}</div>}
-      {nodes && nodes.length === 0 && <div className="card empty">연결된 노드가 없습니다.</div>}
-      <div className="grid">
-        {nodes?.map((node) => (
-          <NodeCard key={node.id} node={node} running={running} isAdmin={isAdmin} onEdit={() => setEditing(node)} />
-        ))}
-        {isAdmin && nodes && (
-          <button className="card add-card" onClick={() => setAdding(true)}>
-            <Icon name="plus" size={20} />
-            <strong>서버 추가</strong>
-            <span className="muted small">Ubuntu · Windows · Jetson — 한 줄 명령으로 연결</span>
-          </button>
-        )}
-      </div>
+      {board && board.nodes.length === 0 && <div className="card empty">연결된 노드가 없습니다.</div>}
+      {board && board.nodes.length > 0 && (
+        <section className="card board">
+          {board.nodes.map((node) => (
+            <ServerRow key={node.id} node={node} isAdmin={isAdmin} onEdit={() => setEditing(node)} />
+          ))}
+          {isAdmin && (
+            <button className="board-add" onClick={() => setAdding(true)}>
+              <Icon name="plus" size={14} />
+              서버 추가 <span className="muted small">Ubuntu · Windows — 한 줄 명령으로 연결</span>
+            </button>
+          )}
+        </section>
+      )}
+      {board && board.nodes.length > 0 && (
+        <div className="board-legend muted small">
+          <span>
+            <i className="swatch job" /> BADAMOA 실행
+          </span>
+          <span>
+            <i className="swatch busy" /> 사람이 쓰는 중
+          </span>
+          <span>
+            <i className="swatch free" /> 비어 있음
+          </span>
+          <span>
+            <i className="swatch reserved" /> 사람 전용 (작업을 보내지 않음)
+          </span>
+          <span>칸이 차오른 높이 = GPU 메모리</span>
+        </div>
+      )}
+
       {adding && <AddNode onClose={() => setAdding(false)} />}
       {editing && (
         <EditNode
@@ -114,181 +196,102 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function NodeCard({
-  node,
-  running,
-  isAdmin,
-  onEdit,
-}: {
-  node: NodeInfo;
-  running: Job[] | null;
-  isAdmin: boolean;
-  onEdit: () => void;
-}) {
-  const { data: trend } = usePolling(() => api<MetricHistory>(`/nodes/${node.id}/metrics?range=1h`), 60000, [node.id]);
-  const m = node.metrics;
-  const live = m.gpus ?? [];
-  const disks = [...(m.disks ?? [])].sort((a, b) => b.pct - a.pct);
-  const busy = running?.filter((j) => j.node_id === node.id) ?? [];
-  const workers = (m.users ?? []).filter((u) => u.active);
-
-  const runInfo = async () => {
-    await api("/jobs", { body: { type: "system.info", node_id: node.id } });
-    window.location.hash = "#/jobs";
-  };
-
+function ServerRow({ node, isAdmin, onEdit }: { node: BoardNode; isAdmin: boolean; onEdit: () => void }) {
+  const online = node.status === "online";
+  const facts = [
+    node.cpu_pct != null ? `CPU ${Math.round(node.cpu_pct)}%` : null,
+    node.memory_pct != null ? `RAM ${node.memory_pct}%` : null,
+  ].filter(Boolean);
+  const diskWarn = node.disk && node.disk.pct >= 90;
   return (
-    <section className="card node">
-      <header>
-        <div className="node-icon">
-          <Icon name="server" size={18} />
+    <div className={`board-row ${online ? "" : "away"}`}>
+      <div className="board-server">
+        <a className="board-name" href={`#/nodes/${node.id}`}>
+          <i className={`dot ${node.status}`} />
+          {node.name}
+        </a>
+        <div className="muted small">
+          {node.gpus.length > 0 ? `${node.gpu_name ?? "GPU"} × ${node.gpus.length}` : "GPU 없음"}
+          {node.is_local ? " · Hub" : ""}
         </div>
-        <div className="node-title">
-          <h3>
-            <a className="node-link" href={`#/nodes/${node.id}`}>
-              {node.name}
-            </a>
-          </h3>
-          <div className="muted small">
-            {node.os || "?"} · {node.info.cpu_count ?? "?"}코어 · {gb(node.info.memory_total_mb)} · GPU {node.info.gpus.length}개
-          </div>
-        </div>
-        <Badge kind={node.status}>{STATUS_LABEL[node.status]}</Badge>
-      </header>
-
-      <div className="tags">
-        {node.is_local && <span className="tag accent">Hub 머신</span>}
-        {node.roles.map((r) => (
-          <span className="tag" key={r}>
-            {ROLES.find((x) => x.id === r)?.label ?? r}
-          </span>
-        ))}
-        {!node.enabled && <span className="tag">작업 받지 않음</span>}
-      </div>
-
-      <div className="resources">
-        <div className="resource">
-          <span>
-            CPU
-            {(m.cpu_temp_c != null || m.cpu_power_w != null) && (
-              <small>
-                {[m.cpu_temp_c != null ? `${m.cpu_temp_c}°C` : null, m.cpu_power_w != null ? `${m.cpu_power_w}W` : null]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </small>
-            )}
-          </span>
-          <div>
-            <Meter value={m.cpu_pct} max={100} />
-            {m.load && <div className="muted small">load {m.load[0]}</div>}
-          </div>
-        </div>
-        <div className="resource">
-          <span>RAM</span>
-          <div>
-            <Meter value={m.memory_used_mb} max={m.memory_total_mb} />
-            <div className="muted small">
-              {((m.memory_used_mb ?? 0) / 1024).toFixed(1)} / {gb(m.memory_total_mb)}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {node.info.gpus.length > 0 && (
-        <div className="resources gpu-block">
-          <div className="block-head">
-            <span>{node.info.gpus[0].name}</span>
-            <span className="muted small">사용률 · 메모리</span>
-          </div>
-          {node.info.gpus.map((gpu) => {
-            const g = live.find((x) => x.index === gpu.index);
-            const state = node.gpu_states.find((s) => s.index === gpu.index);
-            return (
-              <div className="resource" key={gpu.index}>
-                <span>
-                  GPU {gpu.index}
-                  <small>
-                    {[g?.temperature_c != null ? `${g.temperature_c}°C` : null, g?.power_w != null ? `${g.power_w}W` : null]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </small>
-                </span>
-                <div>
-                  <Meter value={g?.utilization_pct} max={100} />
-                  <Meter value={g?.memory_used_mb} max={g?.memory_total_mb} />
-                  <div className={`occupant ${state?.state ?? "free"}`}>
-                    <i />
-                    {occupantLabel(state, running)}
-                    <span className="muted small">
-                      {g ? `${((g.memory_used_mb ?? 0) / 1024).toFixed(1)} / ${gb(g.memory_total_mb)}` : ""}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {disks.length > 0 && (
-        <div className="resources gpu-block">
-          <div className="block-head">
-            <span>디스크</span>
-            <span className="muted small">남은 용량 · 전체</span>
-          </div>
-          {disks.slice(0, 3).map((d) => (
-            <div className="resource" key={d.mount}>
-              <span className="mono small-key">{d.mount}</span>
-              <div className="disk-row">
-                <Meter value={d.pct} max={100} />
-                <span className="muted small">
-                  <strong>{Math.round(d.free_gb)} GB</strong> / {Math.round(d.total_gb)} GB
-                </span>
-              </div>
-            </div>
-          ))}
-          {disks.length > 3 && <div className="muted small">외 {disks.length - 3}개 (상세 화면에서 확인)</div>}
-        </div>
-      )}
-
-      <div className="trend">
-        <div>
-          <div className="small">
-            {busy.length > 0 ? <strong>작업 {busy.length}개 실행 중</strong> : <span className="muted">작업 중 없음</span>}
-          </div>
-          <div className="muted small">{workers.length ? `사용자 ${workers.map((u) => u.user).join(", ")}` : "접속 사용자 작업 없음"}</div>
-        </div>
-        {trend && trend.timestamps.length > 1 && (
-          <div className="trend-plot">
-            <Sparkline lines={[trend.series.cpu?.avg ?? [], trend.series.gpu_util?.avg ?? []]} />
-            <div className="trend-legend">
-              <span>
-                <i style={{ background: "var(--series-1)" }} />
-                CPU
-              </span>
-              <span>
-                <i style={{ background: "var(--series-2)" }} />
-                GPU 평균
-              </span>
-              <span className="muted">최근 1시간</span>
-            </div>
+        {online ? (
+          <div className="muted small">{facts.join(" · ")}</div>
+        ) : (
+          <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
+        )}
+        {online && !node.enabled && <div className="small warn-text">작업 받지 않음</div>}
+        {diskWarn && (
+          <div className="small bad-text">
+            {node.disk!.mount} {Math.round(node.disk!.pct)}% · {Math.round(node.disk!.free_gb)} GB 남음
           </div>
         )}
-      </div>
-
-      <footer>
-        <span className="muted small">마지막 응답 {timeAgo(node.last_seen_at)}</span>
-        <span className="actions">
-          <a className="btn" href={`#/nodes/${node.id}`}>
-            자원 이력
-          </a>
-          <button onClick={runInfo} disabled={node.status !== "online"}>
-            시스템 점검
+        {isAdmin && (
+          <button className="link small" onClick={onEdit}>
+            설정
           </button>
-          {isAdmin && <button onClick={onEdit}>설정</button>}
-        </span>
-      </footer>
-    </section>
+        )}
+      </div>
+      <div className="board-gpus">
+        {node.gpus.length === 0 && <div className="muted small board-nogpu">이 서버는 CPU 작업만 받습니다.</div>}
+        {node.gpus.map((gpu) => (
+          <GpuTile key={gpu.index} gpu={gpu} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GpuTile({ gpu }: { gpu: BoardGpu }) {
+  const used = gpu.memory_used_mb ?? 0;
+  const level = gpu.memory_total_mb ? Math.min(100, (used / gpu.memory_total_mb) * 100) : 0;
+  const o = gpu.occupant;
+  const kind = gpu.state === "job" ? "job" : gpu.state === "busy" ? "busy" : gpu.state === "reserved" ? "reserved" : gpu.state === "offline" ? "offline" : "free";
+  const hot = (gpu.temperature_c ?? 0) >= 83;
+  const detail = [
+    gpu.utilization_pct != null ? `사용률 ${Math.round(gpu.utilization_pct)}%` : null,
+    gpu.memory_total_mb ? `메모리 ${(used / 1024).toFixed(1)} / ${gb(gpu.memory_total_mb)}` : null,
+    gpu.temperature_c != null ? `${gpu.temperature_c}°C` : null,
+    gpu.power_w != null ? `${Math.round(gpu.power_w)} W` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div className={`gpu-tile ${kind}`} title={detail}>
+      {kind !== "offline" && <div className="gpu-level" style={{ height: `${level}%` }} />}
+      <div className="gpu-body">
+        <div className="gpu-head">
+          <span>{gpu.index}</span>
+          {gpu.utilization_pct != null && kind !== "free" && <span>{Math.round(gpu.utilization_pct)}%</span>}
+          {hot && <span className="bad-text">{gpu.temperature_c}°C</span>}
+        </div>
+        {kind === "job" && o && (
+          <>
+            <a className="gpu-who" href={o.href}>
+              {o.label}
+            </a>
+            <div className="gpu-what">
+              {o.epochs ? `epoch ${o.epoch ?? 0}/${o.epochs}` : "실행 중"}
+              {o.eta_s != null ? ` · ${left(o.eta_s)}` : ""}
+            </div>
+          </>
+        )}
+        {kind === "busy" && (
+          <>
+            <div className="gpu-who">{o?.who || "알 수 없는 사용자"}</div>
+            <div className="gpu-what">{o?.programs || "다른 프로세스"}</div>
+          </>
+        )}
+        {(kind === "free" || kind === "reserved") && (
+          <>
+            <div className="gpu-who quiet">{kind === "reserved" ? "사람 전용" : "비어 있음"}</div>
+            <div className="gpu-what">
+              {o?.light ? `${o.who || "누군가"} ${(used / 1024).toFixed(1)} GB 사용 중` : gb(gpu.memory_total_mb)}
+            </div>
+          </>
+        )}
+        {kind === "offline" && <div className="gpu-who quiet">연결 끊김</div>}
+      </div>
+    </div>
   );
 }
 
@@ -355,10 +358,11 @@ function AddNode({ onClose }: { onClose: () => void }) {
   );
 }
 
-function EditNode({ node, onClose }: { node: NodeInfo; onClose: () => void }) {
+function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
   const [name, setName] = useState(node.name);
   const [roles, setRoles] = useState(node.roles);
   const [enabled, setEnabled] = useState(node.enabled);
+  const [kept, setKept] = useState<number[]>(node.gpus.filter((g) => g.reserved).map((g) => g.index));
   const [error, setError] = useState<string | null>(null);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -384,6 +388,24 @@ function EditNode({ node, onClose }: { node: NodeInfo; onClose: () => void }) {
           작업 받기 (끄면 새 작업을 배정하지 않습니다)
         </label>
       </div>
+      {node.gpus.length > 0 && (
+        <>
+          <div className="field-label">사람 전용 GPU</div>
+          <p className="muted small">고른 GPU에는 BADAMOA가 작업을 보내지 않습니다. 사람이 직접 쓰는 자리로 남겨 둘 때 씁니다.</p>
+          <div className="checks">
+            {node.gpus.map((g) => (
+              <label key={g.index}>
+                <input
+                  type="checkbox"
+                  checked={kept.includes(g.index)}
+                  onChange={(e) => setKept(e.target.checked ? [...kept, g.index] : kept.filter((i) => i !== g.index))}
+                />
+                GPU {g.index} · {g.name ?? ""}
+              </label>
+            ))}
+          </div>
+        </>
+      )}
       {error && <div className="error">{error}</div>}
       <div className="modal-actions">
         {!node.is_local && (
@@ -402,7 +424,7 @@ function EditNode({ node, onClose }: { node: NodeInfo; onClose: () => void }) {
         <button
           className="primary"
           disabled={roles.length === 0}
-          onClick={() => run(() => api(`/nodes/${node.id}`, { method: "PATCH", body: { name, roles, enabled } }))}
+          onClick={() => run(() => api(`/nodes/${node.id}`, { method: "PATCH", body: { name, roles, enabled, reserved_gpus: kept } }))}
         >
           저장
         </button>

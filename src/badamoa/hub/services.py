@@ -254,6 +254,7 @@ def heartbeat(db: Session, node: Node, req: HeartbeatRequest) -> list[str]:
     node.metrics = req.metrics
     node.agent_version = req.agent_version
     resources.record(db, node.id, req.metrics, now)
+    resources.record_people(db, node, resources.assignments(db).get(node.id), now)
     if req.info:
         node.info = req.info
         node.os = str(req.info.get("os", node.os))
@@ -301,6 +302,7 @@ def serialize_node(
             ],
         },
         "metrics": node.metrics or {},
+        "reserved_gpus": node.reserved_gpus or [],
         "gpu_states": resources.gpu_states(node, settings, assigned),
     }
 
@@ -331,9 +333,13 @@ def update_node(
     roles: list[str] | None = None,
     enabled: bool | None = None,
     labels: dict[str, Any] | None = None,
+    reserved_gpus: list[int] | None = None,
 ) -> Node:
     require_admin(user)
     node = get_node(db, node_id)
+    if reserved_gpus is not None:
+        known = {g.get("index") for g in (node.info or {}).get("gpus") or []}
+        node.reserved_gpus = sorted({int(i) for i in reserved_gpus if int(i) in known})
     if name is not None:
         node.name = name.strip()[:128] or node.name
     if roles is not None:
@@ -342,7 +348,7 @@ def update_node(
         node.enabled = enabled
     if labels is not None:
         node.labels = labels
-    audit(db, user.id, "api", "node.update", node.id, name=name, roles=roles, enabled=enabled)
+    audit(db, user.id, "api", "node.update", node.id, name=name, roles=roles, enabled=enabled, reserved=reserved_gpus)
     return node
 
 
@@ -578,12 +584,15 @@ def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
                 return "빈 GPU가 있어 곧 배정됩니다."
             users = sorted({u for g in states if g["state"] == "busy" for u in g["users"]})
             by_jobs = sum(1 for g in states if g["state"] == "job")
+            kept = sum(1 for g in states if g["state"] == "reserved")
             who = ", ".join(users) if users else ("다른 프로세스" if any(g["state"] == "busy" for g in states) else "")
             parts = [f"빈 GPU {len(free)}/{len(states)}개"]
             if who:
                 parts.append(f"사용 중: {who}")
             if by_jobs:
                 parts.append(f"BADAMOA 작업 {by_jobs}개")
+            if kept:
+                parts.append(f"사람 전용 {kept}개")
             details.append(f"{node.name} — {' · '.join(parts)}")
         return f"빈 GPU가 부족합니다 (필요 {need}개). " + " / ".join(details)
     return "노드가 작업을 가져가기를 기다리는 중입니다."
