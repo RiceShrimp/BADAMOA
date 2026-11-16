@@ -693,6 +693,55 @@ tr.current-row td {
   min-width: 0;
 }
 
+/* ---- picking a folder on a node ---- */
+.folder-browser .browser-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.folder-browser .browser-head .path {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.browser-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.browser-tools .spacer {
+  flex: 1;
+}
+.browser-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  height: min(360px, 50vh);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.browser-list li > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  padding: 6px 8px;
+  text-align: left;
+}
+.browser-list li > button:hover {
+  background: var(--surface-2);
+}
+.browser-list .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---- settings: accounts, GPU rule ---- */
 a.who {
   color: inherit;

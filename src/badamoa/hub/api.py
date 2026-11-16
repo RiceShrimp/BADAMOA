@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import address, admin, gpus, prometheus, resources, services
+from . import address, admin, asks, gpus, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands, node_wheel
@@ -197,6 +197,27 @@ def get_node(
     return data
 
 
+@router.get("/nodes/{node_id}/browse")
+def browse_node(
+    node_id: str,
+    path: str = "",
+    hidden: bool = False,
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """A node's folders (names, image counts, the dataset layout they look like), asked of the node itself."""
+    node = services.get_node(db, node_id)
+    if services.node_status(node, hub.settings) == "offline":
+        raise services.ServiceError(409, "노드가 꺼져 있어 폴더를 볼 수 없습니다. 경로를 직접 적으세요.")
+    if not asks.answers_questions(node.agent_version or ""):
+        raise services.ServiceError(
+            409, f"이 노드의 프로그램({node.agent_version})은 폴더 보기를 모릅니다. 노드 화면에서 업데이트하세요."
+        )
+    db.close()  # nothing more from the database while waiting for the node
+    return asks.ask(node.id, "browse", {"path": path, "hidden": hidden})
+
+
 @router.get("/nodes/{node_id}/metrics")
 def node_metrics(
     node_id: str,
@@ -238,6 +259,15 @@ class NodePatch(BaseModel):
     enabled: bool | None = None
     labels: dict[str, Any] | None = None
     reserved_gpus: list[int] | None = None  # GPU indices kept for people
+
+
+@router.get("/node-update-commands")
+def node_update_commands(request: Request, _: User = Depends(admin_user), hub: Hub = Depends(get_hub)) -> dict:
+    """For nodes from before they updated themselves: the one-time update, the registration stays."""
+    from .install import update_commands
+
+    hub_url = address.resolve(request, hub.settings)[0]
+    return {"hub_url": hub_url, "version": services.HUB_VERSION, "commands": update_commands(hub_url)}
 
 
 @router.get("/gpu-board")

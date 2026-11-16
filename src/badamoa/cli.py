@@ -210,11 +210,16 @@ def node_join(
     token: Annotated[str, typer.Option(help="Hub UI의 '노드 추가'에서 받은 join token")],
     name: Annotated[str | None, typer.Option(help="노드 표시 이름 (기본: 호스트명)")] = None,
     home: HomeOpt = None,
+    rejoin: Annotated[bool, typer.Option(help="이미 등록되어 있어도 새 노드로 다시 등록")] = False,
 ) -> None:
-    """이 머신을 Hub에 노드로 등록합니다."""
+    """이 머신을 Hub에 노드로 등록합니다. 이미 그 Hub에 등록된 머신이면 등록은 그대로 둡니다."""
     from badamoa.node import agent
 
     node_dir = agent.node_home(home)
+    existing = None if rejoin else agent.already_joined(hub, node_dir)
+    if existing is not None:
+        typer.secho(f"이미 이 Hub에 등록된 노드입니다: node_id={existing.node_id}. 등록은 그대로 둡니다.", fg="green")
+        return
     try:
         config = agent.join(hub, token, node_dir, name)
     except Exception as e:  # noqa: BLE001

@@ -10,6 +10,7 @@ import {
   rememberProject,
   useFolders,
 } from "./DataBoard";
+import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ItemViewer } from "./ItemViewer";
 import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
@@ -615,6 +616,9 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
   }, [job]);
 
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
+  const [browsing, setBrowsing] = useState(false);
+  const [layout, setLayout] = useState(""); // what the picked folder looks like
+  const node = nodes.find((n) => n.id === form.node_id);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -630,7 +634,20 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
 
   return (
     <Modal title="데이터셋 가져오기" onClose={onClose}>
-      {!job ? (
+      {!job && browsing && node ? (
+        <FolderBrowser
+          nodeId={node.id}
+          nodeName={node.name}
+          start={form.path}
+          onCancel={() => setBrowsing(false)}
+          onPick={(path, guess) => {
+            const name = path.split(/[\\/]/).filter(Boolean).pop() ?? "";
+            setForm({ ...form, path, dataset: form.dataset || name.toLowerCase() });
+            setLayout(guess);
+            setBrowsing(false);
+          }}
+        />
+      ) : !job ? (
         <form onSubmit={submit}>
           <p className="muted">
             노드에 있는 폴더를 그대로 등록합니다. 이미지는 복사하지 않고, 해시·크기·라벨·썸네일만 Hub에 저장합니다.
@@ -645,10 +662,27 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
               ))}
             </select>
           </label>
-          <label>
-            폴더 경로 (그 노드에서의 경로)
-            <input value={form.path} onChange={set("path")} required placeholder="/data/street 또는 D:\data\street" className="mono" />
-          </label>
+          <div className="field-label">
+            폴더 경로 <span className="muted small">(그 노드에서의 경로)</span>
+            <div className="input-with-button">
+              <input
+                value={form.path}
+                onChange={(e) => {
+                  setLayout("");
+                  set("path")(e);
+                }}
+                required
+                placeholder="/data/street 또는 D:\data\street"
+                className="mono"
+                aria-label="폴더 경로"
+              />
+              <button type="button" className="small" disabled={!node || node.status !== "online"} onClick={() => setBrowsing(true)}>
+                <Icon name="folder" size={13} /> 찾아보기
+              </button>
+            </div>
+            {layout && <span className="muted small field-hint">{LAYOUT_NAME[layout] ?? layout} 형식으로 보입니다. 형식은 자동 감지로 두면 됩니다.</span>}
+            {node && node.status !== "online" && <span className="muted small field-hint">노드가 꺼져 있어 폴더를 볼 수 없습니다. 경로를 직접 적으세요.</span>}
+          </div>
           <div className="form-row">
             <label>
               데이터셋 이름

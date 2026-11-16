@@ -25,7 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
-from badamoa.node import envs, workdirs
+from badamoa.node import browse, envs, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -63,6 +63,30 @@ class NodeConfig:
 
 def node_home(explicit: str | os.PathLike[str] | None = None) -> Path:
     return component_home("node", explicit)
+
+
+def already_joined(hub_url: str, home: Path) -> NodeConfig | None:
+    """This machine's registration, when the Hub at ``hub_url`` still accepts it (running the install again)."""
+    try:
+        config = NodeConfig.load(home)
+    except (FileNotFoundError, ValueError, TypeError):
+        return None
+    hub_url = hub_url.rstrip("/")
+    try:
+        resp = httpx.post(
+            f"{hub_url}/api/agent/heartbeat",
+            json={"agent_version": __version__, "metrics": {}, "running_job_ids": []},
+            headers={"Authorization": f"Bearer {config.node_token}"},
+            timeout=15,
+        )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None  # deleted on the Hub, or another Hub: join anew
+    if config.hub_url != hub_url:  # the same Hub reached at another address (localhost → its IP)
+        config.hub_url = hub_url
+        config.save(home)
+    return config
 
 
 def join(hub_url: str, token: str, home: Path, name: str | None = None) -> NodeConfig:
@@ -128,6 +152,9 @@ class NodeAgent:
         self._lock = threading.Lock()
         self._running: dict[str, threading.Event] = {}  # job_id -> cancel event
         self._last_sweep = float("-inf")  # when old work folders were last looked at (monotonic)
+        self._updating = False  # moving to the Hub's version: no new jobs meanwhile
+        self._update_tried: dict[str, float] = {}  # version -> when (monotonic), to retry a failed one later
+        self._told_manual = False
         self._sampler = sysinfo.MetricsSampler(str(home))
         self._client = httpx.Client(
             base_url=config.hub_url,
@@ -143,6 +170,7 @@ class NodeAgent:
     def run_forever(self) -> None:
         log.info("node %s → %s", self.config.node_id, self.config.hub_url)
         threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True).start()
+        threading.Thread(target=self._requests_loop, name="requests", daemon=True).start()
         backoff = 1.0
         while not self.stop_event.is_set():
             if self._slots_free() <= 0:
@@ -166,7 +194,7 @@ class NodeAgent:
 
     def _slots_free(self) -> int:
         with self._lock:
-            return self.max_jobs - len(self._running)
+            return 0 if self._updating else self.max_jobs - len(self._running)
 
     # ---- heartbeat -------------------------------------------------------------
 
@@ -192,9 +220,69 @@ class NodeAgent:
                     reply = resp.json()
                     self._request_cancel(reply.get("cancel_job_ids", []))
                     self._maybe_sweep(int(reply.get("workdir_days") or 0))
+                    self._maybe_update(str(reply.get("hub_version") or ""))
             except httpx.HTTPError as e:
                 log.debug("heartbeat failed: %s", e)
             self.stop_event.wait(HEARTBEAT_INTERVAL_S)
+
+    # ---- keeping up with the Hub's version -------------------------------------
+
+    def _maybe_update(self, version: str) -> None:
+        """When the Hub is newer and nothing runs here, install its version and restart (script installs only)."""
+        if not version or not updater.newer(version, __version__):
+            return
+        if time.monotonic() - self._update_tried.get(version, float("-inf")) < 3600:
+            return
+        if updater.layout() is None:
+            if not self._told_manual:
+                self._told_manual = True
+                log.warning("Hub는 %s, 이 노드는 %s입니다. 이 노드는 스스로 업데이트할 수 없습니다.", version, __version__)
+            return
+        with self._lock:
+            if self._running or self._updating:
+                return
+            self._updating = True
+        self._update_tried[version] = time.monotonic()
+        threading.Thread(target=self._update, args=(version,), name="update", daemon=True).start()
+
+    def _update(self, version: str) -> None:
+        log.info("Hub가 %s입니다. 이 노드(%s)를 업데이트합니다.", version, __version__)
+        moved = updater.update(self.config.hub_url, version)  # Linux: does not return when it worked
+        if moved and updater.WINDOWS:
+            self.stop()
+            os._exit(0)  # the helper installs once this process is gone, then starts the node again
+        with self._lock:
+            self._updating = False
+
+    # ---- quick questions from the Hub (a folder listing) ----------------------
+
+    def _requests_loop(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                resp = self._client.post("/api/agent/requests", json={"wait_seconds": CLAIM_WAIT_S})
+                if resp.status_code == 404:  # an older Hub: nothing to ask
+                    self.stop_event.wait(300)
+                    continue
+                if resp.status_code != 200:
+                    self.stop_event.wait(5)
+                    continue
+                for request in resp.json().get("requests", []):
+                    threading.Thread(target=self._answer, args=(request,), name="request", daemon=True).start()
+            except httpx.HTTPError:
+                self.stop_event.wait(5)
+
+    def _answer(self, request: dict[str, Any]) -> None:
+        params = request.get("params") or {}
+        try:
+            if request.get("kind") != "browse":
+                raise ValueError(f"모르는 요청입니다: {request.get('kind')}")
+            body: dict[str, Any] = {"result": browse.listing(str(params.get("path") or ""), bool(params.get("hidden")))}
+        except Exception as e:  # noqa: BLE001 - the person asking gets the reason
+            body = {"error": str(e) or e.__class__.__name__}
+        try:
+            self._client.post(f"/api/agent/requests/{request['id']}", json=body, timeout=15)
+        except httpx.HTTPError as e:
+            log.debug("answer %s failed: %s", request.get("id"), e)
 
     def _maybe_sweep(self, days: int) -> None:
         """Once an hour, with no job running, remove work folders older than the Hub's retention."""

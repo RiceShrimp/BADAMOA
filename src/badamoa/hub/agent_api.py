@@ -7,6 +7,7 @@ from typing import Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import (
@@ -22,7 +23,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import cleanup, registry, services, sweeps
+from . import asks, cleanup, registry, services, sweeps
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -47,6 +48,31 @@ def heartbeat(
     db.commit()
     days = cleanup.get_policy(db)["workdir_days"]
     return HeartbeatResponse(cancel_job_ids=cancel_ids, hub_version=services.HUB_VERSION, workdir_days=days)
+
+
+class QuestionsWait(BaseModel):
+    wait_seconds: float = Field(default=20.0, ge=0, le=60)
+
+
+class Answer(BaseModel):
+    result: Any = None
+    error: str | None = None
+
+
+@router.post("/requests")
+async def questions(body: QuestionsWait, node: Node = Depends(current_node)) -> dict[str, Any]:
+    """Long-poll: the questions the Hub has for this node (a folder listing …), as soon as there are any."""
+    deadline = time.monotonic() + body.wait_seconds
+    while True:
+        waiting = asks.take(node.id)
+        if waiting or time.monotonic() >= deadline:
+            return {"requests": waiting}
+        await anyio.sleep(0.2)
+
+
+@router.post("/requests/{question_id}")
+def answer(question_id: str, body: Answer, _: Node = Depends(current_node)) -> dict[str, bool]:
+    return {"taken": asks.answer(question_id, body.model_dump())}
 
 
 def _claim_once(hub: Hub, token: str) -> dict[str, Any] | None | bool:

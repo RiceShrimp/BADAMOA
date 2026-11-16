@@ -106,6 +106,24 @@ def node_ps1(request: Request, hub: Hub = Depends(get_hub)) -> str:
     return _render("node.ps1", public_base_url(request, hub))
 
 
+@router.get("/node-update.sh", response_class=PlainTextResponse)
+def node_update_sh(request: Request, hub: Hub = Depends(get_hub)) -> str:
+    return _render("node-update.sh", public_base_url(request, hub))
+
+
+@router.get("/node-update.ps1", response_class=PlainTextResponse)
+def node_update_ps1(request: Request, hub: Hub = Depends(get_hub)) -> str:
+    return _render("node-update.ps1", public_base_url(request, hub))
+
+
+def update_commands(hub_url: str) -> dict[str, str]:
+    """For a node installed before it could update itself: the program only, the registration stays."""
+    return {
+        "linux": f"curl -fsSL {hub_url}/install/node-update.sh | sudo bash",
+        "windows": f"irm {hub_url}/install/node-update.ps1 | iex",
+    }
+
+
 def _wheels(hub: Hub) -> list[Path]:
     assert hub.settings.wheels_dir is not None
     return sorted(hub.settings.wheels_dir.glob("*.whl"))

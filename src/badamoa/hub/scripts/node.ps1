@@ -32,6 +32,10 @@ if (-not (Test-Path $uv)) {
     }
 }
 
+# Installed already (the installer run again): stop it first, Windows cannot replace a running program.
+schtasks /End /TN "BADAMOA Node" 2>$null | Out-Null
+Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($Root) -and $_.Name -ne "uv" } | Stop-Process -Force -ErrorAction SilentlyContinue
+
 Write-Host "==> installing badamoa node $Version from $HubUrl"
 & $uv tool install --force --python 3.12 --index "$HubUrl/install/simple/" "badamoa==$Version"
 if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }

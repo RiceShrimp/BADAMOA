@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./nodes.css";
 import { type HubAddress, type JoinToken, api } from "./api";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
@@ -43,6 +43,7 @@ export interface BoardNode {
   status: "online" | "offline" | "disabled";
   enabled: boolean;
   is_local: boolean;
+  agent_version: string;
   roles: string[];
   gpu_name: string | null;
   cpu_pct: number | null;
@@ -53,6 +54,7 @@ export interface BoardNode {
 }
 
 interface Board {
+  hub_version: string;
   nodes: BoardNode[];
   counts: { free: number; job: number; busy: number; reserved: number; offline: number; waiting: number };
   waiting: { job_id: string; label: string; href: string; gpus: number; min_vram_mb: number; reason: string }[];
@@ -83,6 +85,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
   const updated = useUpdatedAt(board);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BoardNode | null>(null);
+  const [updating, setUpdating] = useState<BoardNode | null>(null);
   const c = board?.counts;
   const total = c ? c.free + c.job + c.busy + c.reserved : 0;
 
@@ -158,7 +161,15 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
       {board && board.nodes.length > 0 && (
         <section className="card board">
           {board.nodes.map((node) => (
-            <ServerRow key={node.id} node={node} isAdmin={isAdmin} onEdit={() => setEditing(node)} onChanged={() => void refresh()} />
+            <ServerRow
+              key={node.id}
+              node={node}
+              hubVersion={board.hub_version}
+              isAdmin={isAdmin}
+              onEdit={() => setEditing(node)}
+              onUpdate={() => setUpdating(node)}
+              onChanged={() => void refresh()}
+            />
           ))}
           {isAdmin && (
             <button className="board-add" onClick={() => setAdding(true)}>
@@ -187,6 +198,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       {adding && <AddNode onClose={() => setAdding(false)} />}
+      {updating && <UpdateNode node={updating} onClose={() => setUpdating(null)} />}
       {editing && (
         <EditNode
           node={editing}
@@ -200,17 +212,35 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+/** x.y.z later than another; anything else is not compared. */
+function later(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  if ([...pa, ...pb].some(Number.isNaN)) return false;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0);
+  }
+  return false;
+}
+const SELF_UPDATE_SINCE = "0.31.0"; // nodes from this version update themselves
+
 function ServerRow({
   node,
+  hubVersion,
   isAdmin,
   onEdit,
+  onUpdate,
   onChanged,
 }: {
   node: BoardNode;
+  hubVersion: string;
   isAdmin: boolean;
   onEdit: () => void;
+  onUpdate: () => void;
   onChanged: () => void;
 }) {
+  const behind = Boolean(node.agent_version) && later(hubVersion, node.agent_version);
+  const updatesItself = behind && !later(SELF_UPDATE_SINCE, node.agent_version);
   const toggle = async () => {
     const stop = node.enabled;
     if (stop && !window.confirm(`${node.name}을(를) 비활성화할까요?\n새 작업을 보내지 않습니다. 실행 중인 작업은 끝까지 갑니다. 언제든 "다시 사용"으로 되돌릴 수 있습니다.`)) return;
@@ -240,6 +270,23 @@ function ServerRow({
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
         )}
         {online && !node.enabled && <div className="small warn-text">작업 받지 않음</div>}
+        {behind && (
+          <div className="small warn-text">
+            노드 {node.agent_version} · Hub {hubVersion}
+            {updatesItself ? (
+              " — 작업이 없을 때 스스로 업데이트"
+            ) : isAdmin ? (
+              <>
+                {" — "}
+                <button className="link small" onClick={onUpdate}>
+                  업데이트 방법
+                </button>
+              </>
+            ) : (
+              " — 업데이트 필요"
+            )}
+          </div>
+        )}
         {diskWarn && (
           <div className="small bad-text">
             {node.disk!.mount} {Math.round(node.disk!.pct)}% · {Math.round(node.disk!.free_gb)} GB 남음
@@ -470,6 +517,36 @@ function AddressNote({ where, onChange }: { where: HubAddress; onChange: () => P
       )}
       {error && <div className="error">{error}</div>}
     </div>
+  );
+}
+
+/** For a node from before self-update: the one-time update command (the registration stays). */
+function UpdateNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
+  const [info, setInfo] = useState<{ version: string; commands: { linux: string; windows: string } } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api<{ version: string; commands: { linux: string; windows: string } }>("/node-update-commands")
+      .then(setInfo)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+  return (
+    <Modal title={`${node.name} 업데이트`} onClose={onClose}>
+      <p>
+        이 노드의 프로그램({node.agent_version})은 스스로 업데이트하는 기능이 생기기 전 버전입니다. 그 서버에서 아래 명령을 <strong>한 번만</strong>{" "}
+        실행하세요. 등록은 그대로라 같은 노드로 이어지고, 다음부터는 Hub를 올리면 노드가 스스로 따라 올라갑니다.
+      </p>
+      {error && <div className="error">{error}</div>}
+      {info && (
+        <>
+          <CopyBlock label="Ubuntu / Linux" text={info.commands.linux} />
+          <CopyBlock label="Windows (관리자 PowerShell)" text={info.commands.windows} />
+          <p className="muted small">설치 명령(노드 추가)을 다시 실행해도 됩니다. 이미 등록된 서버는 새로 등록하지 않고 업데이트만 합니다({info.version}부터).</p>
+        </>
+      )}
+      <div className="modal-actions">
+        <button onClick={onClose}>닫기</button>
+      </div>
+    </Modal>
   );
 }
 

@@ -111,6 +111,7 @@ def board(db: Session, settings: HubSettings) -> dict[str, Any]:
                 "status": status,
                 "enabled": node.enabled,
                 "is_local": node.is_local,
+                "agent_version": node.agent_version or "",
                 "roles": node.roles,
                 "gpu_name": gpus[0]["name"] if gpus else None,
                 "cpu_pct": metrics.get("cpu_pct"),
@@ -149,6 +150,7 @@ def board(db: Session, settings: HubSettings) -> dict[str, Any]:
         if label.get("eta_s") is not None and running[job_id].gpu_indices
     ]
     return {
+        "hub_version": services.HUB_VERSION,
         "nodes": shown,
         "counts": {**counts, "waiting": len(queued)},
         "waiting": waiting,
