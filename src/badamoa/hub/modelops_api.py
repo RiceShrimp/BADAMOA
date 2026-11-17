@@ -173,7 +173,7 @@ async def put_file(
             node = services.authenticate_node(db, token)
             if node is None:
                 raise HTTPException(status_code=401, detail="노드 인증 실패")
-            return modelops.add_file(db, node, job_id, name, blob, size, media, caption)
+            return modelops.add_file(db, node, job_id, name, blob, size, media, caption, storage=_storage(hub))
 
     return await anyio.to_thread.run_sync(record)
 

@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, drafts, gpus, lineage, registry, resources, services, sweeps, training
+from . import catalog, checks, drafts, gpus, lineage, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -393,20 +393,42 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         class_id: int | None = None,
         q: str = "",
         edited: bool = False,
+        suspect: str = "",
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
         """릴리스의 이미지와 라벨(박스는 [클래스, cx, cy, w, h] — 이미지 크기에 대한 비율)을 페이지로 반환합니다.
 
         state: labelled(라벨 있음) | background(배경) | unlabelled(아직 라벨 안 함). edited=true면 데이터셋의
-        "작업 중"에서 고친 이미지만. 이미지 하나의 전체 라벨과 고칠 수 있는지는 get_release_item으로 봅니다.
+        "작업 중"에서 고친 이미지만. suspect: 평가 id(list_release_checks) — 그 평가가 잰 이미지만, 모델 예측과 라벨이
+        어긋난 것(놓친 라벨 + 라벨에 없는 예측)이 많은 순서로, 이미지마다 check {found, missed, extra}. 이미지 하나의 전체
+        라벨과 고칠 수 있는지는 get_release_item으로 봅니다.
         """
         user_of(ctx)
         with hub.db.session() as db:
             return catalog.list_items(
                 db, hub.settings, release_id, split=split, state=state, class_id=class_id, q=q, edited=edited,
-                offset=offset, limit=limit,
+                suspect=suspect, offset=offset, limit=limit,
             )
+
+    @mcp.tool(title="라벨 의심 평가 목록", annotations=READ_ONLY)
+    @guarded
+    def list_release_checks(release_id: str, ctx: Context) -> list[dict[str, Any]]:
+        """이 릴리스의 이미지를 "라벨 의심 순"으로 볼 수 있는 모델 평가들: 모델, 평가한 릴리스 · split, 잰 이미지 수, 어긋난
+        이미지 수. id를 list_release_items의 suspect로 주면 틀렸을 법한 라벨부터 보고, get_release_item_predictions로
+        그 이미지의 예측을 봅니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return checks.release_checks(db, catalog.get_release(db, release_id))
+
+    @mcp.tool(title="이미지의 모델 예측", annotations=READ_ONLY)
+    @guarded
+    def get_release_item_predictions(release_id: str, item_id: int, check_id: str, ctx: Context) -> dict[str, Any]:
+        """평가(check_id)의 모델이 이 이미지에 예측한 라벨(릴리스의 라벨 형식, 확신도와 함께)과 평가할 때의 맞춤 · 놓침 ·
+        더 찾음. 예측을 라벨로 넣으려면 fix_labels에 지금 라벨과 합쳐서 줍니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return checks.item_predictions(db, catalog.get_release(db, release_id), item_id, check_id)
 
     @mcp.tool(title="릴리스 이미지 조회", annotations=READ_ONLY)
     @guarded

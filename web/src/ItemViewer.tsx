@@ -3,6 +3,7 @@ import { ApiError, api } from "./api";
 import {
   type ItemDetail,
   type ItemPage,
+  type ItemPredictions,
   type LabelClass,
   type Revision,
   SPLIT_LABEL,
@@ -40,6 +41,8 @@ interface Props {
   task?: string;
   /** Labels were saved into the work in progress: the screen behind looks again. */
   onSaved?: () => void;
+  /** An evaluation the images are sorted by: its model's predictions are shown over each image. */
+  checkOp?: string;
 }
 
 interface Saved {
@@ -59,13 +62,34 @@ function sourceLabel(source: string): string {
 }
 
 const copy = (boxes: Box[]) => boxes.map((b) => [...b]);
+
+/** Overlap of two boxes [class, cx, cy, w, h] (intersection over union). */
+function iou(a: number[], b: number[]): number {
+  const [, ax, ay, aw, ah] = a;
+  const [, bx, by, bw, bh] = b;
+  const w = Math.min(ax + aw / 2, bx + bw / 2) - Math.max(ax - aw / 2, bx - bw / 2);
+  const h = Math.min(ay + ah / 2, by + bh / 2) - Math.max(ay - ah / 2, by - bh / 2);
+  if (w <= 0 || h <= 0) return 0;
+  return (w * h) / (aw * ah + bw * bh - w * h);
+}
 const MAX_ZOOM = 16;
 
 /** Full-screen item view: labels over the image, label revisions (one or two side by side), where else the image is used.
  * The mouse wheel zooms (at the pointer) and a drag moves the zoomed image. "라벨 고치기" (E) turns the same screen
  * into an editor for boxes, outlines (segmentation), keypoints (pose) or the class (classification); what is saved
  * lands in the dataset's work in progress. */
-export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor, classes = [], task = "detect", onSaved }: Props) {
+export function ItemViewer({
+  releaseId,
+  filterQuery,
+  start,
+  total,
+  onClose,
+  colorOf = classColor,
+  classes = [],
+  task = "detect",
+  onSaved,
+  checkOp,
+}: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -80,9 +104,23 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
 
+  // ---- an evaluated model's predictions for this image (when the grid is sorted by one)
+  const [pred, setPred] = useState<ItemPredictions | null>(null);
+  const [showPred, setShowPred] = useState(true);
+
   // ---- zoom: 1 fits the image; pan is where the zoomed image sits inside its frame (screen pixels)
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState<Pt>([0, 0]);
+  const [zoom, setZoomState] = useState(1);
+  const [pan, setPanState] = useState<Pt>([0, 0]);
+  // The newest zoom and pan at once: wheel events can come faster than the screen redraws.
+  const view = useRef<{ zoom: number; pan: Pt }>({ zoom: 1, pan: [0, 0] });
+  const setZoom = (z: number) => {
+    view.current.zoom = z;
+    setZoomState(z);
+  };
+  const setPan = (p: Pt) => {
+    view.current.pan = p;
+    setPanState(p);
+  };
   const [space, setSpace] = useState(false); // held: a drag moves the image, even while fixing
   const panning = useRef<{ x: number; y: number; from: Pt } | null>(null);
   const [grabbing, setGrabbing] = useState(false);
@@ -177,6 +215,18 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     };
   }, [releaseId, filterQuery, index]);
 
+  useEffect(() => {
+    setPred(null);
+    if (!checkOp || !item) return;
+    let alive = true;
+    api<ItemPredictions>(`/releases/${releaseId}/items/${item.id}/predictions?op=${encodeURIComponent(checkOp)}`)
+      .then((p) => alive && setPred(p))
+      .catch(() => alive && setPred(null));
+    return () => {
+      alive = false;
+    };
+  }, [releaseId, checkOp, item?.id]);
+
   // ---- editing steps (each one an undo step)
   const commit = (before: Box[]) => {
     setUndo((u) => [...u.slice(-99), before]);
@@ -261,6 +311,23 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     setSketch([]);
     setPlacing(null);
     if (on) select(null);
+  };
+
+  /** Take predictions as labels: added to the labels being fixed (fixing starts if it has not). */
+  const takePredictions = (labels: Box[]) => {
+    if (!item?.edit.allowed || !labels.length) return;
+    const add = (current: Box[]) => (task === "classify" ? copy(labels.slice(0, 1)) : [...current, ...copy(labels)]);
+    if (editing) {
+      apply(add(boxes));
+      return;
+    }
+    const rev = item.revisions.find((r) => r.id === item.edit.revision_id);
+    const begin = copy(rev?.boxes ?? []);
+    startFrom(item);
+    setBoxes(add(begin));
+    setUndo([begin]); // one undo step brings the labels back as they were
+    setNote(null);
+    setEditing(true);
   };
 
   const beginEdit = () => {
@@ -348,6 +415,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   ];
   /** Zoom by ``factor`` keeping the image point under (cx, cy) where it is. */
   const zoomAt = (factor: number, cx?: number, cy?: number, frame?: Element | null) => {
+    const { zoom, pan } = view.current;
     const next = Math.min(MAX_ZOOM, Math.max(1, zoom * factor));
     if (next === zoom) return;
     if (next === 1) {
@@ -482,6 +550,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     else if (key === "l") setShowLabels((v) => !v);
     else if (key === "n") setShowNames((v) => !v);
     else if (key === "f") setFill((v) => !v);
+    else if (key === "p") setShowPred((v) => !v);
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keyRef.current(e);
@@ -657,6 +726,61 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     ));
   };
 
+  const className = (id: number) => classes.find((c) => c.id === id)?.name ?? String(id);
+  /** The model's predictions over the image: dashed, with how sure it was. */
+  const drawPredictions = (labels: number[][], scores: number[]) => (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="predictions">
+      {labels.map((b, i) => {
+        if (b.length < 5) return null;
+        const [cls, cx, cy, bw, bh] = b;
+        const color = colorOf(cls);
+        const outline = task === "segment" ? b.slice(5) : [];
+        const box = { x: (cx - bw / 2) * w, y: (cy - bh / 2) * h, width: bw * w, height: bh * h };
+        const tag = `예측 ${className(cls)} ${Math.round((scores[i] ?? 0) * 100)}%`;
+        // White dashes on a dark edge: they stand apart from the labels, which are solid lines in the class colour.
+        return (
+          <g key={i}>
+            {outline.length >= 6 &&
+              [
+                { stroke: "rgb(0 0 0 / 0.6)", width: 4, dash: undefined },
+                { stroke: "#fff", width: 2, dash: "6 4" },
+              ].map((s, n) => (
+                <polygon
+                  key={n}
+                  points={outline.map((v, k) => (k % 2 === 0 ? v * w : v * h)).join(" ")}
+                  fill="none"
+                  stroke={s.stroke}
+                  strokeWidth={s.width}
+                  strokeDasharray={s.dash}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="4" vectorEffect="non-scaling-stroke" />
+            <rect {...box} fill="none" stroke="#fff" strokeWidth="2" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
+            <rect x={box.x} y={box.y + box.height} width={tag.length * font * 0.5 + font * 0.5} height={font * 1.2} fill="rgb(20 26 34 / 0.85)" />
+            <rect x={box.x} y={box.y + box.height} width={font * 0.25} height={font * 1.2} fill={color} />
+            <text x={box.x + font * 0.4} y={box.y + box.height + font * 0.9} fontSize={font * 0.8} fill="#fff" fontWeight="600">
+              {tag}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+  // Predictions the labels (as they are now) do not have yet: the ones worth taking.
+  const current = editing ? boxes : revision && !foreign(revision) ? revision.boxes : [];
+  const missing =
+    pred && pred.evaluated
+      ? pred.labels
+          .map((label, i) => ({ label, score: pred.scores[i] ?? 0 }))
+          .filter(({ label }) =>
+            task === "classify"
+              ? current[0]?.[0] !== label[0]
+              : !current.some((b) => b[0] === label[0] && b.length >= 5 && label.length >= 5 && iou(b, label) >= 0.5),
+          )
+          .sort((a, b) => b.score - a.score)
+      : [];
+
   const shown = editRevision ? [editRevision] : [revision, compare].filter((r): r is Revision => r !== null);
   const anyForeign = shown.some(foreign) && classes.length > 0;
   const editVisible = new Set(boxes.map((b, i) => (editRevision && shownBox(editRevision, b) ? i : -1)).filter((i) => i >= 0));
@@ -711,6 +835,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                       />
                     )}
                     {(showLabels || editing) && r && task !== "classify" && drawBoxes(r)}
+                    {showPred && pred?.evaluated && n === 0 && task !== "classify" && drawPredictions(pred.labels, pred.scores)}
                     {editing && shapes && fitWidth > 0 && (
                       <EditLayer
                         width={w}
@@ -743,6 +868,11 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                   </div>
                   {/* outside the zoomed canvas: it keeps its size */}
                   {(showLabels || editing) && r && task === "classify" && classBadge(r)}
+                  {showPred && pred?.evaluated && n === 0 && task === "classify" && pred.labels[0] && (
+                    <span className="class-badge predicted" style={{ color: colorOf(pred.labels[0][0]) }}>
+                      모델: {className(pred.labels[0][0])} {Math.round((pred.scores[0] ?? 0) * 100)}%
+                    </span>
+                  )}
                 </div>
                 {pair && r && (
                   <figcaption>
@@ -929,6 +1059,51 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
               </button>
             )}
             <p className="muted small">← → 저장하고 넘기기 · Esc 고르기 풀기 · Ctrl+C / Ctrl+V 복사 · 휠 확대 · 0 맞추기</p>
+          </section>
+        )}
+
+        {item && checkOp && pred && (
+          <section className="prediction-panel">
+            <div className="eyebrow">
+              모델 예측 · {pred.model ? `${pred.model.name} v${pred.model.version}` : "모델"}
+            </div>
+            {!pred.evaluated ? (
+              <p className="muted small">이 이미지는 이 평가에 들지 않았습니다.</p>
+            ) : (
+              <>
+                <p className="muted small">
+                  평가할 때 맞춘 라벨 {pred.found} · 못 찾은 라벨 {pred.missed} · 라벨에 없는 예측 {pred.extra}
+                </p>
+                <label className="check">
+                  <input type="checkbox" checked={showPred} onChange={(e) => setShowPred(e.target.checked)} /> 예측 겹쳐 보기 (점선) <kbd>P</kbd>
+                </label>
+                {missing.length > 0 ? (
+                  <>
+                    <div className="muted small">지금 라벨에 없는 예측 {missing.length}개</div>
+                    <div className="prediction-list">
+                      {missing.map(({ label, score }, i) => (
+                        <div key={i} className="prediction-row">
+                          <i style={{ borderColor: colorOf(label[0]) }} />
+                          <span>
+                            {className(label[0])} · {Math.round(score * 100)}%
+                          </span>
+                          {item.edit.allowed && (
+                            <button onClick={() => takePredictions([label])}>{task === "classify" ? "이 클래스로" : "라벨로 넣기"}</button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {missing.length > 1 && task !== "classify" && item.edit.allowed && (
+                      <button className="small" onClick={() => takePredictions(missing.map((m) => m.label))}>
+                        모두 라벨로 넣기
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <p className="muted small">예측이 모두 지금 라벨에 있습니다.</p>
+                )}
+              </>
+            )}
           </section>
         )}
 

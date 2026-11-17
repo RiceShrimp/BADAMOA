@@ -23,11 +23,12 @@ from badamoa.core import tasks as task_names
 from badamoa.core.protocol import ImportBegin, ImportChunk
 from badamoa.core.storage import Storage
 
-from . import drafts, services  # drafts imports this module too: each uses the other only when called
+from . import checks, drafts, services  # these import this module too: each uses the other only when called
 from .catalog_models import (
     Batch,
     Dataset,
     Item,
+    ItemPrediction,
     LabelRevision,
     LabelSpace,
     Project,
@@ -1075,10 +1076,12 @@ def list_items(
     camera: str = "",
     q: str = "",
     edited: bool = False,
+    suspect: str = "",
     offset: int = 0,
     limit: int = 60,
 ) -> dict[str, Any]:
-    """A page of a release's items. ``edited``: only the images the dataset's work in progress changed."""
+    """A page of a release's items. ``edited``: only the images the dataset's work in progress changed.
+    ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first."""
     release = get_release(db, release_id)
     draft = drafts.fixing(db, release)
     if edited and draft is None:
@@ -1086,9 +1089,28 @@ def list_items(
     query = _item_filter(release_id, split, state, class_id, site, camera, q.strip())
     if edited:
         query = query.where(ReleaseItem.item_id.in_(drafts.edited_items(draft)))
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     limit = max(1, min(limit, MAX_PAGE))
-    rows = db.execute(query.order_by(ReleaseItem.item_id).offset(max(0, offset)).limit(limit)).all()
+    order = [ReleaseItem.item_id]
+    if suspect:
+        op = checks.check_of(db, release, suspect)
+        query = query.join(
+            ItemPrediction, and_(ItemPrediction.op_id == op.id, ItemPrediction.item_id == ReleaseItem.item_id)
+        )
+        order = [ItemPrediction.wrong.desc(), ItemPrediction.missed.desc(), ReleaseItem.item_id]
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = db.execute(query.order_by(*order).offset(max(0, offset)).limit(limit)).all()
+    mistakes = (
+        {
+            p.item_id: {"found": p.found, "missed": p.missed, "extra": p.extra}
+            for p in db.scalars(
+                select(ItemPrediction).where(
+                    ItemPrediction.op_id == suspect, ItemPrediction.item_id.in_([item.id for _, item in rows])
+                )
+            )
+        }
+        if suspect and rows
+        else {}
+    )
     fixed = drafts.edited_ids(db, draft, [item.id for _, item in rows]) if draft is not None and rows else set()
     revisions = {
         rev.id: rev.boxes or []
@@ -1110,6 +1132,8 @@ def list_items(
                 "thumb_url": media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
                 "boxes": [light_shape(b) for b in revisions.get(member.revision_id, [])[:GRID_BOXES]],
                 "fixed": item.id in fixed,  # changed in the work in progress
+                # the evaluation's found / missed / extra (sorting by likely wrong labels)
+                **({"check": mistakes[item.id]} if item.id in mistakes else {}),
             }
             for member, item in rows
         ],

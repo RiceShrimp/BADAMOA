@@ -327,6 +327,24 @@ def log_artifact(path: str | Path, name: str | None = None) -> None:
     _emit("artifact", path=str(Path(path).resolve()), name=name or Path(path).name)
 
 
+def log_predictions(images: list[dict[str, Any]]) -> None:
+    """평가한 이미지마다 모델의 예측을 기록합니다. 데이터셋 화면의 "라벨 의심 순"(틀린 라벨을 찾기)과
+    이미지 보기의 예측 겹쳐 보기 · "라벨로 넣기"에 쓰입니다 (평가 진입점에서만).
+
+    images: 이미지마다 {"image": 평가용으로 내보낸 파일 이름에서 확장자를 뺀 것(이미지의 sha256),
+    "labels": [[클래스 번호, cx, cy, w, h, …]] (학습 클래스 순서의 번호, 0~1 비율. 분할은 뒤에 윤곽 x, y …,
+    키포인트는 뒤에 x, y, 보임(0 · 2) …, 분류는 [[클래스 번호]]), "scores": [확신도, …],
+    "found": 맞춘 라벨 수, "missed": 모델이 못 찾은 라벨 수, "extra": 라벨에 없는 예측 수}
+    """
+    run = _current()
+    folder = run.out / ".badamoa"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "predictions.json"
+    path.write_text(json.dumps({"images": images[:MAX_PREDICTED]}, ensure_ascii=False), encoding="utf-8")
+    _emit("artifact", path=str(path.resolve()), name="predictions.json", media="predictions")
+
+
+MAX_PREDICTED = 500_000  # images in one log_predictions
 MAX_TABLE_ROWS = 10000
 MAX_SHAPES = 300  # boxes or outlines per kind in one overlay cell
 MAX_POINTS = 400  # points of one outline

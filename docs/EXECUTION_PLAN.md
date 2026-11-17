@@ -181,7 +181,7 @@ bm.finish({"map50_95": best})               # 최종 지표
 | 모델 alias | aliases (`best`, `production`) | aliases (`name@champion`) | 자유로운 이름, 한 버전에 여러 개, 같은 모델 안에서는 한 버전에만. 이름 + alias로 찾기 | 0.15.0 |
 | 실행 표, 내보내기 | Runs 표(열 고르기), CSV | `search_runs` → DataFrame | 학습 목록에서 지표 · 설정 열 고르기와 정렬, CSV로 받기. 실행별 단계 지표 CSV | 0.15.0 |
 | 하이퍼파라미터 탐색 | Sweeps (grid · random · bayes) | (Optuna 연동) | 새 학습 대화상자에서 시험할 값을 적으면 탐색. 모든 조합 · 무작위(범위 · 로그) · 베이지안(Optuna TPE), Hub가 차례로 실행, 가장 좋은 설정과 설정별 지표 그림. 일찍 멈추기(hyperband)는 하지 않음 | 0.16.0, 0.19.0 |
-| 단계별 이미지·표 | `wandb.Image`, Tables | `log_image(step=)`, `log_table` | `bm.log_image(파일, key=, step=)`, `bm.log_table(key, 열, 행)`. 실행 화면에서 step을 넘기며 보고, 표는 정렬·찾기, 칸의 그림 이름은 그림으로. `bm.overlay`로 그림 위에 예측 · 정답 박스와 윤곽(확신도로 거르기, 크게 보기). YOLO 검출 · 분할은 epoch별 검증 이미지 예측을 자동 기록 | 0.17.0, 0.19.0 |
+| 단계별 이미지·표 | `wandb.Image`, Tables | `log_image(step=)`, `log_table` | `bm.log_image(파일, key=, step=)`, `bm.log_table(key, 열, 행)`. 실행 화면에서 step을 넘기며 보고, 표는 정렬·찾기, 칸의 그림 이름은 그림으로. `bm.overlay`로 그림 위에 예측 · 정답 박스와 윤곽(확신도로 거르기, 크게 보기). YOLO 검출 · 분할은 epoch별 검증 이미지 예측을 자동 기록. 평가 진입점에서 `bm.log_predictions([...])`로 이미지마다 예측을 남기면 데이터셋 화면의 "라벨 의심 순"과 예측 겹쳐 보기에 쓰임 (0.40.0) | 0.17.0, 0.19.0, 0.40.0 |
 | 서버 자원 | 자동 수집 (System 탭) | 선택 | 자동: 노드가 이미 수집하는 GPU·메모리를 실행 시간대로 잘라 표시 | 0.10.0 |
 | 설치된 패키지 | 자동 (`requirements.txt`) | 자동 (환경 파일) | 자동: 실행 환경의 패키지 목록을 실행 기록에 | 0.8.0 |
 | 프레임워크 연동 | Lightning·HF 콜백, `wandb.watch` | `autolog()` | Ultralytics는 내장. `bm.lightning_callback()`, `bm.hf_callback()` | 0.10.0 |

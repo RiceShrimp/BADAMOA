@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.storage import Storage
 
-from . import catalog, registry, services, training
+from . import catalog, checks, registry, services, training
 from .catalog_models import Dataset, LabelSpace, Release
 from .config import HubSettings
 from .db import iso
@@ -215,10 +215,25 @@ def blob_for(db: Session, node: Node, job_id: str, what: str, index: int = 0) ->
 
 
 def add_file(
-    db: Session, node: Node, job_id: str, name: str, blob: str, size: int, media: str = "", caption: str = ""
+    db: Session,
+    node: Node,
+    job_id: str,
+    name: str,
+    blob: str,
+    size: int,
+    media: str = "",
+    caption: str = "",
+    storage: Storage | None = None,
 ) -> dict[str, Any]:
-    """A file the job recorded. ``media``: ``table`` (bm.log_table) or ``table-image`` (a picture a table draws on)."""
+    """A file the job recorded. ``media``: ``table`` (bm.log_table), ``table-image`` (a picture a table draws on)
+    or ``predictions`` (bm.log_predictions: every evaluated image's predictions, stored per image)."""
     op, _ = _running(db, node, job_id)
+    if media == "predictions":
+        matched = checks.ingest(db, op, storage.get_blob(blob)) if storage is not None and op.kind == "eval" else 0
+        files = [f for f in (op.files or []) if f.get("kind") != "predictions"]
+        entry = {"name": "predictions.json", "blob": blob, "bytes": size, "kind": "predictions", "images": matched}
+        op.files = [*files, entry]
+        return {"name": "predictions.json", "images": matched}
     name = training.clean_file_name(name)
     picture = name.lower().endswith(IMAGE_SUFFIXES)
     kind = "image" if picture else "file"
@@ -273,8 +288,10 @@ def op_view(db: Session, settings: HubSettings, op: ModelJob, node_names: dict[s
         "files": [
             {**{k: f[k] for k in ("name", "kind", "bytes")}, "url": url}
             for f, url in listed
-            if f["kind"] not in ("table", "table-image")
+            if f["kind"] not in ("table", "table-image", "predictions")
         ],
+        # images whose predictions were kept: the dataset screen can sort them by likely wrong labels
+        "predicted": sum(int(f.get("images") or 0) for f in op.files or [] if f["kind"] == "predictions"),
         # Tables the code recorded (per-image results), and the pictures their cells draw on
         "tables": [
             {"name": f["name"], "kind": "table", "caption": f.get("caption", ""), "url": url}

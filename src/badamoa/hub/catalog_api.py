@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, drafts, originals, overview, purge, services
+from . import catalog, checks, drafts, originals, overview, purge, services
 from . import trash as trash_box
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
@@ -279,6 +279,7 @@ def list_items(
     camera: str = "",
     q: str = "",
     edited: bool = False,
+    suspect: str = "",
     offset: int = 0,
     limit: int = 60,
     _: User = Depends(current_user),
@@ -296,6 +297,7 @@ def list_items(
         camera=camera,
         q=q,
         edited=edited,
+        suspect=suspect,
         offset=offset,
         limit=limit,
     )
@@ -404,6 +406,23 @@ def delete_dataset(dataset_id: str, user: User = Depends(admin_user), db: Sessio
     versions = catalog.delete_dataset(db, user, dataset_id)
     db.commit()
     return {"ok": True, "versions": versions}
+
+
+# ---- likely wrong labels: what evaluated models predicted ---------------------------------
+
+
+@router.get("/releases/{release_id}/checks")
+def release_checks(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> list:
+    """Evaluations that can sort this release's images by likely wrong labels (``items?suspect=<id>``)."""
+    return checks.release_checks(db, catalog.get_release(db, release_id))
+
+
+@router.get("/releases/{release_id}/items/{item_id}/predictions")
+def item_predictions(
+    release_id: str, item_id: int, op: str, _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """What the evaluation's model predicted for this image, in the release's label form."""
+    return checks.item_predictions(db, catalog.get_release(db, release_id), item_id, op)
 
 
 # ---- fixing labels: the dataset's work in progress -----------------------------------

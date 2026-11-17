@@ -488,6 +488,22 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     assert hub.post(f"/api/models/{model_id}/eval", json={"release_id": release["id"], "split": "dev"}).status_code == 400
     assert hub.post(f"/api/models/{model_id}/eval", json={"release_id": "nope"}).status_code == 404
 
+    # ---- every evaluated image's predictions: the release's images by likely wrong labels
+    assert evaluation["predicted"] == 2 and not any(f["kind"] == "predictions" for f in evaluation["files"])
+    offered = hub.get(f"/api/releases/{release['id']}/checks").json()
+    assert [(c["id"], c["split"], c["images"], c["wrong"]) for c in offered] == [(evaluation["id"], "val", 2, 1)]
+    suspects = hub.get(f"/api/releases/{release['id']}/items", params={"suspect": evaluation["id"]}).json()
+    assert suspects["total"] == 2  # only the images it measured
+    assert [i["check"] for i in suspects["items"]] == [
+        {"found": 0, "missed": 2, "extra": 1},
+        {"found": 1, "missed": 0, "extra": 0},
+    ]
+    worst_id = suspects["items"][0]["id"]
+    seen = hub.get(f"/api/releases/{release['id']}/items/{worst_id}/predictions", params={"op": evaluation["id"]}).json()
+    assert seen["evaluated"] and seen["labels"] == [[0, 0.5, 0.5, 0.2, 0.2]] and seen["scores"] == [0.9]
+    assert seen["missed"] == 2 and seen["model"]["id"] == model_id
+    assert hub.get(f"/api/releases/{release['id']}/items", params={"suspect": "nope"}).status_code == 404
+
     # ---- export: the file comes back and can be downloaded
     exported = finished(hub.post(f"/api/models/{model_id}/export", json={"format": "onnx"}).json())
     assert exported["result"]["file"] == "model.onnx" and [f["name"] for f in exported["files"]] == ["model.onnx"]

@@ -22,7 +22,7 @@ def per_image(model, data, loader, device, run) -> None:
         registered = json.loads((run.data_dir / "files.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         registered = {}
-    rows, wrong, index = [], [], 0
+    rows, wrong, index, predicted = [], [], 0, []
     with torch.no_grad():
         for images, targets in loader:
             scores, guesses = torch.softmax(model(images.to(device)), dim=1).max(1)
@@ -32,10 +32,23 @@ def per_image(model, data, loader, device, run) -> None:
                 name = Path(registered.get(path.stem, path.name)).name
                 row = [name, run.classes[truth], run.classes[guess], round(score, 4), "O" if guess == truth else "X"]
                 rows.append(row)
+                right = int(guess == truth)
+                predicted.append(
+                    {
+                        "image": path.stem,
+                        "labels": [[guess]],
+                        "scores": [round(score, 4)],
+                        "found": right,
+                        "missed": 1 - right,
+                        "extra": 0,
+                    }
+                )
                 if guess != truth:
                     wrong.append((score, path, row))
     rows.sort(key=lambda r: (r[4] == "O", -r[3]))
     bm.log_table("per_image", COLUMNS, rows)
+    if hasattr(bm, "log_predictions"):  # every image's guess: the dataset screen sorts by likely wrong labels
+        bm.log_predictions(predicted)
     folder = run.out / ".badamoa" / "failures"
     folder.mkdir(parents=True, exist_ok=True)
     cells = []

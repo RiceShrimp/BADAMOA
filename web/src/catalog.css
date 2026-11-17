@@ -832,3 +832,65 @@ dl.info .path {
   background: rgb(20 26 34 / 0.85);
   font-weight: 600;
 }
+
+/* ---- likely wrong labels (an evaluation's mistakes) ---- */
+.thumb-image .check-mark {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.7);
+}
+.check-note {
+  margin: 8px 0 0;
+}
+select.active-select {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.prediction-list {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.prediction-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+.prediction-row:hover {
+  background: var(--surface-2);
+}
+.prediction-row i {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 2px dashed;
+}
+.prediction-row span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prediction-row button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.viewer-frame .class-badge.predicted {
+  top: 46px;
+  background: rgb(20 26 34 / 0.85);
+  border: 2px dashed currentColor;
+}

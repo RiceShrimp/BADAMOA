@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from . import catalog, cleanup, services, trash
-from .catalog_models import Dataset, Item, Project, Release, ReleaseItem
+from .catalog_models import Dataset, Item, ItemPrediction, Project, Release, ReleaseItem
 from .config import HubSettings
 from .db import utcnow
 from .models import Job, User
@@ -79,6 +79,8 @@ def _remove_unused(settings: HubSettings, db: Session, candidates: set[str]) -> 
 def _drop_project(db: Session, project: Project) -> None:
     models = list(db.scalars(select(ModelVersion.id).where(ModelVersion.project_id == project.id)))
     for chunk in _chunks(models):
+        ops = select(ModelJob.id).where(ModelJob.model_id.in_(chunk))
+        db.execute(delete(ItemPrediction).where(ItemPrediction.op_id.in_(ops)))
         db.execute(delete(ModelJob).where(ModelJob.model_id.in_(chunk)))
     # Everything else hangs off the project and goes with it (ON DELETE CASCADE).
     db.execute(delete(Project).where(Project.id == project.id))
@@ -108,6 +110,7 @@ def _drop_model(db: Session, model: ModelVersion) -> set[str]:
     for op in db.scalars(select(ModelJob).where(ModelJob.model_id == model.id)):
         blobs.update(f["blob"] for f in op.files or [] if f.get("blob"))
         blobs.update(i["blob"] for i in (op.params or {}).get("images") or [] if i.get("blob"))
+        db.execute(delete(ItemPrediction).where(ItemPrediction.op_id == op.id))
     db.execute(delete(ModelJob).where(ModelJob.model_id == model.id))
     db.execute(delete(Tag).where(Tag.kind == "model", Tag.object_id == model.id))
     db.execute(delete(ModelVersion).where(ModelVersion.id == model.id))

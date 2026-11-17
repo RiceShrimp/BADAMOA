@@ -14,6 +14,29 @@ FAILURES = 48  # images with the most mistakes, kept as pictures with their boxe
 COLUMNS = ["image", "truth", "predicted", "found", "missed", "extra"]
 
 
+def as_labels(result) -> dict:
+    """A result's predictions in the dataset's label form: [class, cx, cy, w, h, then the outline or keypoints]."""
+    labels, scores = [], []
+    if result.boxes is None or not len(result.boxes):
+        return {"labels": labels, "scores": scores}
+    masks = result.masks.xyn if result.masks is not None else None
+    points = getattr(result, "keypoints", None)
+    for n, (c, s, xywh) in enumerate(
+        zip(result.boxes.cls.tolist(), result.boxes.conf.tolist(), result.boxes.xywhn.tolist(), strict=True)
+    ):
+        rest: list[float] = []
+        if masks is not None and n < len(masks) and len(masks[n]) >= 3:
+            outline = masks[n][:: max(1, -(-len(masks[n]) // MAX_OUTLINE))]
+            rest = [round(float(v), 5) for v in outline.reshape(-1).tolist()]
+        elif points is not None and points.xyn is not None and n < len(points.xyn):
+            seen = points.conf[n].tolist() if points.conf is not None else [1.0] * len(points.xyn[n])
+            for (x, y), k in zip(points.xyn[n].tolist(), seen, strict=False):
+                rest += [round(float(x), 5), round(float(y), 5), 2.0] if k >= 0.5 else [0.0, 0.0, 0.0]
+        labels.append([int(c), *(round(float(v), 5) for v in xywh), *rest])
+        scores.append(round(float(s), 4))
+    return {"labels": labels, "scores": scores}
+
+
 def per_image(run, model) -> None:
     """Every image of the evaluated split: true, predicted, found, missed and extra boxes (a prediction finds a
     true box of its class it overlaps by half). The ones with the most mistakes also as pictures with the boxes.
@@ -30,7 +53,7 @@ def per_image(run, model) -> None:
     except (OSError, ValueError):
         registered = {}
     print(f"이미지별 결과: {len(images):,}장을 확신도 {SAMPLE_CONF} 이상으로 예측합니다")
-    rows, scored = [], []
+    rows, scored, predicted = [], [], []
     results = model.predict(
         [str(p) for p in images],
         stream=True,
@@ -49,12 +72,15 @@ def per_image(run, model) -> None:
                 for c, s, points in zip(classes, scores, result.masks.xyn, strict=False):
                     outlines.append([int(c), s, points[:: max(1, -(-len(points) // MAX_OUTLINE))].reshape(-1).tolist()])
         found, missed, extra = match(boxes, truth)
+        predicted.append({"image": image.stem, **as_labels(result), "found": found, "missed": missed, "extra": extra})
         name = Path(registered.get(image.stem, image.name)).name
         rows.append([name, len(truth), len(boxes), found, missed, extra])
         if missed + extra:
             scored.append((missed + extra, image, name, boxes, truth, outlines, true_outlines, rows[-1]))
     rows.sort(key=lambda r: (-(r[4] + r[5]), r[0]))
     bm.log_table("per_image", COLUMNS, rows)
+    if hasattr(bm, "log_predictions"):  # every image's predictions: the dataset screen sorts by likely wrong labels
+        bm.log_predictions(predicted)
 
     pictures = run.out / ".badamoa" / "failures"
     pictures.mkdir(parents=True, exist_ok=True)

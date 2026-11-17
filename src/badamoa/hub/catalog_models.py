@@ -186,3 +186,24 @@ class ReleaseItem(Base):
     revision_id: Mapped[int] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(String(12))
     box_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ItemPrediction(Base):
+    """What a model predicted for one image in one evaluation (``model_jobs.id``), and how it compared with the
+    labels then: found, missed (labels it did not find) and extra (predictions no label backs). Many mistakes
+    on an image often mean its labels are wrong; the dataset screen sorts by them.
+
+    ``labels`` are in the evaluated release's label space: ``[[class_id, cx, cy, w, h, …]]`` like a revision.
+    """
+
+    __tablename__ = "item_predictions"
+    __table_args__ = (Index("ix_item_predictions_wrong", "op_id", "wrong", "item_id"),)
+
+    op_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    found: Mapped[int] = mapped_column(Integer, default=0)
+    missed: Mapped[int] = mapped_column(Integer, default=0)
+    extra: Mapped[int] = mapped_column(Integer, default=0)
+    wrong: Mapped[int] = mapped_column(Integer, default=0)  # missed + extra
+    labels: Mapped[list[list[float]]] = mapped_column(JSON, default=list)
+    scores: Mapped[list[float]] = mapped_column(JSON, default=list)

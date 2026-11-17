@@ -92,6 +92,31 @@ export interface GridItem {
   thumb_url: string | null;
   boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
   fixed?: boolean; // changed in the work in progress
+  check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
+}
+
+/** An evaluation that can sort a version's images by likely wrong labels. */
+export interface ReleaseCheck {
+  id: string;
+  model: { id: string; name: string; version: number } | null;
+  release: { id: string; version: string } | null;
+  split: string;
+  created_at: string;
+  images: number; // images of this version it measured
+  wrong: number; // of those, the ones with a mistake
+}
+
+/** What an evaluated model predicted for one image (labels in the version's label form). */
+export interface ItemPredictions {
+  op_id: string;
+  model: { id: string; name: string; version: number } | null;
+  split: string;
+  evaluated: boolean;
+  labels: number[][];
+  scores: number[];
+  found: number;
+  missed: number;
+  extra: number;
 }
 
 export interface ItemPage {

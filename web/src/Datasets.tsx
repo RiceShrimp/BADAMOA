@@ -20,6 +20,7 @@ import {
   type CompareResult,
   type ItemPage,
   type Project,
+  type ReleaseCheck,
   type ReleaseInfo,
   SPLIT_LABEL,
   STATE_HELP,
@@ -175,6 +176,7 @@ function ReleaseView({
   const [camera, setCamera] = useState("");
   const [q, setQ] = useState("");
   const [fixedOnly, setFixedOnly] = useState(false); // only the images the work in progress changed
+  const [suspect, setSuspect] = useState(""); // an evaluation: its images, likely wrong labels first
   const [page, setPage] = useState(0);
   const [pageSize, setPageSizeState] = useState(rememberedPageSize);
   const setPageSize = (n: number) => {
@@ -201,8 +203,12 @@ function ReleaseView({
     if (camera) params.set("camera", camera);
     if (q.trim()) params.set("q", q.trim());
     if (fixedOnly) params.set("edited", "true");
+    if (suspect) params.set("suspect", suspect);
     return params.toString();
-  }, [split, state, classId, site, camera, q, fixedOnly]);
+  }, [split, state, classId, site, camera, q, fixedOnly, suspect]);
+  // Evaluations of this dataset's models that can sort the images by likely wrong labels.
+  const { data: checks } = usePolling(() => api<ReleaseCheck[]>(`/releases/${releaseId}/checks`), 60000, [releaseId]);
+  const check = checks?.find((c) => c.id === suspect);
   useEffect(() => setPage(0), [filterQuery]);
   // The same filters as the Hub takes them for a new release.
   const filter = useMemo(() => {
@@ -408,6 +414,22 @@ function ReleaseView({
             고친 것만 ({fixing.edited.toLocaleString()})
           </label>
         )}
+        {(checks?.length ?? 0) > 0 && (
+          <select
+            value={suspect}
+            onChange={(e) => setSuspect(e.target.value)}
+            aria-label="정렬"
+            title="평가한 모델의 예측과 라벨이 어긋나는 이미지부터 봅니다"
+            className={suspect ? "active-select" : ""}
+          >
+            <option value="">기본 순서</option>
+            {checks?.map((c) => (
+              <option key={c.id} value={c.id}>
+                라벨 의심 순 · {c.model ? `${c.model.name} v${c.model.version}` : "모델"} ({c.release?.version} {c.split} · {c.created_at.slice(0, 10)})
+              </option>
+            ))}
+          </select>
+        )}
         <span className="muted count">{(items?.total ?? 0).toLocaleString()}개</span>
         <span className="spacer" />
         {release.status === "ready" && (
@@ -430,6 +452,13 @@ function ReleaseView({
         </div>
       </div>
 
+      {check && (
+        <div className="notice compact check-note">
+          {check.model?.name} v{check.model?.version}이(가) {check.release?.version}의 {check.split} split을 평가할 때 예측과 라벨이 어긋난 이미지부터 봅니다
+          · 평가한 이미지 {check.images.toLocaleString()}장 중 어긋난 것 {check.wrong.toLocaleString()}장. 숫자는 평가할 때의 라벨 기준이고, 이미지를
+          열면 예측을 겹쳐 보고 라벨로 넣을 수 있습니다.
+        </div>
+      )}
       <div className="pager">
         <button onClick={() => setPage(0)} disabled={page === 0} aria-label="첫 페이지">
           «
@@ -519,6 +548,13 @@ function ReleaseView({
                   <Icon name="edit" size={11} />
                 </span>
               )}
+              {item.check && item.check.missed + item.check.extra > 0 && (
+                <span className="check-mark" title={`모델이 못 찾은 라벨 ${item.check.missed} · 라벨에 없는 예측 ${item.check.extra} (평가할 때 기준)`}>
+                  {item.check.missed > 0 && `놓침 ${item.check.missed}`}
+                  {item.check.missed > 0 && item.check.extra > 0 && " · "}
+                  {item.check.extra > 0 && `더 ${item.check.extra}`}
+                </span>
+              )}
             </span>
             <span className="thumb-name" title={item.file_name}>
               {item.file_name}
@@ -575,6 +611,7 @@ function ReleaseView({
           colorOf={colorOf}
           classes={classes}
           task={task}
+          checkOp={suspect || undefined}
           onClose={() => setViewing(null)}
           onSaved={() => {
             void refresh();
