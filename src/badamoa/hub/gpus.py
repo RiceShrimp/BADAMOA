@@ -141,6 +141,10 @@ def board(db: Session, settings: HubSettings) -> dict[str, Any]:
                     for d in sorted(disks, key=lambda d: str(d.get("mount")))
                     if (d.get("total_gb") or 0) >= MIN_DISK_GB
                 ],
+                # Images taken from other nodes: where they are kept (as set, and in use), and this node's data port.
+                "cache_dir": node.cache_dir or "",
+                "cache": metrics.get("cache") or None,
+                "serve": metrics.get("serve") or None,
                 "last_seen_at": iso(node.last_seen_at),
                 "gpus": gpus,
             }

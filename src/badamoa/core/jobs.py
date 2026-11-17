@@ -46,6 +46,13 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
     spec.type: spec
     for spec in [
         JobTypeSpec(
+            type="data.sync",
+            title="이미지 받기",
+            description="학습할 노드가 버전의 이미지를 그 이미지가 있는 노드에서 직접 받아 둡니다(Hub를 거치지 않음).",
+            hidden=True,
+            params_schema={"type": "object", "properties": {"release_id": {"type": "string"}}},
+        ),
+        JobTypeSpec(
             type="system.info",
             title="시스템 정보",
             description="노드의 OS, CPU, 메모리, 디스크, GPU, 드라이버 정보를 수집합니다.",

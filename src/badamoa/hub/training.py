@@ -16,7 +16,7 @@ from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
 from badamoa.core.storage import Storage
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
-from . import catalog, registry, resources, services
+from . import catalog, registry, resources, services, transfers
 from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Release, ReleaseItem, StorageLocation
 from .config import HubSettings
 from .db import iso, utcnow
@@ -95,9 +95,14 @@ def start_run(
     tags: list[str] | None = None,
     note: str = "",
     sweep: dict[str, Any] | None = None,
+    nodes: list[str] | None = None,
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
+
+    ``nodes`` are the servers it may train on (none: the one holding the images). One of them
+    that has the images takes it as it is; if none has, one receives them first from the node
+    that holds them (``transfers``), without holding a GPU meanwhile.
 
     ``template`` and ``environment`` may be left empty: the project's default
     template and the template's default environment are used. ``base_model_id``
@@ -128,15 +133,28 @@ def start_run(
     chosen = sorted({int(c) for c in classes or []})
     if not set(chosen) <= known:
         raise ServiceError(400, f"라벨 공간 {space.name}에 없는 클래스 id가 있습니다: {sorted(set(chosen) - known)}")
-    node = data_node(db, release.id)
+    candidates, after = [data_node(db, release.id)], None
+    if nodes:
+        allowed = transfers.allowed_nodes(db, nodes)
+        have = transfers.holders(db, release.id)
+        ready = [n for n in allowed if n.id in have]
+        if ready:
+            candidates = ready
+        else:  # none has the images: one receives them first
+            receiver = transfers.pick_receiver(allowed)
+            transfers.check_route(candidates[0], receiver)
+            candidates, after = [receiver], transfers.sync_job(db, user, release.id, receiver, via).id
+    node = candidates[0]
     env = registry.environment_for_run(db, manifest, environment, node)
+    if env.get("path"):  # a registered environment is a folder on one server
+        candidates = [node]
     interrupted = get_run(db, resume_run_id) if resume_run_id else None
     base = None
     if base_model_id:
         base = get_model(db, base_model_id)
         if base.project_id != project.id or base.trainer != row.name:
             raise ServiceError(400, f"{row.title}로 만든 이 프로젝트의 모델에서만 이어서 학습할 수 있습니다.")
-    gpu_count = (1 if node.info.get("gpus") else 0) if gpus is None else gpus
+    gpu_count = (1 if any((n.info or {}).get("gpus") for n in candidates) else 0) if gpus is None else gpus
 
     # What the model is called: the chosen variant (yolo11n.pt → yolo11n), else the template itself.
     variant = Path(str(settings.get(manifest.variant, ""))).stem if manifest.variant else ""
@@ -166,6 +184,7 @@ def start_run(
             "gpus": gpu_count,
             "min_vram_mb": min_vram_mb,
             "model_name": _slug(model_name),
+            **({"nodes": list(dict.fromkeys(nodes))} if nodes else {}),
             **({"base_model": {"id": base.id, "name": base.name, "version": base.version}} if base else {}),
             **({"resumed_from": {"id": interrupted.id, "name": interrupted.name}} if interrupted else {}),
             **({"sweep": sweep} if sweep else {}),
@@ -204,10 +223,12 @@ def start_run(
             **({"init_weights": {"blob": base.blob, "file_name": base.file_name or "best.pt"}} if base else {}),
             **({"resume": {"job_id": interrupted.job_id or "", **interrupted.checkpoint}} if interrupted else {}),
         },
-        node.id,
+        node.id if len(candidates) == 1 else None,
         via=via,
         gpus=gpu_count,
         min_vram_mb=min_vram_mb,
+        nodes=[n.id for n in candidates] if len(candidates) > 1 else None,
+        after=after,
     )
     run.job_id = job.id
     services.audit(
@@ -244,6 +265,7 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,
         tags=tags_of(db, "run", [source.id]).get(source.id, []),
+        nodes=c.get("nodes") or None,
         via=via,
     )
 
@@ -284,6 +306,7 @@ def resume(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         resume_run_id=source.id,
         tags=tags_of(db, "run", [source.id]).get(source.id, []),
         note=source.note or "",
+        nodes=c.get("nodes") or None,
         via=via,
     )
 
@@ -598,6 +621,26 @@ def _settings_of(db: Session, run: Run) -> list[dict[str, Any]]:
     ]
 
 
+def _sync_view(db: Session, job: Job, node_names: dict[str, str] | None) -> dict[str, Any] | None:
+    first = transfers.waiting_for(db, job)
+    if first is None or first.type != "data.sync":
+        return None
+    names = node_names if node_names is not None else services.node_name_map(db)
+    p = (first.result or {}).get("progress") or {}
+    return {
+        "job_id": first.id,
+        "status": first.status,
+        "node_name": names.get(first.target_node_id or "", ""),
+        "items": p.get("items"),
+        "bytes": p.get("bytes"),
+        "done_items": p.get("done_items"),
+        "done_bytes": p.get("done_bytes"),
+        "cached_items": p.get("cached_items"),
+        "rate": p.get("rate"),
+        "eta_s": p.get("eta_s"),
+    }
+
+
 def run_view(
     db: Session,
     settings: HubSettings,
@@ -642,6 +685,8 @@ def run_view(
             if model
             else None
         ),
+        # Images on their way from the node that holds them, before the training can start.
+        "sync": _sync_view(db, job, node_names) if job and status == "queued" else None,
         "base_model": run.config.get("base_model"),  # the registered model this run started from, if any
         "resumed_from": run.config.get("resumed_from"),  # the interrupted run this one continues
         "sweep": run.config.get("sweep"),  # the search this run is part of: {"id", "name", "index"}

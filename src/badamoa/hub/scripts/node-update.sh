@@ -24,6 +24,13 @@ fi
 echo "==> updating badamoa node to $VERSION from $HUB_URL"
 uv tool install --force --python 3.12 --index "$HUB_URL/install/simple/" "badamoa==$VERSION"
 
+echo "==> opening TCP 8475 (other nodes take this node's registered images from here, not through the Hub)"
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw allow 8475/tcp comment "BADAMOA node data" >/dev/null || true
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  { firewall-cmd --permanent --add-port=8475/tcp && firewall-cmd --reload; } >/dev/null 2>&1 || true
+fi
+
 echo "==> restarting the service"
 systemctl restart badamoa-node
 

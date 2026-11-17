@@ -46,6 +46,10 @@ Write-Host "==> joining hub"
 & $badamoa node join --hub $HubUrl --token $Token
 if ($LASTEXITCODE -ne 0) { throw "join failed" }
 
+Write-Host "==> opening TCP 8475 (other nodes take this PC's registered images from here, not through the Hub)"
+Get-NetFirewallRule -DisplayName "BADAMOA node data" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName "BADAMOA node data" -Direction Inbound -Protocol TCP -LocalPort 8475 -Action Allow | Out-Null
+
 Write-Host "==> registering startup task"
 & $badamoa node install-service
 if ($LASTEXITCODE -ne 0) { throw "service install failed" }

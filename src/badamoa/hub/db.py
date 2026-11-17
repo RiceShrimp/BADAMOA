@@ -26,6 +26,7 @@ _ADDED_COLUMNS = [
     ("nodes", "reserved_gpus", "JSON DEFAULT '[]'"),
     ("users", "disabled_at", "DATETIME"),
     ("datasets", "task", "VARCHAR(32) DEFAULT ''"),
+    ("nodes", "cache_dir", "VARCHAR(512) DEFAULT ''"),
 ]
 
 

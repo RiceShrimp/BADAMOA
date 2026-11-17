@@ -23,7 +23,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import asks, cleanup, originals, registry, services, sweeps
+from . import asks, cleanup, originals, registry, services, sweeps, transfers
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -42,12 +42,55 @@ def register(body: RegisterRequest, db: Session = Depends(db_session)) -> Regist
 
 @router.post("/heartbeat", response_model=HeartbeatResponse)
 def heartbeat(
-    body: HeartbeatRequest, node: Node = Depends(current_node), db: Session = Depends(db_session)
+    body: HeartbeatRequest, request: Request, node: Node = Depends(current_node), db: Session = Depends(db_session)
 ) -> HeartbeatResponse:
-    cancel_ids = services.heartbeat(db, node, body)
+    seen = request.client.host if request.client else ""
+    cancel_ids = services.heartbeat(db, node, body, seen_from=seen)
     db.commit()
     days = cleanup.get_policy(db)["workdir_days"]
-    return HeartbeatResponse(cancel_job_ids=cancel_ids, hub_version=services.HUB_VERSION, workdir_days=days)
+    return HeartbeatResponse(
+        cancel_job_ids=cancel_ids, hub_version=services.HUB_VERSION, workdir_days=days, cache_dir=node.cache_dir or ""
+    )
+
+
+# ---- images from node to node (the Hub only arranges it) -------------------------------------
+
+
+@router.get("/jobs/{job_id}/sync/plan")
+def sync_plan(
+    job_id: str,
+    after: int = 0,
+    limit: int = transfers.PLAN_MAX,
+    node: Node = Depends(current_node),
+    db: Session = Depends(db_session),
+) -> dict[str, Any]:
+    page = transfers.plan(db, node, job_id, after, limit)
+    db.commit()
+    return page
+
+
+class SyncProgress(BaseModel):
+    progress: dict[str, Any]
+
+
+@router.post("/jobs/{job_id}/sync/progress")
+def sync_progress(
+    job_id: str, body: SyncProgress, node: Node = Depends(current_node), db: Session = Depends(db_session)
+) -> dict[str, bool]:
+    transfers.report(db, node, job_id, body.progress)
+    db.commit()
+    return {"ok": True}
+
+
+class Resolve(BaseModel):
+    grant: str
+    ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/transfers/resolve")
+def resolve_transfer(body: Resolve, node: Node = Depends(current_node), db: Session = Depends(db_session)) -> dict:
+    """The holding node asks which of the asked-for images a grant lets it send, and where they lie."""
+    return transfers.resolve(db, node, body.grant, body.ids)
 
 
 class QuestionsWait(BaseModel):
@@ -132,6 +175,7 @@ def complete(
 ) -> dict[str, Any]:
     job = services.complete_job(db, node, job_id, body)
     registry.on_job_finished(db, job)
+    transfers.on_job_finished(db, job)
     db.commit()
     sweeps.on_job_finished(job)  # a search may start its next run
     return {"status": job.status}

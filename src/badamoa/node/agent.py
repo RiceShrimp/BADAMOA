@@ -25,7 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
-from badamoa.node import browse, envs, remover, updater, workdirs
+from badamoa.node import browse, cache, dataserver, envs, remover, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -33,6 +33,15 @@ HEARTBEAT_INTERVAL_S = 10.0
 CLAIM_WAIT_S = 20.0
 LOG_FLUSH_INTERVAL_S = 1.0
 LOG_BATCH_MAX = 500
+CACHE_USAGE_EVERY_S = 1800.0  # how often the size of the received images is counted again
+
+
+def data_port() -> int:
+    """The port other nodes take images from (``BADAMOA_NODE_DATA_PORT``; 0 lets the system pick)."""
+    try:
+        return int(os.environ.get("BADAMOA_NODE_DATA_PORT", dataserver.DEFAULT_PORT))
+    except ValueError:
+        return dataserver.DEFAULT_PORT
 
 
 @dataclass
@@ -157,6 +166,12 @@ class NodeAgent:
         self._told_manual = False
         self._rejected = False  # the Hub no longer knows this node (deleted): said once, then quiet
         self._sampler = sysinfo.MetricsSampler(str(home))
+        # Images other nodes take from here, and where images taken from other nodes are kept.
+        self._data = dataserver.DataServer(config.hub_url, config.node_token, config.node_id, data_port())
+        self._cache_setting = ""  # the admin's choice, from the Hub ("" = the node picks)
+        self._cache_usage: tuple[int, int] | None = None
+        self._recount = threading.Event()
+        self._first_beat = threading.Event()  # the Hub's settings (where to keep images) are known
         self._client = httpx.Client(
             base_url=config.hub_url,
             headers={"Authorization": f"Bearer {config.node_token}"},
@@ -167,10 +182,18 @@ class NodeAgent:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._recount.set()
+        self._data.stop()
+
+    def cache_root(self) -> Path:
+        return cache.root(self.home, self._cache_setting)
 
     def run_forever(self) -> None:
         log.info("node %s → %s", self.config.node_id, self.config.hub_url)
+        self._data.start()
         threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True).start()
+        threading.Thread(target=self._count_cache, name="cache-usage", daemon=True).start()
+        self._first_beat.wait(15)  # a job taken before would not know the admin's settings yet
         threading.Thread(target=self._requests_loop, name="requests", daemon=True).start()
         backoff = 1.0
         while not self.stop_event.is_set():
@@ -214,11 +237,20 @@ class NodeAgent:
             try:
                 with self._lock:
                     running = list(self._running)
-                body: dict[str, Any] = {
-                    "agent_version": __version__,
-                    "metrics": self._sampler.sample(),
-                    "running_job_ids": running,
+                root = self.cache_root()
+                usage = self._cache_usage
+                metrics = {
+                    **self._sampler.sample(),
+                    "serve": self._data.info(),
+                    "cache": {
+                        "dir": str(root),
+                        "auto": not self._cache_setting,
+                        "free_gb": cache.free_gb(root),
+                        "bytes": usage[0] if usage else None,
+                        "files": usage[1] if usage else None,
+                    },
                 }
+                body: dict[str, Any] = {"agent_version": __version__, "metrics": metrics, "running_job_ids": running}
                 if not sent_info:
                     body["info"] = {**sysinfo.static_info(), "envs": envs.listing(self.home)}
                 resp = self._client.post("/api/agent/heartbeat", json=body, timeout=15)
@@ -226,11 +258,26 @@ class NodeAgent:
                     sent_info = True
                     reply = resp.json()
                     self._request_cancel(reply.get("cancel_job_ids", []))
+                    setting = str(reply.get("cache_dir") or "")
+                    if setting != self._cache_setting:
+                        self._cache_setting = setting
+                        self._recount.set()
+                    self._first_beat.set()
                     self._maybe_sweep(int(reply.get("workdir_days") or 0))
                     self._maybe_update(str(reply.get("hub_version") or ""))
             except httpx.HTTPError as e:
                 log.debug("heartbeat failed: %s", e)
             self.stop_event.wait(HEARTBEAT_INTERVAL_S)
+
+    def _count_cache(self) -> None:
+        """Now and then (and after images arrived), how much the received images take."""
+        while not self.stop_event.is_set():
+            try:
+                self._cache_usage = cache.usage(self.cache_root())
+            except OSError:
+                pass
+            self._recount.wait(CACHE_USAGE_EVERY_S)
+            self._recount.clear()
 
     # ---- keeping up with the Hub's version -------------------------------------
 
@@ -398,6 +445,7 @@ class NodeAgent:
                     env["BADAMOA_NODE_TOKEN"] = self.config.node_token
                     env["BADAMOA_JOB_ID"] = job_id
                     env["BADAMOA_NODE_HOME"] = str(self.home)
+                    env["BADAMOA_CACHE_DIR"] = str(self.cache_root())
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "badamoa.node.builtin", job["type"], str(params_path), str(result_path)],
                     stdout=subprocess.PIPE,
@@ -449,6 +497,8 @@ class NodeAgent:
             self._complete(job_id, status, result, error)
             if job["type"].startswith(("env.", "train.", "model.")):
                 self._envs_changed.set()
+            if job["type"] in ("data.sync", "train.run"):
+                self._recount.set()
             with self._lock:
                 self._running.pop(job_id, None)
             log.info("job %s %s", job_id, status)

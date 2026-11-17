@@ -17,6 +17,8 @@ schtasks /Delete /F /TN "BADAMOA Node" 2>$null | Out-Null
 Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($Root) } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
+Get-NetFirewallRule -DisplayName "BADAMOA node data" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+
 Write-Host "==> removing the program and its settings"
 foreach ($dir in @($Root, $Home_)) {
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }

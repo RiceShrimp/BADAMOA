@@ -52,6 +52,9 @@ export interface BoardNode {
   cpu?: { pct: number | null; cores: number | null; model: string | null };
   memory?: { used_gb: number; total_gb: number } | null;
   disks?: { mount: string; total_gb: number; free_gb: number; pct: number }[];
+  cache_dir?: string; // as an admin set it ("" = the node picks)
+  cache?: { dir: string; auto: boolean; free_gb: number | null; bytes: number | null; files: number | null } | null;
+  serve?: { port: number; addresses?: string[]; error?: string } | null;
   last_seen_at: string | null;
   gpus: BoardGpu[];
 }
@@ -452,6 +455,67 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
   );
 }
 
+/** "/data" → "/data/badamoa-cache", "D:\\" → "D:\\badamoa-cache" */
+function cacheIn(mount: string): string {
+  const windows = /^[A-Za-z]:/.test(mount);
+  const sep = windows ? "\\" : "/";
+  return mount.endsWith("/") || mount.endsWith("\\") ? `${mount}badamoa-cache` : `${mount}${sep}badamoa-cache`;
+}
+
+/** Where images received from other nodes are kept on this one: a disk, a typed folder, or the node's own pick. */
+function CachePlace({ node, value, onChange }: { node: BoardNode; value: string; onChange: (dir: string) => void }) {
+  const disks = (node.disks ?? []).filter((d) => d.total_gb >= 2);
+  const options = disks.map((d) => ({ dir: cacheIn(d.mount), disk: d }));
+  const [typing, setTyping] = useState(value !== "" && !options.some((o) => o.dir === value));
+  const cache = node.cache;
+  const choice = typing ? "\u0000typed" : value;
+  return (
+    <>
+      <div className="field-label">받은 이미지 보관 위치</div>
+      <p className="muted small">
+        다른 노드에 있는 이미지로 이 노드에서 학습할 때, 그 이미지를 받아 두는 곳입니다(같은 이미지는 한 번만). 수백 GB가 될 수 있으니
+        여유 있는 디스크를 고르세요.
+      </p>
+      <div className={typing ? "pick-or-type two" : "pick-or-type"}>
+        <select
+          value={choice}
+          onChange={(e) => {
+            const v = e.target.value;
+            setTyping(v === "\u0000typed");
+            onChange(v === "\u0000typed" ? "" : v);
+          }}
+          aria-label="받은 이미지 보관 위치"
+        >
+          <option value="">
+            자동 — 남은 공간이 가장 많은 디스크{cache?.auto && cache.dir ? ` (지금: ${cache.dir})` : ""}
+          </option>
+          {options.map((o) => (
+            <option key={o.dir} value={o.dir}>
+              {o.dir} · 남은 {Math.round(o.disk.free_gb).toLocaleString()} / {Math.round(o.disk.total_gb).toLocaleString()} GB
+            </option>
+          ))}
+          <option value={"\u0000typed"}>직접 입력…</option>
+        </select>
+        {typing && (
+          <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="/data/badamoa-cache" aria-label="보관 폴더" autoFocus />
+        )}
+      </div>
+      <div className="muted small">
+        {cache?.files ? `받아 둔 이미지 ${cache.files.toLocaleString()}장 · ${fileSizeGb(cache.bytes ?? 0)}` : "아직 받아 둔 이미지가 없습니다"}
+        {cache?.free_gb != null ? ` · 그 디스크 남은 공간 ${cache.free_gb.toLocaleString()} GB` : ""}
+        {node.serve?.port ? ` · 이미지 전송 포트 ${node.serve.port}` : ""}
+      </div>
+      {node.serve && !node.serve.port && (
+        <div className="small bad-text">다른 노드가 이 노드의 이미지를 받을 수 없습니다: {node.serve.error || "이미지 전송 포트가 닫혀 있습니다"}</div>
+      )}
+    </>
+  );
+}
+
+function fileSizeGb(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
 function RolePicker({ roles, onChange }: { roles: string[]; onChange: (roles: string[]) => void }) {
   return (
     <div className="checks">
@@ -709,6 +773,7 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
   const [roles, setRoles] = useState(node.roles);
   const [enabled, setEnabled] = useState(node.enabled);
   const [kept, setKept] = useState<number[]>(node.gpus.filter((g) => g.reserved).map((g) => g.index));
+  const [cacheDir, setCacheDir] = useState(node.cache_dir ?? "");
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -756,6 +821,7 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
           </div>
         </>
       )}
+      <CachePlace node={node} value={cacheDir} onChange={setCacheDir} />
       {node.is_local && <p className="muted small">Hub가 있는 이 PC의 노드는 삭제할 수 없습니다. 쓰지 않으려면 비활성화하세요.</p>}
       {error && <div className="error">{error}</div>}
       <div className="modal-actions">
@@ -769,7 +835,11 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
         <button
           className="primary"
           disabled={roles.length === 0}
-          onClick={() => run(() => api(`/nodes/${node.id}`, { method: "PATCH", body: { name, roles, enabled, reserved_gpus: kept } }))}
+          onClick={() =>
+            run(() =>
+              api(`/nodes/${node.id}`, { method: "PATCH", body: { name, roles, enabled, reserved_gpus: kept, cache_dir: cacheDir.trim() } }),
+            )
+          }
         >
           저장
         </button>

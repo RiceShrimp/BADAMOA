@@ -32,7 +32,8 @@ import httpx
 from badamoa import templates as shipped
 from badamoa.core import templates as template_format
 
-from . import envs, exporter
+from . import cache as image_cache
+from . import envs, exporter, sync
 
 EVENT_PREFIX = "@@badamoa "
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # colours and cursor moves; the job log is plain text
@@ -235,9 +236,22 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         def stage(name: str) -> None:
             post("/report", {"event": "stage", "data": {"stage": name}})
 
-        # 1. dataset
+        # 1. dataset (images registered on another node come from its cache here, fetched first if missing)
         stage("data")
-        header, items = manifest_stream(client, base)
+        folder = Path(os.environ.get("BADAMOA_CACHE_DIR") or node_home / "cache")
+        sync.receive(client, job_id, folder)
+        header, listed = manifest_stream(client, base)
+        local = set(header["locations"])
+        locations = {**header["locations"], "cache": str(folder)}
+
+        def placed(stream: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+            for item in stream:
+                if str(item.get("location_id")) not in local:  # not registered here: the copy received
+                    ext = Path(item["rel_path"]).suffix
+                    item = {**item, "location_id": "cache", "rel_path": image_cache.rel_of(item["sha256"], ext)}
+                yield item
+
+        items = placed(listed)
         print(f"{header['dataset']} {header['version']} 버전을 학습 형식으로 준비합니다: {work / 'data'}")
         options = exporter.ExportOptions(
             classes=[int(c) for c in params.get("classes") or []],
@@ -249,7 +263,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         build = exporter.BUILDERS.get(data_format)
         if build is None:
             raise RuntimeError(f"이 노드의 BADAMOA는 데이터 형식 {data_format}을 지원하지 않습니다. 노드를 업데이트하세요.")
-        summary = build(items, header["classes"], header["locations"], work / "data", options)
+        summary = build(items, header["classes"], locations, work / "data", options)
         counts, left_out = summary["items"], summary["excluded"]
         print(
             f"이미지 train {counts['train']:,} · val {counts['val']:,} · test {counts['test']:,} · "

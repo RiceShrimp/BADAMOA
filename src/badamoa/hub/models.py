@@ -73,8 +73,35 @@ class Node(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # GPU indices kept for people: BADAMOA never places a job on them
     reserved_gpus: Mapped[list[int]] = mapped_column(JSON, default=list)
+    # Where images copied from other nodes are kept ("" = the node picks the disk with the most room).
+    cache_dir: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TransferGrant(Base):
+    """Leave for one node to take a version's images straight from the node that holds them, while a job runs."""
+
+    __tablename__ = "transfer_grants"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(32), index=True)
+    release_id: Mapped[str] = mapped_column(String(32))
+    source_node_id: Mapped[str] = mapped_column(String(32))
+    dest_node_id: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class NodeRelease(Base):
+    """A version whose images a node received in full (its cache may since have let some go)."""
+
+    __tablename__ = "node_releases"
+
+    node_id: Mapped[str] = mapped_column(ForeignKey("nodes.id", ondelete="CASCADE"), primary_key=True)
+    release_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    items: Mapped[int] = mapped_column(Integer, default=0)
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Job(Base):

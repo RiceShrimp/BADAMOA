@@ -297,6 +297,7 @@ def start_sweep(
     val_fraction: float = 0.2,
     gpus: int | None = None,
     min_vram_mb: int = 0,
+    nodes: list[str] | None = None,
     base_model_id: str = "",
     tags: list[str] | None = None,
     via: str = "api",
@@ -342,6 +343,7 @@ def start_sweep(
             "val_fraction": val_fraction,
             "gpus": gpus,
             "min_vram_mb": min_vram_mb,
+            "nodes": list(dict.fromkeys(nodes or [])),
             "base_model_id": base_model_id,
             "tags": training.clean_tags(tags or []),
         },
@@ -430,6 +432,7 @@ def _start_next(db: Session, sweep: Sweep, via: str = "sweep") -> None:
                 min_vram_mb=s.get("min_vram_mb", 0),
                 base_model_id=s.get("base_model_id", ""),
                 tags=s.get("tags"),
+                nodes=s.get("nodes") or None,
                 sweep={"id": sweep.id, "name": sweep.name, "index": started},
                 via=via,
             )

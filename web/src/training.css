@@ -1093,3 +1093,59 @@ button.overlay-picture:hover {
 .op-table > .eyebrow {
   margin-bottom: 6px;
 }
+
+/* where a run may train */
+.node-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.node-pick {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.node-pick label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 400;
+}
+.node-pick label:last-child {
+  border-bottom: 0;
+}
+.node-pick label.off {
+  opacity: 0.6;
+}
+.node-pick-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* images on their way to the node a run will train on */
+.sync-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sync-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.sync-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.6s ease;
+}

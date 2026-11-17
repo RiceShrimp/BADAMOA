@@ -258,10 +258,10 @@ def node_status(node: Node, settings: HubSettings, now: datetime | None = None) 
     return "offline"
 
 
-def heartbeat(db: Session, node: Node, req: HeartbeatRequest) -> list[str]:
+def heartbeat(db: Session, node: Node, req: HeartbeatRequest, seen_from: str = "") -> list[str]:
     now = utcnow()
     node.last_seen_at = now
-    node.metrics = req.metrics
+    node.metrics = {**req.metrics, "seen_from": seen_from} if seen_from else req.metrics
     node.agent_version = req.agent_version
     resources.record(db, node.id, req.metrics, now)
     resources.record_people(db, node, resources.assignments(db).get(node.id), now)
@@ -313,6 +313,7 @@ def serialize_node(
         },
         "metrics": node.metrics or {},
         "reserved_gpus": node.reserved_gpus or [],
+        "cache_dir": node.cache_dir or "",  # as an admin set it; metrics.cache has the folder in use
         "gpu_states": resources.gpu_states(node, settings, assigned),
     }
 
@@ -344,9 +345,17 @@ def update_node(
     enabled: bool | None = None,
     labels: dict[str, Any] | None = None,
     reserved_gpus: list[int] | None = None,
+    cache_dir: str | None = None,
 ) -> Node:
     require_admin(user)
     node = get_node(db, node_id)
+    if cache_dir is not None:
+        cache_dir = cache_dir.strip()
+        absolute = cache_dir.startswith(("/", "\\")) or (len(cache_dir) > 2 and cache_dir[1:3] in (":\\", ":/"))
+        if cache_dir and not absolute:
+            example = "/data/badamoa-cache, D:\\badamoa-cache"
+            raise ServiceError(400, f"받은 이미지 보관 위치는 절대 경로로 적으세요 (예: {example}).")
+        node.cache_dir = cache_dir[:512]
     if reserved_gpus is not None:
         known = {g.get("index") for g in (node.info or {}).get("gpus") or []}
         node.reserved_gpus = sorted({int(i) for i in reserved_gpus if int(i) in known})
@@ -358,7 +367,10 @@ def update_node(
         node.enabled = enabled
     if labels is not None:
         node.labels = labels
-    audit(db, user.id, "api", "node.update", node.id, name=name, roles=roles, enabled=enabled, reserved=reserved_gpus)
+    audit(
+        db, user.id, "api", "node.update", node.id,
+        name=name, roles=roles, enabled=enabled, reserved=reserved_gpus, cache_dir=cache_dir,
+    )  # fmt: skip
     return node
 
 
@@ -391,7 +403,10 @@ def create_job(
     via: str = "api",
     gpus: int | None = None,
     min_vram_mb: int = 0,
+    nodes: list[str] | None = None,
+    after: str | None = None,
 ) -> Job:
+    """``nodes``: the job may run on any of these (``node_id`` pins one). ``after``: it starts once that job succeeded."""
     try:
         clean = validate_params(job_type, params or {})
     except ValueError as e:
@@ -407,6 +422,10 @@ def create_job(
         node = get_node(db, node_id)
         if not node.enabled:
             raise ServiceError(400, "비활성화된 노드에는 작업을 보낼 수 없습니다.")
+    if nodes:
+        requirements["nodes"] = list(dict.fromkeys(nodes))
+    if after:
+        requirements["after"] = after
     job = Job(
         type=job_type,
         params=clean,
@@ -425,6 +444,8 @@ def _node_matches(job: Job, node: Node) -> bool:
     if job.target_node_id and job.target_node_id != node.id:
         return False
     req = job.requirements or {}
+    if req.get("nodes") and node.id not in req["nodes"]:
+        return False
     if any(role not in node.roles for role in req.get("roles", [])):
         return False
     if req.get("os") and req["os"] != node.os:
@@ -443,6 +464,10 @@ def try_claim(db: Session, node: Node, settings: HubSettings) -> Job | None:
         if not _node_matches(job, node):
             continue
         req = job.requirements or {}
+        if req.get("after"):
+            first = db.get(Job, req["after"])
+            if first is not None and first.status != "succeeded":
+                continue  # still waiting for what it needs (the images it trains on)
         gpu_indices: list[int] = []
         if req.get("gpus"):
             free = resources.free_gpus(node, settings, assigned, req.get("min_vram_mb", 0))
@@ -568,7 +593,15 @@ def job_view(db: Session, settings: HubSettings, job: Job, node_names: dict[str,
 
 def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
     """Why a queued job has not started yet, in words the user can act on."""
+    from . import transfers
+
+    first = transfers.waiting_for(db, job)
+    if first is not None:
+        return transfers.progress_text(first)
     nodes = list(db.scalars(select(Node)))
+    allowed = (job.requirements or {}).get("nodes")
+    if allowed:
+        nodes = [n for n in nodes if n.id in allowed]
     if job.target_node_id:
         nodes = [n for n in nodes if n.id == job.target_node_id]
         if not nodes:

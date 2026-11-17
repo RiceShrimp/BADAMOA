@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
-from . import catalog, lineage, modelops, services, sweeps, training
+from . import catalog, lineage, modelops, services, sweeps, training, transfers
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -50,6 +50,7 @@ class NewRun(BaseModel):
     base_model_id: str = ""  # continue from this registered model's weights
     tags: list[str] = Field(default_factory=list)
     note: str = ""
+    nodes: list[str] = Field(default_factory=list)  # servers it may train on; empty = where the images are
 
 
 class RunUpdate(BaseModel):
@@ -95,6 +96,16 @@ class NewSweep(BaseModel):
     min_vram_mb: int = 0
     base_model_id: str = ""
     tags: list[str] = Field(default_factory=list)
+    nodes: list[str] = Field(default_factory=list)  # servers its runs may train on
+
+
+@router.get("/releases/{release_id}/nodes")
+def release_nodes(
+    release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """The servers a run on this version could train on, and which already have its images."""
+    catalog.get_release(db, release_id)
+    return transfers.node_choices(db, hub.settings, release_id)
 
 
 @router.post("/sweeps")

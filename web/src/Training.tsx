@@ -19,6 +19,8 @@ import {
   type ProjectTags,
   type Run,
   type RunDetail,
+  type NodeChoices,
+  type RunSync,
   STAGE_LABEL,
   type Template,
   type TemplateParam,
@@ -217,8 +219,8 @@ function settingValue(value: unknown): string {
 
 /** Where a waiting or running job is: one line, in plain words. */
 function Stages({ run }: { run: RunDetail }) {
-  const order = ["queued", "data", "env", "train", "upload"];
-  const current = run.status === "queued" ? "queued" : run.stage || "data";
+  const order = [run.sync ? "sync" : "queued", "data", "env", "train", "upload"];
+  const current = run.status === "queued" ? order[0] : run.stage || "data";
   const at = order.indexOf(current);
   return (
     <ol className="stages" aria-label="진행 단계">
@@ -226,6 +228,9 @@ function Stages({ run }: { run: RunDetail }) {
         <li key={key} className={i < at ? "done" : i === at ? "now" : ""} aria-current={i === at ? "step" : undefined}>
           <i />
           {STAGE_LABEL[key]}
+          {key === "sync" && i === at && run.sync?.bytes ? (
+            <span className="num">{Math.floor(((run.sync.done_bytes ?? 0) / run.sync.bytes) * 100)}%</span>
+          ) : null}
           {key === "train" && i === at && run.epochs > 0 && (
             <span className="num">
               {run.epoch}/{run.epochs}
@@ -234,6 +239,116 @@ function Stages({ run }: { run: RunDetail }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+const GB = 1024 ** 3;
+/** "320.4 GB", or "7.2 MB" below a gigabyte */
+const gbText = (bytes: number) =>
+  bytes >= GB
+    ? `${(bytes / GB).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`
+    : `${(bytes / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 1 })} MB`;
+
+/** "약 25분", "약 3시간 10분" */
+function etaText(seconds: number): string {
+  if (seconds < 60) return "1분 안";
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `약 ${minutes}분` : `약 ${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+}
+
+/** A run waiting for its images: how far the copy from the node that holds them got. */
+function SyncProgress({ sync }: { sync: RunSync }) {
+  const total = sync.bytes ?? 0;
+  const done = sync.done_bytes ?? 0;
+  const pct = total ? Math.min(100, (done / total) * 100) : 0;
+  const parts = total
+    ? [
+        `${Math.floor(pct)}%`,
+        `${gbText(done)} / ${gbText(total)}`,
+        sync.rate ? `${Math.round(sync.rate / 1024 ** 2).toLocaleString()} MB/s` : null,
+        sync.eta_s ? `남은 시간 ${etaText(sync.eta_s)}` : null,
+      ].filter(Boolean)
+    : ["준비 중"];
+  return (
+    <div className="notice sync-progress">
+      <div>
+        <strong>{sync.node_name || "학습할 노드"}가 이미지를 받는 중</strong>{" "}
+        <span className="muted small">— 이미지가 있는 노드에서 직접 받습니다. 받는 동안 GPU는 잡지 않습니다.</span>
+      </div>
+      <div className="sync-bar">
+        <i style={{ width: `${pct}%` }} />
+      </div>
+      <div className="small num">{parts.join(" · ")}</div>
+    </div>
+  );
+}
+
+/** Where a run may train: automatically where the images are, or on the servers picked. */
+function NodeField({
+  choices,
+  mode,
+  onMode,
+  picked,
+  onPicked,
+}: {
+  choices: NodeChoices;
+  mode: "auto" | "pick";
+  onMode: (mode: "auto" | "pick") => void;
+  picked: string[];
+  onPicked: (ids: string[]) => void;
+}) {
+  const source = choices.nodes.find((n) => n.id === choices.source);
+  const chosen = choices.nodes.filter((n) => picked.includes(n.id));
+  const ready = chosen.filter((n) => n.images);
+  // The Hub's pick when none of them has the images: online first, then the one with the most GPUs.
+  const receiver = [...chosen].sort((a, b) => Number(b.status === "online") - Number(a.status === "online") || b.gpus - a.gpus)[0];
+  const toggle = (id: string) => onPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  return (
+    <div className="node-field">
+      <label>
+        학습할 노드
+        <select value={mode} onChange={(e) => onMode(e.target.value as "auto" | "pick")}>
+          <option value="auto">자동 — 이미지가 있는 {source?.name ?? "노드"}</option>
+          <option value="pick">노드 고르기</option>
+        </select>
+      </label>
+      {mode === "pick" && (
+        <>
+          <div className="node-pick">
+            {choices.nodes.map((n) => {
+              const blocked = !n.enabled ? "작업 받지 않음" : !n.images && !n.can_receive ? "0.37.0 이상으로 업데이트 필요" : "";
+              return (
+                <label key={n.id} className={blocked ? "off" : ""}>
+                  <input type="checkbox" checked={picked.includes(n.id)} disabled={Boolean(blocked)} onChange={() => toggle(n.id)} />
+                  <span className="node-pick-name">
+                    <i className={`dot ${n.status}`} />
+                    {n.name}
+                  </span>
+                  <span className="muted small">{n.gpus ? `빈 GPU ${n.gpus_free}/${n.gpus}` : "GPU 없음"}</span>
+                  <span className={`tag ${n.images ? "" : "muted"}`}>
+                    {blocked || (n.images === "registered" ? "이미지 있음" : n.images === "received" ? "받아 둠" : `받아야 함 ${gbText(choices.bytes)}`)}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {chosen.length > 0 && ready.length > 0 && (
+            <p className="muted small">
+              이미지가 있는 {ready.map((n) => n.name).join(", ")}에서 학습합니다{ready.length > 1 ? " (GPU가 먼저 비는 쪽)" : ""}.
+            </p>
+          )}
+          {chosen.length > 0 && ready.length === 0 && receiver && (
+            <p className="muted small">
+              고른 노드에 이미지가 없어, {receiver.name}가 먼저 {source?.name ?? "이미지가 있는 노드"}에서 {choices.items.toLocaleString()}장 (
+              {gbText(choices.bytes)})을 직접 받은 뒤 학습합니다. 받는 동안 GPU는 잡지 않고, 한 번 받으면 다음부터는 바로 시작합니다.
+              {receiver.cache_free_gb != null && receiver.cache_free_gb * GB < choices.bytes && (
+                <span className="bad-text"> 보관 위치의 남은 공간({receiver.cache_free_gb} GB)이 모자랍니다 — 노드 설정에서 바꾸세요.</span>
+              )}
+            </p>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -437,7 +552,8 @@ function RunView({ runId }: { runId: string }) {
 
       {failure && <div className="error">{failure}</div>}
       {active && <Stages run={run} />}
-      {run.status === "queued" && run.wait_reason && <div className="notice">{run.wait_reason}</div>}
+      {run.status === "queued" && run.sync && <SyncProgress sync={run.sync} />}
+      {run.status === "queued" && !run.sync && run.wait_reason && <div className="notice">{run.wait_reason}</div>}
       {run.error && <div className="error">{run.error} 아래 로그에서 원인을 확인하세요.</div>}
 
       <div className="stats five metrics">
@@ -907,6 +1023,9 @@ function NewRun({
   // What the chosen version's dataset is labelled for decides the templates on offer.
   const runTask = tree?.find((d) => d.releases.some((r) => r.id === release))?.task ?? task;
   const [goalMetric, setGoalMetric] = useState(keyMetrics(runTask)[0]);
+  const [choices, setChoices] = useState<NodeChoices | null>(null);
+  const [nodeMode, setNodeMode] = useState<"auto" | "pick">("auto");
+  const [pickedNodes, setPickedNodes] = useState<string[]>([]);
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -931,8 +1050,10 @@ function NewRun({
 
   useEffect(() => {
     setChosen([]);
+    setChoices(null);
     if (!release) return setClasses([]);
     void api<ReleaseInfo>(`/releases/${release}`).then((info) => setClasses(info.label_space.classes));
+    void api<NodeChoices>(`/releases/${release}/nodes`).then(setChoices);
   }, [release]);
 
   const template = templates?.find((t) => t.name === templateName);
@@ -981,6 +1102,12 @@ function NewRun({
       delete params[t.name];
     }
     const ranged = Object.values(space).some((s) => s.min !== undefined);
+    if (nodeMode === "pick" && pickedNodes.length === 0) {
+      setError("학습할 노드를 하나 이상 고르세요.");
+      setBusy(false);
+      return;
+    }
+    const nodes = nodeMode === "pick" ? pickedNodes : [];
     try {
       if (trials.length > 0) {
         const sweep = await api<{ id: string }>("/sweeps", {
@@ -998,6 +1125,7 @@ function NewRun({
             classes: chosen,
             name: extra.name,
             base_model_id: extra.base,
+            nodes,
           },
         });
         onSweep(sweep.id);
@@ -1014,6 +1142,7 @@ function NewRun({
           name: extra.name,
           model_name: extra.model_name,
           base_model_id: extra.base,
+          nodes,
         },
       });
       onStarted(run);
@@ -1077,6 +1206,15 @@ function NewRun({
           )}
           {template?.description && templates && templates.length > 1 && <p className="muted small">{template.description}</p>}
           {basic.length > 0 && <div className="form-row">{basic.map(field)}</div>}
+          {choices && (
+            <NodeField
+              choices={choices}
+              mode={nodeMode}
+              onMode={setNodeMode}
+              picked={pickedNodes}
+              onPicked={setPickedNodes}
+            />
+          )}
 
           <details className="advanced">
             <summary>
@@ -1177,7 +1315,7 @@ function NewRun({
           )}
 
           <p className="muted small">
-            학습할 서버는 자동으로 정해집니다. 그 서버에서 처음 학습할 때는 환경을 준비하느라 몇 분 더 걸릴 수 있습니다.
+            어느 서버든 처음 학습할 때는 환경을 준비하느라 몇 분 더 걸릴 수 있습니다.
             {template?.license ? ` ${template.title}은 ${template.license} 라이선스입니다 — 제품에 탑재하기 전에 확인하세요.` : ""}
           </p>
           {error && <div className="error">{error}</div>}

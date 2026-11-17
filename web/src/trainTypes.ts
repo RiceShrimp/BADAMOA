@@ -71,6 +71,41 @@ export interface RunConfig {
   val_fraction?: number;
   gpus?: number;
   model_name?: string;
+  nodes?: string[]; // servers it may train on; none: where the images are
+}
+
+/** Images on their way to the node a run will train on (from the node that holds them, not through the Hub). */
+export interface RunSync {
+  job_id: string;
+  status: string;
+  node_name: string;
+  items: number | null;
+  bytes: number | null;
+  done_items: number | null;
+  done_bytes: number | null;
+  cached_items: number | null;
+  rate: number | null;
+  eta_s: number | null;
+}
+
+/** A server a run on some version could train on. */
+export interface NodeChoice {
+  id: string;
+  name: string;
+  status: "online" | "offline" | "disabled";
+  enabled: boolean;
+  gpus: number;
+  gpus_free: number;
+  images: "" | "registered" | "received"; // "": they would be copied there first
+  cache_free_gb: number | null;
+  can_receive: boolean;
+}
+
+export interface NodeChoices {
+  items: number;
+  bytes: number;
+  source: string;
+  nodes: NodeChoice[];
 }
 
 export interface Run {
@@ -82,6 +117,7 @@ export interface Run {
   environment: { kind: string; name: string; id?: string };
   status: RunStatus;
   stage: "" | "data" | "env" | "train" | "upload";
+  sync?: RunSync | null;
   job_id: string | null;
   node_name: string | null;
   wait_reason: string | null;
@@ -269,6 +305,7 @@ export const ACTIVE: RunStatus[] = ["queued", "running"];
 
 export const STAGE_LABEL: Record<string, string> = {
   queued: "대기",
+  sync: "이미지 받기",
   data: "데이터 준비",
   env: "환경 준비",
   train: "학습",

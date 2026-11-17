@@ -35,6 +35,10 @@ Write-Host "==> updating badamoa node to $Version from $HubUrl"
 if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }
 
 Write-Host "==> starting the node"
+Write-Host "==> opening TCP 8475 (other nodes take this PC's registered images from here, not through the Hub)"
+Get-NetFirewallRule -DisplayName "BADAMOA node data" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName "BADAMOA node data" -Direction Inbound -Protocol TCP -LocalPort 8475 -Action Allow | Out-Null
+
 schtasks /Run /TN "BADAMOA Node" | Out-Null
 
 Write-Host "BADAMOA node updated to $Version (same registration). From now on it follows the Hub by itself."

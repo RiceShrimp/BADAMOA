@@ -15,6 +15,17 @@ from badamoa.hub.config import HubSettings
 ADMIN = {"username": "admin", "password": "badamoa-test-pw"}
 
 
+@pytest.fixture(autouse=True)
+def _quiet_nodes(monkeypatch):
+    """Node agents in tests: their image port on loopback, any free port (no firewall prompt, no clashes),
+    and images received kept in the node's own folder, never on a real disk the machine has."""
+    from badamoa.node import cache
+
+    monkeypatch.setenv("BADAMOA_NODE_DATA_PORT", "0")
+    monkeypatch.setenv("BADAMOA_NODE_DATA_HOST", "127.0.0.1")
+    monkeypatch.setattr(cache, "choose", lambda home: home / "cache")
+
+
 @pytest.fixture
 def settings(tmp_path) -> HubSettings:
     return HubSettings(home=tmp_path / "hub", web_dir=tmp_path / "no-web")

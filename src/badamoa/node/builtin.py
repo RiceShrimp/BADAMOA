@@ -72,6 +72,12 @@ def data_export(params: dict[str, Any]) -> dict[str, Any]:
     return exporter.run_download(params)
 
 
+def data_sync(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import sync
+
+    return sync.run(params)
+
+
 def train_run(params: dict[str, Any]) -> dict[str, Any]:
     from badamoa.node import trainer
 
@@ -118,6 +124,7 @@ HANDLERS = {
     "debug.sleep": debug_sleep,
     "data.import": data_import,
     "data.export": data_export,
+    "data.sync": data_sync,
     "train.run": train_run,
     "model.run": model_run,
     "env.check": env_check,

@@ -43,6 +43,8 @@ class HeartbeatResponse(BaseModel):
     hub_version: str
     # Work folders older than this many days that no job is using go (0: keep them).
     workdir_days: int = 0
+    # Where to keep images copied from other nodes, as an admin set it ("" = the node chooses).
+    cache_dir: str = ""
 
 
 class ClaimRequest(BaseModel):

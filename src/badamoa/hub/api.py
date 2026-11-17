@@ -259,6 +259,7 @@ class NodePatch(BaseModel):
     enabled: bool | None = None
     labels: dict[str, Any] | None = None
     reserved_gpus: list[int] | None = None  # GPU indices kept for people
+    cache_dir: str | None = None  # where images copied from other nodes go ("" = the node picks)
 
 
 @router.get("/node-update-commands")
