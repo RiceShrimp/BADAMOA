@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" role="img" aria-label="BADAMOA — gather a sea of data into models">
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06131b"/>
+      <stop offset="0.55" stop-color="#082430"/>
+      <stop offset="1" stop-color="#0b3441"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4fd0e2" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#4fd0e2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="curveFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4fd0e2" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#4fd0e2" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="card"><rect width="880" height="300" rx="20"/></clipPath>
+    <style>
+      .ko { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", sans-serif; }
+      .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, "SFMono-Regular", monospace; }
+    </style>
+  </defs>
+
+  <g clip-path="url(#card)">
+    <rect width="880" height="300" fill="url(#sea)"/>
+    <!-- waves -->
+    <path d="M0 236 C 90 214, 170 214, 260 236 S 430 258, 520 236 S 690 214, 780 236 S 860 252, 880 246 V300 H0 Z" fill="#0f4a57" opacity="0.55"/>
+    <path d="M0 256 C 100 238, 190 240, 290 258 S 470 276, 570 256 S 760 236, 880 258 V300 H0 Z" fill="#12a3b5" opacity="0.22"/>
+    <path d="M0 274 C 120 262, 220 264, 330 278 S 540 292, 650 276 S 820 262, 880 272 V300 H0 Z" fill="#4fd0e2" opacity="0.18"/>
+    <!-- bubbles -->
+    <g fill="#4fd0e2">
+      <circle cx="470" cy="70" r="2.5" opacity="0.5"/>
+      <circle cx="488" cy="104" r="1.6" opacity="0.4"/>
+      <circle cx="455" cy="132" r="3.2" opacity="0.25"/>
+      <circle cx="40" cy="40" r="1.8" opacity="0.35"/>
+    </g>
+  </g>
+  <rect x="0.5" y="0.5" width="879" height="299" rx="19.5" fill="none" stroke="#1d4652"/>
+
+  <!-- logo + title -->
+  <g transform="translate(44 52)">
+    <rect width="64" height="64" rx="18" fill="#12a3b5"/>
+    <path d="M12 26c5-6 8.4-6 13.4 0s8.2 6 13.2 0 8.4-6 13.4 0M12 40c5-6 8.4-6 13.4 0s8.2 6 13.2 0 8.4-6 13.4 0" fill="none" stroke="#fff" stroke-width="4.8" stroke-linecap="round"/>
+  </g>
+  <text x="126" y="98" class="ko" font-size="50" font-weight="800" fill="#f2fbfd" letter-spacing="1">BADAMOA</text>
+  <text x="129" y="128" class="ko" font-size="19" font-weight="600" fill="#4fd0e2" letter-spacing="2">바다모아</text>
+
+  <text x="46" y="172" class="ko" font-size="25" font-weight="700" fill="#e4f4f7">Gather a sea of data into models</text>
+  <text x="46" y="202" class="ko" font-size="15" fill="#9fc3cc">Self-hosted vision MLOps · data, training, evaluation and models</text>
+  <text x="46" y="230" class="mono" font-size="10.5" fill="#6f9aa5"><tspan fill="#4fd0e2" font-weight="700">B</tspan>uild · <tspan fill="#4fd0e2" font-weight="700">A</tspan>nnotate · <tspan fill="#4fd0e2" font-weight="700">D</tspan>evelop · <tspan fill="#4fd0e2" font-weight="700">A</tspan>utomate  /  <tspan fill="#4fd0e2" font-weight="700">M</tspan>LOps <tspan fill="#4fd0e2" font-weight="700">O</tspan>rchestration &amp; <tspan fill="#4fd0e2" font-weight="700">A</tspan>gents</text>
+
+  <!-- mini app window -->
+  <g transform="translate(548 34)">
+    <rect width="296" height="206" rx="14" fill="#0b1a21" stroke="#235361"/>
+    <circle cx="18" cy="17" r="4" fill="#ff8a80" opacity="0.8"/>
+    <circle cx="32" cy="17" r="4" fill="#f0c35a" opacity="0.8"/>
+    <circle cx="46" cy="17" r="4" fill="#6fd69a" opacity="0.8"/>
+    <text x="62" y="21" class="mono" font-size="10" fill="#6f9aa5">coco128 · mAP50-95</text>
+    <line x1="0" y1="32" x2="296" y2="32" stroke="#1b3a44"/>
+
+    <!-- chart -->
+    <g transform="translate(16 46)">
+      <g stroke="#173540" stroke-width="1">
+        <line x1="0" y1="0" x2="164" y2="0"/>
+        <line x1="0" y1="36" x2="164" y2="36"/>
+        <line x1="0" y1="72" x2="164" y2="72"/>
+        <line x1="0" y1="108" x2="164" y2="108"/>
+      </g>
+      <path d="M0 106 C 16 97, 28 74, 46 62 S 82 36, 110 28 S 146 19, 164 16 V108 H0 Z" fill="url(#curveFill)"/>
+      <path d="M0 106 C 16 97, 28 74, 46 62 S 82 36, 110 28 S 146 19, 164 16" fill="none" stroke="#4fd0e2" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 107 C 18 102, 32 89, 50 78 S 88 57, 114 49 S 148 42, 164 40" fill="none" stroke="#b18cff" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+      <path d="M0 107 C 20 104, 36 97, 56 91 S 94 76, 120 70 S 152 65, 164 63" fill="none" stroke="#f0c35a" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+      <circle cx="164" cy="16" r="3.6" fill="#4fd0e2"/>
+    </g>
+
+    <!-- side cards -->
+    <g transform="translate(194 44)" class="ko">
+      <rect width="88" height="36" rx="8" fill="#0f2f37"/>
+      <text x="9" y="14" font-size="9" fill="#8fb4bd">Dataset</text>
+      <text x="9" y="28" font-size="11" font-weight="700" fill="#e4f4f7">COCO128 v1</text>
+      <rect y="42" width="88" height="36" rx="8" fill="#0f2f37"/>
+      <text x="9" y="56" font-size="9" fill="#8fb4bd">Model</text>
+      <text x="9" y="70" font-size="11" font-weight="700" fill="#e4f4f7">yolo11n · v3</text>
+      <rect y="84" width="88" height="36" rx="8" fill="#12301f"/>
+      <text x="9" y="98" font-size="9" fill="#8fc7a5">Node</text>
+      <circle cx="12" cy="108" r="3" fill="#6fd69a"/>
+      <text x="20" y="112" font-size="11" font-weight="700" fill="#e4f4f7">gpu-01</text>
+    </g>
+
+    <!-- gpu tiles -->
+    <g transform="translate(16 170)">
+      <rect width="60" height="22" rx="5" fill="#132a32"/><rect width="48" height="22" rx="5" fill="#12a3b5" opacity="0.75"/>
+      <rect x="68" width="60" height="22" rx="5" fill="#132a32"/><rect x="68" width="36" height="22" rx="5" fill="#12a3b5" opacity="0.55"/>
+      <rect x="136" width="60" height="22" rx="5" fill="#132a32"/><rect x="136" width="16" height="22" rx="5" fill="#12a3b5" opacity="0.4"/>
+      <rect x="204" width="60" height="22" rx="5" fill="#132a32"/>
+      <text x="8" y="15" class="mono" font-size="9.5" fill="#e4f4f7">GPU0</text>
+      <text x="76" y="15" class="mono" font-size="9.5" fill="#e4f4f7">GPU1</text>
+      <text x="144" y="15" class="mono" font-size="9.5" fill="#e4f4f7">GPU2</text>
+      <text x="212" y="15" class="mono" font-size="9.5" fill="#6f9aa5">GPU3</text>
+    </g>
+  </g>
+</svg>
