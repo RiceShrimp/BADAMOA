@@ -11,6 +11,7 @@ import {
 } from "./DataBoard";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
+import { DraftActions, DraftLine, DraftNotice } from "./DraftBar";
 import { ItemViewer } from "./ItemViewer";
 import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
@@ -173,6 +174,7 @@ function ReleaseView({
   const [site, setSite] = useState("");
   const [camera, setCamera] = useState("");
   const [q, setQ] = useState("");
+  const [fixedOnly, setFixedOnly] = useState(false); // only the images the work in progress changed
   const [page, setPage] = useState(0);
   const [pageSize, setPageSizeState] = useState(rememberedPageSize);
   const setPageSize = (n: number) => {
@@ -198,8 +200,9 @@ function ReleaseView({
     if (site) params.set("site", site);
     if (camera) params.set("camera", camera);
     if (q.trim()) params.set("q", q.trim());
+    if (fixedOnly) params.set("edited", "true");
     return params.toString();
-  }, [split, state, classId, site, camera, q]);
+  }, [split, state, classId, site, camera, q, fixedOnly]);
   useEffect(() => setPage(0), [filterQuery]);
   // The same filters as the Hub takes them for a new release.
   const filter = useMemo(() => {
@@ -213,7 +216,7 @@ function ReleaseView({
     return out;
   }, [split, state, classId, site, camera, q]);
 
-  const { data: items } = usePolling(
+  const { data: items, refresh: refreshItems } = usePolling(
     () => api<ItemPage>(`/releases/${releaseId}/items?${filterQuery}&offset=${page * pageSize}&limit=${pageSize}`),
     release?.status === "building" ? 5000 : 60000,
     [releaseId, filterQuery, page, pageSize, release?.status],
@@ -230,6 +233,10 @@ function ReleaseView({
   const colorOf = colorFor(classes);
   const skeletonOf = (id: number) => classes.find((c) => c.id === id)?.skeleton;
   const splits = Object.entries(stats.splits ?? {}).sort();
+  const isDraft = release.status === "draft";
+  // The work in progress that changes this version's images: this one, or the one based on it.
+  const fixing = isDraft || release.draft?.base?.id === release.id ? release.draft : null;
+  const title = isDraft ? "작업 중" : release.version;
   const pages = Math.max(1, Math.ceil((items?.total ?? 0) / pageSize));
   const present = Object.keys(stats.classes ?? {}).length;
 
@@ -247,18 +254,22 @@ function ReleaseView({
         {project?.folder && <span>{project.folder}</span>}
         <a href={`#/datasets/project/${release.project_id}`}>{project?.name ?? "프로젝트"}</a>
         <strong>
-          {release.dataset.name} {release.version}
+          {release.dataset.name} {title}
         </strong>
       </nav>
       <div className="page-head">
         <div>
           <h1 className="with-badge">
-            <span className="muted-strong">{release.dataset.name}</span> {release.version}
+            <span className="muted-strong">{release.dataset.name}</span> {title}
             <span className="tag task-tag" title={TASK_HINT[task] ?? "직접 정한 태스크"}>
               {taskLabel(task)}
             </span>
             {release.status === "building" && <Badge kind="running">등록 중</Badge>}
+            {isDraft && <Badge kind="queued">아직 버전 아님</Badge>}
           </h1>
+          {isDraft ? (
+            <DraftLine release={release} />
+          ) : (
           <p className="muted">
             라벨 공간 {release.label_space.name} · 클래스 {classes.length}개 · {release.created_at.slice(0, 10)} 등록
             {release.base && (
@@ -268,7 +279,17 @@ function ReleaseView({
               </>
             )}
           </p>
+          )}
         </div>
+        {isDraft ? (
+          <DraftActions
+            release={release}
+            onChanged={() => {
+              void refresh();
+              void refreshItems();
+            }}
+          />
+        ) : (
         <div className="head-actions">
           {release.status === "ready" && (
             <button onClick={() => setMaking("items")} title="이 버전의 항목을 골라 새 버전을 만들거나 split을 다시 나눕니다">
@@ -291,7 +312,9 @@ function ReleaseView({
             </button>
           )}
         </div>
+        )}
       </div>
+      <DraftNotice release={release} />
 
       <div className="stats five">
         <Stat icon="images" label="전체 항목" value={(stats.items ?? 0).toLocaleString()} sub={bytesLabel(stats.bytes)} />
@@ -305,6 +328,9 @@ function ReleaseView({
           sub={`${unit} ${(stats.boxes ?? 0).toLocaleString()}개`}
         />
         <Stat icon="review" label="배경" value={(stats.states?.background ?? 0).toLocaleString()} sub="라벨 없음 · 찾을 물체 없음" />
+        {(stats.states?.unlabelled ?? 0) > 0 && (
+          <Stat icon="edit" label="아직 안 함" value={(stats.states?.unlabelled ?? 0).toLocaleString()} sub="라벨할 이미지 · 학습에서 빠짐" />
+        )}
       </div>
 
       {release.status === "building" && <BuildingBar releaseId={release.id} />}
@@ -376,6 +402,12 @@ function ReleaseView({
           </select>
         )}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="파일 이름에 포함…" aria-label="파일 이름" />
+        {fixing && fixing.edited > 0 && (
+          <label className="check inline-check" title="작업 중에서 라벨을 고친 이미지만 봅니다">
+            <input type="checkbox" checked={fixedOnly} onChange={(e) => setFixedOnly(e.target.checked)} />
+            고친 것만 ({fixing.edited.toLocaleString()})
+          </label>
+        )}
         <span className="muted count">{(items?.total ?? 0).toLocaleString()}개</span>
         <span className="spacer" />
         {release.status === "ready" && (
@@ -448,7 +480,10 @@ function ReleaseView({
                       />
                     )}
                   </td>
-                  <td>{item.file_name}</td>
+                  <td>
+                    {item.file_name}
+                    {item.fixed && <span className="tag fixed-tag">고침</span>}
+                  </td>
                   <td>
                     <span className="split-dot" style={{ background: SPLIT_COLOR[item.split] }} />
                     {SPLIT_LABEL[item.split] ?? item.split}
@@ -479,6 +514,11 @@ function ReleaseView({
                 <Icon name="images" size={22} />
               )}
               <span className="split-dot" style={{ background: SPLIT_COLOR[item.split] }} title={SPLIT_LABEL[item.split] ?? item.split} />
+              {item.fixed && (
+                <span className="fixed-mark" title={isDraft ? "이 작업 중에서 고친 이미지" : "작업 중에서 고친 이미지 (이 버전은 그대로)"}>
+                  <Icon name="edit" size={11} />
+                </span>
+              )}
             </span>
             <span className="thumb-name" title={item.file_name}>
               {item.file_name}
@@ -536,6 +576,10 @@ function ReleaseView({
           classes={classes}
           task={task}
           onClose={() => setViewing(null)}
+          onSaved={() => {
+            void refresh();
+            void refreshItems();
+          }}
         />
       )}
     </>
@@ -697,6 +741,8 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
     camera: "",
     name_pattern: "",
     note: "",
+    unlabelled: "auto", // an image without a label file: auto | background | unlabelled
+    classes: "", // class names for a folder of images to label, "car, person"
   });
   const [job, setJob] = useState<Job | null>(null);
   const [lastLog, setLastLog] = useState("");
@@ -760,7 +806,11 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
     e.preventDefault();
     try {
       setError(null);
-      setJob(await api<Job>(`/projects/${projectId}/imports`, { body: { ...form, task } }));
+      const classes = form.classes
+        .split(/[,\n]/)
+        .map((c) => c.trim())
+        .filter(Boolean);
+      setJob(await api<Job>(`/projects/${projectId}/imports`, { body: { ...form, classes, task } }));
       announceImport();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -947,6 +997,27 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
                 <input value={form.camera} onChange={set("camera")} placeholder="규칙에 맞지 않을 때" />
               </label>
             </div>
+          </details>
+          <details className="advanced" open={form.unlabelled !== "auto" || Boolean(form.classes)}>
+            <summary>
+              라벨이 없는 이미지 <span className="muted">(라벨할 이미지를 가져올 때)</span>
+            </summary>
+            <label>
+              라벨 파일이 없는 이미지
+              <select value={form.unlabelled} onChange={set("unlabelled")}>
+                <option value="auto">자동 · 폴더에 라벨 파일이 하나도 없으면 아직 안 함, 아니면 배경</option>
+                <option value="background">배경 · 찾을 물체가 없는 이미지</option>
+                <option value="unlabelled">아직 안 함 · 라벨할 이미지</option>
+              </select>
+            </label>
+            <label>
+              클래스 <span className="muted small">(클래스 이름이 없는 폴더에)</span>
+              <input value={form.classes} onChange={set("classes")} placeholder="예: car, person, bike" />
+            </label>
+            <p className="muted small">
+              이미지만 있는 폴더는 클래스 목록이 없습니다. 여기 적은 클래스로 라벨을 고칠 수 있습니다. 비우면 기존 데이터셋의 새 버전일 때 그
+              데이터셋의 클래스를 씁니다. "아직 안 함" 이미지는 학습에서 빠지고, 이미지 보기의 "라벨 고치기"로 라벨하면 들어갑니다.
+            </p>
           </details>
           <label>
             메모 (선택)

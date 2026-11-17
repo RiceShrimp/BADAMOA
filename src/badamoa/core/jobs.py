@@ -85,6 +85,9 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "note": {"type": "string", "default": ""},
                     "base_release_id": {"type": "string", "default": ""},
                     "task": {"type": "string", "default": ""},
+                    # an image without a label file: auto | background | unlabelled (not labelled yet)
+                    "unlabelled": {"type": "string", "default": "auto"},
+                    "classes": {"type": "array", "default": []},  # class names for a folder that names none
                 },
             },
         ),

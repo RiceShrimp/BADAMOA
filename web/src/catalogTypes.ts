@@ -13,11 +13,12 @@ export interface Project {
 export interface TreeRelease {
   id: string;
   version: string;
-  status: "building" | "ready";
+  status: "building" | "ready" | "draft";
   items: number;
   label_space: string;
   created_at: string;
   deleted_at: string | null;
+  edited?: number; // the work in progress: how many images it changed
 }
 
 export interface TreeDataset {
@@ -53,10 +54,21 @@ export interface ReleaseStats {
   cameras?: string[];
 }
 
+/** A dataset's work in progress ("작업 중"): fixed labels not yet made a version. */
+export interface DraftInfo {
+  id: string;
+  base: { id: string; version: string } | null;
+  edited: number;
+  editors: string[];
+  created_at: string;
+  /** A newer version came in after it was started: it can be moved onto that one. */
+  behind: { id: string; version: string } | null;
+}
+
 export interface ReleaseInfo {
   id: string;
   version: string;
-  status: "building" | "ready";
+  status: "building" | "ready" | "draft";
   note: string;
   created_at: string;
   project_id: string;
@@ -66,6 +78,7 @@ export interface ReleaseInfo {
   base: { id: string; version: string } | null;
   stats: ReleaseStats;
   siblings: { id: string; version: string }[];
+  draft: DraftInfo | null; // the dataset's work in progress, whichever version is open
 }
 
 export interface GridItem {
@@ -74,10 +87,11 @@ export interface GridItem {
   width: number;
   height: number;
   split: string;
-  state: "labelled" | "background";
+  state: "labelled" | "background" | "unlabelled";
   box_count: number;
   thumb_url: string | null;
   boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
+  fixed?: boolean; // changed in the work in progress
 }
 
 export interface ItemPage {
@@ -116,8 +130,19 @@ export interface ItemDetail {
   thumb_url: string | null;
   image_url: string | null;
   image_local?: boolean; // false: the original comes from the node that has it
+  edit: ItemEdit;
   revisions: Revision[];
-  releases: { id: string; dataset: string; version: string; split: string; rev: number | null; current: boolean }[];
+  releases: { id: string; dataset: string; version: string; split: string; rev: number | null; current: boolean; draft: boolean }[];
+}
+
+/** Whether an image may be fixed where it is open, and the labels a fix starts from. */
+export interface ItemEdit {
+  allowed: boolean;
+  reason: string;
+  latest: { id: string; version: string } | null;
+  draft_id: string | null;
+  revision_id: number | null; // the work in progress's labels, else this version's
+  fixed: boolean; // fixed in the work in progress (looking at its base version)
 }
 
 /** Everything deleted, to bring back or remove for good. */
@@ -177,12 +202,13 @@ export interface CompareResult {
 }
 
 export const SPLIT_LABEL: Record<string, string> = { train: "train", val: "val", test: "test", "": "미분할" };
-export const STATE_LABEL: Record<string, string> = { labelled: "라벨 있음", background: "배경" };
+export const STATE_LABEL: Record<string, string> = { labelled: "라벨 있음", background: "배경", unlabelled: "아직 안 함" };
 /** What each label state means, where they are picked. */
-export const STATE_HINT: Record<string, string> = { labelled: "", background: "라벨 없음" };
+export const STATE_HINT: Record<string, string> = { labelled: "", background: "찾을 것 없음", unlabelled: "라벨할 이미지" };
 export const STATE_HELP: Record<string, string> = {
   labelled: "박스나 클래스 라벨이 있는 이미지",
-  background: "라벨이 없는 이미지(빈 라벨 파일이거나 라벨 파일이 없음). 찾을 물체가 없는 예로 학습에 들어갑니다.",
+  background: "다 봤는데 찾을 물체가 없는 이미지. 찾을 물체가 없는 예로 학습에 들어갑니다.",
+  unlabelled: "아직 아무도 라벨하지 않은 이미지. 학습에서는 빠집니다.",
 };
 
 /** Something went into or out of the trash: the sidebar's count looks again. */

@@ -128,8 +128,7 @@ def start_eval(
     """
     model = training.get_model(db, model_id)
     release = catalog.get_release(db, release_id)
-    if release.status != "ready":
-        raise ServiceError(409, "아직 등록 중인 버전입니다.")
+    catalog.require_ready(release)
     dataset = db.get(Dataset, release.dataset_id)
     if dataset.project_id != model.project_id:
         raise ServiceError(400, "다른 프로젝트의 버전으로는 평가할 수 없습니다.")

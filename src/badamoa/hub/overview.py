@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import catalog, training
+from . import catalog, drafts, training
 from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Project, Release, ReleaseItem
 from .config import HubSettings
 from .db import iso
@@ -81,9 +81,12 @@ def _class_names(db: Session, release: Release | None) -> dict[int, dict[str, An
 
 def dataset_card(db: Session, settings: HubSettings, dataset: Dataset) -> dict[str, Any] | None:
     releases = db.scalar(
-        select(func.count(Release.id)).where(Release.dataset_id == dataset.id, Release.deleted_at.is_(None))
+        select(func.count(Release.id)).where(
+            Release.dataset_id == dataset.id, Release.deleted_at.is_(None), Release.status != "draft"
+        )
     )
     latest = _latest(db, dataset.id)
+    draft = drafts.draft_of(db, dataset.id)
     if latest is None:
         return None
     stats = latest.stats or {}
@@ -95,6 +98,8 @@ def dataset_card(db: Session, settings: HubSettings, dataset: Dataset) -> dict[s
         "task": catalog.dataset_task(dataset),
         "release": {"id": latest.id, "version": latest.version, "created_at": iso(latest.created_at), "note": latest.note},
         "releases": releases or 0,
+        # fixed labels not yet made a version
+        "draft": {"id": draft.id, "edited": drafts.edited_count(db, draft)} if draft is not None else None,
         "items": stats.get("items", 0),
         "bytes": stats.get("bytes", 0),
         "boxes": stats.get("boxes", 0),

@@ -1010,6 +1010,7 @@ function NewRun({
   const [templateName, setTemplateName] = useState("");
   const [values, setValues] = useState<Record<string, FormValue>>({});
   const [classes, setClasses] = useState<LabelClass[]>([]);
+  const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
   const [chosen, setChosen] = useState<number[]>([]); // empty = all classes
   const [extra, setExtra] = useState({ environment: "", gpus: "", name: "", model_name: "", base: "" });
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -1051,8 +1052,12 @@ function NewRun({
   useEffect(() => {
     setChosen([]);
     setChoices(null);
+    setReleaseInfo(null);
     if (!release) return setClasses([]);
-    void api<ReleaseInfo>(`/releases/${release}`).then((info) => setClasses(info.label_space.classes));
+    void api<ReleaseInfo>(`/releases/${release}`).then((info) => {
+      setClasses(info.label_space.classes);
+      setReleaseInfo(info);
+    });
     void api<NodeChoices>(`/releases/${release}/nodes`).then(setChoices);
   }, [release]);
 
@@ -1206,6 +1211,17 @@ function NewRun({
           )}
           {template?.description && templates && templates.length > 1 && <p className="muted small">{template.description}</p>}
           {basic.length > 0 && <div className="form-row">{basic.map(field)}</div>}
+          {releaseInfo?.draft && releaseInfo.draft.base?.id === releaseInfo.id && releaseInfo.draft.edited > 0 && (
+            <div className="notice compact">
+              작업 중에 고친 이미지 {releaseInfo.draft.edited.toLocaleString()}장은 아직 이 버전에 없습니다. 고친 라벨로 학습하려면{" "}
+              <a href={`#/datasets/${releaseInfo.draft.id}`}>작업 중</a>을 버전으로 확정한 뒤 그 버전을 고르세요.
+            </div>
+          )}
+          {(releaseInfo?.stats.states?.unlabelled ?? 0) > 0 && (
+            <p className="muted small">
+              아직 라벨 안 한 이미지 {(releaseInfo?.stats.states?.unlabelled ?? 0).toLocaleString()}장은 학습에서 뺍니다.
+            </p>
+          )}
           {choices && (
             <NodeField
               choices={choices}

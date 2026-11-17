@@ -27,6 +27,8 @@ _ADDED_COLUMNS = [
     ("users", "disabled_at", "DATETIME"),
     ("datasets", "task", "VARCHAR(32) DEFAULT ''"),
     ("nodes", "cache_dir", "VARCHAR(512) DEFAULT ''"),
+    ("label_revisions", "parent_id", "INTEGER"),
+    ("label_revisions", "created_by", "VARCHAR(32)"),
 ]
 
 
@@ -89,7 +91,11 @@ class Database:
                 conn.execute(
                     text("UPDATE datasets SET task = (SELECT task FROM projects WHERE projects.id = datasets.project_id)")
                 )
-            self._unlabelled_is_background(conn)
+            # Before 0.38.0 "unlabelled" was an image without a label file, which is background since 0.34.0.
+            # From 0.38.0 it means "nobody has labelled it yet": convert only a database older than that
+            # (one without the columns 0.38.0 added, or older still: without the dataset task of 0.34.0).
+            if ("label_revisions", "parent_id") in added or ("datasets", "task") in added:
+                self._unlabelled_is_background(conn)
 
     @staticmethod
     def _unlabelled_is_background(conn) -> None:

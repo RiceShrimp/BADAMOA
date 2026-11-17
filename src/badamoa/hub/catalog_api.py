@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, originals, overview, purge, services
+from . import catalog, drafts, originals, overview, purge, services
 from . import trash as trash_box
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
@@ -194,6 +194,9 @@ class ImportRequest(BaseModel):
     note: str = ""
     base_release_id: str = ""
     task: str = ""  # Det · Seg · Kpt · Cls, a named task, or "" to read it from the folder
+    # An image without a label file: "background", "unlabelled" (to label), or "auto" (unlabelled when no file has labels)
+    unlabelled: str = "auto"
+    classes: list[str] = []  # class names for a folder that names none (images to label)
 
 
 @router.post("/projects/{project_id}/imports")
@@ -213,6 +216,8 @@ def start_import(
         dataset=body.dataset,
         version=body.version,
         fmt=body.format,
+        unlabelled=body.unlabelled,
+        classes=body.classes,
         label_space=body.label_space,
         site=body.site,
         camera=body.camera,
@@ -273,6 +278,7 @@ def list_items(
     site: str = "",
     camera: str = "",
     q: str = "",
+    edited: bool = False,
     offset: int = 0,
     limit: int = 60,
     _: User = Depends(current_user),
@@ -289,6 +295,7 @@ def list_items(
         site=site,
         camera=camera,
         q=q,
+        edited=edited,
         offset=offset,
         limit=limit,
     )
@@ -397,6 +404,67 @@ def delete_dataset(dataset_id: str, user: User = Depends(admin_user), db: Sessio
     versions = catalog.delete_dataset(db, user, dataset_id)
     db.commit()
     return {"ok": True, "versions": versions}
+
+
+# ---- fixing labels: the dataset's work in progress -----------------------------------
+
+
+class Labels(BaseModel):
+    boxes: list[list[float]]  # [[class, cx, cy, w, h, …], …]; [[class]] for classification; [] for background
+    parent_revision_id: int | None = None  # the labels the fix started from: refused if someone saved in between
+    force: bool = False  # save over a fix someone else made in between
+
+
+@router.put("/releases/{release_id}/items/{item_id}/labels")
+def save_labels(
+    release_id: str, item_id: int, body: Labels, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Fixed labels of one image, into the dataset's work in progress (made on the first fix)."""
+    result = drafts.save_labels(
+        db, user, release_id, item_id, body.boxes, parent_id=body.parent_revision_id, force=body.force
+    )
+    db.commit()
+    return result
+
+
+@router.post("/releases/{release_id}/items/{item_id}/revert")
+def revert_labels(
+    release_id: str, item_id: int, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    result = drafts.revert_item(db, user, release_id, item_id)
+    db.commit()
+    return result
+
+
+class Confirm(BaseModel):
+    version: str
+    note: str = ""
+
+
+@router.post("/releases/{release_id}/confirm")
+def confirm_draft(
+    release_id: str, body: Confirm, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """The work in progress becomes a version."""
+    result = drafts.confirm(db, user, release_id, body.version, body.note)
+    db.commit()
+    return result
+
+
+@router.post("/releases/{release_id}/rebase")
+def rebase_draft(release_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """Move the work in progress onto the dataset's newest version."""
+    result = drafts.rebase(db, user, release_id)
+    db.commit()
+    return result
+
+
+@router.post("/releases/{release_id}/discard")
+def discard_draft(release_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """Throw the work in progress away (the fixed labels stay in each image's history)."""
+    result = drafts.discard(db, user, release_id)
+    db.commit()
+    return result
 
 
 @router.delete("/releases/{release_id}")

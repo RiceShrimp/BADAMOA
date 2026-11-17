@@ -40,7 +40,8 @@ class Entry:
 
     path: Path
     split: str = ""
-    state: str = "background"  # labelled | background (no labels: nothing to find in it)
+    # labelled | background (nothing to find in it) | unlabelled (nobody has labelled it yet)
+    state: str = "background"
     boxes: list[list[float]] = field(default_factory=list)
 
 
@@ -142,7 +143,7 @@ def _clamp(v: float) -> float:
 def _read_yolo_label(path: Path, kpt_shape: list[int] | None = None) -> tuple[str, list[list[float]]]:
     """Boxes of a YOLO label file: [class, cx, cy, w, h], then an outline (segmentation) or keypoints (pose)."""
     if not path.is_file():
-        return "background", []  # no label file: nothing to find in it
+        return "unlabelled", []  # no label file: background or not labelled yet, by the import's rule (settle)
     boxes = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.split()
@@ -352,7 +353,22 @@ def scan_imagefolder(root: Path) -> Scan:
     return Scan(format="imagefolder", classes=classes, entries=entries)
 
 
-def scan(root: Path, fmt: str = "auto") -> Scan:
+def settle(found: Scan, rule: str = "auto") -> Scan:
+    """Images without a label file are background (the YOLO custom), or not labelled yet: with the rule
+    "unlabelled", or "auto" when no image of the folder has a label file (a folder of images to label)."""
+    missing = [e for e in found.entries if e.state == "unlabelled"]
+    if missing and not (rule == "unlabelled" or (rule == "auto" and len(missing) == len(found.entries))):
+        for entry in missing:
+            entry.state = "background"
+    return found
+
+
+def scan(root: Path, fmt: str = "auto", unlabelled: str = "auto") -> Scan:
+    """The images and labels of a dataset folder. ``unlabelled``: see ``settle``."""
+    return settle(_scan(root, fmt), unlabelled)
+
+
+def _scan(root: Path, fmt: str = "auto") -> Scan:
     if not root.is_dir():
         raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {root}")
     detection_layout = (root / "images").is_dir() or (root / "labels").is_dir() or list(root.glob("*.yaml"))
@@ -441,9 +457,12 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     root = Path(params["path"]).expanduser()
     print(f"폴더 확인: {root}")
-    found = scan(root, params.get("format") or "auto")
+    found = scan(root, params.get("format") or "auto", params.get("unlabelled") or "auto")
     total = len(found.entries)
     print(f"형식 {found.format} · 클래스 {len(found.classes)}개 · 이미지 {total:,}장")
+    waiting = sum(1 for e in found.entries if e.state == "unlabelled")
+    if waiting:
+        print(f"라벨 파일이 없는 이미지 {waiting:,}장은 '아직 라벨 안 함'으로 등록합니다.")
     if total == 0:
         raise RuntimeError("이미지를 찾지 못했습니다. 경로와 형식을 확인하세요.")
 

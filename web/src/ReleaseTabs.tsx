@@ -425,6 +425,7 @@ export function ReleasesTab({ release, onCompare }: { release: ReleaseInfo; onCo
                 <a href={`#/datasets/${r.id}`}>{r.version}</a>
                 {r.id === release.id && <span className="tag">지금 보는 버전</span>}
                 {r.status === "building" && <span className="tag">등록 중</span>}
+                {r.status === "draft" && <span className="tag accent">고친 것 {(r.edited ?? 0).toLocaleString()} · 아직 버전 아님</span>}
               </td>
               <td className="num right">{r.items.toLocaleString()}</td>
               <td className="muted">{r.label_space}</td>
@@ -440,7 +441,10 @@ export function ReleasesTab({ release, onCompare }: { release: ReleaseInfo; onCo
           ))}
         </tbody>
       </table>
-      <p className="muted small">버전은 만든 뒤 바뀌지 않습니다. 고치려면 "새 버전"으로 새로 만드세요. 용량 {bytesLabel(release.stats.bytes)}.</p>
+      <p className="muted small">
+        버전은 만든 뒤 바뀌지 않습니다. 최신 버전의 이미지에서 "라벨 고치기"로 고친 라벨은 작업 중에 모였다가 "버전으로 확정"하면 새 버전이 됩니다.
+        용량 {bytesLabel(release.stats.bytes)}.
+      </p>
     </section>
   );
 }

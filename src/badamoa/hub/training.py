@@ -110,8 +110,7 @@ def start_run(
     (training on with new data).
     """
     release = catalog.get_release(db, release_id)
-    if release.status != "ready":
-        raise ServiceError(409, "아직 등록 중인 버전입니다.")
+    catalog.require_ready(release)
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
     task = catalog.dataset_task(dataset)

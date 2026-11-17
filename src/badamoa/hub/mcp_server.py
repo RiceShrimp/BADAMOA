@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, gpus, lineage, registry, resources, services, sweeps, training
+from . import catalog, drafts, gpus, lineage, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -350,6 +350,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         note: str = "",
         name_pattern: str = "",
         task: str = "",
+        unlabelled: str = "auto",
+        classes: list[str] | None = None,
     ) -> dict[str, Any]:
         """노드에 있는 YOLO/COCO 형식 폴더를 복사 없이 새 릴리스로 등록합니다.
 
@@ -357,6 +359,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         task: 데이터셋의 태스크 — Det · Seg · Kpt · Cls 또는 팀이 정한 이름(예: OCR). 비우면 폴더를 보고 정합니다.
         이미 있는 데이터셋의 새 버전이면 그 데이터셋의 태스크를 따릅니다.
         name_pattern: 파일 이름에서 사이트 · 카메라를 읽는 규칙, 예: "{site}_{camera}_*" 또는 "{site}/{camera}/*".
+        unlabelled: 라벨 파일이 없는 이미지 — "background"(배경), "unlabelled"(아직 라벨 안 함), "auto"(폴더에 라벨
+        파일이 하나도 없으면 아직 안 함, 아니면 배경). classes: 클래스 이름이 없는 폴더(라벨할 이미지)에 쓸 클래스 목록.
         작업을 반환하므로 wait_for_job으로 완료를 기다린 뒤 result.release_id를 get_release로 확인하세요.
         """
         user = user_of(ctx)
@@ -373,9 +377,77 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 note=note,
                 name_pattern=name_pattern,
                 task=task,
+                unlabelled=unlabelled,
+                classes=classes,
                 via="mcp",
             )
             return services.job_view(db, hub.settings, job)
+
+    @mcp.tool(title="릴리스 이미지 목록", annotations=READ_ONLY)
+    @guarded
+    def list_release_items(
+        release_id: str,
+        ctx: Context,
+        split: str | None = None,
+        state: str = "",
+        class_id: int | None = None,
+        q: str = "",
+        edited: bool = False,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """릴리스의 이미지와 라벨(박스는 [클래스, cx, cy, w, h] — 이미지 크기에 대한 비율)을 페이지로 반환합니다.
+
+        state: labelled(라벨 있음) | background(배경) | unlabelled(아직 라벨 안 함). edited=true면 데이터셋의
+        "작업 중"에서 고친 이미지만. 이미지 하나의 전체 라벨과 고칠 수 있는지는 get_release_item으로 봅니다.
+        """
+        user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.list_items(
+                db, hub.settings, release_id, split=split, state=state, class_id=class_id, q=q, edited=edited,
+                offset=offset, limit=limit,
+            )
+
+    @mcp.tool(title="릴리스 이미지 조회", annotations=READ_ONLY)
+    @guarded
+    def get_release_item(release_id: str, item_id: int, ctx: Context) -> dict[str, Any]:
+        """이미지 하나의 라벨 개정 전부(박스 포함), 들어 있는 버전들, 그리고 edit — 여기서 고칠 수 있는지(allowed ·
+        reason)와 고칠 때 바탕이 되는 라벨(revision_id)을 반환합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return catalog.item_detail(db, hub.settings, release_id, item_id)
+
+    @mcp.tool(title="라벨 고치기", annotations=WRITE)
+    @guarded
+    def fix_labels(
+        release_id: str,
+        item_id: int,
+        boxes: list[list[float]],
+        ctx: Context,
+        parent_revision_id: int | None = None,
+    ) -> dict[str, Any]:
+        """이미지 하나의 라벨을 고쳐 데이터셋의 "작업 중"에 저장합니다. 버전(릴리스)은 바뀌지 않습니다.
+
+        최신 버전이나 작업 중에서만 고칠 수 있습니다. boxes: 이 이미지의 라벨 전부 — [[클래스, cx, cy, w, h], …]
+        (비율 0~1), 분류는 [[클래스]], 빈 목록이면 배경(찾을 물체 없음). parent_revision_id: 고치기 시작한 라벨
+        (get_release_item의 edit.revision_id) — 그 사이 다른 사람이 고쳤으면 거부됩니다. 반환의 release_id가 작업 중이고,
+        confirm_draft로 새 버전이 됩니다.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            return drafts.save_labels(db, user, release_id, item_id, boxes, parent_id=parent_revision_id, via="mcp")
+
+    @mcp.tool(title="작업 중을 버전으로 확정", annotations=WRITE)
+    @guarded
+    def confirm_draft(draft_id: str, version: str, ctx: Context, note: str = "") -> dict[str, Any]:
+        """데이터셋의 "작업 중"(고친 라벨)을 새 버전으로 확정합니다. 확정한 버전은 바뀌지 않고 학습에 쓸 수 있습니다.
+
+        draft_id: 작업 중의 id(fix_labels가 반환한 release_id, 또는 get_release의 draft.id). note를 비우면 "이미지 N장의
+        라벨을 고침"이 들어갑니다.
+        """
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            return drafts.confirm(db, user, draft_id, version, note, via="mcp")
 
     # ---- tools: training and models --------------------------------------------
 

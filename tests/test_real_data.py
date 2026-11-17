@@ -71,7 +71,7 @@ def test_import_coco128_end_to_end(live_hub, tmp_path, monkeypatch):
             release = hub.get(f"/api/releases/{job['result']['release_id']}").json()
             stats = release["stats"]
             assert stats["items"] == 128 and stats["boxes"] == 929
-            assert stats["states"] == {"labelled": 126, "background": 2}
+            assert stats["states"] == {"labelled": 126, "background": 2, "unlabelled": 0}
             assert len(release["label_space"]["classes"]) == 80
             person = stats["classes"]["0"]
             assert person["boxes"] == 254 and person["items"] == 61  # "person" in COCO128

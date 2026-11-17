@@ -33,8 +33,7 @@ LISTED = 10
 
 def start_export(db: Session, user: User, release_id: str, fmt: str, images: bool = True, via: str = "api") -> Job:
     release = catalog.get_release(db, release_id)
-    if release.status != "ready":
-        raise ServiceError(409, "아직 등록 중인 버전입니다. 끝난 뒤에 내려받으세요.")
+    catalog.require_ready(release, "끝난 뒤에 내려받으세요.")
     task = catalog.release_task(db, release)
     formats = FORMATS.get(task, ("yolo",))
     if fmt not in formats:

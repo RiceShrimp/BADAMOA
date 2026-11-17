@@ -100,7 +100,7 @@ def test_import_browse_and_compare_releases(hub, tmp_path):
     release = hub.get(f"/api/releases/{v1}").json()
     stats = release["stats"]
     assert stats["items"] == 8 and stats["splits"]["train"]["items"] == 6 and stats["splits"]["val"]["items"] == 2
-    assert stats["states"] == {"labelled": 6, "background": 2}
+    assert stats["states"] == {"labelled": 6, "background": 2, "unlabelled": 0}
     assert stats["sites"] == ["Hangang"] and stats["bytes"] > 0
     assert [c["name"] for c in release["label_space"]["classes"]] == CLASSES and release["base"] is None
     assert sum(c["boxes"] for c in stats["classes"].values()) == stats["boxes"] > 0
@@ -130,7 +130,7 @@ def test_import_browse_and_compare_releases(hub, tmp_path):
         (1, "import:street v1", CLASSES)
     ]
     assert detail["revisions"][0]["boxes"] and detail["releases"] == [
-        {"id": v1, "dataset": "street", "version": "v1", "split": "train", "rev": 1, "current": True}
+        {"id": v1, "dataset": "street", "version": "v1", "split": "train", "rev": 1, "current": True, "draft": False}
     ]
     original = httpx.get(str(hub.base_url).rstrip("/") + detail["image_url"])
     assert original.status_code == 200 and len(original.content) == detail["bytes"]
@@ -422,7 +422,8 @@ def test_cards_and_release_tabs(hub, tmp_path):
     assert (dataset["name"], dataset["release"]["id"], dataset["releases"], dataset["items"], dataset["classes"]) == (
         "street", v1, 1, 8, 3
     )
-    assert dataset["splits"] == {"train": 6, "val": 2} and dataset["states"] == {"labelled": 6, "background": 2}
+    assert dataset["splits"] == {"train": 6, "val": 2}
+    assert dataset["states"] == {"labelled": 6, "background": 2, "unlabelled": 0}
     assert [c["name"] for c in dataset["top_classes"]] and page["metric"] == "map50_95" and page["top_models"] == []
 
     # ---- a release's charts: sizes, classes, where the boxes sit

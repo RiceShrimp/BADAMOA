@@ -109,8 +109,10 @@ class LabelRevision(Base):
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
     rev: Mapped[int] = mapped_column(Integer)
     label_space_id: Mapped[str] = mapped_column(String(32))
-    source: Mapped[str] = mapped_column(String(255), default="")  # import:<batch name> | human | autolabel:<model>
-    state: Mapped[str] = mapped_column(String(12))  # labelled | background (no labels: nothing to find)
+    # import:<batch> | human:<name> (fixed on screen) | classes:<version> | autolabel:<model>
+    source: Mapped[str] = mapped_column(String(255), default="")
+    # labelled | background (looked at, nothing to find) | unlabelled (nobody has looked yet)
+    state: Mapped[str] = mapped_column(String(12))
     box_count: Mapped[int] = mapped_column(Integer, default=0)
     boxes: Mapped[list[list[float]]] = mapped_column(JSON, default=list)
     # Classes that were labelled exhaustively: a missing box of these means "not there",
@@ -118,6 +120,8 @@ class LabelRevision(Base):
     labelled_class_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     digest: Mapped[str] = mapped_column(String(40))
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # the revision a person fixed
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -156,7 +160,8 @@ class Release(Base):
     label_space_id: Mapped[str] = mapped_column(String(32))
     base_release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(12), default="building")  # building | ready
+    # building | ready | draft: the dataset's work in progress, fixed labels not yet made a version (one per dataset)
+    status: Mapped[str] = mapped_column(String(12), default="building")
     stats: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)

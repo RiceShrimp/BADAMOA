@@ -23,7 +23,7 @@ from badamoa.core import tasks as task_names
 from badamoa.core.protocol import ImportBegin, ImportChunk
 from badamoa.core.storage import Storage
 
-from . import services
+from . import drafts, services  # drafts imports this module too: each uses the other only when called
 from .catalog_models import (
     Batch,
     Dataset,
@@ -44,8 +44,10 @@ from .train_models import ModelJob, ModelVersion, Run, Sweep
 
 TASKS = task_names.BUILTIN
 SPLITS = ("train", "val", "test", "")
-# An image without labels is background: nothing to find in it. ("unlabelled" from older nodes is read as that.)
-STATES = ("labelled", "background")
+# labelled; background: looked at, nothing to find in it; unlabelled: nobody has labelled it yet (0.38.0).
+# Whether an image without labels is background or not labelled yet is decided when it is imported.
+STATES = ("labelled", "background", "unlabelled")
+UNLABELLED_RULES = ("auto", "background", "unlabelled")
 # Data that may go into a dataset of another task: outlines kept as boxes, keypoints kept as boxes.
 _FITS = {("segment", "detect"), ("detect", "segment"), ("detect", "pose")}
 MAX_PAGE = 200
@@ -422,6 +424,7 @@ def tree(db: Session, project_id: str, include_deleted: bool = False) -> list[di
         releases = [r for r in db.scalars(query) if include_deleted or r.deleted_at is None]
         if not releases:
             continue
+        releases.sort(key=lambda r: r.status != "draft")  # the work in progress first: newer than every version
         result.append(
             {
                 "id": dataset.id,
@@ -436,6 +439,7 @@ def tree(db: Session, project_id: str, include_deleted: bool = False) -> list[di
                         "label_space": spaces.get(r.label_space_id, ""),
                         "created_at": iso(r.created_at),
                         "deleted_at": iso(r.deleted_at),
+                        **({"edited": drafts.edited_count(db, r)} if r.status == "draft" else {}),
                     }
                     for r in releases
                 ],
@@ -464,9 +468,16 @@ def start_import(
     note: str = "",
     base_release_id: str = "",
     task: str = "",
+    unlabelled: str = "auto",
+    classes: list[str] | None = None,
     via: str = "api",
 ) -> Job:
-    """Import a node's folder as a dataset version. ``task``: Det/Seg/Kpt/Cls, a named task, or "" (from the data)."""
+    """Import a node's folder as a dataset version. ``task``: Det/Seg/Kpt/Cls, a named task, or "" (from the data).
+
+    ``unlabelled``: what an image without a label file is — "background", "unlabelled" (to be labelled), or
+    "auto": not labelled yet when the folder has no label files at all, else background (the YOLO custom).
+    ``classes``: class names for a folder that names none (images to label); otherwise the folder's are used.
+    """
     get_project(db, project_id)
     dataset, version, path = dataset.strip(), version.strip(), path.strip()
     if not dataset or not version or not path:
@@ -477,6 +488,10 @@ def start_import(
         raise ServiceError(400, str(e)) from e
     if fmt not in ("auto", "yolo", "coco", "imagefolder"):
         raise ServiceError(400, "형식은 auto, yolo, coco, imagefolder 중 하나여야 합니다.")
+    if unlabelled not in UNLABELLED_RULES:
+        raise ServiceError(400, "unlabelled는 auto, background, unlabelled 중 하나여야 합니다.")
+    if version == drafts.DRAFT:
+        raise ServiceError(400, f"'{version}'은 버전 이름으로 쓸 수 없습니다.")
     if name_pattern.strip():
         name_rule(name_pattern)  # a wrong rule is turned away now, not after the node has read every file
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
@@ -501,6 +516,8 @@ def start_import(
         "name_pattern": name_pattern.strip(),
         "note": note,
         "base_release_id": base_release_id,
+        "unlabelled": unlabelled,
+        "classes": list(dict.fromkeys(c.strip() for c in classes or [] if c.strip())),
     }
     return services.create_job(db, user, "data.import", params, node_id, via=via)
 
@@ -713,7 +730,20 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
     )
     db.add(batch)
     keypoints = body.keypoints if task == "pose" else None
-    space = _label_space(db, project.id, body.classes, p.get("label_space", ""), keypoints)
+    classes = list(body.classes)
+    if not classes and p.get("classes"):  # a folder of images to label: the classes given when importing
+        classes = list(p["classes"])
+    if not classes and dataset is not None:  # or those of the dataset's newest version
+        newest = db.scalar(
+            select(Release)
+            .where(Release.dataset_id == dataset.id, Release.status == "ready", Release.deleted_at.is_(None))
+            .order_by(Release.created_at.desc())
+            .limit(1)
+        )
+        if newest is not None:
+            space = db.get(LabelSpace, newest.label_space_id)
+            classes = [c["name"] for c in space.classes] if space else []
+    space = _label_space(db, project.id, classes, p.get("label_space", ""), keypoints)
     if dataset is None:
         dataset = Dataset(project_id=project.id, name=p["dataset"], task=task)
         db.add(dataset)
@@ -815,7 +845,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
             for b in data.boxes
             if (len(b) == 1 or len(b) >= 5) and int(b[0]) in class_ids
         ]
-        state = "labelled" if boxes else "background"  # no labels: nothing to find in it
+        # No labels: background (nothing to find in it), or not labelled yet when the node says so.
+        state = "labelled" if boxes else ("unlabelled" if data.state == "unlabelled" else "background")
         digest = _digest(space.id, state, boxes)
         history = revisions.get(item.id, [])
         same = next((r for r in history if r.digest == digest), None)
@@ -977,8 +1008,17 @@ def get_release(db: Session, release_id: str, allow_deleted: bool = False) -> Re
     return release
 
 
+def require_ready(release: Release, then: str = "") -> None:
+    """Training, export, evaluation and new versions take only finished versions."""
+    if release.status == "draft":
+        raise ServiceError(409, "작업 중은 아직 버전이 아닙니다. '버전으로 확정'한 뒤에 쓰세요.")
+    if release.status != "ready":
+        raise ServiceError(409, "아직 등록 중인 버전입니다." + (f" {then}" if then else ""))
+
+
 def release_view(db: Session, release_id: str) -> dict[str, Any]:
     release = get_release(db, release_id)
+    drafts.fresh_stats(db, release)
     dataset = db.get(Dataset, release.dataset_id)
     space = db.get(LabelSpace, release.label_space_id)
     base = db.get(Release, release.base_release_id) if release.base_release_id else None
@@ -998,6 +1038,8 @@ def release_view(db: Session, release_id: str) -> dict[str, Any]:
         "base": {"id": base.id, "version": base.version} if base and base.deleted_at is None else None,
         "stats": release.stats or {},
         "siblings": [{"id": r.id, "version": r.version} for r in siblings if r.id != release.id],
+        # the dataset's work in progress (fixed labels not yet a version), whichever version is open
+        "draft": drafts.draft_info(db, dataset.id),
     }
 
 
@@ -1032,14 +1074,22 @@ def list_items(
     site: str = "",
     camera: str = "",
     q: str = "",
+    edited: bool = False,
     offset: int = 0,
     limit: int = 60,
 ) -> dict[str, Any]:
-    get_release(db, release_id)
+    """A page of a release's items. ``edited``: only the images the dataset's work in progress changed."""
+    release = get_release(db, release_id)
+    draft = drafts.fixing(db, release)
+    if edited and draft is None:
+        return {"total": 0, "offset": 0, "limit": max(1, min(limit, MAX_PAGE)), "items": []}
     query = _item_filter(release_id, split, state, class_id, site, camera, q.strip())
+    if edited:
+        query = query.where(ReleaseItem.item_id.in_(drafts.edited_items(draft)))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     limit = max(1, min(limit, MAX_PAGE))
     rows = db.execute(query.order_by(ReleaseItem.item_id).offset(max(0, offset)).limit(limit)).all()
+    fixed = drafts.edited_ids(db, draft, [item.id for _, item in rows]) if draft is not None and rows else set()
     revisions = {
         rev.id: rev.boxes or []
         for rev in db.scalars(select(LabelRevision).where(LabelRevision.id.in_([m.revision_id for m, _ in rows])))
@@ -1059,6 +1109,7 @@ def list_items(
                 "box_count": member.box_count,
                 "thumb_url": media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
                 "boxes": [light_shape(b) for b in revisions.get(member.revision_id, [])[:GRID_BOXES]],
+                "fixed": item.id in fixed,  # changed in the work in progress
             }
             for member, item in rows
         ],
@@ -1117,6 +1168,7 @@ def item_detail(db: Session, settings: HubSettings, release_id: str, item_id: in
         # The original: read here, or asked of the node that has it when the view opens.
         "image_url": media_url(settings, "item", str(item.id)) if item.location_id else None,
         "image_local": item_file(db, item) is not None,
+        "edit": drafts.item_edit_view(db, release, item.id),
         "revisions": [_revision_view(r, spaces, with_boxes=True) for r in revisions],
         "releases": [
             {
@@ -1126,6 +1178,7 @@ def item_detail(db: Session, settings: HubSettings, release_id: str, item_id: in
                 "split": m.split,
                 "rev": rev_numbers.get(m.revision_id),
                 "current": rel.id == release_id,
+                "draft": rel.status == "draft",
             }
             for m, rel, ds in memberships
         ],
@@ -1352,8 +1405,8 @@ def new_release(
     if not sources:
         raise ServiceError(400, "새 버전에 담을 버전을 하나 이상 고르세요.")
     releases = [get_release(db, rid) for rid in dict.fromkeys(sources)]
-    if any(r.status != "ready" for r in releases):
-        raise ServiceError(409, "아직 등록 중인 버전이 있습니다. 끝난 뒤에 다시 시도하세요.")
+    for release in releases:
+        require_ready(release, "끝난 뒤에 다시 시도하세요.")
     first = releases[0]
     first_dataset = db.get(Dataset, first.dataset_id)
     project_id = first_dataset.project_id
@@ -1417,6 +1470,8 @@ def new_release(
     version, name = version.strip(), (dataset.strip() or first_dataset.name)
     if not version:
         raise ServiceError(400, "버전 이름을 적으세요.")
+    if version == drafts.DRAFT:
+        raise ServiceError(400, f"'{version}'은 버전 이름으로 쓸 수 없습니다.")
     target = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == name))
     taken = select(Release).where(Release.dataset_id == target.id, Release.version == version) if target else None
     if taken is not None and db.scalar(taken):
@@ -1487,8 +1542,11 @@ def delete_dataset(db: Session, user: User, dataset_id: str) -> int:
         raise ServiceError(404, "데이터셋을 찾을 수 없습니다.")
     get_project(db, dataset.project_id)
     live = list(db.scalars(select(Release).where(Release.dataset_id == dataset.id, Release.deleted_at.is_(None))))
-    if any(r.status != "ready" for r in live):
+    if any(r.status == "building" for r in live):
         raise ServiceError(409, f"{dataset.name}에 가져오는 중인 버전이 있습니다. 끝난 뒤에 지우세요.")
+    for draft in [r for r in live if r.status == "draft"]:  # fixes not made a version go; their labels stay
+        drafts.discard(db, user, draft.id, via="api")
+        live.remove(draft)
     for release in live:
         release.deleted_at = utcnow()
     services.audit(db, user.id, "api", "dataset.delete", dataset.id, name=dataset.name, versions=len(live))
@@ -1498,6 +1556,8 @@ def delete_dataset(db: Session, user: User, dataset_id: str) -> int:
 def set_release_deleted(db: Session, user: User, release_id: str, deleted: bool) -> Release:
     services.require_admin(user)
     release = get_release(db, release_id, allow_deleted=True)
+    if release.status == "draft":
+        raise ServiceError(400, "작업 중은 휴지통으로 옮기지 않습니다. '모두 되돌리기'로 지우세요.")
     release.deleted_at = utcnow() if deleted else None
     services.audit(
         db, user.id, "api", "release.delete" if deleted else "release.restore", release.id, version=release.version

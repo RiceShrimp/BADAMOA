@@ -50,6 +50,7 @@ interface DatasetCardInfo {
   task: string;
   release: { id: string; version: string; created_at: string; note: string };
   releases: number;
+  draft: { id: string; edited: number } | null; // fixed labels not yet made a version
   items: number;
   bytes: number;
   boxes: number;
@@ -1152,6 +1153,11 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
                       {taskLabel(d.task)}
                     </span>
                     <span className="tag">{d.release.version}</span>
+                    {d.draft && d.draft.edited > 0 && (
+                      <span className="tag accent" title="라벨을 고쳤지만 아직 버전으로 확정하지 않은 이미지">
+                        작업 중 {d.draft.edited.toLocaleString()}
+                      </span>
+                    )}
                   </span>
                 </div>
                 <div className="muted small">
