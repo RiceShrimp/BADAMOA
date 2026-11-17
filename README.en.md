@@ -1,55 +1,54 @@
-<h1 align="center">
+<p align="center">
   <img src="docs/img/banner-en.svg" alt="BADAMOA — gather a sea of data into models" width="880">
-</h1>
-
-<p align="center">
-  <a href="README.md">한국어</a> &nbsp;|&nbsp; <b>English</b>
 </p>
 
 <p align="center">
-  <b>A vision MLOps platform you install on your own servers</b><br>
-  Data, training, evaluation and model management in one place
+  <a href="https://github.com/RiceShrimp/BADAMOA/releases"><img src="https://img.shields.io/github/v/release/RiceShrimp/BADAMOA?label=release&color=0a7c8c" alt="Latest release"></a>
+  <a href="https://github.com/RiceShrimp/BADAMOA/actions/workflows/ci.yml"><img src="https://github.com/RiceShrimp/BADAMOA/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/platform-Ubuntu%20%7C%20Windows-4b5563" alt="Ubuntu | Windows">
 </p>
 
 <p align="center">
-  🗂️ Dataset catalog without copying &nbsp;·&nbsp; 🏋️ YOLO · torchvision training &nbsp;·&nbsp; 📈 Metric comparison · sweeps<br>
-  📦 Model registry &nbsp;·&nbsp; 🖥️ One-line GPU server join &nbsp;·&nbsp; 🤖 MCP agents &nbsp;·&nbsp; 🐳 No Docker
+  <a href="README.md">한국어</a> · <b>English</b>
 </p>
 
 <br>
 
-<p align="center">
-  <a href="#-quick-start"><img src="docs/img/btn-start-en.svg" alt="Quick start" width="280"></a>
-  &nbsp;&nbsp;
-  <a href="https://github.com/RiceShrimp/BADAMOA/releases"><img src="docs/img/btn-changelog-en.svg" alt="Release notes" width="280"></a>
-</p>
+**BADAMOA** is a vision MLOps platform you install on your own servers. Registering image datasets, training on the team's GPU servers, and evaluating and keeping the resulting models all happen in one web app. It runs as a single Python package, with no Docker and no extra server software.
+
+The name is Korean for "gathering the sea": collecting a scattered sea of data into models. It also spells **B**uild · **A**nnotate · **D**evelop · **A**utomate and **M**LOps **O**rchestration & **A**gents.
 
 <p align="center">
-  🐧 Ubuntu · ⊞ Windows (Hub and nodes) &nbsp;|&nbsp; 🐍 Python 3.11+ · <a href="https://docs.astral.sh/uv/">uv</a> &nbsp;|&nbsp; 🎮 NVIDIA GPU recommended (CPU works)<br>
-  <a href="docs/ARCHITECTURE.md">Design</a> · <a href="docs/ROADMAP.md">Roadmap</a> · <a href="CHANGELOG.md">CHANGELOG</a> &nbsp;<sub>(docs are in Korean)</sub>
+  <img src="docs/img/shot-project.png" alt="Project page: COCO128 detection and segmentation dataset cards, and the ranking of models trained in the project" width="880">
 </p>
+
+- **Data stays where it is.** Pick a folder on a training server or a NAS and only the file list and labels go to the Hub. Hundreds of GB never move.
+
+- **GPU servers join with one command.** They only connect out to the Hub, so no firewall holes, and GPUs someone is already using are left alone.
+
+- **Results live on the Hub.** Metrics, images, checkpoints and weights are kept there, so runs can be resumed and compared even after a training server changes.
+
+- **Agents can drive it.** The Hub doubles as an MCP server: hand a training run to an agent such as Claude Code and ask it about the results.
+
+> [!NOTE]
+> The app's screens are in Korean. Below, menu and button names are given in English with the on-screen label in parentheses, e.g. **Nodes** (노드).
 
 <br>
 
-> **BADA** — **B**uild · **A**nnotate · **D**evelop · **A**utomate &nbsp;/&nbsp; **MOA** — **M**LOps **O**rchestration & **A**gents &nbsp;(*bada moa*: "gather the sea" in Korean)
->
-> The goal: manage data, train, evaluate and keep models in one place, attach remote training and data servers with a one-line command, and let agents such as Claude Code drive all of it over MCP.
+## How it fits together
 
-> 🌐 **The app's screens are in Korean.** Below, buttons are named in English with the on-screen label next to them, e.g. **Nodes** (`노드`).
+<p align="center">
+  <img src="docs/img/architecture-en.svg" alt="Architecture: browsers and agents talk to the Hub; training and data servers (nodes) only connect out to it" width="880">
+</p>
+
+The Hub serves the web app, the API and the MCP server, and holds the catalog and the model registry, all in one process. Nodes do the actual training and data reading. The PC running the Hub is a node from the start, so a single server is enough to begin with.
 
 <br>
 
-## 🚀 Quick start
+## Installation
 
-<p align="center">
-  <img src="docs/img/steps-en.svg" alt="1 Run the Hub, 2 add servers as nodes, 3 register data and train" width="880">
-</p>
-
-| | Step | How |
-|:-:|---|---|
-| 1️⃣ | **Run the Hub** | The four commands below. When the browser opens, create the admin account. The PC running the Hub becomes the first node |
-| 2️⃣ | **Add servers as nodes** | Web UI **Nodes** (`노드`) → **Add node** (`노드 추가`), then run the one-line command on the remote server (Ubuntu · Windows) |
-| 3️⃣ | **Register data → train** | **Datasets** (`데이터셋`) → **Import dataset** (`데이터셋 가져오기`), pick a folder on a node → **Train on this version** (`이 버전으로 학습`) |
+### Start the Hub
 
 You need [uv](https://docs.astral.sh/uv/) and Node.js. Run these in order from the repository folder.
 
@@ -69,175 +68,136 @@ npm --prefix web run build
 uv run badamoa hub run --home .badamoa/hub
 ```
 
-The browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`, the "웹 UI" line of the start-up message). Other servers join through that address, so use it rather than `localhost`.
+When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account. Other servers find the Hub through that address, so use it rather than `localhost`.
 
-> 💡 **Nodes only make outgoing connections to the Hub.** Nothing has to be opened on the remote servers. The only exception is TCP 8475, used when nodes send images straight to each other, which the node installer opens itself.
+> [!TIP]
+> For data to try, `uv run python scripts/fetch_coco128.py` (COCO128, about 7 MB) and `uv run python scripts/fetch_mnist160.py` (MNIST160, about 70 KB). Both unpack under `.badamoa/data/`.
 
-> 🧪 **Data to try it with**
->
-> - `uv run python scripts/fetch_coco128.py` — COCO128 (128 images · about 7 MB)
-> - `uv run python scripts/fetch_mnist160.py` — MNIST160 (160 images · about 70 KB)
->
-> Both unpack under `.badamoa/data/`.
+### Add training and data servers
 
-<br>
+In the web app, **Nodes** (노드) → **Add node** (노드 추가) shows a one-line command for Ubuntu and one for Windows. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows): it registers to start automatically and shows up on the node board shortly after. From then on the node updates itself to follow the Hub's version.
 
-## 🗂️ From data to models on one screen
+Only node-to-node image transfers use TCP 8475, and the install command opens it in the firewall.
 
-<p align="center">
-  <img src="docs/img/shot-project.png" alt="Project page: COCO128 detection and segmentation dataset cards, and the ranking of models trained in the project" width="880">
-</p>
-
-| | | |
-|:-:|---|---|
-| 🗂️ | **Registered in place** | Pick a YOLO, COCO or class-per-folder dataset on a node with **Browse** (`찾아보기`). Images stay where they are; the Hub keeps the list and the labels. Detection · segmentation · keypoints · classification |
-| 🏷️ | **Versions** | Every import makes a version, with label revision history, statistics, and the difference between two versions |
-| 🏆 | **Model ranking** | When a run finishes, its weights become a model version, ranked on the project page by each task's own metric |
+<details>
+<summary>If the Hub was not started from this repository</summary>
 
 <br>
 
-## ✨ Features at a glance
+Started from the repository with `uv`, the Hub builds the package nodes download (a wheel) by itself. Otherwise build and upload it yourself:
 
-All real screens, from runs on COCO128 and MNIST160. Click an image to see it full size.
+```bash
+uv build --wheel -o .badamoa/dist
+```
 
-<table>
-  <tr>
-    <td align="center" valign="top" width="50%">
-      <br>
-      <img src="docs/img/feat-images.png" alt="A version's image grid: COCO images with boxes coloured by class" width="420">
-      <h3>🖼️ Images and labels</h3>
-      <p>A grid with boxes, outlines and keypoints drawn.<br>Filter by split, class and label state.</p>
-    </td>
-    <td align="center" valign="top" width="50%">
-      <br>
-      <img src="docs/img/feat-training.png" alt="A training run: accuracy and loss curves, metric cards, and the note that it became a model" width="420">
-      <h3>📈 Training runs</h3>
-      <p>Metric curves, per-epoch prediction images and output files, live.<br>Tick runs in the list to overlay their curves.</p>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <br>
-      <img src="docs/img/feat-sweep.png" alt="A hyperparameter sweep: metric per setting and the best run" width="420">
-      <h3>🎯 Hyperparameter sweeps</h3>
-      <p>Grid · random · Bayesian (Optuna TPE).<br>The best settings and the metric per setting at a glance.</p>
-    </td>
-    <td align="center" valign="top">
-      <br>
-      <img src="docs/img/feat-model.png" alt="A model: its metrics, aliases, evaluation records and exported files" width="420">
-      <h3>📦 Model versions · evaluation · export</h3>
-      <p>Aliases (champion · production …), evaluate on the same data to compare.<br>Export to ONNX · TorchScript, test on images right away.</p>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <br>
-      <img src="docs/img/feat-nodes.png" alt="Node board: CPU, memory and disk bars and GPU tiles per server" width="420">
-      <h3>🖥️ GPU node board</h3>
-      <p>GPU tiles plus CPU · memory · disk for each server.<br>GPUs in use by people are left alone; jobs go to free ones.</p>
-    </td>
-    <td align="center" valign="top">
-      <br>
-      <img src="docs/img/feat-lineage.png" alt="Lineage: from a dataset version to a run, a model, and its evaluation and export" width="420">
-      <h3>🔗 Lineage</h3>
-      <p>Version → run → model → evaluation · export · test.<br>Trace back which data and settings made a model.</p>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <br>
-      <img src="docs/img/feat-templates.png" alt="Model types in settings: the built-in YOLO and torchvision templates" width="420">
-      <h3>🧩 Your own training code, same screens</h3>
-      <p>Add one declaration file to your training code folder,<br>upload it, and it appears as a model type in the training dialog.</p>
-    </td>
-    <td align="center" valign="top">
-      <br>
-      <img src="docs/img/feat-home.png" alt="Home: counts of projects, datasets, images, models, nodes and storage, and a getting-started list" width="420">
-      <h3>🏠 The Hub at a glance</h3>
-      <p>Counts of data, models, nodes and storage,<br>and a getting-started list for first-time users.</p>
-    </td>
-  </tr>
-</table>
+```bash
+uv run badamoa hub publish-wheel <wheel file> --home .badamoa/hub
+```
 
-<br>
+</details>
 
-## 🏋️ What you can train
+### Connect an agent (MCP)
 
-| Task | Built-in model types | Evaluate · export · test |
-|---|---|---|
-| 🎯 **Detection** | Ultralytics YOLO11 · YOLO26<br>torchvision Faster R-CNN · RetinaNet · FCOS · SSDlite | mAP · ONNX · TorchScript · images with boxes |
-| 🧩 **Segmentation** | Ultralytics YOLO11-seg · YOLO26-seg | mask mAP · ONNX · images with masks |
-| 🔢 **Classification** | torchvision ResNet · EfficientNet · MobileNetV3<br>ConvNeXt · RegNet · ViT · Swin | Top-1/5 · confusion matrix · ONNX · top-5 classes |
-| 🦴 **Keypoints** | Import and view only (training planned) | — |
-| 🏢 **Your own code** | Anything registered as a [model template](#-registering-your-own-training-code-model-templates) | The template's `eval` · `export` · `predict` |
-
-- **Where a run trains** is automatic (a node that has the images) or your pick. Choose a node without the images and it first fetches them **straight from the node that has them, not through the Hub**.
-
-- The first time a node trains, it installs PyTorch and the training libraries in a separate virtual environment (a few minutes), choosing the build that fits its GPU driver.
-
-- Images, files and checkpoints left by training and evaluation all end up **on the Hub**. If a training server goes away, the results and the checkpoints to resume from stay.
-
-<br>
-
-## 🖥️ Adding remote servers as nodes
-
-1. Web UI → **Nodes** (`노드`) → **Add node** (`노드 추가`) shows a one-line command for Ubuntu and for Windows.
-
-2. Run it on the remote server (`sudo` on Ubuntu, an administrator PowerShell on Windows). It registers to start automatically, so the node comes back after a reboot.
-
-3. Once the server shows up on the node board, you are done. From then on the node updates itself to follow the Hub's version.
-
-> If you started the Hub from this repository with `uv`, it builds the package nodes download (a wheel) by itself. Otherwise run `uv build --wheel -o .badamoa/dist`, then `uv run badamoa hub publish-wheel <wheel file> --home .badamoa/hub`.
-
-<br>
-
-## 🤖 Connecting an agent (MCP)
-
-Web UI → **Agents** (`에이전트`): issue a token and the connect command appears.
+On the **Agents** (에이전트) page, issue a token and the connect command appears.
 
 ```bash
 claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "Authorization: Bearer <token>"
 ```
 
-Then ask things like "check the BADAMOA nodes" or "train yolo11n on coco128 v1 and tell me the metrics when it is done".
-
-| | What an agent can do |
-|:-:|---|
-| 🖥️ | List and inspect nodes, the GPU board, resource history; make a node join command |
-| 🗂️ | Look up projects, datasets and versions, compare versions, import datasets |
-| 🏋️ | Start and inspect runs, start and stop sweeps, notes and tags |
-| 📦 | Look up models, their lineage, set aliases |
-| 🩺 | Run, wait for, read logs of and cancel jobs; "diagnose a failed job" and "node health report" prompts |
+Then just ask: "check the nodes", "train yolo11n on coco128 v1 and tell me the metrics when it's done". Agents can see nodes and GPUs, datasets and versions, start runs and hyperparameter sweeps, look up models and their lineage, set aliases, and read job logs to diagnose failures.
 
 <br>
 
-## 🧩 Registering your own training code (model templates)
+## A tour
 
-Put your training code in one folder and add a declaration file (`badamoa.toml`): it shows up as a model type in the training dialog.
+Everything below is a real screen, taken from a Hub that has trained on COCO128 and MNIST160.
+
+### Datasets
+
+<p align="center">
+  <img src="docs/img/feat-images.png" alt="A version's image grid: COCO images with boxes coloured by class" width="880">
+</p>
+
+YOLO, COCO and class-per-folder layouts are read as they are and registered as detection, segmentation, keypoint or classification datasets. Every import makes a version, and versions can be compared. Images can be filtered by split, class and label state. Wrong boxes or classes are fixed right where you see them, and the fixes are confirmed together as a new version; existing versions never change.
+
+### Training and hyperparameter sweeps
+
+<p align="center">
+  <img src="docs/img/feat-training.png" alt="A training run: accuracy and loss curves with metric cards" width="49%">
+  <img src="docs/img/feat-sweep.png" alt="A hyperparameter sweep: the metric per setting and the best run" width="49%">
+</p>
+
+Pick a dataset version and a model and the run goes to a node with a free GPU; metric curves and per-epoch prediction images come in live. Overlay runs to compare their curves, and resume a stopped run from its checkpoint. Sweeps can be grid, random or Bayesian (Optuna TPE).
+
+### Models
+
+<p align="center">
+  <img src="docs/img/feat-model.png" alt="A model: evaluation records, an exported ONNX file and test images" width="880">
+</p>
+
+A finished run's weights become a model version. Give it aliases such as champion or production, evaluate models on the same data to compare them, export to ONNX or TorchScript, and upload images to test it on the spot. Its lineage traces back which data and settings produced it.
+
+<p align="center">
+  <img src="docs/img/feat-lineage.png" alt="Lineage: from a dataset version to a run, a model, and its evaluation, export and test" width="880">
+</p>
+
+### Servers and the Hub
+
+<p align="center">
+  <img src="docs/img/feat-nodes.png" alt="Node board: CPU, memory and disk per server, and GPU tiles" width="49%">
+  <img src="docs/img/feat-home.png" alt="Home: counts of data, models, nodes and storage, and a getting-started list" width="49%">
+</p>
+
+The node board shows each server's GPUs alongside its CPU, memory and disk. A GPU someone is using directly counts as busy and gets no jobs. Home sums up data, models, nodes and storage at a glance.
+
+<br>
+
+## Supported models
+
+| Task | Built in | Evaluate · export · test |
+|---|---|---|
+| Detection | Ultralytics YOLO11 · YOLO26<br>torchvision Faster R-CNN · RetinaNet · FCOS · SSDlite | mAP, ONNX · TorchScript, images with boxes |
+| Segmentation | Ultralytics YOLO11-seg · YOLO26-seg | mask mAP, ONNX, images with masks |
+| Classification | torchvision ResNet · EfficientNet · MobileNetV3<br>ConvNeXt · RegNet · ViT · Swin | Top-1 · Top-5, confusion matrix, ONNX |
+| Keypoints | Import and view only (training planned) | — |
+
+The first time a node trains, it installs PyTorch and the training libraries in a separate virtual environment on that node (a few minutes). The build is chosen to fit the GPU driver; set `BADAMOA_TORCH_BACKEND` on the node (e.g. `cpu`, `cu128`) to pick one yourself.
+
+<br>
+
+## Bringing your own training code
+
+To use your team's training code instead of the built-in models, put it in one folder, add a declaration file (`badamoa.toml`) and upload it as a **model template**. It then appears as a model type on the training page and trains, evaluates and exports like the built-in ones.
+
+<p align="center">
+  <img src="docs/img/feat-templates.png" alt="Model types in settings: the built-in YOLO and torchvision templates" width="880">
+</p>
 
 ```bash
 badamoa template init my-model
 ```
 
-Replace the marked part of `my-model/train.py` with your code. Settings and progress go through the SDK (`badamoa_sdk`). It looks like W&B or MLflow, and BADAMOA makes it importable when it runs your code, so there is nothing to install.
+Replace the marked part of `my-model/train.py` with your code. Settings and progress go through the SDK (`badamoa_sdk`), which looks much like W&B or MLflow. BADAMOA provides the SDK when it runs your code, so there is nothing to install.
 
 ```python
 import badamoa_sdk as bm
 
-hp = bm.params(                                  # declared settings → input fields in the training dialog
+hp = bm.params(                                  # declared settings → input fields on the training page
     model=bm.choice(["resnet18", "resnet50"], label="Model"),
     epochs=bm.integer(30, min=1, label="epoch"),
-    lr=bm.number(0.001, label="Learning rate", group="Optimizer", advanced=True),  # folded under "advanced"
+    lr=bm.number(0.001, label="Learning rate", group="Optimizer", advanced=True),  # folded under advanced settings
 )
 run = bm.init()                                  # run.data, run.out, run.device, run.classes …
 for epoch in range(1, hp.epochs + 1):
     ...
     bm.log({"train_loss": loss, "map50_95": score}, step=epoch)       # charts update right away
     bm.progress(epoch, hp.epochs)
-bm.log_artifact("confusion.png")                 # (optional) images and files → the run's "files"
+bm.log_artifact("confusion.png")                 # (optional) images and files → the run's files
 bm.log_model(run.out / "best.pt")                # the weights to register as a model
 bm.finish({"map50_95": best})
 ```
+
+Check it, then upload it to the Hub:
 
 ```bash
 badamoa template check my-model
@@ -247,89 +207,28 @@ badamoa template check my-model
 badamoa template push my-model --hub http://<hub>:8470 --token <admin API token>
 ```
 
-<details>
-<summary>📋 <b>More on templates</b> — packages, existing environments, input fields, versions</summary>
+Packages listed under `[environment] requirements` in `badamoa.toml` are installed by the servers. To use a conda or venv environment a server already has, register it under **Settings** (설정) → **Environments** (환경) and put its name in `default`. Raise `version` when you upload changed code; every run remembers the version it used, so "run again" uses the same code.
 
 <br>
 
-- List the packages you need under `[environment] requirements` in `badamoa.toml` and servers install them. To use a conda or venv environment a server already has, register it in Web UI → **Settings** (`설정`) → **Environments** (`환경`) and put its name in `default`.
+## Status
 
-- What you declare in `bm.params(...)` becomes the training dialog's input fields. `advanced=True` folds a field under the advanced settings, and `group` titles a group there. BADAMOA reads the code rather than running it to build the fields, so values must be written literally. You can also put them under `[params]` in `badamoa.toml` without touching the code.
+BADAMOA is in 0.x development. Here is what works and what is still to come; the order is in the [roadmap](docs/ROADMAP.md) (in Korean).
 
-- Per-step images and tables: `bm.log_image(key=, step=)` · `bm.log_table`. There are callbacks for Lightning and the Hugging Face Trainer too.
+| Area | Works | To come |
+|---|---|---|
+| **Build** · data | ✅ Registering in place, versions and label revisions, version diff, node-to-node transfer | 🚧 Sample library, embedding search, curation |
+| **Annotate** · labels | ✅ Viewing boxes, outlines and keypoints; fixing labels in place and confirming them as a version | 🚧 Editing outline and keypoint shapes, autolabel, review |
+| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates | 🚧 TensorRT, keypoint training |
+| **Automate** · deployment | — | 🚧 Inference service, deployment, pipelines |
+| **MOA** · operations | ✅ Nodes and GPU assignment, self-updating nodes, MCP agents | 🚧 Approval gates, built-in agent |
 
-- Raise `version` when you upload changed code. Runs record the version they used, so "run again" uses the same code.
-
-</details>
-
-<br>
-
-## ⚠️ Good to know
-
-- 🚧 **Still in development (0.x).** The `P2`–`P5` menu items (sample library · autolabel · review · deploy · pipelines) are not there yet. The order is in the [roadmap](docs/ROADMAP.md).
-
-- 🔓 **HTTP only** (TLS is planned). Use it inside your own network.
-
-- 💾 **Each node gets a virtual environment for training.** With PyTorch in it, plan for a few GB of disk per node.
-
-- 🧪 **Verified on small data** (COCO128 · MNIST160, the smallest YOLO). Speed on large datasets is measured when real ones come in.
+> [!NOTE]
+> It speaks plain HTTP for now (TLS is planned), so keep it inside your own network. Each node gets a virtual environment with PyTorch in it, a few GB of disk. It has been verified on small data such as COCO128 and MNIST160; speed on large datasets will be measured as real ones come in.
 
 <br>
 
-## 📚 More
-
-Folded below. Click a title to open it.
-
-<details>
-<summary>🗂️ <b>Registering a dataset</b> — COCO128, MNIST160, real-data tests</summary>
-
-<br>
-
-In Web UI → **Datasets** (`데이터셋`), create a project, press **Import dataset** (`데이터셋 가져오기`) and pick a YOLO or COCO folder on a node (**Browse** shows folders on remote servers too). Images are not copied; they stay where they are.
-
-For something to try, take COCO128 (128 images from COCO, about 7 MB). It unpacks to `.badamoa/data/coco128`.
-
-```bash
-uv run python scripts/fetch_coco128.py
-```
-
-With it on disk, `uv run pytest` also runs the real-data checks (`tests/test_real_data.py`).
-
-Classification data in class-per-folder form registers the same way (choose the task when importing, or let the folder layout tell). MNIST160 (160 digits, about 70 KB) is there to try:
-
-```bash
-uv run python scripts/fetch_mnist160.py
-```
-
-</details>
-
-<details>
-<summary>🏋️ <b>Training</b> — new runs, GPU assignment, PyTorch builds, a real YOLO test</summary>
-
-<br>
-
-In Web UI → **Training** (`학습`) → **New run** (`새 학습`), pick a dataset version and a model (e.g. yolo11n). **Train on this version** (`이 버전으로 학습`) on a version's page starts one too.
-
-- By default a run trains on a node that has the version's images. Choosing another node under "nodes to train on" first moves the images to it directly (TCP 8475).
-
-- The first time a node trains, it installs PyTorch and Ultralytics in a separate virtual environment (a few minutes; the node needs uv). The PyTorch build is chosen to fit the GPU driver; set `BADAMOA_TORCH_BACKEND` on the node (e.g. `cpu`, `cu128`) to pick one yourself.
-
-- When it finishes, the weights are registered as a version on the **Models** (`모델`) page.
-
-- A GPU on which another process uses more than 10% of the memory counts as busy and jobs wait. To assign anyway on a PC you use alone, start the Hub with `--gpu-busy-memory-pct 101 --gpu-busy-util-pct 101`.
-
-With COCO128 present, a test can run a real YOLO training (1 epoch, CPU):
-
-```bash
-BADAMOA_TEST_YOLO=1 uv run pytest tests/test_real_data.py -k yolo
-```
-
-</details>
-
-<details>
-<summary>🛠️ <b>Development</b> — tests, lint, web UI dev server, layout</summary>
-
-<br>
+## Development
 
 ```bash
 uv run pytest
@@ -339,35 +238,25 @@ uv run pytest
 uv run ruff check .
 ```
 
-When working on the web UI, keep a Hub running and start `npm --prefix web run dev`: `/api` requests are proxied to the Hub.
+When working on the web app, keep a Hub running and start `npm --prefix web run dev`: `/api` requests are passed to the Hub. With COCO128 downloaded, `uv run pytest` also runs the real-data checks, and `BADAMOA_TEST_YOLO=1` adds a real YOLO training (1 epoch, CPU).
 
 ```
 src/badamoa/core       shared schemas · storage · system info
-src/badamoa/hub        Hub: REST · node protocol · MCP · web UI hosting
+src/badamoa/hub        Hub: REST · node protocol · MCP · serving the web app
 src/badamoa/node       Node Agent · dataset import · training formats · environments · node-to-node transfer
-src/badamoa/templates  built-in model templates (YOLO, YOLO-seg, torchvision detection · classification) · SDK (badamoa_sdk) · new-template skeleton
-web/                   web UI (React + Vite)
+src/badamoa/templates  built-in model templates · SDK (badamoa_sdk) · new-template skeleton
+web/                   web app (React + Vite)
 tests/                 unit · API · E2E
 ```
 
-To ship a version, raise the version in `src/badamoa/__init__.py` together with [CHANGELOG.md](CHANGELOG.md) and push to main: a release with the same notes appears on [GitHub Releases](https://github.com/RiceShrimp/BADAMOA/releases) by itself.
+To ship a version, raise the version in `src/badamoa/__init__.py` together with [CHANGELOG.md](CHANGELOG.md) and push to main. A release with the same notes appears on [GitHub Releases](https://github.com/RiceShrimp/BADAMOA/releases) by itself.
 
-</details>
+### Documents (in Korean)
 
-<details>
-<summary>📄 <b>Documents</b> (in Korean) — design, roadmap, plans, screens</summary>
-
-<br>
-
-| Document | About |
-|---|---|
-| [CHANGELOG.md](CHANGELOG.md) | What changed in each version (same as the in-app release notes and GitHub Releases) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Goals · design principles · structure · install and operation |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and checklists |
-| [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) | Plan for in-house training code, environments and storage; MLflow · W&B comparison |
-| [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) | Fixing labels and labeling inside BADAMOA |
-| [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) | Screen layouts |
-| [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) | Study of reference products |
-| [docs/PLANS.md](docs/PLANS.md) | The first sketch |
-
-</details>
+- [CHANGELOG.md](CHANGELOG.md) — changes per version (the same as the in-app release notes)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — goals, design principles, structure
+- [docs/ROADMAP.md](docs/ROADMAP.md) — phases and checklists
+- [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) — in-house training code, environments and storage; MLflow · W&B comparison
+- [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — fixing labels and labeling inside BADAMOA
+- [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) — screen layouts
+- [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) · [docs/PLANS.md](docs/PLANS.md) — study of reference products, the first sketch
