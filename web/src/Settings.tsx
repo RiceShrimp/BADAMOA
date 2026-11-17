@@ -4,7 +4,7 @@ import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
 import { type Project, announceTrash } from "./catalogTypes";
 import type { Environment, EnvironmentNode, Template } from "./trainTypes";
-import { Badge, CopyBlock, Icon, Modal, timeAgo, usePolling } from "./ui";
+import { Badge, CopyBlock, Icon, Modal, timeAgo, useHubUrl, usePolling } from "./ui";
 
 const ENTRY_LABEL: Record<string, string> = { train: "학습", eval: "평가", predict: "추론", export: "내보내기" };
 
@@ -62,8 +62,9 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
 // ---- for teams that already run Prometheus and Grafana ---------------------------------
 
 function ExternalMonitoring() {
-  const target = window.location.host;
-  const scheme = window.location.protocol.replace(":", "");
+  const hub = new URL(useHubUrl()); // Prometheus runs on another machine: not the browser's localhost
+  const target = hub.host;
+  const scheme = hub.protocol.replace(":", "");
   const config = [
     "scrape_configs:",
     "  - job_name: badamoa",
@@ -338,6 +339,7 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
 // ---- model templates -----------------------------------------------------------------
 
 function Templates({ isAdmin }: { isAdmin: boolean }) {
+  const hubUrl = useHubUrl();
   const [watching, setWatching] = useState(false);
   const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), watching ? 3000 : 20000, [watching]);
   const preparing = templates?.some((t) => t.environment.preparing.length > 0) ?? false;
@@ -478,7 +480,7 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
           <CopyBlock label="2. train.py를 고친 뒤 확인" text="badamoa template check my-model" />
           <CopyBlock
             label="3. 올리기 (에이전트 연결 화면에서 발급한 관리자 토큰)"
-            text={`badamoa template push my-model --hub ${window.location.origin} --token <토큰>`}
+            text={`badamoa template push my-model --hub ${hubUrl} --token <토큰>`}
           />
           <p className="muted small">
             폴더를 zip으로 묶어 이 화면의 "올리기"로 등록해도 같습니다. 코드를 바꿔 다시 올릴 때는 선언 파일의 version을

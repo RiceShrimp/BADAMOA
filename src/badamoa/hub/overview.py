@@ -113,16 +113,44 @@ def dataset_card(db: Session, settings: HubSettings, dataset: Dataset) -> dict[s
     }
 
 
-def _best_model(db: Session, project: Project) -> dict[str, Any] | None:
-    best = None
+def _model_groups(db: Session, project: Project, tasks: list[str]) -> list[dict[str, Any]]:
+    """The project's models by task, best first by that task's own main metric.
+
+    A Top-1 and an mAP do not compare, so a project with detection and classification datasets
+    ranks each on its own. Tasks come in the order of the project's datasets, then any others.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
     for model in db.scalars(
         select(ModelVersion).where(ModelVersion.project_id == project.id, ModelVersion.deleted_at.is_(None))
     ):
-        metric = training.PRIMARY_METRIC.get(model.task, "map50_95")
-        value = (model.metrics or {}).get(metric)
-        if isinstance(value, int | float) and (best is None or value > best["value"]):
-            best = {"id": model.id, "name": f"{model.name} v{model.version}", "metric": metric, "value": value}
-    return best
+        task = model.task or "detect"
+        value = (model.metrics or {}).get(training.PRIMARY_METRIC.get(task, "map50_95"))
+        groups.setdefault(task, []).append(
+            {
+                "id": model.id,
+                "name": f"{model.name} v{model.version}",
+                "value": value if isinstance(value, int | float) else None,
+                "aliases": model.aliases or [],
+            }
+        )
+    order = [t for t in tasks if t in groups] + sorted(t for t in groups if t not in tasks)
+    return [
+        {
+            "task": task,
+            "metric": training.PRIMARY_METRIC.get(task, "map50_95"),
+            "models": sorted(groups[task], key=lambda m: -(m["value"] if m["value"] is not None else -1)),
+        }
+        for task in order
+    ]
+
+
+def _best_model(db: Session, project: Project, tasks: list[str]) -> dict[str, Any] | None:
+    """The best model of the project's main task (its first dataset's), or of the first task that has one."""
+    for group in _model_groups(db, project, tasks):
+        top = group["models"][0]
+        if top["value"] is not None:
+            return {"id": top["id"], "name": top["name"], "metric": group["metric"], "value": top["value"]}
+    return None
 
 
 def _labelled_classes(db: Session, project: Project) -> list[dict[str, Any]]:
@@ -169,7 +197,7 @@ def _project_card(db: Session, settings: HubSettings, project: Project, counts: 
         "items": counts["items"].get(project.id, 0),
         "runs": counts["runs"].get(project.id, 0),
         "models": counts["models"].get(project.id, 0),
-        "best": _best_model(db, project),
+        "best": _best_model(db, project, tasks or ["detect"]),  # the same order as the project page
         "collage": _collage(db, settings, newest),
         "classes": _labelled_classes(db, project),
     }
@@ -225,21 +253,19 @@ def project_page(db: Session, settings: HubSettings, project_id: str) -> dict[st
     datasets = db.scalars(select(Dataset).where(Dataset.project_id == project.id).order_by(Dataset.name)).all()
     cards = [c for c in (dataset_card(db, settings, d) for d in datasets) if c is not None]
     tasks = card["tasks"] or ["detect"]
-    metric = training.PRIMARY_METRIC.get(tasks[0], "map50_95")  # the first dataset's; a model of another task shows its own
-    models = [
-        {
-            "id": m.id,
-            "name": f"{m.name} v{m.version}",
-            "value": (m.metrics or {}).get(training.PRIMARY_METRIC.get(m.task, "map50_95")),
-            "aliases": m.aliases or [],
-        }
-        for m in db.scalars(
-            select(ModelVersion).where(ModelVersion.project_id == project.id, ModelVersion.deleted_at.is_(None))
-        )
-    ]
-    models.sort(key=lambda m: -(m["value"] if isinstance(m["value"], int | float) else -1))
+    groups = _model_groups(db, project, tasks)
+    shown = 5 if len(groups) <= 1 else 3  # several tasks share the card: a few of each
+    groups = [{**g, "models": g["models"][:shown]} for g in groups]
+    metric = groups[0]["metric"] if groups else training.PRIMARY_METRIC.get(tasks[0], "map50_95")
     sweeps = db.scalar(select(func.count(Sweep.id)).where(Sweep.project_id == project.id)) or 0
-    return {**card, "metric": metric, "dataset_cards": cards, "top_models": models[:5], "sweeps": sweeps}
+    return {
+        **card,
+        "metric": metric,  # of the first group: what top_models is ranked by
+        "dataset_cards": cards,
+        "model_groups": groups,
+        "top_models": groups[0]["models"] if groups else [],  # for older readers: the first task only
+        "sweeps": sweeps,
+    }
 
 
 def home(db: Session, settings: HubSettings) -> dict[str, Any]:

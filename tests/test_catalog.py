@@ -641,3 +641,31 @@ def test_old_work_folders_on_a_node(tmp_path):
     assert workdirs.sweep(tmp_path, 0, set(), now) == (0, 0)  # 0: keep
     assert workdirs.sweep(tmp_path, 30, {"running-old"}, now) == (1, 1000)
     assert sorted(p.name for p in root.iterdir()) == ["recent", "running-old"]
+
+
+def test_project_ranks_each_task_by_its_own_metric(client, admin):
+    """A Top-1 of 0.93 is not better than an mAP of 0.52: each task gets its own list and metric."""
+    from badamoa.hub.train_models import ModelVersion
+
+    project = client.post("/api/projects", json={"name": "섞임"}, headers=admin).json()
+    rows = [
+        ("det-small", "detect", {"map50_95": 0.41}),
+        ("digits", "classify", {"top1": 0.93}),
+        ("det-big", "detect", {"map50_95": 0.52}),
+        ("masks", "segment", {"mask_map50_95": 0.30, "map50_95": 0.61}),
+    ]
+    with client.app.state.hub.db.session() as db:
+        for name, task, metrics in rows:
+            db.add(ModelVersion(project_id=project["id"], name=name, version=1, task=task, blob="0" * 64, metrics=metrics))
+
+    page = client.get(f"/api/projects/{project['id']}/overview", headers=admin).json()
+    groups = [(g["task"], g["metric"], [m["name"] for m in g["models"]]) for g in page["model_groups"]]
+    assert groups == [  # the project's own task first (no datasets yet: detection), then the others
+        ("detect", "map50_95", ["det-big v1", "det-small v1"]),
+        ("classify", "top1", ["digits v1"]),
+        ("segment", "mask_map50_95", ["masks v1"]),
+    ]
+    assert page["metric"] == "map50_95" and [m["name"] for m in page["top_models"]] == ["det-big v1", "det-small v1"]
+
+    card = next(c for c in client.get("/api/project-cards", headers=admin).json() if c["id"] == project["id"])
+    assert (card["best"]["name"], card["best"]["metric"], card["best"]["value"]) == ("det-big v1", "map50_95", 0.52)

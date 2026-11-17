@@ -269,6 +269,18 @@
 .project-models h3 {
   margin: 0;
 }
+/* several tasks in one project: a list per task, each ranked by its own metric */
+.project-models .model-group + .model-group {
+  margin-top: 12px;
+}
+.model-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-group-head + ol {
+  margin-top: 4px;
+}
 .scroll-list {
   max-height: 280px;
   overflow-y: auto;

@@ -371,6 +371,12 @@ class HubAddress(BaseModel):
     url: str | None = None  # None: find it by itself again
 
 
+@router.get("/hub-url")
+def hub_url(request: Request, _: User = Depends(current_user), hub: Hub = Depends(get_hub)) -> dict[str, str]:
+    """The address to put in commands run elsewhere (MCP, template push, Prometheus): never the browser's localhost."""
+    return {"url": address.resolve(request, hub.settings)[0]}
+
+
 @router.get("/settings/hub-address")
 def hub_address(request: Request, _: User = Depends(admin_user), hub: Hub = Depends(get_hub)) -> dict[str, Any]:
     """The address nodes are told to reach this Hub at, where it comes from, and the ones this machine has."""

@@ -1,4 +1,24 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { api } from "./api";
+
+/**
+ * The Hub's address for commands that run on another machine (an agent, a template push, Prometheus).
+ * Not the browser's own: opened as localhost, that would point the other machine at itself.
+ * The browser's address stands in until the Hub answers.
+ */
+export function useHubUrl(): string {
+  const [url, setUrl] = useState(window.location.origin);
+  useEffect(() => {
+    let alive = true;
+    api<{ url: string }>("/hub-url")
+      .then((r) => alive && setUrl(r.url))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return url;
+}
 
 /** Re-run `load` every `ms` while mounted; returns the latest value, error, and a manual refresh. */
 export function usePolling<T>(load: () => Promise<T>, ms: number, deps: unknown[] = []) {

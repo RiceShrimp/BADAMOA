@@ -63,8 +63,15 @@ interface DatasetCardInfo {
 interface ProjectPageInfo extends ProjectCardInfo {
   metric: string;
   dataset_cards: DatasetCardInfo[];
-  top_models: { id: string; name: string; value: number | null; aliases: string[] }[];
+  model_groups: ModelGroup[];
   sweeps: number;
+}
+
+/** One task's models, best first by that task's own metric (a Top-1 and an mAP do not compare). */
+interface ModelGroup {
+  task: string;
+  metric: string;
+  models: { id: string; name: string; value: number | null; aliases: string[] }[];
 }
 
 export const METRIC_NAME: Record<string, string> = { map50_95: "mAP50-95", mask_map50_95: "mask mAP50-95", top1: "Top-1" };
@@ -1186,27 +1193,37 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
 
         <aside className="card project-models">
           <h3>이 프로젝트의 모델</h3>
-          {page.top_models.length === 0 ? (
+          {page.model_groups.length === 0 && (
             <p className="muted small">아직 학습한 모델이 없습니다. 데이터셋을 열어 "이 버전으로 학습"을 누르세요.</p>
-          ) : (
-            <ol>
-              {page.top_models.map((m) => (
-                <li key={m.id}>
-                  <a href={`#/models/${m.id}`} onClick={() => rememberProject(page.id)}>
-                    {m.name}
-                  </a>
-                  {m.aliases.map((a) => (
-                    <span key={a} className="tag">
-                      {a}
-                    </span>
-                  ))}
-                  <span className="num muted">{m.value != null ? m.value.toFixed(3) : "–"}</span>
-                </li>
-              ))}
-            </ol>
           )}
+          {page.model_groups.map((g) => (
+            <div key={g.task} className="model-group">
+              {page.model_groups.length > 1 && (
+                <div className="model-group-head">
+                  <span className="tag task-tag">{taskLabel(g.task)}</span>
+                  <span className="muted small">{METRIC_NAME[g.metric] ?? g.metric} 기준</span>
+                </div>
+              )}
+              <ol>
+                {g.models.map((m) => (
+                  <li key={m.id}>
+                    <a href={`#/models/${m.id}`} onClick={() => rememberProject(page.id)}>
+                      {m.name}
+                    </a>
+                    {m.aliases.map((a) => (
+                      <span key={a} className="tag">
+                        {a}
+                      </span>
+                    ))}
+                    <span className="num muted">{m.value != null ? m.value.toFixed(3) : "–"}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ))}
           <div className="muted small">
-            {METRIC_NAME[page.metric] ?? page.metric} 기준 · 학습 {page.runs}회 · 탐색 {page.sweeps}회
+            {page.model_groups.length === 1 && `${METRIC_NAME[page.model_groups[0].metric] ?? page.model_groups[0].metric} 기준 · `}
+            학습 {page.runs}회 · 탐색 {page.sweeps}회
           </div>
           <a className="link small" href="#/training" onClick={() => rememberProject(page.id)}>
             학습 화면에서 비교 <Icon name="arrow" size={12} />

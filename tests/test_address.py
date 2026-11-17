@@ -71,3 +71,21 @@ def test_hub_builds_the_node_package_from_its_checkout(tmp_path):
     settings = HubSettings(home=tmp_path / "hub")
     assert install.ensure_node_wheel(settings) == "built"
     assert install.node_wheel(settings).name == f"badamoa-{services.HUB_VERSION}-py3-none-any.whl"
+
+
+def test_commands_run_elsewhere_get_the_hub_address(client, admin):
+    """The agents page and the template push and Prometheus commands: the Hub's address, not the browser's localhost."""
+    assert client.get("/api/hub-url").status_code == 401
+    member = {"username": "kim", "password": "member-test-pw"}
+    assert client.post("/api/users", json=member, headers=admin).status_code == 200
+    token = client.post("/api/auth/login", json=member).json()["token"]
+    as_member = {"Authorization": f"Bearer {token}"}  # not only admins: everyone can connect an agent
+
+    assert client.get("/api/hub-url", headers=as_member).json() == {"url": "http://testserver"}
+    local = {**as_member, "host": "localhost:8470"}
+    found = address.lan_addresses()
+    expected = f"http://{found[0]}:8470" if found else "http://localhost:8470"
+    assert client.get("/api/hub-url", headers=local).json() == {"url": expected}
+
+    assert client.put("/api/settings/hub-address", json={"url": "http://gpu-hub.lan:8470"}, headers=admin).status_code == 200
+    assert client.get("/api/hub-url", headers=local).json() == {"url": "http://gpu-hub.lan:8470"}

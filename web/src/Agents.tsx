@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { type ApiTokenInfo, api } from "./api";
-import { CopyBlock, Icon, timeAgo, usePolling } from "./ui";
+import { CopyBlock, Icon, timeAgo, useHubUrl, usePolling } from "./ui";
 
 const CAPABILITIES = [
   { icon: "server", title: "노드 조회", text: "어떤 서버가 온라인인지, GPU와 디스크가 얼마나 남았는지" },
@@ -13,7 +13,7 @@ export function Agents() {
   const [name, setName] = useState("claude-code");
   const [created, setCreated] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const mcpUrl = `${window.location.origin}/mcp`;
+  const mcpUrl = `${useHubUrl()}/mcp`;
   const shown = created ?? "<토큰>";
 
   const create = async (e: FormEvent) => {
