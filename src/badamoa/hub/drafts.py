@@ -182,11 +182,40 @@ def _number(value: Any) -> float:
     return number
 
 
+def _unit(v: float) -> float:
+    return round(min(1.0, max(0.0, v)), 5)
+
+
+def _after_box(rest: list[float], task: str, keypoints: int) -> list[float]:
+    """What follows a box: an outline (segmentation), keypoints (pose), nothing (detection), or a named
+    task's own values (kept as they are)."""
+    if task == "segment":
+        if rest and (len(rest) < 6 or len(rest) % 2):
+            raise ServiceError(400, "윤곽은 점 3개 이상의 [x1, y1, x2, y2, …]입니다.")
+        return [_unit(v) for v in rest]
+    if task == "pose":
+        if not rest:
+            return [0.0, 0.0, 0.0] * keypoints
+        if len(rest) % 3 or (keypoints and len(rest) != keypoints * 3):
+            raise ServiceError(400, f"키포인트는 점 {keypoints}개의 [x, y, 보임(0 · 1 · 2)]입니다.")
+        out: list[float] = []
+        for i in range(0, len(rest), 3):
+            x, y, seen = rest[i : i + 3]
+            if seen not in (0, 1, 2):
+                raise ServiceError(400, "키포인트의 보임 값은 0(없음) · 1(가려짐) · 2(보임)입니다.")
+            out += [_unit(x), _unit(y), float(seen)] if seen else [0.0, 0.0, 0.0]
+        return out
+    if task == "detect":
+        return []
+    return rest
+
+
 def clean_boxes(boxes: list[list[Any]], space: LabelSpace, task: str) -> list[list[float]]:
     """The labels as stored: known classes, boxes inside the image, coordinates rounded to 5 places."""
     if len(boxes) > MAX_BOXES:
         raise ServiceError(400, f"한 이미지의 라벨은 {MAX_BOXES:,}개까지입니다.")
     known = {int(c["id"]) for c in space.classes}
+    points = {int(c["id"]): len(c.get("keypoints") or []) for c in space.classes}  # pose: keypoints per class
     out: list[list[float]] = []
     for box in boxes:
         if not box:
@@ -202,13 +231,11 @@ def clean_boxes(boxes: list[list[Any]], space: LabelSpace, task: str) -> list[li
         cx, cy, w, h = (_number(v) for v in box[1:5])
         x1, y1 = max(0.0, cx - w / 2), max(0.0, cy - h / 2)
         x2, y2 = min(1.0, cx + w / 2), min(1.0, cy + h / 2)
+        rest = _after_box([_number(v) for v in box[5:]], task, points.get(cls, 0))
+        if task == "segment" and rest:  # the box is the outline's bounds
+            x1, y1, x2, y2 = min(rest[0::2]), min(rest[1::2]), max(rest[0::2]), max(rest[1::2])
         if x2 - x1 < MIN_SIDE or y2 - y1 < MIN_SIDE:
             continue  # nothing left inside the image
-        # what follows the box: an outline (x, y, …) or keypoints (x, y, visibility, …)
-        rest = [
-            _number(v) if task == "pose" and n % 3 == 2 else round(min(1.0, max(0.0, _number(v))), 5)
-            for n, v in enumerate(box[5:])
-        ]
         out.append([cls, round((x1 + x2) / 2, 5), round((y1 + y2) / 2, 5), round(x2 - x1, 5), round(y2 - y1, 5), *rest])
     if task == "classify" and len(out) > 1:
         raise ServiceError(400, "분류 이미지에는 클래스 하나만 고를 수 있습니다.")

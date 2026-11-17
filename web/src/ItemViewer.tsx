@@ -11,7 +11,18 @@ import {
   classColor,
   keypointsOf,
 } from "./catalogTypes";
-import { type Box, ClassPicker, EditLayer } from "./LabelEditor";
+import {
+  type Box,
+  ClassPicker,
+  EditLayer,
+  KeypointList,
+  type Pt,
+  keypointList,
+  moveShape,
+  outlineOf,
+  polygonShape,
+  withKeypoints,
+} from "./LabelEditor";
 import { Icon } from "./ui";
 
 interface Props {
@@ -48,9 +59,12 @@ function sourceLabel(source: string): string {
 }
 
 const copy = (boxes: Box[]) => boxes.map((b) => [...b]);
+const MAX_ZOOM = 16;
 
-/** Full-screen item view: boxes over the image, label revisions (one or two side by side), where else the image is used.
- * "라벨 고치기" (E) turns the same screen into an editor; what is saved lands in the dataset's work in progress. */
+/** Full-screen item view: labels over the image, label revisions (one or two side by side), where else the image is used.
+ * The mouse wheel zooms (at the pointer) and a drag moves the zoomed image. "라벨 고치기" (E) turns the same screen
+ * into an editor for boxes, outlines (segmentation), keypoints (pose) or the class (classification); what is saved
+ * lands in the dataset's work in progress. */
 export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colorOf = classColor, classes = [], task = "detect", onSaved }: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
@@ -66,6 +80,13 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
 
+  // ---- zoom: 1 fits the image; pan is where the zoomed image sits inside its frame (screen pixels)
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<Pt>([0, 0]);
+  const [space, setSpace] = useState(false); // held: a drag moves the image, even while fixing
+  const panning = useRef<{ x: number; y: number; from: Pt } | null>(null);
+  const [grabbing, setGrabbing] = useState(false);
+
   // ---- fixing labels
   const [editing, setEditing] = useState(false);
   const editingRef = useRef(false);
@@ -75,13 +96,18 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   const [undo, setUndo] = useState<Box[][]>([]);
   const [redo, setRedo] = useState<Box[][]>([]);
   const [selected, setSelected] = useState<number | null>(null);
+  const [point, setPoint] = useState<number | null>(null); // outline corner or keypoint of the selected label
   const [drawing, setDrawing] = useState(false);
+  const [sketch, setSketch] = useState<Pt[]>([]); // corners of an outline being drawn
+  const [placing, setPlacing] = useState<number | null>(null); // pose: the keypoint the next click places
   const [drawClass, setDrawClass] = useState<number>(classes[0]?.id ?? 0);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<{ kind: "saved" | "error" | "conflict"; text: string } | null>(null);
   const clip = useRef<Box | null>(null);
   const dirty = editing && JSON.stringify(boxes) !== baseline;
-  const geometry = task === "detect" || !["segment", "pose", "classify"].includes(task); // boxes only: move, resize, draw
+  const shapes = task !== "classify"; // labels with a place in the image (not a class for the whole image)
+  const kind = task === "segment" ? "outline" : task === "pose" ? "pose" : "box";
+  const keypointNames = (cls: number) => classes.find((c) => c.id === cls)?.keypoints ?? [];
 
   useEffect(() => {
     const el = stageRef.current;
@@ -93,6 +119,12 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     return () => observer.disconnect();
   }, []);
 
+  const select = (index: number | null, at: number | null = null) => {
+    setSelected(index);
+    setPoint(index == null ? null : at);
+    if (index !== selected) setPlacing(null);
+  };
+
   /** Begin fixing this image from the labels of the work in progress (or this version's). */
   const startFrom = (detail: ItemDetail) => {
     const rev = detail.revisions.find((r) => r.id === detail.edit.revision_id);
@@ -102,6 +134,9 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     setUndo([]);
     setRedo([]);
     setSelected(null);
+    setPoint(null);
+    setSketch([]);
+    setPlacing(null);
     if (rev) setRevisionId(rev.id);
     setCompareId(null);
   };
@@ -127,6 +162,8 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
         setRevisionId(detail.revision_id);
         setCompareId(null);
         setNote(null);
+        setZoom(1);
+        setPan([0, 0]);
         if (editingRef.current) {
           if (detail.edit.allowed) startFrom(detail);
           else setEditing(false);
@@ -154,39 +191,76 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     setRedo((r) => [...r, boxes]);
     setBoxes(undo[undo.length - 1]);
     setUndo((u) => u.slice(0, -1));
-    setSelected(null);
+    select(null);
   };
   const redoStep = () => {
     if (!redo.length) return;
     setUndo((u) => [...u, boxes]);
     setBoxes(redo[redo.length - 1]);
     setRedo((r) => r.slice(0, -1));
-    setSelected(null);
+    select(null);
   };
+  const replace = (index: number, label: Box) => apply(boxes.map((b, i) => (i === index ? label : b)));
   const removeSelected = () => {
     if (selected == null) return;
     apply(boxes.filter((_, i) => i !== selected));
-    setSelected(null);
+    select(null);
+  };
+  /** Delete the picked point: an outline corner goes (three stay at least), a keypoint becomes "not labelled". */
+  const removePoint = () => {
+    if (selected == null || point == null) return;
+    const b = boxes[selected];
+    if (kind === "outline") {
+      const pts = outlineOf(b);
+      if (pts.length <= 3) return removeSelected();
+      pts.splice(point, 1);
+      replace(selected, polygonShape(b[0], pts));
+    } else if (kind === "pose") {
+      const kps = keypointList(b);
+      kps[point] = [0, 0, 0];
+      replace(selected, withKeypoints(b, kps));
+    }
+    setPoint(null);
+  };
+  const setSeen = (at: number, seen: number) => {
+    if (selected == null) return;
+    const b = boxes[selected];
+    const kps = keypointList(b);
+    if (!kps[at] || kps[at][2] === seen) return;
+    kps[at] = seen === 0 ? [0, 0, 0] : [kps[at][0], kps[at][1], seen];
+    replace(selected, withKeypoints(b, kps));
+    setPoint(seen === 0 ? null : at);
   };
   const pickClass = (id: number) => {
     setDrawClass(id);
     if (task === "classify") {
       if (boxes[0]?.[0] !== id) apply([[id]]);
     } else if (selected != null && boxes[selected] && boxes[selected][0] !== id) {
-      apply(boxes.map((b, i) => (i === selected ? [id, ...b.slice(1)] : b)));
+      replace(selected, [id, ...boxes[selected].slice(1)]);
     }
   };
   const toBackground = () => {
     if (!boxes.length) return;
     apply([]);
-    setSelected(null);
+    select(null);
   };
   const paste = () => {
     const b = clip.current;
-    if (!b || !geometry) return;
-    const shift = (v: number, size: number) => Math.min(1 - size / 2, v + 0.02);
-    apply([...boxes, [b[0], shift(b[1], b[3]), shift(b[2], b[4]), b[3], b[4]]]);
-    setSelected(boxes.length);
+    if (!b || !shapes) return;
+    apply([...boxes, moveShape(b, task, 0.02, 0.02)]);
+    select(boxes.length);
+  };
+  const closeSketch = () => {
+    if (sketch.length < 3) return;
+    apply([...boxes, polygonShape(drawClass, sketch)]);
+    setSketch([]);
+    select(boxes.length);
+  };
+  const toggleDrawing = (on: boolean) => {
+    setDrawing(on);
+    setSketch([]);
+    setPlacing(null);
+    if (on) select(null);
   };
 
   const beginEdit = () => {
@@ -198,8 +272,8 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   const stopEdit = () => {
     if (dirty && !window.confirm("저장하지 않은 고친 내용이 있습니다. 버리고 그만 고칠까요?")) return;
     setEditing(false);
-    setDrawing(false);
-    setSelected(null);
+    toggleDrawing(false);
+    select(null);
     if (item) setRevisionId(item.revision_id);
   };
 
@@ -255,12 +329,94 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     onClose();
   };
 
+  // ---- zoom and pan
+  const w = item?.width ?? 1;
+  const h = item?.height ?? 1;
+  const revision = item?.revisions.find((r) => r.id === revisionId) ?? null;
+  const compare = editing ? null : (item?.revisions.find((r) => r.id === compareId && r.id !== revisionId) ?? null);
+  // Fit the image (or two of them, side by side) inside the stage whatever its aspect ratio.
+  const pair = Boolean(compare);
+  const room = pair ? (stage.w - 12) / 2 : stage.w;
+  const fitWidth = Math.max(0, Math.min(room, ((stage.h - (pair ? 26 : 0)) * w) / h));
+  const fitHeight = (fitWidth * h) / w;
+  const frameStyle = { width: fitWidth, height: fitHeight };
+
+  /** Keep the zoomed image covering its frame. */
+  const clampPan = ([x, y]: Pt, z: number): Pt => [
+    Math.min(0, Math.max(fitWidth - fitWidth * z, x)),
+    Math.min(0, Math.max(fitHeight - fitHeight * z, y)),
+  ];
+  /** Zoom by ``factor`` keeping the image point under (cx, cy) where it is. */
+  const zoomAt = (factor: number, cx?: number, cy?: number, frame?: Element | null) => {
+    const next = Math.min(MAX_ZOOM, Math.max(1, zoom * factor));
+    if (next === zoom) return;
+    if (next === 1) {
+      setZoom(1);
+      setPan([0, 0]);
+      return;
+    }
+    const rect = (frame ?? stageRef.current?.querySelector(".viewer-frame"))?.getBoundingClientRect();
+    if (!rect) return;
+    const x = (cx ?? rect.left + rect.width / 2) - rect.left;
+    const y = (cy ?? rect.top + rect.height / 2) - rect.top;
+    const lx = (x - pan[0]) / zoom; // the point under the pointer, in unzoomed frame pixels
+    const ly = (y - pan[1]) / zoom;
+    setZoom(next);
+    setPan(clampPan([x - lx * next, y - ly * next], next));
+  };
+  const fit = () => {
+    setZoom(1);
+    setPan([0, 0]);
+  };
+  const wheelRef = useRef<(e: WheelEvent) => void>(() => {});
+  wheelRef.current = (e: WheelEvent) => {
+    if (!item) return;
+    e.preventDefault();
+    const frame = (e.target as Element).closest?.(".viewer-frame");
+    zoomAt(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015)), e.clientX, e.clientY, frame);
+  };
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => wheelRef.current(e);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+  /** A drag moves the zoomed image: any drag while only looking, space + drag or the middle button while fixing. */
+  const panDown = (e: React.PointerEvent) => {
+    if (zoom <= 1) return;
+    if (!(e.button === 1 || space || (!editing && e.button === 0))) return;
+    e.preventDefault();
+    panning.current = { x: e.clientX, y: e.clientY, from: pan };
+    setGrabbing(true);
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+  };
+  const panMove = (e: React.PointerEvent) => {
+    const start = panning.current;
+    if (!start) return;
+    setPan(clampPan([start.from[0] + e.clientX - start.x, start.from[1] + e.clientY - start.y], zoom));
+  };
+  const panUp = () => {
+    panning.current = null;
+    setGrabbing(false);
+  };
+
   // One listener; it always calls the newest handler (the editor's state changes on every step).
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
     const key = e.key.toLowerCase();
     const mod = e.ctrlKey || e.metaKey;
+    if (e.key === " ") {
+      e.preventDefault();
+      setSpace(true);
+      return;
+    }
+    if (!mod && (e.key === "0" || e.key === "+" || e.key === "=" || e.key === "-")) {
+      if (e.key === "0") fit();
+      else zoomAt(e.key === "-" ? 1 / 1.4 : 1.4);
+      return;
+    }
     if (editing) {
       if (mod && key === "s") {
         e.preventDefault();
@@ -282,18 +438,24 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
         paste();
         return;
       }
-      if (e.key === "Delete" || e.key === "Backspace") {
+      if (e.key === "Enter" && sketch.length) {
         e.preventDefault();
-        removeSelected();
+        closeSketch();
         return;
       }
-      if (key === "b" && geometry) {
-        setDrawing((d) => !d);
-        setSelected(null);
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        if (sketch.length) setSketch(sketch.slice(0, -1));
+        else if (point != null) removePoint();
+        else removeSelected();
+        return;
+      }
+      if (key === "b" && shapes) {
+        toggleDrawing(!drawing);
         return;
       }
       if (key === "v") {
-        setDrawing(false);
+        toggleDrawing(false);
         return;
       }
       if (/^[1-9]$/.test(e.key)) {
@@ -303,8 +465,11 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (drawing) setDrawing(false);
-        else if (selected != null) setSelected(null);
+        if (sketch.length) setSketch([]);
+        else if (placing != null) setPlacing(null);
+        else if (drawing) toggleDrawing(false);
+        else if (point != null) setPoint(null);
+        else if (selected != null) select(null);
         else stopEdit();
         return;
       }
@@ -320,8 +485,16 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keyRef.current(e);
+    const onKeyUp = (e: KeyboardEvent) => e.key === " " && setSpace(false);
+    const onBlur = () => setSpace(false);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
   // Leaving the page with unsaved fixes asks first.
   useEffect(() => {
@@ -331,8 +504,6 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const revision = item?.revisions.find((r) => r.id === revisionId) ?? null;
-  const compare = editing ? null : (item?.revisions.find((r) => r.id === compareId && r.id !== revisionId) ?? null);
   const currentRev = item?.revisions.find((r) => r.id === item.revision_id)?.rev ?? null;
   // A label revision goes by the versions that carry it; the bare revision number means nothing to people.
   const versionsOf = (rev: number) => {
@@ -382,14 +553,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     setHidden(next);
   };
 
-  const w = item?.width ?? 1;
-  const h = item?.height ?? 1;
-  const font = Math.max(w, h) / 70;
-  // Fit the image (or two of them, side by side) inside the stage whatever its aspect ratio.
-  const pair = Boolean(compare);
-  const room = pair ? (stage.w - 12) / 2 : stage.w;
-  const fitWidth = Math.max(0, Math.min(room, ((stage.h - (pair ? 26 : 0)) * w) / h));
-  const frameStyle = { width: fitWidth, height: (fitWidth * h) / w };
+  const font = Math.max(w, h) / 70 / zoom; // names stay the same size on screen when zoomed in
 
   const drawBoxes = (r: Revision) => {
     const names = namesOf(r);
@@ -406,12 +570,12 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
           // a keypoint label its points (x, y, visibility, …) and the class names them and their limbs.
           const pose = task === "pose";
           const keypoints = pose ? keypointsOf(b) : [];
-          const kind = r.classes.find((c) => c.id === cls);
+          const kindOf = r.classes.find((c) => c.id === cls);
           const outline = pose ? [] : b.slice(5);
           const points = outline.map((v, n) => (n % 2 === 0 ? v * w : v * h)).join(" ");
           const thin = outline.length >= 6 || keypoints.length > 0;
           // dots sized to the person, so a crowd of small people stays readable
-          const dot = Math.min(font * 0.32, Math.max(font * 0.12, Math.min(bw * w, bh * h) * 0.045));
+          const dot = Math.min(font * 0.32, Math.max(font * 0.12, (Math.min(bw * w, bh * h) * 0.045) / zoom));
           return (
             <g key={i}>
               {outline.length >= 6 && (
@@ -436,7 +600,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                 strokeWidth="2"
                 vectorEffect="non-scaling-stroke"
               />
-              {(kind?.skeleton ?? []).map(([a, c], n) =>
+              {(kindOf?.skeleton ?? []).map(([a, c], n) =>
                 keypoints[a] && keypoints[c] && keypoints[a][2] > 0 && keypoints[c][2] > 0 ? (
                   <line
                     key={`l${n}`}
@@ -462,7 +626,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                     strokeWidth="1.5"
                     vectorEffect="non-scaling-stroke"
                   >
-                    <title>{`${kind?.keypoints?.[n] ?? n + 1}${seen === 1 ? " (가려짐)" : ""}`}</title>
+                    <title>{`${kindOf?.keypoints?.[n] ?? n + 1}${seen === 1 ? " (가려짐)" : ""}`}</title>
                   </circle>
                 ) : null,
               )}
@@ -481,50 +645,104 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
     );
   };
 
+  /** Classification: the image's class as a badge over it (a frame with a name is lost on a small image). */
+  const classBadge = (r: Revision) => {
+    const names = namesOf(r);
+    const labels = visible(r);
+    if (!labels.length) return <span className="class-badge empty">{r.state === "unlabelled" ? "아직 안 함" : "클래스 없음"}</span>;
+    return labels.map((b, i) => (
+      <span key={i} className="class-badge" style={{ background: colorIn(r, b[0]) }}>
+        {names[b[0]] ?? b[0]}
+      </span>
+    ));
+  };
+
   const shown = editRevision ? [editRevision] : [revision, compare].filter((r): r is Revision => r !== null);
   const anyForeign = shown.some(foreign) && classes.length > 0;
   const editVisible = new Set(boxes.map((b, i) => (editRevision && shownBox(editRevision, b) ? i : -1)).filter((i) => i >= 0));
   const editState = saving ? "저장 중…" : dirty ? "저장 안 됨" : "저장됨";
+  const picked = selected != null ? boxes[selected] : null;
+  const drawTool = kind === "outline" ? "윤곽 그리기" : kind === "pose" ? "새로 그리기" : "박스 그리기";
+  const canvasStyle = { transform: `translate(${pan[0]}px, ${pan[1]}px) scale(${zoom})` };
+  const panCursor = grabbing ? "grabbing" : zoom > 1 && (space || !editing) ? "grab" : undefined;
+
+  const hint = (() => {
+    if (task === "classify") return "이 이미지의 클래스를 고르세요. 숫자키 1~9로도 고르고, ← →로 저장하고 넘깁니다.";
+    if (placing != null && picked) return `"${keypointNames(picked[0])[placing] ?? `점 ${placing + 1}`}" 자리를 누르세요. Esc로 그만 놓습니다.`;
+    if (drawing && kind === "outline")
+      return sketch.length >= 3 ? "점을 더 찍거나, 첫 점을 누르거나 Enter로 닫습니다. Backspace는 마지막 점을 지웁니다." : "윤곽을 따라 눌러 점을 찍습니다.";
+    if (drawing && kind === "pose") return "끌어서 박스를 그리면, 이어서 점을 차례로 놓습니다.";
+    if (drawing) return "끌어서 박스를 그립니다. 아래에서 고른 클래스로 그려집니다.";
+    if (picked && kind === "outline") return "점을 끌어 옮기고, 선을 두 번 눌러 점을 더합니다. 점을 고르고 Delete로 그 점을 지웁니다.";
+    if (picked && kind === "pose") return "점을 끌어 옮깁니다. 아래 목록에서 점마다 보임 · 가려짐 · 없음을 정하고, 없는 점은 눌러서 놓습니다.";
+    if (picked) return "끌어서 옮기거나 모서리로 크기를 바꿉니다. 클래스는 아래에서 바꿉니다.";
+    return "라벨을 눌러 고릅니다. 휠로 확대하고, 확대한 뒤에는 스페이스나 휠 버튼을 누른 채 끌어 옮깁니다.";
+  })();
 
   return (
     <div className={`viewer ${editing ? "editing" : ""}`} role="dialog" aria-modal="true" aria-label="항목 보기">
       <div className="viewer-stage" ref={stageRef}>
         {error && <div className="error">{error}</div>}
         {item && (
-          <div className="viewer-frames">
+          <div
+            className="viewer-frames"
+            style={{ cursor: panCursor }}
+            onPointerDown={panDown}
+            onPointerMove={panMove}
+            onPointerUp={panUp}
+            onPointerCancel={panUp}
+            onMouseDown={(e) => e.button === 1 && e.preventDefault()}
+          >
             {(shown.length ? shown : [null]).map((r, n) => (
               <figure key={r?.id ?? n} className="viewer-figure">
                 <div className="viewer-frame" style={frameStyle}>
-                  {/* the thumbnail at once, the original over it as soon as it is here */}
-                  {item.thumb_url && full !== "ok" && <img src={item.thumb_url} alt="" className="placeholder" />}
-                  {item.image_url && full !== "error" && (
-                    <img
-                      key={item.image_url}
-                      src={item.image_url}
-                      alt={item.file_name}
-                      className={full === "ok" ? "" : "loading"}
-                      onLoad={() => setFull("ok")}
-                      onError={() => setFull("error")}
-                    />
-                  )}
-                  {(showLabels || editing) && r && drawBoxes(r)}
-                  {editing && task !== "classify" && fitWidth > 0 && (
-                    <EditLayer
-                      width={w}
-                      height={h}
-                      boxes={boxes}
-                      visible={editVisible}
-                      selected={selected}
-                      drawing={drawing}
-                      geometry={geometry}
-                      drawClass={drawClass}
-                      scale={w / fitWidth}
-                      colorOf={colorOf}
-                      onSelect={setSelected}
-                      onChange={setBoxes}
-                      onCommit={commit}
-                    />
-                  )}
+                  <div className="viewer-canvas" style={canvasStyle}>
+                    {/* the thumbnail at once, the original over it as soon as it is here */}
+                    {item.thumb_url && full !== "ok" && <img src={item.thumb_url} alt="" className="placeholder" />}
+                    {item.image_url && full !== "error" && (
+                      <img
+                        key={item.image_url}
+                        src={item.image_url}
+                        alt={item.file_name}
+                        className={full === "ok" ? "" : "loading"}
+                        draggable={false}
+                        onLoad={() => setFull("ok")}
+                        onError={() => setFull("error")}
+                      />
+                    )}
+                    {(showLabels || editing) && r && task !== "classify" && drawBoxes(r)}
+                    {editing && shapes && fitWidth > 0 && (
+                      <EditLayer
+                        width={w}
+                        height={h}
+                        task={task}
+                        boxes={boxes}
+                        visible={editVisible}
+                        selected={selected}
+                        point={point}
+                        drawing={drawing}
+                        sketch={sketch}
+                        placing={placing}
+                        drawClass={drawClass}
+                        keypointCount={keypointNames(drawClass).length}
+                        scale={w / (fitWidth * zoom)}
+                        ignore={space || grabbing}
+                        colorOf={colorOf}
+                        onSelect={(i, at = null) => select(i, at)}
+                        onChange={setBoxes}
+                        onCommit={commit}
+                        onSketch={setSketch}
+                        onClose={closeSketch}
+                        onDrawn={(i) => {
+                          select(i);
+                          if (kind === "pose" && keypointNames(drawClass).length) setPlacing(0);
+                        }}
+                        onPlaced={setPlacing}
+                      />
+                    )}
+                  </div>
+                  {/* outside the zoomed canvas: it keeps its size */}
+                  {(showLabels || editing) && r && task === "classify" && classBadge(r)}
                 </div>
                 {pair && r && (
                   <figcaption>
@@ -557,6 +775,17 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
           <button className="icon-btn" onClick={() => void go(index + 1)} disabled={index >= total - 1 || saving} aria-label="다음">
             ›
           </button>
+          <span className="zoom-controls">
+            <button className="icon-btn" onClick={() => zoomAt(1 / 1.4)} disabled={zoom <= 1} aria-label="축소" title="축소 (−, 휠)">
+              −
+            </button>
+            <button className="zoom-level" onClick={fit} title="화면에 맞추기 (0)">
+              {Math.round(zoom * 100)}%
+            </button>
+            <button className="icon-btn" onClick={() => zoomAt(1.4)} disabled={zoom >= MAX_ZOOM} aria-label="확대" title="확대 (+, 휠)">
+              +
+            </button>
+          </span>
         </div>
       </div>
 
@@ -606,40 +835,52 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
             <p className="muted small">
               {inDraft ? "작업 중에 저장됩니다." : "저장하면 데이터셋의 작업 중에 모입니다. 이 버전은 그대로 남습니다."}
             </p>
-            {geometry && (
+            {shapes && (
               <div className="segmented tool-switch" role="group" aria-label="도구">
-                <button className={!drawing ? "active" : ""} onClick={() => setDrawing(false)} aria-pressed={!drawing}>
+                <button className={!drawing ? "active" : ""} onClick={() => toggleDrawing(false)} aria-pressed={!drawing}>
                   고르기 <kbd>V</kbd>
                 </button>
-                <button
-                  className={drawing ? "active" : ""}
-                  onClick={() => {
-                    setDrawing(true);
-                    setSelected(null);
-                  }}
-                  aria-pressed={drawing}
-                >
-                  박스 그리기 <kbd>B</kbd>
+                <button className={drawing ? "active" : ""} onClick={() => toggleDrawing(true)} aria-pressed={drawing}>
+                  {drawTool} <kbd>B</kbd>
                 </button>
               </div>
             )}
-            <div className="muted small edit-hint">
-              {task === "classify"
-                ? "이 이미지의 클래스를 고르세요."
-                : selected != null
-                  ? "고른 박스의 클래스를 바꾸려면 아래에서 고르세요."
-                  : drawing
-                    ? "끌어서 박스를 그립니다. 아래에서 고른 클래스로 그려집니다."
-                    : geometry
-                      ? "박스를 눌러 고르고, 끌어서 옮기거나 모서리로 크기를 바꿉니다."
-                      : "라벨을 눌러 고르면 클래스를 바꾸거나 지울 수 있습니다. 윤곽 · 점 모양은 아직 고칠 수 없습니다."}
-            </div>
+            <div className="muted small edit-hint">{hint}</div>
+            {drawing && kind === "outline" && sketch.length >= 3 && (
+              <button className="small" onClick={closeSketch}>
+                윤곽 닫기 <kbd>Enter</kbd>
+              </button>
+            )}
             <ClassPicker
               classes={classes}
-              current={task === "classify" ? (boxes[0]?.[0] ?? null) : selected != null ? (boxes[selected]?.[0] ?? null) : drawClass}
+              current={task === "classify" ? (boxes[0]?.[0] ?? null) : picked ? picked[0] : drawClass}
               colorOf={colorOf}
               onPick={pickClass}
             />
+            {kind === "pose" && picked && keypointList(picked).length > 0 && (
+              <div>
+                <div className="eyebrow">점</div>
+                <KeypointList
+                  names={keypointNames(picked[0])}
+                  points={keypointList(picked)}
+                  picked={point}
+                  placing={placing}
+                  colorOf={colorOf(picked[0])}
+                  onPick={(i) => {
+                    setPoint(i);
+                    setPlacing(null);
+                  }}
+                  onSeen={setSeen}
+                  onPlace={(i) => {
+                    toggleDrawing(false);
+                    setPlacing(i);
+                  }}
+                />
+              </div>
+            )}
+            {kind === "outline" && picked && (
+              <p className="muted small">윤곽 점 {outlineOf(picked).length}개{point != null && ` · ${point + 1}번 점 고름`}</p>
+            )}
             <div className="row-actions">
               <button onClick={undoStep} disabled={!undo.length} title="Ctrl+Z">
                 되돌리기
@@ -647,13 +888,18 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
               <button onClick={redoStep} disabled={!redo.length} title="Ctrl+Shift+Z">
                 다시 하기
               </button>
+              {selected != null && point != null && kind === "outline" && (
+                <button onClick={removePoint} title="Delete">
+                  점 지우기
+                </button>
+              )}
               {selected != null && (
-                <button onClick={removeSelected} title="Delete">
-                  지우기
+                <button onClick={removeSelected} title={point == null ? "Delete" : undefined}>
+                  {task === "classify" ? "지우기" : "라벨 지우기"}
                 </button>
               )}
               {task !== "classify" && (
-                <button onClick={toBackground} disabled={!boxes.length} title="박스를 모두 지우고 '찾을 것이 없는 이미지'로">
+                <button onClick={toBackground} disabled={!boxes.length} title="라벨을 모두 지우고 '찾을 것이 없는 이미지'로">
                   배경으로
                 </button>
               )}
@@ -682,7 +928,7 @@ export function ItemViewer({ releaseId, filterQuery, start, total, onClose, colo
                 이 이미지를 바탕 버전의 라벨로 되돌리기
               </button>
             )}
-            <p className="muted small">← → 저장하고 넘기기 · Esc 고르기 풀기 · Ctrl+C / Ctrl+V 박스 복사</p>
+            <p className="muted small">← → 저장하고 넘기기 · Esc 고르기 풀기 · Ctrl+C / Ctrl+V 복사 · 휠 확대 · 0 맞추기</p>
           </section>
         )}
 

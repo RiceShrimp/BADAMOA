@@ -25,6 +25,11 @@ def _save(client, release_id, item_id, boxes, parent=None, force=False):
     return client.put(f"/api/releases/{release_id}/items/{item_id}/labels", json=body)
 
 
+def _saved_revision(client, item_id, saved):
+    revisions = _detail(client, saved["release_id"], item_id)["revisions"]
+    return next(r for r in revisions if r["id"] == saved["revision_id"])
+
+
 def test_fix_labels_into_the_work_in_progress_and_confirm_it(hub, tmp_path):  # noqa: F811
     project = hub.post("/api/projects", json={"name": "고치기"}).json()
     v1 = _import(hub, project["id"], make_yolo(tmp_path / "ds"), "v1")
@@ -172,3 +177,43 @@ def test_images_without_a_label_file_next_to_labelled_ones_are_background(tmp_pa
     assert states["train_0002.jpg"] == "background"
     states = {e.path.name: e.state for e in importer.scan(root, unlabelled="unlabelled").entries}
     assert states["train_0002.jpg"] == "unlabelled" and states["train_0001.jpg"] == "background"  # empty file
+
+
+def test_fix_outlines_keypoints_and_classes(hub, tmp_path):  # noqa: F811
+    from sample_data import make_imagefolder
+    from test_classify import _make_seg
+    from test_pose import make_yolo_pose
+
+    project = hub.post("/api/projects", json={"name": "모양"}).json()
+
+    # ---- segmentation: the box follows the outline; an outline needs three corners
+    seg = _import(hub, project["id"], _make_seg(tmp_path / "seg"), "v1", task="segment")
+    item = _items(hub, seg, "q=train_0000")["items"][0]
+    outline = [2, 0, 0, 0, 0, 0.1, 0.2, 0.6, 0.2, 0.6, 0.7, 0.1, 0.7]
+    saved = _save(hub, seg, item["id"], [outline])
+    assert saved.status_code == 200, saved.text
+    rev = _saved_revision(hub, item["id"], saved.json())
+    assert rev["boxes"] == [[2, 0.35, 0.45, 0.5, 0.5, 0.1, 0.2, 0.6, 0.2, 0.6, 0.7, 0.1, 0.7]]
+    assert _save(hub, seg, item["id"], [[2, 0.5, 0.5, 0.2, 0.2, 0.1, 0.2, 0.6, 0.2]]).status_code == 400
+
+    # ---- pose: points as (x, y, visibility); a missing point is (0, 0, 0); the count follows the class
+    pose = _import(hub, project["id"], make_yolo_pose(tmp_path / "pose"), "v1", dataset="people")
+    item = _items(hub, pose)["items"][0]
+    moved = [0, 0.5, 0.5, 0.4, 0.6, 0.45, 0.35, 2, 0.7, 0.3, 1, 0.9, 0.9, 0]
+    saved = _save(hub, pose, item["id"], [moved])
+    assert saved.status_code == 200, saved.text
+    rev = _saved_revision(hub, item["id"], saved.json())
+    assert rev["boxes"][0][5:] == [0.45, 0.35, 2.0, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0]
+    assert _save(hub, pose, item["id"], [[0, 0.5, 0.5, 0.4, 0.6, 0.4, 0.3, 2]]).status_code == 400  # one point of three
+    assert _save(hub, pose, item["id"], [[0, 0.5, 0.5, 0.4, 0.6, 0.4, 0.3, 5, 0, 0, 0, 0, 0, 0]]).status_code == 400
+    new = _save(hub, pose, item["id"], [moved, [0, 0.2, 0.2, 0.1, 0.1]]).json()  # a new one, points not placed yet
+    rev = _saved_revision(hub, item["id"], new)
+    assert rev["boxes"][1] == [0, 0.2, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # ---- classification: one class per image
+    cls = _import(hub, project["id"], make_imagefolder(tmp_path / "cls"), "v1", dataset="kinds")
+    item = _items(hub, cls)["items"][0]
+    other = 1 - int(_detail(hub, cls, item["id"])["revisions"][0]["boxes"][0][0])
+    saved = _save(hub, cls, item["id"], [[other]])
+    assert saved.status_code == 200 and saved.json()["state"] == "labelled"
+    assert _save(hub, cls, item["id"], [[0], [1]]).status_code == 400
