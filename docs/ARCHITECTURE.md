@@ -9,7 +9,7 @@
 BADAMOA
 ├─ BADA
 │   ├─ Build     수집 · 검색 · 큐레이션 · 데이터 생성 · 데이터셋 버전
-│   ├─ Annotate  OVD/VLM 오토라벨 · 검수
+│   ├─ Annotate  라벨링 · OVD/VLM 오토라벨 · 검수
 │   ├─ Develop   학습(일반 지도학습 + 증류) · 평가 · 레지스트리 · export
 │   └─ Automate  자동 재학습 · 배포 · OTA
 └─ MOA
@@ -58,7 +58,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 | 실험 추적·레지스트리 | **자체** (지표 시계열 + 아티팩트 + alias) | MLflow 내장 — 무거운 의존성, 별도 서버·UI·인증, 레지스트리가 둘이 됨. 필요하면 **미러 플러그인**으로 MLflow/W&B에 복제 |
 | 큐레이션 | 기본(near-dup·uniqueness·대표성)은 **임베딩으로 자체 계산**. FiftyOne Brain은 **플러그인 Job**(노드 venv에서 실행, 점수만 Hub에 기록) | FiftyOne을 Hub 의존성으로 두는 것 — MongoDB가 딸려오고 데이터 저장소가 둘이 됨 |
 | 평가 | **자체** (pycocotools 계열 + 샘플 단위 TP/FP/FN) | 평가만을 위한 FiftyOne 의존 |
-| 검수 | **내장 검수 에디터** — 승인/거절/클래스 변경/박스 조정/SAM 재프롬프트로 한정 | CVAT(Docker 전용). 처음부터 그리는 대량 수작업은 CVAT·Label Studio **내보내기/가져오기** |
+| 라벨링 · 검수 | **내장** — 데이터셋 화면의 바로 고치기에서 시작해 라벨링 묶음 · 에디터 · 스마트 도구 · 검수로 넓힌다 ([LABELING_PLAN.md](LABELING_PLAN.md)). CVAT · Label Studio · Lightly Studio의 장점을 가져온다 | CVAT(Docker 전용), Lightly Studio(torch · DB 엔진이 기본 설치, 여러 사용자 · 권한이 Enterprise), FiftyOne(MongoDB)을 그대로 쓰기. 외부 도구와는 **내보내기/가져오기**로 연결 |
 | 저장소 | **저장 위치 4종** (4.3) | 자체 분산 스토리지, MinIO 기본 탑재 |
 | 서빙 | **내장 추론 서비스** (ONNX Runtime / TensorRT), REST | Triton(사실상 Linux 전용)·gRPC — 필요해지면 exporter 플러그인 |
 | Edge | **같은 Node Agent** (Jetson = arm64 노드) | 별도 Edge Agent 앱, 별도 Device 엔티티 |
@@ -167,7 +167,8 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **Data QA**: 깨진 이미지, bbox 오류, 극소 박스, 클래스 불균형
 - **Data generation**: Generator 플러그인 — Cosmos Transfer 계열 IAA(날씨·조명·시간대, 구조 보존 → 라벨 재사용), 희귀 클래스 합성. synthetic 태그, 테스트셋은 real-only, 효과는 A/B로 측정
 
-### Annotate — 오토라벨
+### Annotate — 라벨링 · 오토라벨
+- 라벨링(바로 고치기 · 라벨링 묶음 · 에디터 · 검수)은 [LABELING_PLAN.md](LABELING_PLAN.md). 고친 라벨도 새 개정이고, 새 버전으로만 들어간다.
 - Labeler 플러그인: OVD(Grounding DINO, OWLv2, Florence-2) / Seg(SAM 2·3) / Grounding VLM(Qwen-VL 계열) / Cls(SigLIP2 zero-shot). 후보는 착수 시점에 최신·라이선스·Windows 지원을 다시 확인한다.
 - 흐름: 다중 프롬프트 OVD → (박스→SAM 마스크) → 앙상블 → VLM이 crop 재검증 → 신뢰도 라우팅(자동 승인 / 검수 / 폐기)
 - 검수 결과로 클래스별 오토라벨 정밀도를 재고 임계값을 조정한다.
@@ -200,7 +201,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **권한**: 에이전트는 토큰 주인의 역할을 그대로 따른다. 조회 = 자유 / GPU 소모 = 확인 / 승격·배포·삭제 = Hub 승인 요청(사람이 UI에서 승인할 때까지 `pending`). 모든 호출은 감사 로그에 남는다.
 
 ### 화면
-사이드바는 제품 구조 그대로다: 홈 → **Build**(샘플 라이브러리, 데이터셋) → **Annotate**(오토라벨, 검수) → **Develop**(학습, 모델) → **Automate**(배포, 파이프라인) → **MOA**(노드, 작업, 에이전트).
+사이드바는 제품 구조 그대로다: 홈 → **Build**(샘플 라이브러리, 데이터셋) → **Annotate**(라벨링, 오토라벨, 검수) → **Develop**(학습, 모델) → **Automate**(배포, 파이프라인) → **MOA**(노드, 작업, 에이전트).
 아직 없는 화면은 흐리게 두고 추가될 Phase를 표시한다.
 
 - 구현됨(Phase 0): 홈(상태 요약 · 시작하기 · 최근 활동 · 최근 작업), 노드, 작업, 에이전트, 밝은/어두운 테마
