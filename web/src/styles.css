@@ -1073,40 +1073,13 @@ details summary {
   margin-top: 4px;
 }
 
-/* ---- release notes ---- */
-button.pill {
-  cursor: pointer;
-}
+/* ---- the version in the top bar: a dot while this version's notes are unread ---- */
 .pill.new {
   color: var(--accent);
   border-color: var(--accent);
 }
 .pill.new i {
   background: var(--accent);
-}
-.release {
-  padding: 14px 0;
-  border-top: 1px solid var(--border);
-}
-.release:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-.release header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.release section {
-  margin-top: 10px;
-}
-.release ul {
-  margin: 4px 0 0;
-  padding-left: 18px;
-}
-.release li {
-  margin: 2px 0;
 }
 
 /* ---- charts (categorical palette validated for both surfaces; slots are fixed, never cycled) ---- */

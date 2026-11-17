@@ -149,6 +149,12 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  tag: (
+    <>
+      <path d="M3 12.2V4a1 1 0 0 1 1-1h8.2l8.4 8.4a1.5 1.5 0 0 1 0 2.1l-7.1 7.1a1.5 1.5 0 0 1-2.1 0z" />
+      <circle cx="7.6" cy="7.6" r="1.4" />
+    </>
+  ),
   settings: (
     <>
       <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />

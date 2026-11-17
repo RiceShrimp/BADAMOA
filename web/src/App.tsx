@@ -9,13 +9,13 @@ import { Jobs } from "./Jobs";
 import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
-import { ReleaseNotes, hasUnseenRelease } from "./ReleaseNotes";
+import { ReleasesPage, hasUnseenRelease } from "./ReleaseNotes";
 import { Settings } from "./Settings";
 import { Training } from "./Training";
 import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash";
+type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases";
 
 interface NavItem {
   label: string;
@@ -78,6 +78,7 @@ const PAGES = NAV.flatMap((g) => g.items.filter((i) => i.page).map((i) => ({ ...
 function pageFromHash(): Page {
   if (window.location.hash.startsWith("#/datasets/trash")) window.history.replaceState(null, "", "#/trash"); // its old place
   const id = window.location.hash.replace("#/", "").split("/")[0];
+  if (id === "releases") return "releases"; // reached from the version in the top bar, not the sidebar
   return (PAGES.find((p) => p.page === id)?.page ?? "home") as Page;
 }
 
@@ -153,8 +154,10 @@ function Shell({
   onLogout: () => void;
 }) {
   const [theme, toggleTheme] = useTheme();
-  const [notesOpen, setNotesOpen] = useState(false);
   const [unseen, setUnseen] = useState(() => hasUnseenRelease(version));
+  useEffect(() => {
+    if (page === "releases") setUnseen(false);
+  }, [page]);
   const { data: nodes } = usePolling(() => api<NodeInfo[]>("/nodes"), 10000);
   const { data: binned, refresh: recount } = usePolling(() => api<{ total: number }>("/trash/count"), 30000);
   useEffect(() => {
@@ -170,7 +173,7 @@ function Shell({
     return () => document.removeEventListener("visibilitychange", back);
   }, [recheck]);
   const updated = running && version && running.version !== version ? running.version : null;
-  const current = PAGES.find((p) => p.page === page);
+  const current = page === "releases" ? { group: undefined, label: "릴리즈" } : PAGES.find((p) => p.page === page);
   const online = nodes?.filter((n) => n.status === "online").length ?? 0;
   const isAdmin = user.role === "admin";
 
@@ -245,17 +248,14 @@ function Shell({
               <i />
               노드 {online}/{nodes?.length ?? 0} 온라인
             </a>
-            <button
+            <a
               className={`pill plain ${unseen ? "new" : ""}`}
-              onClick={() => {
-                setNotesOpen(true);
-                setUnseen(false);
-              }}
-              aria-label={`릴리즈 노트 (v${version})`}
-              title="릴리즈 노트"
+              href="#/releases"
+              aria-label={`릴리즈 (v${version})`}
+              title={unseen ? "새 버전입니다 — 무엇이 바뀌었는지 보기" : "릴리즈"}
             >
               {unseen && <i />}v{version}
-            </button>
+            </a>
             <button
               className="icon-btn"
               onClick={toggleTheme}
@@ -284,8 +284,8 @@ function Shell({
           {page === "agents" && <Agents />}
           {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}
           {page === "trash" && <TrashPage isAdmin={isAdmin} />}
+          {page === "releases" && <ReleasesPage version={version} selected={sub} />}
         </main>
-        {notesOpen && <ReleaseNotes version={version} onClose={() => setNotesOpen(false)} />}
       </div>
     </div>
   );
