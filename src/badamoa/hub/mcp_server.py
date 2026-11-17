@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, checks, drafts, gpus, labeling, lineage, registry, resources, services, sweeps, training
+from . import catalog, checks, drafts, gpus, labeling, lineage, node_data, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -281,10 +281,59 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
     @mcp.tool(title="릴리스 조회", annotations=READ_ONLY)
     @guarded
     def get_release(release_id: str, ctx: Context) -> dict[str, Any]:
-        """릴리스의 통계(항목 수, split, 라벨 상태, 클래스별 박스 수), 라벨 공간, base 릴리스를 반환합니다."""
+        """릴리스의 통계(항목 수, split, 라벨 상태, 클래스별 박스 수), 라벨 공간, base 릴리스, 지문(digest)을 반환합니다.
+
+        release_id 자리에 id 대신 지문의 앞부분(7자 이상, 커밋 해시처럼)이나 "데이터셋@버전"(예: "street@v3")을 줘도 됩니다.
+        same_as: 내용이 똑같은(지문이 같은) 같은 프로젝트의 다른 버전.
+        """
         user_of(ctx)
         with hub.db.session() as db:
-            return catalog.release_view(db, release_id)
+            return catalog.release_view(db, catalog.find_release(db, release_id).id)
+
+    @mcp.tool(title="버전이 있는 서버", annotations=READ_ONLY)
+    @guarded
+    def list_version_copies(release_id: str, ctx: Context) -> dict[str, Any]:
+        """버전의 이미지가 있는 서버: 등록한 곳(origin)과, 학습하려고 받아 둔 서버들(copies).
+
+        copies마다 크기 · 받은 때 · 그 서버에서 한 학습 수(runs) · 마지막으로 쓴 때 · 지금 쓰는 작업(in_use) ·
+        상태(kept · remove · held · removing)와 지울 수 있는지(removable, 아니면 why_not).
+        release_id는 지문이나 "데이터셋@버전"도 됩니다.
+        """
+        user_of(ctx)
+        with hub.db.session() as db:
+            return node_data.release_copies(db, hub.settings, catalog.find_release(db, release_id))
+
+    @mcp.tool(title="받아 둔 버전 지우기", annotations=DESTRUCTIVE)
+    @guarded
+    def remove_version_copy(release_id: str, node_id: str, ctx: Context) -> dict[str, Any]:
+        """서버가 학습하려고 받아 둔 버전의 사본을 지웁니다. 원본(등록한 폴더)은 건드리지 않고,
+        그 서버의 다른 버전과 함께 쓰는 이미지는 남깁니다. 그 서버에서 이 버전을 쓰는 작업이 있으면 거부됩니다.
+        다시 학습하면 다시 받습니다."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            release = catalog.find_release(db, release_id)
+            node_data.remove_copy(db, user, release.id, node_id, via="mcp")
+            db.flush()
+            return node_data.release_copies(db, hub.settings, release)
+
+    @mcp.tool(title="서버에 받아 둔 버전", annotations=READ_ONLY)
+    @guarded
+    def list_node_copies(node_id: str, ctx: Context) -> dict[str, Any]:
+        """서버가 다른 서버에서 받아 둔 버전들과 마지막 확인 결과(check: unknown = Hub 기록에 없는 파일)."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return node_data.node_copies(db, hub.settings, services.get_node(db, node_id))
+
+    @mcp.tool(title="받아 둔 이미지 맞춰 보기", annotations=WRITE)
+    @guarded
+    def check_node_copies(node_id: str, ctx: Context, clean: bool = False) -> dict[str, Any]:
+        """서버가 받아 둔 이미지를 Hub의 기록과 맞춰 봅니다(버전마다 실제로 있는 수). clean=True면
+        남길 버전 어느 것도 쓰지 않는 파일을 지웁니다. 작업을 반환하므로 wait_for_job 뒤 list_node_copies로 확인하세요."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            job = node_data.check_node(db, user, node_id, clean=clean, via="mcp")
+            db.flush()
+            return services.job_view(db, hub.settings, job)
 
     @mcp.tool(title="릴리스 비교", annotations=READ_ONLY)
     @guarded
@@ -530,8 +579,15 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         base_model_id: str = "",
         tags: list[str] | None = None,
         note: str = "",
+        nodes: list[str] | None = None,
+        data_after: str = "",
     ) -> dict[str, Any]:
         """릴리스로 학습을 시작합니다. 학습은 그 릴리스의 이미지가 있는 노드에서 실행됩니다.
+
+        release_id 자리에 지문의 앞부분이나 "데이터셋@버전"을 줘도 됩니다.
+        nodes: 학습할 수 있는 노드 id들(비우면 이미지가 있는 노드). 이미지가 없는 노드면 먼저 이미지를 받은 뒤 학습합니다.
+        data_after: 그렇게 받은 이미지를 학습이 끝난 뒤 keep(남겨 두기, 다음 학습이 바로 시작) 또는
+        delete(학습이 성공하면 지움). 남긴 것은 list_version_copies · remove_version_copy로 보고 지웁니다.
 
         tags · note: 나중에 찾고 묶어 보기 위한 태그와 메모 (예: tags=["야간", "baseline"]).
 
@@ -549,7 +605,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
             run = training.start_run(
                 db,
                 user,
-                release_id=release_id,
+                release_id=catalog.find_release(db, release_id).id,
                 template=template,
                 environment=environment,
                 params=params,
@@ -561,6 +617,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 base_model_id=base_model_id,
                 tags=tags,
                 note=note,
+                nodes=nodes,
+                data_after=data_after,
                 via="mcp",
             )
             db.flush()
@@ -619,8 +677,12 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         name: str = "",
         gpus: int | None = None,
         tags: list[str] | None = None,
+        nodes: list[str] | None = None,
+        data_after: str = "",
     ) -> dict[str, Any]:
         """여러 설정으로 학습을 돌려 가장 좋은 설정을 찾습니다 (W&B Sweeps).
+
+        nodes · data_after: start_training과 같음. data_after=delete면 탐색이 다 끝난 뒤 받은 이미지를 지웁니다.
 
         space: 시험할 설정. 값 목록 {"lr0": {"values": [0.01, 0.001]}}
         또는 범위 {"lr0": {"min": 0.0001, "max": 0.01, "log": true}}.
@@ -635,7 +697,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
             sweep = sweeps.start_sweep(
                 db,
                 user,
-                release_id=release_id,
+                release_id=catalog.find_release(db, release_id).id,
                 space=space,
                 template=template,
                 params=params,
@@ -647,6 +709,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 name=name,
                 gpus=gpus,
                 tags=tags,
+                nodes=nodes,
+                data_after=data_after,
                 via="mcp",
             )
             return sweeps.sweep_view(db, hub.settings, sweep)

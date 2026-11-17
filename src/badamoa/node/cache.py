@@ -6,12 +6,18 @@ Files are named by their SHA-256, so an image shared by several versions or data
 once and a later version only brings what is new. The folder is the one an admin set for the
 node; otherwise the node picks the disk with the most room once and remembers it
 (``cache-dir.txt`` in the node's home), so it does not wander as disks fill up.
+
+The Hub decides what stays: ``check`` counts what is there of each version the Hub says the node
+keeps, and with ``clean`` removes the files none of them needs (a copy someone removed, a version
+removed for good, an interrupted transfer nobody came back to).
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -106,3 +112,50 @@ def free_gb(folder: Path) -> float | None:
         return round(shutil.disk_usage(probe).free / 1024**3, 1)
     except OSError:
         return None
+
+
+# ---- checking against the Hub ----------------------------------------------------------------
+
+
+def tally(root: Path, items: Iterable[dict[str, Any]], needed: set[str]) -> dict[str, int]:
+    """How much of a version is here (``items``: its images as the Hub lists them). Adds their hashes to ``needed``."""
+    count = size = 0
+    for item in items:
+        needed.add(item["sha256"])
+        if has(root, item["sha256"], item["ext"], int(item["bytes"])):
+            count, size = count + 1, size + int(item["bytes"])
+    return {"items": count, "bytes": size}
+
+
+def sweep(root: Path, needed: set[str], clean: bool, since: float | None = None) -> dict[str, dict[str, int]]:
+    """The files none of the images in ``needed`` is; removed with ``clean``.
+
+    A file that arrived at ``since`` or later is left alone: it belongs to a transfer that began
+    after the list of what to keep was made.
+    """
+    unknown = {"files": 0, "bytes": 0}
+    removed = {"files": 0, "bytes": 0}
+    images = root / "images"
+    if not images.is_dir():
+        return {"unknown": unknown, "removed": removed}
+    since = time.time() if since is None else since
+    for current, _, names in os.walk(images):
+        for name in names:
+            if name.endswith(".part") or ".part-" in name or name.split(".", 1)[0] in needed:
+                continue
+            path = os.path.join(current, name)
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            unknown["files"] += 1
+            unknown["bytes"] += stat.st_size
+            # ctime: when it arrived here (a transfer may keep the original's modification time)
+            if clean and max(stat.st_mtime, stat.st_ctime) < since:
+                try:
+                    os.remove(path)
+                except OSError:
+                    continue
+                removed["files"] += 1
+                removed["bytes"] += stat.st_size
+    return {"unknown": unknown, "removed": removed}

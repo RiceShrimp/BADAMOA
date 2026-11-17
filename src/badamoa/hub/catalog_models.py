@@ -163,6 +163,8 @@ class Release(Base):
     # building | ready | draft: the dataset's work in progress, fixed labels not yet made a version (one per dataset)
     status: Mapped[str] = mapped_column(String(12), default="building")
     stats: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # A fingerprint of the content, like a commit hash (``catalog.release_digest``); "" until it is ready
+    digest: Mapped[str] = mapped_column(String(64), default="")
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)

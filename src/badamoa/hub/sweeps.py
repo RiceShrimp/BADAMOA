@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from badamoa.core.protocol import TERMINAL_STATUSES
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
-from . import catalog, registry, services, training
+from . import catalog, node_data, registry, services, training
 from .catalog_models import Dataset
 from .config import HubSettings
 from .db import iso, utcnow
@@ -300,10 +300,14 @@ def start_sweep(
     nodes: list[str] | None = None,
     base_model_id: str = "",
     tags: list[str] | None = None,
+    data_after: str = "",
     via: str = "api",
 ) -> Sweep:
+    """``data_after``: what becomes of the copies its runs' servers received, once the whole search is over."""
     if method not in METHODS:
         raise ServiceError(400, "method는 grid(모든 조합), random(무작위) 또는 bayes(베이지안)입니다.")
+    if data_after not in node_data.CHOICES:
+        raise ServiceError(400, "data_after는 keep(남겨 두기) 또는 delete(지우기)입니다.")
     release = catalog.get_release(db, release_id)
     dataset = db.get(Dataset, release.dataset_id)
     project = catalog.get_project(db, dataset.project_id)
@@ -346,6 +350,7 @@ def start_sweep(
             "nodes": list(dict.fromkeys(nodes or [])),
             "base_model_id": base_model_id,
             "tags": training.clean_tags(tags or []),
+            **({"data_after": data_after} if nodes and data_after else {}),
         },
         created_by=user.id,
     )
@@ -443,6 +448,7 @@ def _start_next(db: Session, sweep: Sweep, via: str = "sweep") -> None:
         active += 1
     if started >= total and active == 0:
         sweep.status, sweep.finished_at = "finished", utcnow()
+        node_data.after_sweep(db, sweep)
 
 
 def wake() -> None:

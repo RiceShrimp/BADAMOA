@@ -497,7 +497,7 @@ class NodeAgent:
             self._complete(job_id, status, result, error)
             if job["type"].startswith(("env.", "train.", "model.")):
                 self._envs_changed.set()
-            if job["type"] in ("data.sync", "train.run"):
+            if job["type"] in ("data.sync", "data.check", "train.run"):
                 self._recount.set()
             with self._lock:
                 self._running.pop(job_id, None)

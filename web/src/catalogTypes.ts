@@ -70,6 +70,8 @@ export interface ReleaseInfo {
   version: string;
   status: "building" | "ready" | "draft";
   note: string;
+  digest?: string; // a fingerprint of its content, like a commit hash ("" until it is ready)
+  same_as?: { id: string; version: string; dataset: string }[]; // other versions with exactly this content
   created_at: string;
   project_id: string;
   dataset: { id: string; name: string };

@@ -1,0 +1,70 @@
+/* copies of versions on the servers that received them (NodeCopies.tsx) */
+.copies .card-head .spacer {
+  flex: 1;
+}
+.copy-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.copy-list li {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+}
+.copy-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.copy-empty,
+.copy-check {
+  margin: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+.copy-check .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+}
+code.digest {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+button.digest {
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: copy;
+}
+button.digest:hover {
+  color: var(--text);
+}
+/* "after the run, the data sent to that server: keep / delete" in the new-run dialog */
+.data-after {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+@media (max-width: 640px) {
+  .copy-list li {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .copy-list li > .small {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}

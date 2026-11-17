@@ -16,7 +16,7 @@ from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
 from badamoa.core.storage import Storage
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
-from . import catalog, registry, resources, services, transfers
+from . import catalog, node_data, registry, resources, services, transfers
 from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Release, ReleaseItem, StorageLocation
 from .config import HubSettings
 from .db import iso, utcnow
@@ -96,13 +96,16 @@ def start_run(
     note: str = "",
     sweep: dict[str, Any] | None = None,
     nodes: list[str] | None = None,
+    data_after: str = "",
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
 
     ``nodes`` are the servers it may train on (none: the one holding the images). One of them
     that has the images takes it as it is; if none has, one receives them first from the node
-    that holds them (``transfers``), without holding a GPU meanwhile.
+    that holds them (``transfers``), without holding a GPU meanwhile. ``data_after`` says what
+    becomes of the copy such a node received once the run is over: ``keep`` it or ``delete`` it
+    (only after a run that succeeded; ``node_data``).
 
     ``template`` and ``environment`` may be left empty: the project's default
     template and the template's default environment are used. ``base_model_id``
@@ -127,6 +130,8 @@ def start_run(
         raise ServiceError(400, "unlabelled는 exclude 또는 background여야 합니다.")
     if not 0 <= val_fraction <= 0.9:
         raise ServiceError(400, "val_fraction은 0~0.9여야 합니다.")
+    if data_after not in node_data.CHOICES:
+        raise ServiceError(400, "data_after는 keep(남겨 두기) 또는 delete(지우기)입니다.")
     space = db.get(LabelSpace, release.label_space_id)
     known = {int(c["id"]) for c in space.classes}
     chosen = sorted({int(c) for c in classes or []})
@@ -184,6 +189,8 @@ def start_run(
             "min_vram_mb": min_vram_mb,
             "model_name": _slug(model_name),
             **({"nodes": list(dict.fromkeys(nodes))} if nodes else {}),
+            # only where the images may have to come to another server
+            **({"data_after": data_after} if nodes and data_after and not sweep else {}),
             **({"base_model": {"id": base.id, "name": base.name, "version": base.version}} if base else {}),
             **({"resumed_from": {"id": interrupted.id, "name": interrupted.name}} if interrupted else {}),
             **({"sweep": sweep} if sweep else {}),
@@ -265,6 +272,7 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         source_run_id=source.id,
         tags=tags_of(db, "run", [source.id]).get(source.id, []),
         nodes=c.get("nodes") or None,
+        data_after=c.get("data_after", ""),
         via=via,
     )
 
@@ -306,6 +314,7 @@ def resume(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         tags=tags_of(db, "run", [source.id]).get(source.id, []),
         note=source.note or "",
         nodes=c.get("nodes") or None,
+        data_after=c.get("data_after", ""),
         via=via,
     )
 
@@ -677,7 +686,11 @@ def run_view(
         "epochs": run.epochs,
         "epoch": run.epoch,
         "config": run.config,
-        "release": {"id": release.id, "dataset": dataset.name, "version": release.version} if release and dataset else None,
+        "release": (
+            {"id": release.id, "dataset": dataset.name, "version": release.version, "digest": release.digest}
+            if release and dataset
+            else None
+        ),
         "metrics": run.summary or {},  # final metrics once finished, the best step so far before that
         "model": (
             {"id": model.id, "name": model.name, "version": model.version, "alias": model.alias, "aliases": _aliases(model)}
@@ -933,7 +946,13 @@ def model_view(
     run = db.get(Run, model.run_id) if model.run_id else None
     source = None
     if release and dataset:
-        source = {"id": release.id, "dataset": dataset.name, "version": release.version, "deleted": bool(release.deleted_at)}
+        source = {
+            "id": release.id,
+            "dataset": dataset.name,
+            "version": release.version,
+            "digest": release.digest,
+            "deleted": bool(release.deleted_at),
+        }
     template = model.template or (_template_of(run) if run else {"name": model.trainer, "title": model.trainer})
     view: dict[str, Any] = {
         "id": model.id,

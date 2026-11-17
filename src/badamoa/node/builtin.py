@@ -78,6 +78,12 @@ def data_sync(params: dict[str, Any]) -> dict[str, Any]:
     return sync.run(params)
 
 
+def data_check(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import sync
+
+    return sync.check(params)
+
+
 def train_run(params: dict[str, Any]) -> dict[str, Any]:
     from badamoa.node import trainer
 
@@ -125,6 +131,7 @@ HANDLERS = {
     "data.import": data_import,
     "data.export": data_export,
     "data.sync": data_sync,
+    "data.check": data_check,
     "train.run": train_run,
     "model.run": model_run,
     "env.check": env_check,

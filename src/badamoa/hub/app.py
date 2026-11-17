@@ -17,6 +17,7 @@ from . import (
     admin,
     agent_api,
     api,
+    catalog,
     catalog_api,
     cleanup,
     exports_api,
@@ -50,10 +51,18 @@ async def _sweeper(hub: Hub) -> None:
         with hub.db.session() as db:
             resources.prune(db)
 
+    def fingerprint() -> int:
+        with hub.db.session() as db:
+            return catalog.fill_digests(db)
+
     ticks = 0
     while True:
         await anyio.sleep(_SWEEP_INTERVAL_S)
         ticks += 1
+        try:  # versions made before fingerprints: a few each round until none is left
+            await anyio.to_thread.run_sync(fingerprint)
+        except Exception:
+            log.exception("version fingerprints failed")
         if ticks % int(cleanup.EVERY_S // _SWEEP_INTERVAL_S) == 0:
             try:
                 await anyio.to_thread.run_sync(cleanup.scheduled, hub.db, hub.settings)

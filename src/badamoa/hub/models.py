@@ -75,6 +75,9 @@ class Node(Base):
     reserved_gpus: Mapped[list[int]] = mapped_column(JSON, default=list)
     # Where images copied from other nodes are kept ("" = the node picks the disk with the most room).
     cache_dir: Mapped[str] = mapped_column(String(512), default="")
+    # The last check of its received copies against the Hub's records (``node_data``): when, what it
+    # found that no version needs, what it removed, or why it failed.
+    data_check: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -93,7 +96,7 @@ class TransferGrant(Base):
 
 
 class NodeRelease(Base):
-    """A version whose images a node received in full (its cache may since have let some go)."""
+    """A version whose images a node received in full: a copy in its cache (``node_data``)."""
 
     __tablename__ = "node_releases"
 
@@ -102,6 +105,14 @@ class NodeRelease(Base):
     items: Mapped[int] = mapped_column(Integer, default=0)
     bytes: Mapped[int] = mapped_column(Integer, default=0)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # "" kept · "remove": goes once nothing on the node uses it · "held": a run asked to remove it but did
+    # not succeed, so it stays for continuing · "removing": the check job ``job_id`` is taking it away
+    state: Mapped[str] = mapped_column(String(12), default="")
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # What the node's last check found of it (None: not checked since it arrived)
+    present_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    present_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Job(Base):

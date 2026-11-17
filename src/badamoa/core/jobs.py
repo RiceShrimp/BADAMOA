@@ -53,6 +53,15 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             params_schema={"type": "object", "properties": {"release_id": {"type": "string"}}},
         ),
         JobTypeSpec(
+            type="data.check",
+            title="받아 둔 이미지 확인",
+            description=(
+                "다른 노드에서 받아 둔 이미지가 Hub의 기록과 맞는지 보고, clean이면 남길 버전이 쓰지 않는 사본을 지웁니다."
+            ),
+            hidden=True,
+            params_schema={"type": "object", "properties": {"clean": {"type": "boolean", "default": False}}},
+        ),
+        JobTypeSpec(
             type="system.info",
             title="시스템 정보",
             description="노드의 OS, CPU, 메모리, 디스크, GPU, 드라이버 정보를 수집합니다.",

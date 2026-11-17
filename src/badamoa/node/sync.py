@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -302,3 +302,50 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     if result.get("local"):
         print("이 노드에 등록된 이미지입니다. 받을 것이 없습니다.")
     return result
+
+
+def _expected(client: httpx.Client, job_id: str, release: str = "", after: int = 0) -> dict[str, Any]:
+    resp = client.get(f"/api/agent/jobs/{job_id}/check/expected", params={"release": release, "after": after})
+    if resp.status_code != 200:
+        raise RuntimeError(f"Hub가 확인할 목록을 주지 않았습니다 ({resp.status_code}): {resp.text[:300]}")
+    return resp.json()
+
+
+def _images_of(client: httpx.Client, job_id: str, release: str) -> Iterator[dict[str, Any]]:
+    after = 0
+    while True:
+        page = _expected(client, job_id, release, after)
+        yield from page["items"]
+        if page.get("next") is None:
+            return
+        after = page["next"]
+
+
+def check(params: dict[str, Any]) -> dict[str, Any]:
+    """The ``data.check`` job: what of each copy the Hub says is here is here, and (``clean``) away with the rest."""
+    hub, token, job_id, folder = (
+        os.environ.get(k) for k in ("BADAMOA_HUB_URL", "BADAMOA_NODE_TOKEN", "BADAMOA_JOB_ID", "BADAMOA_CACHE_DIR")
+    )
+    if not (hub and token and job_id and folder):
+        raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
+    root, clean = Path(folder), bool(params.get("clean"))
+    needed: set[str] = set()
+    found: dict[str, dict[str, int]] = {}
+    started = time.time()  # anything arriving from now on belongs to a transfer the list below does not know
+    with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
+        first = _expected(client, job_id)
+        print(f"받아 둔 이미지 보관 위치 {root} · Hub 기록의 버전 {len(first['check'])}개")
+        for release in first["check"]:
+            found[release] = cache.tally(root, _images_of(client, job_id, release), needed)
+        for release in first.get("keep") or []:  # versions jobs here use now: spared, not counted
+            for item in _images_of(client, job_id, release):
+                needed.add(item["sha256"])
+    complete = sum(1 for release in first["check"] if found[release]["items"])
+    print(f"Hub 기록과 맞춰 봄: 버전 {len(found)}개 중 {complete}개의 이미지가 있습니다.")
+    swept = cache.sweep(root, needed, clean, since=started)
+    unknown, removed = swept["unknown"], swept["removed"]
+    if unknown["files"]:
+        print(f"남길 버전이 쓰지 않는 파일 {unknown['files']:,}개 ({_size(unknown['bytes'])})")
+    if clean:
+        print(f"지운 파일 {removed['files']:,}개 ({_size(removed['bytes'])})")
+    return {"releases": found, **swept}

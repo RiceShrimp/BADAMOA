@@ -47,7 +47,11 @@ def holders(db: Session, release_id: str) -> set[str]:
     """Nodes that have a version's images: where they were registered, and where they were received in full."""
     from . import training  # training imports this module
 
-    have = set(db.scalars(select(NodeRelease.node_id).where(NodeRelease.release_id == release_id)))
+    have = set(
+        db.scalars(
+            select(NodeRelease.node_id).where(NodeRelease.release_id == release_id, NodeRelease.state != "removing")
+        )
+    )
     try:
         have.add(training.data_node(db, release_id).id)
     except ServiceError:
@@ -246,6 +250,10 @@ def on_job_finished(db: Session, job: Job) -> None:
             row = NodeRelease(node_id=job.node_id, release_id=release_id)
             db.add(row)
         row.items, row.bytes, row.synced_at = int(result.get("items") or 0), int(result.get("bytes") or 0), utcnow()
+        # the transfer checked every image on arrival: all of it is there now
+        row.present_items, row.present_bytes, row.checked_at = row.items, row.bytes, row.synced_at
+        if row.state == "removing":
+            row.state, row.job_id = "", None
         return
     # It failed or was stopped: the trainings waiting for it cannot start.
     reason = job.error or ("취소되었습니다." if job.status == "canceled" else "실패했습니다.")
@@ -289,7 +297,11 @@ def node_choices(db: Session, settings: Any, release_id: str) -> dict[str, Any]:
         source = training.data_node(db, release_id).id
     except ServiceError:
         source = ""
-    received = set(db.scalars(select(NodeRelease.node_id).where(NodeRelease.release_id == release_id)))
+    received = set(
+        db.scalars(
+            select(NodeRelease.node_id).where(NodeRelease.release_id == release_id, NodeRelease.state != "removing")
+        )
+    )
     assigned = resources.assignments(db)
     nodes = db.scalars(select(Node).order_by(Node.is_local.desc(), Node.created_at)).all()
     shown = []

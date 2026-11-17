@@ -370,6 +370,7 @@ def confirm(db: Session, user: User, draft_id: str, version: str, note: str = ""
     draft.created_by = user.id
     db.flush()
     draft.stats = catalog.compute_stats(db, draft)
+    catalog.stamp_digest(db, draft)
     services.audit(db, user.id, via, "release.create", draft.id, version=version, edited=edited, base=draft.base_release_id)
     return {"release_id": draft.id, "version": version, "edited": edited}
 

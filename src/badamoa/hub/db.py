@@ -29,6 +29,13 @@ _ADDED_COLUMNS = [
     ("nodes", "cache_dir", "VARCHAR(512) DEFAULT ''"),
     ("label_revisions", "parent_id", "INTEGER"),
     ("label_revisions", "created_by", "VARCHAR(32)"),
+    ("releases", "digest", "VARCHAR(64) DEFAULT ''"),
+    ("node_releases", "state", "VARCHAR(12) DEFAULT ''"),
+    ("node_releases", "job_id", "VARCHAR(32)"),
+    ("node_releases", "present_items", "INTEGER"),
+    ("node_releases", "present_bytes", "INTEGER"),
+    ("node_releases", "checked_at", "DATETIME"),
+    ("nodes", "data_check", "JSON DEFAULT '{}'"),
 ]
 
 

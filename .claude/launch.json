@@ -37,7 +37,8 @@
       ],
       "env": {
         "BADAMOA_GPU_BUSY_MEMORY_PCT": "101",
-        "BADAMOA_GPU_BUSY_UTIL_PCT": "101"
+        "BADAMOA_GPU_BUSY_UTIL_PCT": "101",
+        "BADAMOA_NODE_DATA_PORT": "0"
       },
       "port": 8471
     },

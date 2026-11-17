@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
-from . import catalog, lineage, modelops, services, sweeps, training, transfers
+from . import catalog, lineage, modelops, node_data, services, sweeps, training, transfers
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -51,6 +51,7 @@ class NewRun(BaseModel):
     tags: list[str] = Field(default_factory=list)
     note: str = ""
     nodes: list[str] = Field(default_factory=list)  # servers it may train on; empty = where the images are
+    data_after: str = ""  # keep | delete: the copy a server received for it, once the run succeeded
 
 
 class RunUpdate(BaseModel):
@@ -97,6 +98,7 @@ class NewSweep(BaseModel):
     base_model_id: str = ""
     tags: list[str] = Field(default_factory=list)
     nodes: list[str] = Field(default_factory=list)  # servers its runs may train on
+    data_after: str = ""  # keep | delete: the copies its servers received, once the whole search is over
 
 
 @router.get("/releases/{release_id}/nodes")
@@ -106,6 +108,64 @@ def release_nodes(
     """The servers a run on this version could train on, and which already have its images."""
     catalog.get_release(db, release_id)
     return transfers.node_choices(db, hub.settings, release_id)
+
+
+# ---- copies of versions on the servers that received them ---------------------------------------
+
+
+@router.get("/release-ref")
+def find_release(ref: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """A version by id, by the start of its fingerprint, or as ``dataset@version``."""
+    release = catalog.find_release(db, ref)
+    return {"id": release.id, "version": release.version, "digest": release.digest}
+
+
+@router.get("/releases/{release_id}/copies")
+def release_copies(
+    release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Where a version's images are: the server they were registered on and the copies others received."""
+    return node_data.release_copies(db, hub.settings, catalog.get_release(db, release_id, allow_deleted=True))
+
+
+@router.delete("/releases/{release_id}/copies/{node_id}")
+def remove_copy(
+    release_id: str,
+    node_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """Remove the copy a server received (images its other copies share stay). Refused while a job there uses it."""
+    node_data.remove_copy(db, user, release_id, node_id, via="ui")
+    db.commit()
+    return node_data.release_copies(db, hub.settings, catalog.get_release(db, release_id, allow_deleted=True))
+
+
+@router.get("/nodes/{node_id}/copies")
+def node_copies(
+    node_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """The versions a server keeps copies of, and its last check."""
+    return node_data.node_copies(db, hub.settings, services.get_node(db, node_id))
+
+
+class CopyCheck(BaseModel):
+    clean: bool = False  # also remove what no kept copy needs
+
+
+@router.post("/nodes/{node_id}/copies/check")
+def check_copies(
+    node_id: str,
+    body: CopyCheck,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """Have a server compare what it received with the Hub's records."""
+    job = node_data.check_node(db, user, node_id, clean=body.clean, via="ui")
+    db.commit()
+    return {"job_id": job.id, **node_data.node_copies(db, hub.settings, services.get_node(db, node_id))}
 
 
 @router.post("/sweeps")

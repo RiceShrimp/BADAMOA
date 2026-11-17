@@ -23,7 +23,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import asks, cleanup, originals, registry, services, sweeps, transfers
+from . import asks, cleanup, node_data, originals, registry, services, sweeps, transfers
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -91,6 +91,18 @@ class Resolve(BaseModel):
 def resolve_transfer(body: Resolve, node: Node = Depends(current_node), db: Session = Depends(db_session)) -> dict:
     """The holding node asks which of the asked-for images a grant lets it send, and where they lie."""
     return transfers.resolve(db, node, body.grant, body.ids)
+
+
+@router.get("/jobs/{job_id}/check/expected")
+def check_expected(
+    job_id: str,
+    release: str = "",
+    after: int = 0,
+    node: Node = Depends(current_node),
+    db: Session = Depends(db_session),
+) -> dict[str, Any]:
+    """A checking node asks which copies it should hold, then the images of each, page by page."""
+    return node_data.expected(db, node, job_id, release, after)
 
 
 class QuestionsWait(BaseModel):
@@ -176,6 +188,7 @@ def complete(
     job = services.complete_job(db, node, job_id, body)
     registry.on_job_finished(db, job)
     transfers.on_job_finished(db, job)
+    node_data.on_job_finished(db, job)
     db.commit()
     sweeps.on_job_finished(job)  # a search may start its next run
     return {"status": job.status}

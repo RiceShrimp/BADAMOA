@@ -290,12 +290,18 @@ function NodeField({
   onMode,
   picked,
   onPicked,
+  dataAfter,
+  onDataAfter,
+  sweep,
 }: {
   choices: NodeChoices;
   mode: "auto" | "pick";
   onMode: (mode: "auto" | "pick") => void;
   picked: string[];
   onPicked: (ids: string[]) => void;
+  dataAfter: "keep" | "delete";
+  onDataAfter: (value: "keep" | "delete") => void;
+  sweep: boolean; // a search: the copy goes (or stays) once all its runs are over
 }) {
   const source = choices.nodes.find((n) => n.id === choices.source);
   const chosen = choices.nodes.filter((n) => picked.includes(n.id));
@@ -303,6 +309,10 @@ function NodeField({
   // The Hub's pick when none of them has the images: online first, then the one with the most GPUs.
   const receiver = [...chosen].sort((a, b) => Number(b.status === "online") - Number(a.status === "online") || b.gpus - a.gpus)[0];
   const toggle = (id: string) => onPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  // Where it will train holds a copy sent from elsewhere (or will receive one): what becomes of it afterwards
+  const targets = ready.length ? ready : receiver ? [receiver] : [];
+  const copied = targets.some((n) => n.images !== "registered");
+  const when = sweep ? "탐색이 모두 끝나면" : "학습이 끝나면";
   return (
     <div className="node-field">
       <label>
@@ -340,11 +350,29 @@ function NodeField({
           {chosen.length > 0 && ready.length === 0 && receiver && (
             <p className="muted small">
               고른 노드에 이미지가 없어, {receiver.name}가 먼저 {source?.name ?? "이미지가 있는 노드"}에서 {choices.items.toLocaleString()}장 (
-              {gbText(choices.bytes)})을 직접 받은 뒤 학습합니다. 받는 동안 GPU는 잡지 않고, 한 번 받으면 다음부터는 바로 시작합니다.
+              {gbText(choices.bytes)})을 직접 받은 뒤 학습합니다. 받는 동안 GPU는 잡지 않습니다.
               {receiver.cache_free_gb != null && receiver.cache_free_gb * GB < choices.bytes && (
                 <span className="bad-text"> 보관 위치의 남은 공간({receiver.cache_free_gb} GB)이 모자랍니다 — 노드 설정에서 바꾸세요.</span>
               )}
             </p>
+          )}
+          {chosen.length > 0 && copied && (
+            <div className="data-after">
+              <div className="segmented" role="radiogroup" aria-label="보낸 데이터">
+                <span className="eyebrow">{when} 이 서버로 보낸 데이터를</span>
+                <button type="button" className={dataAfter === "keep" ? "active" : ""} onClick={() => onDataAfter("keep")}>
+                  남겨 두기
+                </button>
+                <button type="button" className={dataAfter === "delete" ? "active" : ""} onClick={() => onDataAfter("delete")}>
+                  지우기
+                </button>
+              </div>
+              <span className="muted small">
+                {dataAfter === "keep"
+                  ? "같은 버전으로 다시 학습하면 바로 시작합니다. 버전 화면에서 언제든 지울 수 있습니다."
+                  : `${sweep ? "탐색이 끝나면" : "학습이 성공하면"} 지웁니다. 실패하면 이어서 실행할 수 있게 남깁니다.`}
+              </span>
+            </div>
           )}
         </>
       )}
@@ -1027,6 +1055,7 @@ function NewRun({
   const [choices, setChoices] = useState<NodeChoices | null>(null);
   const [nodeMode, setNodeMode] = useState<"auto" | "pick">("auto");
   const [pickedNodes, setPickedNodes] = useState<string[]>([]);
+  const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -1131,6 +1160,7 @@ function NewRun({
             name: extra.name,
             base_model_id: extra.base,
             nodes,
+            data_after: nodes.length ? dataAfter : "",
           },
         });
         onSweep(sweep.id);
@@ -1148,6 +1178,7 @@ function NewRun({
           model_name: extra.model_name,
           base_model_id: extra.base,
           nodes,
+          data_after: nodes.length ? dataAfter : "",
         },
       });
       onStarted(run);
@@ -1229,6 +1260,9 @@ function NewRun({
               onMode={setNodeMode}
               picked={pickedNodes}
               onPicked={setPickedNodes}
+              dataAfter={dataAfter}
+              onDataAfter={setDataAfter}
+              sweep={trials.length > 0}
             />
           )}
 

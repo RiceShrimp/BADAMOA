@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CrosshairProvider, LineChart, type Series } from "./Chart";
 import { GpuTimeline } from "./GpuTimeline";
+import { NodeCopies } from "./NodeCopies";
 import { type MetricHistory, type NodeDetailInfo, api } from "./api";
 import { Badge, Icon, Meter, RefreshButton, STATUS_LABEL, Stat, duration, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
@@ -505,6 +506,8 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
 
       </details>
       </CrosshairProvider>
+
+      <NodeCopies nodeId={nodeId} />
 
       <section className="card table-wrap">
         <div className="card-head">

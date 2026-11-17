@@ -994,6 +994,7 @@ def import_finish(db: Session, node: Node, job_id: str) -> dict[str, Any]:
     db.flush()
     release.stats = compute_stats(db, release)
     release.status = "ready"
+    stamp_digest(db, release)
     services.audit(
         db, job.created_by, "agent", "release.create", release.id, name=job.params["dataset"], version=release.version
     )
@@ -1018,6 +1019,86 @@ def require_ready(release: Release, then: str = "") -> None:
         raise ServiceError(409, "아직 등록 중인 버전입니다." + (f" {then}" if then else ""))
 
 
+# ---- a version's fingerprint, like a commit hash --------------------------------------------
+
+SHORT_DIGEST = 12  # how much of it screens show
+_DIGEST_REF = re.compile(r"^[0-9a-f]{7,64}$")
+
+
+def release_digest(db: Session, release: Release) -> str:
+    """SHA-256 of what a version is: its task and classes, then every image with its split and pinned labels.
+
+    Images go in the order of their own hash, one line each (image hash, split, label state, the label
+    revision's digest), so the same content gives the same fingerprint whatever its name, note or
+    version name, and in whatever order it was put together.
+    """
+    dataset = db.get(Dataset, release.dataset_id)
+    space = db.get(LabelSpace, release.label_space_id)
+    h = hashlib.sha256()
+    head = {"task": dataset_task(dataset), "classes": space.classes if space else []}
+    h.update(json.dumps(head, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode())
+    rows = db.execute(
+        select(Item.sha256, ReleaseItem.split, ReleaseItem.state, LabelRevision.digest)
+        .join(Item, Item.id == ReleaseItem.item_id)
+        .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id, isouter=True)
+        .where(ReleaseItem.release_id == release.id)
+        .order_by(Item.sha256)
+        .execution_options(yield_per=5000)
+    )
+    for sha, split, state, labels in rows:
+        h.update(f"\n{sha} {split or '-'} {state} {labels or '-'}".encode())
+    return h.hexdigest()
+
+
+def stamp_digest(db: Session, release: Release) -> str:
+    """Give a finished version its fingerprint (once: a finished version does not change)."""
+    if release.status == "ready" and not release.digest:
+        db.flush()
+        release.digest = release_digest(db, release)
+    return release.digest
+
+
+def fill_digests(db: Session, limit: int = 20) -> int:
+    """Fingerprints for versions made before there were any (the Hub's background loop, a few at a time)."""
+    missing = db.scalars(select(Release).where(Release.status == "ready", Release.digest == "").limit(limit)).all()
+    for release in missing:
+        stamp_digest(db, release)
+    return len(missing)
+
+
+def find_release(db: Session, ref: str) -> Release:
+    """A version by id, by the start of its fingerprint (7 characters or more), or as ``dataset@version``."""
+    ref = (ref or "").strip()
+    release = db.get(Release, ref)
+    if release is not None and release.deleted_at is None:
+        return release
+    found: list[Release] = []
+    if "@" in ref:
+        name, _, version = ref.rpartition("@")
+        found = list(
+            db.scalars(
+                select(Release)
+                .join(Dataset, Dataset.id == Release.dataset_id)
+                .where(Dataset.name == name.strip(), Release.version == version.strip(), Release.deleted_at.is_(None))
+            )
+        )
+        what = f"{name.strip()} {version.strip()}"
+    elif _DIGEST_REF.match(ref.lower()):
+        found = list(
+            db.scalars(select(Release).where(Release.digest.startswith(ref.lower()), Release.deleted_at.is_(None)))
+        )
+        what = f"지문 {ref}"
+    else:
+        raise ServiceError(404, "버전을 찾을 수 없습니다. id, 지문(7자 이상) 또는 '데이터셋@버전'으로 가리키세요.")
+    if not found:
+        raise ServiceError(404, f"{what}에 맞는 버전이 없습니다.")
+    if len(found) > 1:
+        projects = {db.get(Dataset, r.dataset_id).project_id for r in found}
+        why = "여러 프로젝트에 같은 이름이 있습니다" if len(projects) > 1 else "지문이 같은 버전이 여럿입니다"
+        raise ServiceError(409, f"{what}에 맞는 버전이 {len(found)}개입니다({why}). id나 더 긴 지문으로 가리키세요.")
+    return found[0]
+
+
 def release_view(db: Session, release_id: str) -> dict[str, Any]:
     release = get_release(db, release_id)
     drafts.fresh_stats(db, release)
@@ -1027,11 +1108,28 @@ def release_view(db: Session, release_id: str) -> dict[str, Any]:
     siblings = db.scalars(
         select(Release).where(Release.dataset_id == dataset.id, Release.deleted_at.is_(None), Release.status == "ready")
     ).all()
+    # Other versions of the project with exactly this content (the same fingerprint)
+    twins = (
+        db.execute(
+            select(Release.id, Release.version, Dataset.name)
+            .join(Dataset, Dataset.id == Release.dataset_id)
+            .where(
+                Release.digest == release.digest,
+                Release.id != release.id,
+                Release.deleted_at.is_(None),
+                Dataset.project_id == dataset.project_id,
+            )
+        ).all()
+        if release.digest
+        else []
+    )
     return {
         "id": release.id,
         "version": release.version,
         "status": release.status,
         "note": release.note,
+        "digest": release.digest,
+        "same_as": [{"id": i, "version": v, "dataset": name} for i, v, name in twins],
         "created_at": iso(release.created_at),
         "project_id": dataset.project_id,
         "dataset": {"id": dataset.id, "name": dataset.name},
@@ -1558,6 +1656,7 @@ def new_release(
     db.flush()
     release.stats = compute_stats(db, release)
     release.status = "ready"
+    stamp_digest(db, release)
     services.audit(
         db,
         user.id,

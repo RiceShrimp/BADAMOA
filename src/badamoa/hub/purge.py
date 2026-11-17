@@ -10,6 +10,9 @@ but can no longer be started again).
 Lineage is kept whole: a version that runs, models or evaluations point at, and a run a model was
 trained by, stay in the trash (with the reason) until what points at them goes first. Models go
 before runs and runs before versions, so emptying everything at once removes the whole chain.
+
+Copies of a removed version that other servers received are removed from those servers too
+(``node_data.forget``).
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from . import catalog, cleanup, services, trash
+from . import catalog, cleanup, node_data, services, trash
 from .catalog_models import Dataset, Item, ItemPrediction, Project, Release, ReleaseItem
 from .config import HubSettings
 from .db import utcnow
@@ -209,6 +212,9 @@ def empty_trash(
             kept.append({"id": project.id, "name": project.name, "reason": f"{', '.join(busy)} 진행 중"})
             continue
         candidates |= _project_blobs(db, project.id)
+        versions = select(Release.id).join(Dataset, Dataset.id == Release.dataset_id)
+        # copies other servers received of its versions go too
+        node_data.forget(db, list(db.scalars(versions.where(Dataset.project_id == project.id))), user and user.id, via)
         _drop_project(db, project)
         done["projects"] += 1
     for release in picked["releases"]:
@@ -218,6 +224,7 @@ def empty_trash(
             reason = f"{', '.join(users)}가 이 버전을 씀"
             kept.append({"id": release.id, "name": f"{dataset.name} {release.version}", "reason": reason})
             continue
+        node_data.forget(db, [release.id], user and user.id, via)
         candidates |= _drop_release(db, release)
         done["releases"] += 1
     for group in picked["templates"]:

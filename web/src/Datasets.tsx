@@ -14,6 +14,7 @@ import { ImportProgress, announceImport, useImports } from "./Imports";
 import { DraftActions, DraftLine, DraftNotice } from "./DraftBar";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
+import { Fingerprint, ReleaseCopies } from "./NodeCopies";
 import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog, describeFilter } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
 import { type Job, type NodeInfo, api } from "./api";
@@ -286,6 +287,26 @@ function ReleaseView({
                 · base <a href={`#/datasets/${release.base.id}`}>{release.base.version}</a>
               </>
             )}
+            {release.digest && (
+              <>
+                {" "}
+                · 지문 <Fingerprint digest={release.digest} />
+              </>
+            )}
+            {(release.same_as ?? []).length > 0 && (
+              <>
+                {" "}
+                · 내용이 같은 버전{" "}
+                {release.same_as!.map((r, i) => (
+                  <span key={r.id}>
+                    {i > 0 && ", "}
+                    <a href={`#/datasets/${r.id}`}>
+                      {r.dataset === release.dataset.name ? r.version : `${r.dataset} ${r.version}`}
+                    </a>
+                  </span>
+                ))}
+              </>
+            )}
           </p>
           )}
         </div>
@@ -342,6 +363,7 @@ function ReleaseView({
       </div>
 
       {release.status === "building" && <BuildingBar releaseId={release.id} />}
+      {release.status === "ready" && <ReleaseCopies releaseId={release.id} />}
       {release.note && (
         <details className="card fold">
           <summary>메모</summary>
