@@ -544,6 +544,16 @@ details.node-more > summary {
 .sys-item.full .sys-line strong {
   color: var(--bad);
 }
+/* a disk over 90% while the line shows them all */
+.sys-alert {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--bad);
+  vertical-align: 1px;
+}
 .sys-bar {
   height: 4px;
   margin-top: 3px;

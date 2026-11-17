@@ -325,6 +325,7 @@ interface SysInfo {
   value: string;
   pct: number | null;
   title?: string;
+  alert?: string; // a disk over 90%: a red dot beside the label; the line itself stays the total
 }
 
 /** Processor, memory and disks (added up): always the same three lines under a server's name. */
@@ -355,16 +356,19 @@ function systemBars(node: BoardNode): SysInfo[] {
   if (disks.length > 0) {
     const total = disks.reduce((n, d) => n + d.total_gb, 0);
     const free = disks.reduce((n, d) => n + d.free_gb, 0);
-    const fullest = disks.reduce((a, d) => (d.pct > a.pct ? d : a));
-    const full = fullest.pct >= FULL_PCT;
+    const full = disks.filter((d) => d.pct >= FULL_PCT);
     const each = disks.map((d) => `${d.mount} ${capacity(d.free_gb)} 남음 / ${capacity(d.total_gb)} (${Math.round(d.pct)}%)`);
+    const alert = full.length
+      ? `90% 넘은 디스크: ${full.map((d) => `${d.mount} ${Math.round(d.pct)}% (${capacity(d.free_gb)} 남음)`).join(", ")}`
+      : undefined;
     bars.push({
       kind: "disk",
-      // Added up; a disk nearly full is named instead.
-      label: full ? `${fullest.mount} ${Math.round(fullest.pct)}%` : disks.length > 1 ? `디스크 ${disks.length}개` : "디스크",
-      value: `${capacity(full ? fullest.free_gb : free)} 남음`,
-      pct: full ? fullest.pct : total ? ((total - free) / total) * 100 : null,
-      title: [`전체 ${capacity(free)} 남음 / ${capacity(total)}`, ...each].join("\n"),
+      // Always the disks added up; one nearly full only adds a red dot (each disk: hover, or the server's page).
+      label: disks.length > 1 ? `디스크 ${disks.length}개` : "디스크",
+      value: `${capacity(free)} 남음`,
+      pct: total ? ((total - free) / total) * 100 : null,
+      title: [alert, `전체 ${capacity(free)} 남음 / ${capacity(total)}`, ...each].filter(Boolean).join("\n"),
+      alert,
     });
   }
   return bars;
@@ -378,7 +382,10 @@ function SysBars({ bars }: { bars: SysInfo[] }) {
         return (
           <div key={b.kind} className={`sys-item ${b.kind}${full ? " full" : ""}`} title={b.title}>
             <div className="sys-line">
-              <span>{b.label}</span>
+              <span>
+                {b.label}
+                {b.alert && <i className="sys-alert" role="img" aria-label={b.alert} />}
+              </span>
               <strong>{b.value}</strong>
             </div>
             <div className="sys-bar">
