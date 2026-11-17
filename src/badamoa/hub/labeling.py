@@ -18,8 +18,17 @@ from typing import Any
 from sqlalchemy import and_, delete, false, func, insert, select
 from sqlalchemy.orm import Session
 
-from . import catalog, checks, drafts, services
-from .catalog_models import Dataset, ItemPrediction, LabelSet, LabelSetItem, LabelSetPart, Release, ReleaseItem
+from . import catalog, checks, drafts, qa, services
+from .catalog_models import (
+    Dataset,
+    ItemPrediction,
+    LabelSet,
+    LabelSetItem,
+    LabelSetPart,
+    QaResult,
+    Release,
+    ReleaseItem,
+)
 from .db import iso, utcnow
 from .models import User
 from .services import ServiceError
@@ -83,6 +92,18 @@ def create_set(
             ItemPrediction, and_(ItemPrediction.op_id == op.id, ItemPrediction.item_id == ReleaseItem.item_id)
         ).where(ItemPrediction.wrong > 0)
         order = [ItemPrediction.wrong.desc(), ItemPrediction.missed.desc(), ReleaseItem.item_id]
+        if wanted.get("mistake") in ("extra", "missed"):
+            column = getattr(ItemPrediction, wanted["mistake"])
+            query = query.where(column > 0)
+            order = [column.desc(), ReleaseItem.item_id]
+    if wanted.get("check"):  # a label check's images (검수)
+        if wanted["check"] not in qa.CHECKS:
+            raise ServiceError(400, "그런 검사가 없습니다.")
+        qa.run(db, release)
+        flagged = and_(
+            QaResult.release_id == release.id, QaResult.check == wanted["check"], QaResult.item_id == ReleaseItem.item_id
+        )
+        query = query.join(QaResult, flagged)
     item_ids = list(db.scalars(query.order_by(*order).limit(MAX_ITEMS + 1)))
     if not item_ids:
         raise ServiceError(400, "고른 조건에 맞는 이미지가 없습니다.")

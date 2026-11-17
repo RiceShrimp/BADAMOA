@@ -97,6 +97,7 @@ export interface GridItem {
   fixed?: boolean; // changed in the work in progress
   check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
   set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
+  qa?: { check: string; boxes: number[]; note: string }; // flagged by a label check (검수): which labels, why
 }
 
 export type SetState = "todo" | "labelled" | "approved" | "rejected";

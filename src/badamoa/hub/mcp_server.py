@@ -26,7 +26,21 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, checks, drafts, gpus, labeling, lineage, node_data, registry, resources, services, sweeps, training
+from . import (
+    catalog,
+    checks,
+    drafts,
+    gpus,
+    labeling,
+    lineage,
+    node_data,
+    qa,
+    registry,
+    resources,
+    services,
+    sweeps,
+    training,
+)
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -445,6 +459,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         suspect: str = "",
         label_set: str = "",
         part: int | None = None,
+        check: str = "",
+        mistake: str = "",
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -459,8 +475,19 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         with hub.db.session() as db:
             return catalog.list_items(
                 db, hub.settings, release_id, split=split, state=state, class_id=class_id, q=q, edited=edited,
-                suspect=suspect, label_set=label_set, part=part, offset=offset, limit=limit,
+                suspect=suspect, label_set=label_set, part=part, check=check, mistake=mistake, offset=offset, limit=limit,
             )
+
+    @mcp.tool(title="검수: 미라벨 · 오라벨 찾기", annotations=READ_ONLY)
+    @guarded
+    def get_label_checks(release_id: str, ctx: Context) -> dict[str, Any]:
+        """릴리스의 라벨 검사 결과: 규칙 검사(unlabelled 라벨 안 한 이미지, duplicate 같은 물체에 박스 둘, class_overlap 한
+        물체에 클래스 둘, rare_class 드문 클래스, tiny 아주 작은 박스, huge 이미지를 거의 덮는 박스)마다 이미지 수, 그리고
+        평가한 모델마다 extra(라벨에 없는 물체) · missed(모델이 못 찾은 라벨) 이미지 수. 이미지는 list_release_items의
+        check=<검사 id>, 또는 suspect=<평가 id> + mistake=extra|missed로 봅니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return qa.summary(db, catalog.get_release(db, release_id))
 
     @mcp.tool(title="라벨링 묶음 목록", annotations=READ_ONLY)
     @guarded

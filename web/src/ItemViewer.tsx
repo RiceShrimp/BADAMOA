@@ -48,6 +48,8 @@ interface Props {
   checkOp?: string;
   /** A part of a labeling set opened to label (fixing from the start) or to review. */
   labeling?: LabelingMode;
+  /** Opened from a label check (검수): its name; the labels it flagged are marked on the image. */
+  qaTitle?: string;
 }
 
 export interface LabelingMode {
@@ -105,6 +107,7 @@ export function ItemViewer({
   onSaved,
   checkOp,
   labeling,
+  qaTitle,
 }: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
@@ -122,6 +125,7 @@ export function ItemViewer({
 
   // ---- a labeling set's part: this image's state in it, and how far the part got
   const [inSet, setInSet] = useState<{ state: SetState; note: string } | null>(null);
+  const [flagged, setFlagged] = useState<{ boxes: number[]; note: string } | null>(null); // what a label check found
   const [progress, setProgress] = useState<{ size: number; states: Record<SetState, number> } | null>(null);
   const refreshProgress = async () => {
     if (!labeling) return;
@@ -231,6 +235,7 @@ export function ItemViewer({
         if (!alive) return;
         setItem(detail);
         setInSet(page.items[0].set ? { state: page.items[0].set.state, note: page.items[0].set.note } : null);
+        setFlagged(page.items[0].qa ? { boxes: page.items[0].qa.boxes, note: page.items[0].qa.note } : null);
         setFull(detail.image_url ? "loading" : "error");
         setRevisionId(detail.revision_id);
         setCompareId(null);
@@ -822,6 +827,22 @@ export function ItemViewer({
   };
 
   const className = (id: number) => classes.find((c) => c.id === id)?.name ?? String(id);
+  /** The labels a check flagged: a thick yellow frame around each (on the version's own labels only). */
+  const drawFlagged = (labels: number[][], indices: number[]) => (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="flagged">
+      {indices.map((i) => {
+        const b = labels[i];
+        if (!b || b.length < 5) return null;
+        const box = { x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h };
+        return (
+          <g key={i}>
+            <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="6" vectorEffect="non-scaling-stroke" />
+            <rect {...box} fill="none" stroke="#ffd400" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+          </g>
+        );
+      })}
+    </svg>
+  );
   /** The model's predictions over the image: dashed, with how sure it was. */
   const drawPredictions = (labels: number[][], scores: number[]) => (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="predictions">
@@ -931,6 +952,7 @@ export function ItemViewer({
                     )}
                     {(showLabels || editing) && r && task !== "classify" && drawBoxes(r)}
                     {showPred && pred?.evaluated && n === 0 && task !== "classify" && drawPredictions(pred.labels, pred.scores)}
+                    {flagged && !editing && n === 0 && r && item && r.id === item.revision_id && drawFlagged(r.boxes, flagged.boxes)}
                     {editing && shapes && fitWidth > 0 && (
                       <EditLayer
                         width={w}
@@ -1021,6 +1043,17 @@ export function ItemViewer({
             <Icon name="x" />
           </button>
         </header>
+
+        {item && qaTitle && (
+          <section className="qa-panel">
+            <div className="eyebrow">검수</div>
+            <div>
+              <strong>{qaTitle}</strong>
+              {flagged?.note && <span className="muted"> · {flagged.note}</span>}
+            </div>
+            {flagged && flagged.boxes.length > 0 && <p className="muted small">해당 라벨을 노란 테두리로 표시했습니다(이 버전의 라벨을 볼 때).</p>}
+          </section>
+        )}
 
         {item && labeling && (
           <section className="labeling-panel">

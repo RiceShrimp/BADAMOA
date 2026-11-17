@@ -259,3 +259,27 @@ class LabelSetItem(Base):
     labelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reviewed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class QaRun(Base):
+    """The label checks of a release were run on these labels (``fingerprint``: its items and revisions)."""
+
+    __tablename__ = "qa_runs"
+
+    release_id: Mapped[str] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class QaResult(Base):
+    """An image a label check flagged: which of its labels (indices in the release's revision) and why."""
+
+    __tablename__ = "qa_results"
+    __table_args__ = (Index("ix_qa_results_check", "release_id", "check", "item_id"),)
+
+    release_id: Mapped[str] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True)
+    check: Mapped[str] = mapped_column(String(24), primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    boxes: Mapped[list[int]] = mapped_column(JSON, default=list)
+    note: Mapped[str] = mapped_column(String(255), default="")

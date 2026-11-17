@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, checks, drafts, originals, overview, purge, services
+from . import catalog, checks, drafts, originals, overview, purge, qa, services
 from . import trash as trash_box
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
@@ -282,6 +282,8 @@ def list_items(
     suspect: str = "",
     label_set: str = "",
     part: int | None = None,
+    check: str = "",
+    mistake: str = "",
     offset: int = 0,
     limit: int = 60,
     _: User = Depends(current_user),
@@ -302,6 +304,8 @@ def list_items(
         suspect=suspect,
         label_set=label_set,
         part=part,
+        check=check,
+        mistake=mistake,
         offset=offset,
         limit=limit,
     )
@@ -413,6 +417,14 @@ def delete_dataset(dataset_id: str, user: User = Depends(admin_user), db: Sessio
 
 
 # ---- likely wrong labels: what evaluated models predicted ---------------------------------
+
+
+@router.get("/releases/{release_id}/qa")
+def label_checks(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """검수: how many images each label check flags (``items?check=<id>``), and the model's view per evaluation."""
+    result = qa.summary(db, catalog.get_release(db, release_id))
+    db.commit()
+    return result
 
 
 @router.get("/releases/{release_id}/checks")

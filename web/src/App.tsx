@@ -7,6 +7,7 @@ import { TRASH_EVENT } from "./catalogTypes";
 import { Home } from "./Home";
 import { Jobs } from "./Jobs";
 import { Labeling } from "./Labeling";
+import { Review } from "./Review";
 import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
@@ -16,7 +17,7 @@ import { Training } from "./Training";
 import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "labeling" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases";
+type Page = "home" | "datasets" | "labeling" | "review" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases";
 
 interface NavItem {
   label: string;
@@ -40,7 +41,8 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     group: "Annotate",
     hint: "라벨",
     items: [
-      { label: "라벨링", icon: "edit", page: "labeling" }, // labeling sets, review included
+      { label: "라벨링", icon: "edit", page: "labeling" }, // labeling sets, with their review
+      { label: "검수", icon: "review", page: "review" }, // finding missing and wrong labels
       { label: "오토라벨", icon: "wand", phase: 3 },
     ],
   },
@@ -279,6 +281,7 @@ function Shell({
           {page === "home" && <Home user={user} nodes={nodes} />}
           {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "labeling" && <Labeling setId={sub} />}
+          {page === "review" && <Review />}
           {page === "training" && <Training runId={sub} arg={arg} />}
           {page === "models" && <Models modelId={sub} isAdmin={isAdmin} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
