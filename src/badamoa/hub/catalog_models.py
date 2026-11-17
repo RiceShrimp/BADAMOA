@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base, utcnow
@@ -207,3 +207,53 @@ class ItemPrediction(Base):
     wrong: Mapped[int] = mapped_column(Integer, default=0)  # missed + extra
     labels: Mapped[list[list[float]]] = mapped_column(JSON, default=list)
     scores: Mapped[list[float]] = mapped_column(JSON, default=list)
+
+
+class LabelSet(Base):
+    """A labeling set: images of a dataset picked to be labelled by people, split into parts of ``part_size``.
+
+    The labels themselves are saved like any fix: as revisions in the dataset's work in progress, which
+    becomes a version when confirmed. The set keeps who does which part and how far each image got.
+    """
+
+    __tablename__ = "label_sets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    release_id: Mapped[str] = mapped_column(String(32))  # the version its images were picked from
+    name: Mapped[str] = mapped_column(String(128))
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    part_size: Mapped[int] = mapped_column(Integer, default=50)
+    review: Mapped[bool] = mapped_column(Boolean, default=True)  # every image is checked by a reviewer
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LabelSetPart(Base):
+    """One part of a set: who labels it and who reviews it."""
+
+    __tablename__ = "label_set_parts"
+
+    set_id: Mapped[str] = mapped_column(ForeignKey("label_sets.id", ondelete="CASCADE"), primary_key=True)
+    part: Mapped[int] = mapped_column(Integer, primary_key=True)
+    assignee: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reviewer: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class LabelSetItem(Base):
+    """An image of a set: its part and place, and how far it got (todo → labelled → approved, or rejected)."""
+
+    __tablename__ = "label_set_items"
+    __table_args__ = (Index("ix_label_set_items_part", "set_id", "part", "position"),)
+
+    set_id: Mapped[str] = mapped_column(ForeignKey("label_sets.id", ondelete="CASCADE"), primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    part: Mapped[int] = mapped_column(Integer)
+    position: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(12), default="todo")  # todo | labelled | approved | rejected
+    note: Mapped[str] = mapped_column(Text, default="")  # why a reviewer sent it back
+    labelled_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    labelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

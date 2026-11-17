@@ -21,6 +21,7 @@ from . import (
     cleanup,
     exports_api,
     install,
+    labeling_api,
     modelops_api,
     registry,
     registry_api,
@@ -124,6 +125,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(catalog_api.router)
     app.include_router(catalog_api.agent_router)
     app.include_router(catalog_api.media_router)
+    app.include_router(labeling_api.router)
     app.include_router(exports_api.router)
     app.include_router(exports_api.agent_router)
     app.include_router(exports_api.media_router)

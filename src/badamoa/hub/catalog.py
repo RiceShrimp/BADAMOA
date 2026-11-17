@@ -23,13 +23,14 @@ from badamoa.core import tasks as task_names
 from badamoa.core.protocol import ImportBegin, ImportChunk
 from badamoa.core.storage import Storage
 
-from . import checks, drafts, services  # these import this module too: each uses the other only when called
+from . import checks, drafts, labeling, services  # these import this module too: each uses the other only when called
 from .catalog_models import (
     Batch,
     Dataset,
     Item,
     ItemPrediction,
     LabelRevision,
+    LabelSetItem,
     LabelSpace,
     Project,
     Release,
@@ -1041,6 +1042,8 @@ def release_view(db: Session, release_id: str) -> dict[str, Any]:
         "siblings": [{"id": r.id, "version": r.version} for r in siblings if r.id != release.id],
         # the dataset's work in progress (fixed labels not yet a version), whichever version is open
         "draft": drafts.draft_info(db, dataset.id),
+        # labels are fixed (and labeling sets made) on the newest version or the work in progress
+        "fixable": not drafts.edit_place(db, release)[1],
     }
 
 
@@ -1077,11 +1080,14 @@ def list_items(
     q: str = "",
     edited: bool = False,
     suspect: str = "",
+    label_set: str = "",
+    part: int | None = None,
     offset: int = 0,
     limit: int = 60,
 ) -> dict[str, Any]:
     """A page of a release's items. ``edited``: only the images the dataset's work in progress changed.
-    ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first."""
+    ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first.
+    ``label_set`` (and ``part``): only a labeling set's images, in the set's order."""
     release = get_release(db, release_id)
     draft = drafts.fixing(db, release)
     if edited and draft is None:
@@ -1097,6 +1103,13 @@ def list_items(
             ItemPrediction, and_(ItemPrediction.op_id == op.id, ItemPrediction.item_id == ReleaseItem.item_id)
         )
         order = [ItemPrediction.wrong.desc(), ItemPrediction.missed.desc(), ReleaseItem.item_id]
+    if label_set:
+        labeling.get_set(db, label_set)
+        joined = and_(LabelSetItem.set_id == label_set, LabelSetItem.item_id == ReleaseItem.item_id)
+        query = query.join(LabelSetItem, joined)
+        if part is not None:
+            query = query.where(LabelSetItem.part == part)
+        order = [LabelSetItem.position]
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = db.execute(query.order_by(*order).offset(max(0, offset)).limit(limit)).all()
     mistakes = (
@@ -1112,6 +1125,7 @@ def list_items(
         else {}
     )
     fixed = drafts.edited_ids(db, draft, [item.id for _, item in rows]) if draft is not None and rows else set()
+    in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
     revisions = {
         rev.id: rev.boxes or []
         for rev in db.scalars(select(LabelRevision).where(LabelRevision.id.in_([m.revision_id for m, _ in rows])))
@@ -1134,6 +1148,8 @@ def list_items(
                 "fixed": item.id in fixed,  # changed in the work in progress
                 # the evaluation's found / missed / extra (sorting by likely wrong labels)
                 **({"check": mistakes[item.id]} if item.id in mistakes else {}),
+                # in a labeling set: how far it got (todo / labelled / approved / rejected) and why it was sent back
+                **({"set": in_set[item.id]} if item.id in in_set else {}),
             }
             for member, item in rows
         ],

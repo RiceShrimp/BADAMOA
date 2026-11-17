@@ -280,6 +280,8 @@ def list_items(
     q: str = "",
     edited: bool = False,
     suspect: str = "",
+    label_set: str = "",
+    part: int | None = None,
     offset: int = 0,
     limit: int = 60,
     _: User = Depends(current_user),
@@ -298,6 +300,8 @@ def list_items(
         q=q,
         edited=edited,
         suspect=suspect,
+        label_set=label_set,
+        part=part,
         offset=offset,
         limit=limit,
     )
@@ -432,6 +436,7 @@ class Labels(BaseModel):
     boxes: list[list[float]]  # [[class, cx, cy, w, h, …], …]; [[class]] for classification; [] for background
     parent_revision_id: int | None = None  # the labels the fix started from: refused if someone saved in between
     force: bool = False  # save over a fix someone else made in between
+    label_set: str = ""  # labelled as part of this labeling set: it counts as done there
 
 
 @router.put("/releases/{release_id}/items/{item_id}/labels")
@@ -440,7 +445,14 @@ def save_labels(
 ) -> dict[str, Any]:
     """Fixed labels of one image, into the dataset's work in progress (made on the first fix)."""
     result = drafts.save_labels(
-        db, user, release_id, item_id, body.boxes, parent_id=body.parent_revision_id, force=body.force
+        db,
+        user,
+        release_id,
+        item_id,
+        body.boxes,
+        parent_id=body.parent_revision_id,
+        force=body.force,
+        label_set=body.label_set,
     )
     db.commit()
     return result

@@ -13,7 +13,8 @@ import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
 import { DraftActions, DraftLine, DraftNotice } from "./DraftBar";
 import { ItemViewer } from "./ItemViewer";
-import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog } from "./ReleaseMaker";
+import { NewSetDialog } from "./Labeling";
+import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog, describeFilter } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
 import { type Job, type NodeInfo, api } from "./api";
 import {
@@ -191,6 +192,7 @@ function ReleaseView({
   const [viewing, setViewing] = useState<number | null>(null);
   const [compareWith, setCompareWith] = useState("");
   const [making, setMaking] = useState<"" | "items" | "classes">("");
+  const [labelingSet, setLabelingSet] = useState(false); // making a labeling set of the filtered images
   const [naming, setNaming] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -432,6 +434,11 @@ function ReleaseView({
         )}
         <span className="muted count">{(items?.total ?? 0).toLocaleString()}개</span>
         <span className="spacer" />
+        {release.fixable && (
+          <button className="ghost-btn" onClick={() => setLabelingSet(true)} title="지금 거른 이미지를 일감으로 나눠 사람에게 맡깁니다">
+            <Icon name="edit" size={13} /> 라벨링 묶음 만들기
+          </button>
+        )}
         {release.status === "ready" && (
           <button className="ghost-btn" onClick={() => setNaming(true)} title="파일 이름에서 사이트 · 카메라를 읽어 채웁니다">
             사이트 · 카메라
@@ -578,6 +585,17 @@ function ReleaseView({
       )}
 
       {exporting && <ExportDialog release={release} task={task} onClose={() => setExporting(false)} />}
+      {labelingSet && (
+        <NewSetDialog
+          release={release}
+          filter={{ ...filter, ...(fixedOnly ? { edited: true } : {}), ...(suspect ? { suspect } : {}) }}
+          filtered={suspect ? (check?.wrong ?? 0) : (items?.total ?? 0)}
+          describe={[describeFilter(filter, release), fixedOnly ? "고친 것만" : "", check ? `${check.model?.name} 평가에서 어긋난 것` : ""]
+            .filter(Boolean)
+            .join(" · ")}
+          onClose={() => setLabelingSet(false)}
+        />
+      )}
       {making && (
         <NewReleaseDialog
           release={release}

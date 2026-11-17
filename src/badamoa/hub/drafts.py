@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, literal, select
 from sqlalchemy.orm import Session, aliased
 
-from . import catalog, services
+from . import catalog, labeling, services
 from .catalog_models import Dataset, LabelRevision, LabelSpace, Release, ReleaseItem, RevisionClass
 from .db import iso, utcnow
 from .models import User
@@ -251,6 +251,7 @@ def save_labels(
     *,
     parent_id: int | None = None,
     force: bool = False,
+    label_set: str = "",
     via: str = "ui",
 ) -> dict[str, Any]:
     """Save a person's labels of one image into the dataset's work in progress (made on the first fix).
@@ -302,7 +303,9 @@ def save_labels(
     draft.stats = {**(draft.stats or {}), "stale": True}
     services.audit(db, user.id, via, "label.edit", draft.id, item=item_id, revision=revision.id, boxes=len(labels))
     db.flush()
+    in_set = labeling.mark_labelled(db, user, label_set, item_id) if label_set else None
     return {
+        **({"set": in_set} if in_set else {}),
         "release_id": draft.id,
         "revision_id": revision.id,
         "state": revision.state,

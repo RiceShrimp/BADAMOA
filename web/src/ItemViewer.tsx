@@ -4,6 +4,9 @@ import {
   type ItemDetail,
   type ItemPage,
   type ItemPredictions,
+  type LabelSetView,
+  SET_STATE_LABEL,
+  type SetState,
   type LabelClass,
   type Revision,
   SPLIT_LABEL,
@@ -43,6 +46,17 @@ interface Props {
   onSaved?: () => void;
   /** An evaluation the images are sorted by: its model's predictions are shown over each image. */
   checkOp?: string;
+  /** A part of a labeling set opened to label (fixing from the start) or to review. */
+  labeling?: LabelingMode;
+}
+
+export interface LabelingMode {
+  setId: string;
+  part: number;
+  mode: "label" | "review";
+  review: boolean;
+  name: string;
+  instructions: string;
 }
 
 interface Saved {
@@ -51,6 +65,7 @@ interface Saved {
   state: string;
   box_count: number;
   edited: number;
+  set?: { item_id: number; state: SetState }; // saved as part of a labeling set
 }
 
 /** Where a label revision came from, in words: "import:coco v1" → "가져오기 · coco v1". */
@@ -89,6 +104,7 @@ export function ItemViewer({
   task = "detect",
   onSaved,
   checkOp,
+  labeling,
 }: Props) {
   const [index, setIndex] = useState(start);
   const [item, setItem] = useState<ItemDetail | null>(null);
@@ -103,6 +119,24 @@ export function ItemViewer({
   const [full, setFull] = useState<"loading" | "ok" | "error">("loading"); // the original image
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
+
+  // ---- a labeling set's part: this image's state in it, and how far the part got
+  const [inSet, setInSet] = useState<{ state: SetState; note: string } | null>(null);
+  const [progress, setProgress] = useState<{ size: number; states: Record<SetState, number> } | null>(null);
+  const refreshProgress = async () => {
+    if (!labeling) return;
+    try {
+      const view = await api<LabelSetView>(`/label-sets/${labeling.setId}`);
+      const part = view.part_list.find((p) => p.part === labeling.part);
+      if (part) setProgress({ size: part.size, states: part.states });
+    } catch {
+      /* the counts wait for the next action */
+    }
+  };
+  useEffect(() => {
+    void refreshProgress();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labeling?.setId, labeling?.part]);
 
   // ---- an evaluated model's predictions for this image (when the grid is sorted by one)
   const [pred, setPred] = useState<ItemPredictions | null>(null);
@@ -126,7 +160,7 @@ export function ItemViewer({
   const [grabbing, setGrabbing] = useState(false);
 
   // ---- fixing labels
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(labeling?.mode === "label"); // labeling: fixing from the first image
   const editingRef = useRef(false);
   editingRef.current = editing;
   const [boxes, setBoxes] = useState<Box[]>([]);
@@ -196,6 +230,7 @@ export function ItemViewer({
         const detail = await api<ItemDetail>(`/releases/${releaseId}/items/${page.items[0].id}`);
         if (!alive) return;
         setItem(detail);
+        setInSet(page.items[0].set ? { state: page.items[0].set.state, note: page.items[0].set.note } : null);
         setFull(detail.image_url ? "loading" : "error");
         setRevisionId(detail.revision_id);
         setCompareId(null);
@@ -350,8 +385,10 @@ export function ItemViewer({
     setSaving(true);
     setNote(null);
     try {
-      const body = { boxes, parent_revision_id: item.edit.revision_id, force };
+      const body = { boxes, parent_revision_id: item.edit.revision_id, force, label_set: labeling?.setId ?? "" };
       const saved = await api<Saved>(`/releases/${releaseId}/items/${item.id}/labels`, { method: "PUT", body });
+      if (saved.set) setInSet((s) => ({ note: s?.note ?? "", state: saved.set!.state }));
+      if (labeling) void refreshProgress();
       const detail = await load(item.id);
       startFrom(detail);
       setRevisionId(saved.revision_id);
@@ -384,6 +421,51 @@ export function ItemViewer({
     } catch (e) {
       setNote({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     }
+  };
+
+  /** Labeling: this image is done (saved if changed; looked at and left as it is otherwise), on to the next. */
+  const finishAndNext = async () => {
+    if (!labeling || !item) return;
+    const startedAs = item.revisions.find((r) => r.id === item.edit.revision_id)?.state;
+    if (dirty || (editing && startedAs === "unlabelled")) {
+      // nothing drawn on an image nobody had labelled: it is background now (looked at, nothing to find)
+      if (!(await save())) return;
+    } else if (inSet?.state !== "approved") {
+      try {
+        const done = await api<{ state: SetState }>(`/label-sets/${labeling.setId}/items/${item.id}/done`, { method: "POST" });
+        setInSet((s) => ({ note: s?.note ?? "", state: done.state }));
+        void refreshProgress();
+        onSaved?.();
+      } catch (e) {
+        setNote({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+    }
+    if (index < total - 1) setIndex(index + 1);
+    else setNote({ kind: "saved", text: "이 일감의 마지막 이미지입니다." });
+  };
+  /** Review: approve this image (with the fix just made, if any), or send it back with a reason. */
+  const reviewItem = async (approve: boolean) => {
+    if (!labeling || !item) return;
+    let reason = "";
+    if (!approve) {
+      reason = window.prompt("돌려보내는 이유 (라벨링한 사람에게 보입니다)", "")?.trim() ?? "";
+      if (!reason) return;
+    }
+    if (dirty && !(await save())) return;
+    try {
+      const done = await api<{ state: SetState; note: string }>(`/label-sets/${labeling.setId}/items/${item.id}/review`, {
+        body: { approve, note: reason },
+      });
+      setInSet({ state: done.state, note: done.note });
+      void refreshProgress();
+      onSaved?.();
+    } catch (e) {
+      setNote({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    if (index < total - 1) setIndex(index + 1);
+    else setNote({ kind: "saved", text: "이 일감의 마지막 이미지입니다." });
   };
 
   const go = async (to: number) => {
@@ -511,6 +593,11 @@ export function ItemViewer({
         closeSketch();
         return;
       }
+      if (e.key === "Enter" && labeling?.mode === "label") {
+        e.preventDefault();
+        void finishAndNext();
+        return;
+      }
       if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         if (sketch.length) setSketch(sketch.slice(0, -1));
@@ -543,6 +630,14 @@ export function ItemViewer({
       }
     }
     if (mod) return;
+    if (labeling?.mode === "review" && (key === "a" || key === "r")) {
+      void reviewItem(key === "a");
+      return;
+    }
+    if (labeling?.mode === "label" && e.key === "Enter") {
+      void finishAndNext();
+      return;
+    }
     if (e.key === "Escape") close();
     else if (e.key === "ArrowRight") void go(index + 1);
     else if (e.key === "ArrowLeft") void go(index - 1);
@@ -926,6 +1021,47 @@ export function ItemViewer({
             <Icon name="x" />
           </button>
         </header>
+
+        {item && labeling && (
+          <section className="labeling-panel">
+            <div className="eyebrow">
+              {labeling.mode === "review" ? "검수" : "라벨링"} · {labeling.name} · 일감 {labeling.part + 1}
+            </div>
+            {progress && (
+              <div className="small">
+                {labeling.review
+                  ? `승인 ${progress.states.approved ?? 0} · 검수 대기 ${progress.states.labelled ?? 0} · 돌려받음 ${progress.states.rejected ?? 0} · 남음 ${progress.states.todo ?? 0}`
+                  : `끝남 ${(progress.states.approved ?? 0) + (progress.states.labelled ?? 0)} / ${progress.size}`}
+              </div>
+            )}
+            {inSet && (
+              <div>
+                이 이미지: <span className={`tag set-tag set-${inSet.state}`}>{SET_STATE_LABEL[inSet.state]}</span>
+              </div>
+            )}
+            {inSet?.note && <div className="notice small">돌려받은 이유: {inSet.note}</div>}
+            {labeling.instructions && (
+              <details className="instructions" open={labeling.mode === "label"}>
+                <summary>지시문</summary>
+                <p className="note small">{labeling.instructions}</p>
+              </details>
+            )}
+            {labeling.mode === "label" ? (
+              <button className="primary" onClick={() => void finishAndNext()} disabled={saving}>
+                완료하고 다음 <kbd>Enter</kbd>
+              </button>
+            ) : (
+              <div className="row-actions">
+                <button className="primary" onClick={() => void reviewItem(true)} disabled={saving}>
+                  승인 <kbd>A</kbd>
+                </button>
+                <button className="danger" onClick={() => void reviewItem(false)} disabled={saving}>
+                  돌려보내기 <kbd>R</kbd>
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         {item && !editing && (
           <section className="edit-entry">

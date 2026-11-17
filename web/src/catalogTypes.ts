@@ -79,6 +79,7 @@ export interface ReleaseInfo {
   stats: ReleaseStats;
   siblings: { id: string; version: string }[];
   draft: DraftInfo | null; // the dataset's work in progress, whichever version is open
+  fixable: boolean; // labels are fixed (and labeling sets made) here: the newest version or the work in progress
 }
 
 export interface GridItem {
@@ -93,6 +94,48 @@ export interface GridItem {
   boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
   fixed?: boolean; // changed in the work in progress
   check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
+  set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
+}
+
+export type SetState = "todo" | "labelled" | "approved" | "rejected";
+export const SET_STATE_LABEL: Record<SetState, string> = { todo: "할 일", labelled: "라벨함", approved: "승인", rejected: "돌려받음" };
+export type SetColumn = "unassigned" | "labeling" | "review" | "done";
+
+/** A labeling set as listed. */
+export interface LabelSetSummary {
+  id: string;
+  name: string;
+  project_id: string;
+  dataset: { id: string; name: string } | null;
+  release: { id: string; version: string } | null;
+  review: boolean;
+  part_size: number;
+  items: number;
+  states: Record<SetState, number>;
+  parts: number;
+  columns: Record<SetColumn, number>;
+  mine: number; // parts given to the viewer (to label or review)
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface LabelSetPart {
+  part: number;
+  size: number;
+  states: Record<SetState, number>;
+  assignee: { id: string; name: string } | null;
+  reviewer: { id: string; name: string } | null;
+  column: SetColumn;
+  next_label: number | null; // index in the part of the first image to label (or sent back)
+  next_review: number | null;
+}
+
+export interface LabelSetView extends LabelSetSummary {
+  instructions: string;
+  open_release_id: string | null; // where its images are labelled: the work in progress or the newest version
+  people: { id: string; name: string }[];
+  part_list: LabelSetPart[];
+  me: string;
 }
 
 /** An evaluation that can sort a version's images by likely wrong labels. */

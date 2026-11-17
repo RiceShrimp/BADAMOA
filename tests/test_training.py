@@ -503,6 +503,12 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     assert seen["evaluated"] and seen["labels"] == [[0, 0.5, 0.5, 0.2, 0.2]] and seen["scores"] == [0.9]
     assert seen["missed"] == 2 and seen["model"]["id"] == model_id
     assert hub.get(f"/api/releases/{release['id']}/items", params={"suspect": "nope"}).status_code == 404
+    # a labeling set of the images it got wrong: to check those labels
+    recheck = {"release_id": release["id"], "name": "다시 보기", "filter": {"suspect": evaluation["id"]}}
+    made = hub.post("/api/label-sets", json=recheck).json()
+    assert made["items"] == 1
+    in_set = hub.get(f"/api/releases/{release['id']}/items", params={"label_set": made["id"]}).json()["items"]
+    assert [i["id"] for i in in_set] == [worst_id]
 
     # ---- export: the file comes back and can be downloaded
     exported = finished(hub.post(f"/api/models/{model_id}/export", json={"format": "onnx"}).json())

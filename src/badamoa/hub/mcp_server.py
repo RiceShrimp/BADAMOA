@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, checks, drafts, gpus, lineage, registry, resources, services, sweeps, training
+from . import catalog, checks, drafts, gpus, labeling, lineage, registry, resources, services, sweeps, training
 from .deps import Hub
 from .install import join_commands
 from .models import User
@@ -394,6 +394,8 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         q: str = "",
         edited: bool = False,
         suspect: str = "",
+        label_set: str = "",
+        part: int | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -408,8 +410,47 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         with hub.db.session() as db:
             return catalog.list_items(
                 db, hub.settings, release_id, split=split, state=state, class_id=class_id, q=q, edited=edited,
-                suspect=suspect, offset=offset, limit=limit,
+                suspect=suspect, label_set=label_set, part=part, offset=offset, limit=limit,
             )
+
+    @mcp.tool(title="라벨링 묶음 목록", annotations=READ_ONLY)
+    @guarded
+    def list_label_sets(ctx: Context, project_id: str = "") -> list[dict[str, Any]]:
+        """라벨링 묶음들: 이미지 수, 상태별 수(todo · labelled · approved · rejected), 일감 수와 보드 칸별 수."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            return labeling.list_sets(db, user, project_id)
+
+    @mcp.tool(title="라벨링 묶음 조회", annotations=READ_ONLY)
+    @guarded
+    def get_label_set(set_id: str, ctx: Context) -> dict[str, Any]:
+        """라벨링 묶음의 일감마다 맡은 사람 · 검수자 · 상태별 수 · 보드 칸(unassigned · labeling · review · done)과
+        라벨링할 곳(open_release_id). 일감의 이미지는 list_release_items(open_release_id, label_set=…)로 봅니다."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            return labeling.set_view(db, user, set_id)
+
+    @mcp.tool(title="라벨링 묶음 만들기", annotations=WRITE)
+    @guarded
+    def create_label_set(
+        release_id: str,
+        name: str,
+        ctx: Context,
+        filter: dict[str, Any] | None = None,
+        part_size: int = 50,
+        review: bool = True,
+        instructions: str = "",
+    ) -> dict[str, Any]:
+        """최신 버전(또는 작업 중)의 이미지로 라벨링 묶음을 만들어 part_size장씩 일감으로 나눕니다. filter: 버전 화면의
+        필터 {"split", "state"(예: "unlabelled"), "class_id", "site", "camera", "q"}와 "edited"(작업 중에서 고친 것),
+        "suspect"(평가 id: 그 평가에서 어긋난 이미지, 많이 어긋난 순). 라벨은 데이터셋의 작업 중에 모입니다."""
+        user = user_of(ctx)
+        with hub.db.session() as db:
+            found = labeling.create_set(
+                db, user, release_id=release_id, name=name, instructions=instructions, match=filter,
+                part_size=part_size, review=review, via="mcp",
+            )
+            return labeling.set_view(db, user, found.id)
 
     @mcp.tool(title="라벨 의심 평가 목록", annotations=READ_ONLY)
     @guarded
