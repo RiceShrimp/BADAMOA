@@ -56,6 +56,9 @@ def _job_label(db: Session, job: Job, now: datetime) -> dict[str, Any]:
     return {"label": spec.title if spec else job.type, "href": "#/jobs"}
 
 
+MIN_DISK_GB = 2  # smaller partitions (EFI, boot) are not worth a meter
+
+
 def board(db: Session, settings: HubSettings) -> dict[str, Any]:
     now = utcnow()
     nodes = db.scalars(select(Node).order_by(Node.is_local.desc(), Node.created_at)).all()
@@ -121,6 +124,23 @@ def board(db: Session, settings: HubSettings) -> dict[str, Any]:
                 "disk": {"mount": fullest.get("mount"), "pct": fullest.get("pct"), "free_gb": fullest.get("free_gb")}
                 if fullest
                 else None,
+                # What the server has besides GPUs, shown beside them: processor, memory, every disk.
+                "cpu": {
+                    "pct": metrics.get("cpu_pct"),
+                    "cores": (node.info or {}).get("cpu_count"),
+                    "model": (node.info or {}).get("cpu_model"),
+                },
+                "memory": {
+                    "used_gb": round(metrics["memory_used_mb"] / 1024, 1),
+                    "total_gb": round(metrics["memory_total_mb"] / 1024, 1),
+                }
+                if metrics.get("memory_used_mb") is not None and metrics.get("memory_total_mb")
+                else None,
+                "disks": [
+                    {k: d.get(k) for k in ("mount", "total_gb", "free_gb", "pct")}
+                    for d in sorted(disks, key=lambda d: str(d.get("mount")))
+                    if (d.get("total_gb") or 0) >= MIN_DISK_GB
+                ],
                 "last_seen_at": iso(node.last_seen_at),
                 "gpus": gpus,
             }

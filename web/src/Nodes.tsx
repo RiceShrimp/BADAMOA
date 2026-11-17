@@ -49,6 +49,9 @@ export interface BoardNode {
   cpu_pct: number | null;
   memory_pct: number | null;
   disk: { mount: string; pct: number; free_gb: number } | null;
+  cpu?: { pct: number | null; cores: number | null; model: string | null };
+  memory?: { used_gb: number; total_gb: number } | null;
+  disks?: { mount: string; total_gb: number; free_gb: number; pct: number }[];
   last_seen_at: string | null;
   gpus: BoardGpu[];
 }
@@ -248,11 +251,6 @@ function ServerRow({
     onChanged();
   };
   const online = node.status === "online";
-  const facts = [
-    node.cpu_pct != null ? `CPU ${Math.round(node.cpu_pct)}%` : null,
-    node.memory_pct != null ? `RAM ${node.memory_pct}%` : null,
-  ].filter(Boolean);
-  const diskWarn = node.disk && node.disk.pct >= 90;
   return (
     <div className={`board-row ${online ? "" : "away"}`}>
       <div className="board-server">
@@ -264,9 +262,7 @@ function ServerRow({
           {node.gpus.length > 0 ? `${node.gpu_name ?? "GPU"} × ${node.gpus.length}` : "GPU 없음"}
           {node.is_local ? " · Hub" : ""}
         </div>
-        {online ? (
-          <div className="muted small">{facts.join(" · ")}</div>
-        ) : (
+        {!online && (
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
         )}
         {online && !node.enabled && <div className="small warn-text">작업 받지 않음</div>}
@@ -287,11 +283,6 @@ function ServerRow({
             )}
           </div>
         )}
-        {diskWarn && (
-          <div className="small bad-text">
-            {node.disk!.mount} {Math.round(node.disk!.pct)}% · {Math.round(node.disk!.free_gb)} GB 남음
-          </div>
-        )}
         {isAdmin && (
           <div className="row-links">
             <button className="link small" onClick={onEdit}>
@@ -303,12 +294,72 @@ function ServerRow({
           </div>
         )}
       </div>
-      <div className="board-gpus">
-        {node.gpus.length === 0 && <div className="muted small board-nogpu">이 서버는 CPU 작업만 받습니다.</div>}
-        {node.gpus.map((gpu) => (
-          <GpuTile key={gpu.index} gpu={gpu} />
-        ))}
+      <div className="board-res">
+        <SystemMeters node={node} />
+        <div className="board-gpus">
+          {node.gpus.length === 0 && <div className="muted small board-nogpu">이 서버는 CPU 작업만 받습니다.</div>}
+          {node.gpus.map((gpu) => (
+            <GpuTile key={gpu.index} gpu={gpu} />
+          ))}
+        </div>
       </div>
+    </div>
+  );
+}
+
+/** "931 GB" / "1.8 TB" */
+function capacity(gbValue: number): string {
+  return gbValue >= 1000 ? `${(gbValue / 1024).toFixed(1)} TB` : `${Math.round(gbValue)} GB`;
+}
+
+/** Processor, memory and every disk of a server, each a thin bar: what is left at a glance. */
+function SystemMeters({ node }: { node: BoardNode }) {
+  const meters: { key: string; label: string; value: string; pct: number | null; title?: string }[] = [];
+  const cpu = node.cpu;
+  if (cpu && (cpu.pct != null || cpu.cores)) {
+    meters.push({
+      key: "cpu",
+      label: "CPU",
+      value: [cpu.pct != null ? `${Math.round(cpu.pct)}%` : null, cpu.cores ? `${cpu.cores}코어` : null].filter(Boolean).join(" · "),
+      pct: cpu.pct,
+      title: cpu.model ?? undefined,
+    });
+  }
+  if (node.memory) {
+    const { used_gb, total_gb } = node.memory;
+    meters.push({
+      key: "memory",
+      label: "메모리",
+      value: `${used_gb.toFixed(1)} / ${total_gb.toFixed(1)} GB`,
+      pct: total_gb ? (used_gb / total_gb) * 100 : null,
+    });
+  }
+  for (const d of node.disks ?? []) {
+    meters.push({
+      key: `disk:${d.mount}`,
+      label: d.mount,
+      value: `${capacity(d.free_gb)} 남음 / ${capacity(d.total_gb)}`,
+      pct: d.pct,
+      title: `디스크 ${d.mount} · ${Math.round(d.pct)}% 사용`,
+    });
+  }
+  if (meters.length === 0) return null;
+  return (
+    <div className="board-sys">
+      {meters.map((m) => {
+        const level = m.pct == null ? "" : m.pct >= 90 ? "bad" : m.pct >= 75 ? "warn" : "";
+        return (
+          <div key={m.key} className={`sys-meter ${level}`} title={m.title}>
+            <div className="sys-line">
+              <span className="sys-label">{m.label}</span>
+              <span className="num">{m.value}</span>
+            </div>
+            <div className="sys-bar">
+              <i style={{ width: `${Math.min(100, Math.max(0, m.pct ?? 0))}%` }} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

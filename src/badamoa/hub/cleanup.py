@@ -2,8 +2,8 @@
 
 Three kinds of things can go, each only when it is safe to:
 
-    unreferenced  files of runs, models and test images that were deleted, and files nothing
-                  records (an upload never used): always, a day after they were written
+    unreferenced  files of runs, models and test images removed from the trash for good, and
+                  files nothing records (an upload never used): always, a day after they were written
     outputs       the files runs and model jobs produced, older than ``outputs_days``
                   (0 = keep for ever). Metrics, logs and the models themselves stay; runs whose
                   model has an alias, and runs tagged ``keep`` or ``보관``, are left alone.
@@ -11,8 +11,8 @@ Three kinds of things can go, each only when it is safe to:
                   (such a run can then no longer be continued)
 
 The Hub runs this every few hours with the saved policy; an admin can look at what it would
-remove and run it now from the storage card in Settings. The same pass empties the trash of
-projects and versions deleted more than ``trash_days`` ago (``purge.py``), and the nodes learn
+remove and run it now from the storage card in Settings. The same pass removes for good what went
+to the trash more than ``trash_days`` ago (``purge.py``); until then the trash keeps every file. The nodes learn
 ``workdir_days`` from their heartbeat to remove old work folders (``node/workdirs.py``).
 """
 
@@ -41,7 +41,7 @@ from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, RunFile, Tag, Template
 
 POLICY_KEY = "storage.policy"
-# trash_days: deleted projects and versions are removed for good after this long (0: until emptied by hand).
+# trash_days: what is in the trash is removed for good after this long (0: until emptied by hand).
 # workdir_days: nodes remove work folders runs left behind (failed or stopped) after this long.
 DEFAULT_POLICY = {"outputs_days": 0, "checkpoint_days": 0, "trash_days": 0, "workdir_days": 30}
 GRACE_S = 24 * 3600  # a younger file may be on its way to being recorded (an upload, an artifact in flight)
@@ -63,8 +63,9 @@ def scheduled(database: Any, settings: HubSettings) -> dict[str, Any] | None:
             days = get_policy(db)["trash_days"]
             if days > 0:
                 emptied = purge.empty_trash(db, settings, None, older_than_days=days, via="system")
-                if emptied["projects"] or emptied["releases"]:
-                    log.info("trash: %d projects, %d versions removed", emptied["projects"], emptied["releases"])
+                gone = {kind: emptied[kind] for kind in purge.KINDS if emptied[kind]}
+                if gone:
+                    log.info("trash: removed %s", ", ".join(f"{n} {kind}" for kind, n in gone.items()))
         with database.session() as db:
             report = cleanup(db, settings, apply=True)
         if report["removed"]["files"]:
@@ -181,19 +182,16 @@ def live_blobs(
     """
     live: set[str] = set()
     live.update(k for k in db.scalars(select(Item.thumb_key)) if k)
+    # Records in the trash count: their files stay until the trash lets them go (purge.py).
     live.update(b for b in db.scalars(select(Template.blob)) if b)  # every version: old runs may run again
-    live.update(db.scalars(select(ModelVersion.blob).where(ModelVersion.deleted_at.is_(None))))
-    deleted_runs = set(db.scalars(select(Run.id).where(Run.deleted_at.is_not(None))))
-    for file_id, run_id, blob in db.execute(select(RunFile.id, RunFile.run_id, RunFile.blob)):
-        if run_id not in deleted_runs and file_id not in without_files:
+    live.update(db.scalars(select(ModelVersion.blob)))
+    for file_id, blob in db.execute(select(RunFile.id, RunFile.blob)):
+        if file_id not in without_files:
             live.add(blob)
-    for run_id, checkpoint in db.execute(select(Run.id, Run.checkpoint).where(Run.deleted_at.is_(None))):
+    for run_id, checkpoint in db.execute(select(Run.id, Run.checkpoint)):
         if (checkpoint or {}).get("blob") and run_id not in without_checkpoints:
             live.add(checkpoint["blob"])
-    deleted_models = set(db.scalars(select(ModelVersion.id).where(ModelVersion.deleted_at.is_not(None))))
     for op in db.scalars(select(ModelJob)):
-        if op.model_id in deleted_models:
-            continue
         if op.id not in without_ops:
             live.update(f["blob"] for f in op.files or [] if f.get("blob"))
         live.update(i["blob"] for i in (op.params or {}).get("images") or [] if i.get("blob"))

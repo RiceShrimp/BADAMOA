@@ -186,6 +186,18 @@ def delete_template(db: Session, user: User, template_id: str) -> None:
     services.audit(db, user.id, "api", "template.delete", row.id, name=row.name)
 
 
+def restore_template(db: Session, user: User, template_id: str) -> Template:
+    """Back on the list from the trash, every version of it."""
+    services.require_admin(user)
+    row = db.get(Template, template_id)
+    if row is None or row.deleted_at is None or row.builtin:
+        raise ServiceError(404, "휴지통에 그 모델 종류가 없습니다.")
+    for version in db.scalars(select(Template).where(Template.name == row.name, Template.deleted_at.is_not(None))):
+        version.deleted_at = None
+    services.audit(db, user.id, "api", "template.restore", row.id, name=row.name)
+    return row
+
+
 # ---- environments ------------------------------------------------------------------
 
 
@@ -395,11 +407,39 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
             except OSError:
                 pass  # removed meanwhile
     database = sum(p.stat().st_size for p in settings.home.glob("hub.db*") if p.is_file())
-    kept = ModelVersion.deleted_at.is_(None)
-    models = int(db.scalar(select(func.coalesce(func.sum(ModelVersion.bytes), 0)).where(kept)) or 0)
-    outputs = int(db.scalar(select(func.coalesce(func.sum(RunFile.bytes), 0))) or 0)
-    outputs += sum(int(f.get("bytes") or 0) for op in db.scalars(select(ModelJob)) for f in op.files or [])
-    checkpoints = sum(int((c or {}).get("bytes") or 0) for c in db.scalars(select(Run.checkpoint)))
+    # What only the trash holds: deleted runs and models, and those of deleted projects.
+    gone = set(db.scalars(select(Project.id).where(Project.deleted_at.is_not(None))))
+    models = outputs = checkpoints = trash = 0
+    binned_models: set[str] = set()
+    for model_id, project_id, deleted_at, size in db.execute(
+        select(ModelVersion.id, ModelVersion.project_id, ModelVersion.deleted_at, ModelVersion.bytes)
+    ):
+        if deleted_at is not None or project_id in gone:
+            binned_models.add(model_id)
+            trash += size or 0
+        else:
+            models += size or 0
+    binned_runs: set[str] = set()
+    for run_id, project_id, deleted_at, checkpoint in db.execute(
+        select(Run.id, Run.project_id, Run.deleted_at, Run.checkpoint)
+    ):
+        size = int((checkpoint or {}).get("bytes") or 0)
+        if deleted_at is not None or project_id in gone:
+            binned_runs.add(run_id)
+            trash += size
+        else:
+            checkpoints += size
+    for run_id, size in db.execute(select(RunFile.run_id, RunFile.bytes)):
+        if run_id in binned_runs:
+            trash += size or 0
+        else:
+            outputs += size or 0
+    for op in db.scalars(select(ModelJob)):
+        size = sum(int(f.get("bytes") or 0) for f in op.files or [])
+        if op.model_id in binned_models:
+            trash += size
+        else:
+            outputs += size
     disk = shutil.disk_usage(settings.home)
     return {
         "policy": cleanup.get_policy(db),
@@ -414,7 +454,8 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
             "models": models,
             "outputs": outputs,
             "checkpoints": checkpoints,
-            "other": max(0, stored - models - outputs - checkpoints) + database,
+            "trash": trash,
+            "other": max(0, stored - models - outputs - checkpoints - trash) + database,
         },
     }
 

@@ -426,6 +426,19 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "yolo-seg", "classify", "torchvision"]
     assert hub.get(f"/api/runs/{run['id']}").json()["template"]["title"] == "My Detector"  # the record stays
 
+    # ---- in the trash with every version: back on the list, then gone for good
+    (binned,) = hub.get("/api/trash").json()["templates"]  # built-in ones are not in the trash
+    assert (binned["title"], binned["versions"], binned["runs"]) == ("My Detector", ["0.1.0", "0.2.0"], 3)
+    assert hub.post(f"/api/templates/{binned['id']}/restore").status_code == 200
+    back = next(t for t in hub.get("/api/templates").json() if t["name"] == "my-detector")
+    assert back["versions"] == 2 and hub.get("/api/trash").json()["templates"] == []
+    assert hub.delete(f"/api/templates/{back['id']}").status_code == 200
+    gone = hub.post("/api/trash/empty", json={"templates": [binned["id"]]}).json()
+    assert gone["templates"] == 1 and gone["files"] == 2  # the two bundles
+    assert hub.get("/api/trash").json()["templates"] == []
+    assert hub.get(f"/api/runs/{run['id']}").json()["template"]["title"] == "My Detector"  # still readable
+    assert hub.post(f"/api/runs/{run['id']}/rerun").status_code == 404  # but it cannot run again
+
 
 def test_registered_environment_and_project_default(hub, release):
     # An environment that exists on the server already: here, the Python running the tests.

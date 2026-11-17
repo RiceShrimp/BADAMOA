@@ -65,6 +65,13 @@ def delete_template(template_id: str, user: User = Depends(admin_user), db: Sess
     return {"ok": True}
 
 
+@router.post("/templates/{template_id}/restore")
+def restore_template(template_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
+    row = registry.restore_template(db, user, template_id)
+    db.commit()
+    return {"id": row.id, "name": row.name, "note": ""}
+
+
 # ---- environments --------------------------------------------------------------------
 
 
@@ -154,7 +161,7 @@ def storage(
 class StoragePolicy(BaseModel):
     outputs_days: int | None = None  # 0: keep for ever; left out: as it is
     checkpoint_days: int | None = None
-    trash_days: int | None = None  # deleted projects and versions, removed for good after this long
+    trash_days: int | None = None  # what is in the trash, removed for good after this long
     workdir_days: int | None = None  # work folders runs left on the nodes
 
 

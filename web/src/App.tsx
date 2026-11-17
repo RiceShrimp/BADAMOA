@@ -1,5 +1,5 @@
 import { ImportTray } from "./Imports";
-import { type FormEvent, Fragment, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Agents } from "./Agents";
 import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./api";
 import { Datasets } from "./Datasets";
@@ -12,9 +12,10 @@ import { Nodes } from "./Nodes";
 import { ReleaseNotes, hasUnseenRelease } from "./ReleaseNotes";
 import { Settings } from "./Settings";
 import { Training } from "./Training";
+import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings";
+type Page = "home" | "datasets" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash";
 
 interface NavItem {
   label: string;
@@ -68,11 +69,14 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
       { label: "설정", icon: "settings", page: "settings" },
     ],
   },
+  // Whatever was deleted (data, runs, models, templates), one click away from every screen.
+  { items: [{ label: "휴지통", icon: "trash", page: "trash" }] },
 ];
 
 const PAGES = NAV.flatMap((g) => g.items.filter((i) => i.page).map((i) => ({ ...i, group: g.group })));
 
 function pageFromHash(): Page {
+  if (window.location.hash.startsWith("#/datasets/trash")) window.history.replaceState(null, "", "#/trash"); // its old place
   const id = window.location.hash.replace("#/", "").split("/")[0];
   return (PAGES.find((p) => p.page === id)?.page ?? "home") as Page;
 }
@@ -166,7 +170,6 @@ function Shell({
     return () => document.removeEventListener("visibilitychange", back);
   }, [recheck]);
   const updated = running && version && running.version !== version ? running.version : null;
-  const onTrash = page === "datasets" && sub === "trash";
   const current = PAGES.find((p) => p.page === page);
   const online = nodes?.filter((n) => n.status === "online").length ?? 0;
   const isAdmin = user.role === "admin";
@@ -191,27 +194,16 @@ function Shell({
                 </div>
               )}
               {section.items.map((item) =>
-                item.page === "datasets" ? (
-                  // The trash sits under 데이터셋, one click away from every screen.
-                  <Fragment key={item.label}>
-                    <a href="#/datasets" className={`nav-item ${page === "datasets" && !onTrash ? "active" : ""}`}>
-                      <Icon name={item.icon} />
-                      {item.label}
-                    </a>
-                    <a
-                      href="#/datasets/trash"
-                      className={`nav-item nav-sub ${onTrash ? "active" : ""}`}
-                      title="지운 프로젝트와 버전을 되살리거나 완전히 지웁니다"
-                    >
-                      <Icon name="trash" size={14} />
-                      휴지통
-                      {(binned?.total ?? 0) > 0 && <span className="nav-count">{binned?.total}</span>}
-                    </a>
-                  </Fragment>
-                ) : item.page ? (
-                  <a key={item.label} href={`#/${item.page}`} className={`nav-item ${page === item.page ? "active" : ""}`}>
+                item.page ? (
+                  <a
+                    key={item.label}
+                    href={`#/${item.page}`}
+                    className={`nav-item ${page === item.page ? "active" : ""}`}
+                    title={item.page === "trash" ? "지운 것을 되살리거나 완전히 지웁니다" : undefined}
+                  >
                     <Icon name={item.icon} />
                     {item.label}
+                    {item.page === "trash" && (binned?.total ?? 0) > 0 && <span className="nav-count">{binned?.total}</span>}
                   </a>
                 ) : (
                   <div
@@ -291,6 +283,7 @@ function Shell({
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}
           {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}
+          {page === "trash" && <TrashPage isAdmin={isAdmin} />}
         </main>
         {notesOpen && <ReleaseNotes version={version} onClose={() => setNotesOpen(false)} />}
       </div>

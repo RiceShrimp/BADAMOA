@@ -766,20 +766,19 @@ def _set_tags(db: Session, project_id: str, kind: str, object_id: str, tags: lis
     return wanted
 
 
-def _drop_tags(db: Session, kind: str, object_id: str) -> None:
-    for row in db.scalars(select(Tag).where(Tag.kind == kind, Tag.object_id == object_id)):
-        db.delete(row)
-
-
 def project_tags(db: Session, project_id: str) -> dict[str, list[dict[str, Any]]]:
     """Every tag used in a project, most used first: what the screen offers to filter by."""
     catalog.get_project(db, project_id)
     found: dict[str, list[dict[str, Any]]] = {"runs": [], "models": []}
     count = func.count(Tag.id)
+    binned = select(Run.id).where(Run.deleted_at.is_not(None)).union(
+        select(ModelVersion.id).where(ModelVersion.deleted_at.is_not(None))
+    )
     rows = db.execute(
-        select(Tag.kind, Tag.name, count).where(Tag.project_id == project_id).group_by(Tag.kind, Tag.name).order_by(
-            count.desc(), Tag.name
-        )
+        select(Tag.kind, Tag.name, count)
+        .where(Tag.project_id == project_id, Tag.object_id.not_in(binned))
+        .group_by(Tag.kind, Tag.name)
+        .order_by(count.desc(), Tag.name)
     )
     for kind, name, n in rows:
         found["runs" if kind == "run" else "models"].append({"name": name, "count": n})
@@ -821,7 +820,8 @@ def update_run(
     return run
 
 
-def delete_run(db: Session, user: User, run_id: str, storage: Storage | None = None) -> None:
+def delete_run(db: Session, user: User, run_id: str) -> None:
+    """To the trash, with its metrics, files, checkpoint and tags: restoring brings it all back."""
     run = get_run(db, run_id)
     job = db.get(Job, run.job_id) if run.job_id else None
     if job is not None and job.status not in TERMINAL_STATUSES:
@@ -829,12 +829,37 @@ def delete_run(db: Session, user: User, run_id: str, storage: Storage | None = N
     if user.role != "admin" and run.created_by != user.id:
         raise ServiceError(403, "자신이 시작한 학습만 지울 수 있습니다.")
     run.deleted_at = utcnow()
-    _drop_tags(db, "run", run.id)
-    if run.checkpoint:  # nobody can resume a deleted run: its checkpoint goes too
-        spent, run.checkpoint = run.checkpoint.get("blob", ""), {}
-        db.flush()
-        _drop_blob(db, storage, spent)
     services.audit(db, user.id, "api", "run.delete", run.id, name=run.name)
+
+
+def restore_run(db: Session, user: User, run_id: str, storage: Storage) -> dict[str, Any]:
+    """Out of the trash. A run of the same name started meanwhile keeps its name; this one gets a number."""
+    run = db.get(Run, run_id)
+    if run is None or run.deleted_at is None:
+        raise ServiceError(404, "휴지통에 그 학습이 없습니다.")
+    catalog.get_project(db, run.project_id)  # a run in a deleted project comes back with its project
+    if user.role != "admin" and run.created_by != user.id:
+        raise ServiceError(403, "자신이 시작한 학습이나 관리자만 되살릴 수 있습니다.")
+    notes = []
+    base, name, n = run.name[:150], run.name, 2
+    while db.scalar(
+        select(Run.id).where(Run.project_id == run.project_id, Run.name == name, Run.deleted_at.is_(None)).limit(1)
+    ):
+        name, n = f"{base}-{n}", n + 1
+    if name != run.name:
+        notes.append(f"같은 이름의 학습이 있어 이름을 바꿨습니다: {name}")
+        run.name = name
+    # Deleted before the trash kept files: what the cleanup already removed cannot come back.
+    gone = [f for f in db.scalars(select(RunFile).where(RunFile.run_id == run.id)) if not storage.has_blob(f.blob)]
+    for f in gone:
+        db.delete(f)
+    if gone:
+        notes.append(f"파일 {len(gone)}개는 이미 지워져 함께 되살리지 못했습니다.")
+    if (run.checkpoint or {}).get("blob") and not storage.has_blob(run.checkpoint["blob"]):
+        run.checkpoint = {}
+    run.deleted_at = None
+    services.audit(db, user.id, "api", "run.restore", run.id, name=run.name)
+    return {"id": run.id, "name": run.name, "note": " ".join(notes)}
 
 
 # ---- models ---------------------------------------------------------------------------
@@ -968,9 +993,22 @@ def set_alias(db: Session, user: User, model_id: str, alias: str, via: str = "ap
 
 
 def delete_model(db: Session, user: User, model_id: str) -> None:
+    """To the trash, with its weights, evaluations and tags. Its aliases come off (they point at a listed version)."""
     services.require_admin(user)
     model = get_model(db, model_id)
     model.deleted_at = utcnow()
     _put_aliases(model, [])
-    _drop_tags(db, "model", model.id)
     services.audit(db, user.id, "api", "model.delete", model.id, name=model.name, version=model.version)
+
+
+def restore_model(db: Session, user: User, model_id: str, storage: Storage) -> dict[str, Any]:
+    services.require_admin(user)
+    model = db.get(ModelVersion, model_id)
+    if model is None or model.deleted_at is None:
+        raise ServiceError(404, "휴지통에 그 모델이 없습니다.")
+    catalog.get_project(db, model.project_id)  # a model in a deleted project comes back with its project
+    if not storage.has_blob(model.blob):
+        raise ServiceError(409, "모델 파일이 이미 지워져 되살릴 수 없습니다. 휴지통에서 완전히 지우세요.")
+    model.deleted_at = None
+    services.audit(db, user.id, "api", "model.restore", model.id, name=model.name, version=model.version)
+    return {"id": model.id, "name": model.name, "version": model.version, "note": ""}

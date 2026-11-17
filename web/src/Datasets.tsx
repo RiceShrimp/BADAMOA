@@ -6,7 +6,6 @@ import {
   ProjectPage,
   SPLIT_COLOR,
   Shot,
-  TrashPage,
   rememberProject,
   useFolders,
 } from "./DataBoard";
@@ -91,8 +90,7 @@ export function Datasets({ sub, arg, isAdmin }: { sub?: string; arg?: string; is
 
   let body;
   if (!sub) body = <ProjectBoard onNewProject={newProject} />;
-  else if (sub === "trash") body = <TrashPage isAdmin={isAdmin} />;
-  else if (sub === "project" && arg) body = <ProjectPage projectId={arg} onImport={() => setImporting(arg)} />;
+  else if (sub === "project" && arg) body = <ProjectPage projectId={arg} onImport={() => setImporting(arg)} isAdmin={isAdmin} />;
   else {
     const [tab, query = ""] = (arg ?? "images").split("?");
     body = <ReleaseView key={sub} releaseId={sub} tab={tab || "images"} query={query} isAdmin={isAdmin} projects={projects ?? []} />;

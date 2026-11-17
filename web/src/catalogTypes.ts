@@ -120,6 +120,7 @@ export interface ItemDetail {
   releases: { id: string; dataset: string; version: string; split: string; rev: number | null; current: boolean }[];
 }
 
+/** Everything deleted, to bring back or remove for good. */
 export interface TrashInfo {
   projects: { id: string; name: string; folder: string; deleted_at: string; releases: number; items: number }[];
   releases: {
@@ -130,6 +131,37 @@ export interface TrashInfo {
     deleted_at: string;
     items: number;
     in_use: string[]; // what still points at it, e.g. "학습 1개": it cannot be removed for good
+  }[];
+  runs: {
+    id: string;
+    name: string;
+    project: { id: string; name: string };
+    release: string; // "coco v2"
+    template: string;
+    epoch: number;
+    created_by: string | null;
+    deleted_at: string;
+    in_use: string[]; // "모델 1개": the models it trained keep it
+  }[];
+  models: {
+    id: string;
+    name: string;
+    version: number;
+    task: string;
+    bytes: number;
+    project: { id: string; name: string };
+    run: string;
+    deleted_at: string;
+    restorable: boolean; // false: its weights were removed before the trash kept files
+  }[];
+  templates: {
+    id: string;
+    name: string;
+    title: string;
+    task: string;
+    versions: string[];
+    deleted_at: string;
+    runs: number; // runs made with it: they cannot be started again once it is removed for good
   }[];
 }
 
@@ -156,6 +188,19 @@ export const STATE_HELP: Record<string, string> = {
 /** Something went into or out of the trash: the sidebar's count looks again. */
 export const TRASH_EVENT = "badamoa:trash";
 export const announceTrash = () => window.dispatchEvent(new Event(TRASH_EVENT));
+
+/** Do ``work`` for each item, one after another; what failed comes back as "name: reason" lines. */
+export async function eachOf<T>(items: T[], work: (item: T) => Promise<unknown>, name: (item: T) => string): Promise<string[]> {
+  const failed: string[] = [];
+  for (const item of items) {
+    try {
+      await work(item);
+    } catch (e) {
+      failed.push(`${name(item)}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return failed;
+}
 
 /** Tasks by their short English names; a task a team named is shown as typed. */
 export const TASK_LABEL: Record<string, string> = { detect: "Det", segment: "Seg", pose: "Kpt", classify: "Cls" };

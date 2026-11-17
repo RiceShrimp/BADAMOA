@@ -1479,6 +1479,22 @@ def new_release(
     return {**summary, "release_id": release.id, "dataset": name, "version": version}
 
 
+def delete_dataset(db: Session, user: User, dataset_id: str) -> int:
+    """Every version of a dataset to the trash (each comes back on its own). Returns how many went."""
+    services.require_admin(user)
+    dataset = db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise ServiceError(404, "데이터셋을 찾을 수 없습니다.")
+    get_project(db, dataset.project_id)
+    live = list(db.scalars(select(Release).where(Release.dataset_id == dataset.id, Release.deleted_at.is_(None))))
+    if any(r.status != "ready" for r in live):
+        raise ServiceError(409, f"{dataset.name}에 가져오는 중인 버전이 있습니다. 끝난 뒤에 지우세요.")
+    for release in live:
+        release.deleted_at = utcnow()
+    services.audit(db, user.id, "api", "dataset.delete", dataset.id, name=dataset.name, versions=len(live))
+    return len(live)
+
+
 def set_release_deleted(db: Session, user: User, release_id: str, deleted: bool) -> Release:
     services.require_admin(user)
     release = get_release(db, release_id, allow_deleted=True)

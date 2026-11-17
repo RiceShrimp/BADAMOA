@@ -126,3 +126,21 @@ def test_prometheus_metrics(client, admin):
     assert f'badamoa_gpu_state{{node="{name}",gpu="1",state="reserved"}} 1' in text
     assert f'badamoa_gpu_memory_used_bytes{{node="{name}",gpu="0",name="RTX 4090"}} {18000 * 1024 * 1024:g}' in text
     assert 'badamoa_jobs{status="queued"} 1' in text
+
+
+def test_board_shows_processor_memory_and_disks(client, admin):
+    """Beside the GPUs: how busy the processor is, memory in use, and what is left on each disk."""
+    _, node = _join(client, admin)
+    disks = [
+        {"mount": "/data", "total_gb": 3725.0, "used_gb": 3500.0, "free_gb": 225.0, "pct": 94.0},
+        {"mount": "/", "total_gb": 931.5, "used_gb": 500.0, "free_gb": 431.5, "pct": 53.7},
+        {"mount": "/boot/efi", "total_gb": 0.5, "used_gb": 0.1, "free_gb": 0.4, "pct": 20.0},
+    ]
+    metrics = {"cpu_pct": 37.5, "memory_used_mb": 8192, "memory_total_mb": 32768, "gpus": [_gpu(0, 200)], "disks": disks}
+    body = {"agent_version": "0.3.0", "metrics": metrics, "running_job_ids": []}
+    assert client.post("/api/agent/heartbeat", json=body, headers=node).status_code == 200
+    (server,) = client.get("/api/gpu-board", headers=admin).json()["nodes"]
+    assert server["cpu"]["pct"] == 37.5
+    assert server["memory"] == {"used_gb": 8.0, "total_gb": 32.0}
+    assert [d["mount"] for d in server["disks"]] == ["/", "/data"]  # the EFI partition is too small to show
+    assert server["disks"][1] == {"mount": "/data", "total_gb": 3725.0, "free_gb": 225.0, "pct": 94.0}

@@ -91,8 +91,64 @@
   padding: 14px 0;
   border-bottom: 1px solid var(--border);
 }
-.board-row.away .board-gpus {
+.board-row.away .board-res {
   opacity: 0.55;
+}
+.board-res {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+/* processor, memory and disks: a thin bar each, above the GPU tiles */
+.board-sys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px 10px;
+}
+.sys-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.sys-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sys-line .num {
+  color: var(--text);
+  white-space: nowrap;
+}
+.sys-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sys-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.sys-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.6s ease;
+}
+.sys-meter.warn .sys-bar i {
+  background: var(--warn);
+}
+.sys-meter.bad .sys-bar i {
+  background: var(--bad);
+}
+.sys-meter.bad .sys-line .num {
+  color: var(--bad);
 }
 .board-server {
   display: flex;

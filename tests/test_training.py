@@ -247,6 +247,55 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     assert hub.get(f"/api/models/{v1['id']}").json()["run"] is None  # the model outlives its run
 
 
+def test_runs_and_models_wait_in_the_trash(hub, release, settings):
+    """A deleted run or model keeps everything in the trash; it comes back whole, or goes for good."""
+    project = release["project_id"]
+    run, _ = _train(hub, release, {"epochs": 2})
+    model_id = hub.get(f"/api/runs/{run['id']}").json()["model"]["id"]
+    model = hub.get(f"/api/models/{model_id}").json()
+    hub.patch(f"/api/runs/{run['id']}", json={"tags": ["야간"]})
+    hub.post(f"/api/models/{model['id']}/alias", json={"alias": "production"})
+    weights = settings.storage_dir / "blobs" / model["sha256"][:2] / model["sha256"][2:4] / model["sha256"]
+
+    # ---- to the trash: off the lists, everything kept
+    assert hub.delete(f"/api/models/{model['id']}").status_code == 200
+    assert hub.delete(f"/api/runs/{run['id']}").status_code == 200
+    assert hub.get(f"/api/projects/{project}/runs").json() == []
+    assert hub.get(f"/api/projects/{project}/tags").json()["runs"] == []  # tags in the trash are not offered
+    count = hub.get("/api/trash/count").json()
+    assert (count["runs"], count["models"], count["total"]) == (1, 1, 2)
+    binned = hub.get("/api/trash").json()
+    (r,), (m,) = binned["runs"], binned["models"]
+    assert (r["name"], r["in_use"], r["release"]) == (run["name"], ["모델 1개"], "street v1")
+    assert m["restorable"] is True and m["run"] == run["name"] and weights.is_file()
+
+    # ---- back again; a run of the same name started meanwhile keeps its name
+    other, _ = _train(hub, release, {"epochs": 1})
+    assert hub.patch(f"/api/runs/{other['id']}", json={"name": run["name"]}).status_code == 200
+    done = hub.post(f"/api/runs/{run['id']}/restore").json()
+    assert done["name"] == f"{run['name']}-2" and "이름을 바꿨습니다" in done["note"]
+    back = hub.get(f"/api/runs/{run['id']}").json()
+    assert back["tags"] == ["야간"] and len(back["files"]) == 2 and back["history"]["steps"] == [1, 2]
+    assert hub.post(f"/api/models/{model['id']}/restore").status_code == 200
+    restored = hub.get(f"/api/models/{model['id']}").json()
+    assert restored["aliases"] == [] and restored["run"]["id"] == run["id"]  # its aliases came off when deleted
+    assert hub.get("/api/trash/count").json()["total"] == 0
+    assert hub.post(f"/api/runs/{run['id']}/restore").status_code == 404  # not in the trash
+
+    # ---- for good: a run a model came from stays until that model goes
+    assert hub.delete(f"/api/runs/{run['id']}").status_code == 200
+    kept = hub.post("/api/trash/empty", json={"runs": [run["id"]]}).json()
+    assert kept["runs"] == 0 and kept["kept"][0]["reason"] == "모델 1개가 이 학습에서 나옴"
+    assert hub.delete(f"/api/models/{model['id']}").status_code == 200
+    gone = hub.post("/api/trash/empty", json={}).json()
+    assert (gone["runs"], gone["models"], gone["kept"]) == (1, 1, [])
+    assert hub.get(f"/api/runs/{run['id']}").status_code == 404
+    assert hub.post(f"/api/models/{model['id']}/restore").status_code == 404
+    assert hub.get("/api/trash/count").json()["total"] == 0
+    actions = [a["action"] for a in hub.get("/api/activity?limit=10").json()]
+    assert {"run.restore", "model.restore", "trash.empty"} <= set(actions)
+
+
 def test_class_subset_and_failed_run(hub, release):
     run, job = _train(hub, release, classes=[1], model_name="cars", unlabelled="background")
     assert job["status"] == "succeeded", _logs(hub, job["id"])
@@ -798,6 +847,7 @@ def test_storage_policy_and_cleanup(hub, release, settings, monkeypatch):
     hub.post(f"/api/models/{view(aliased)['model']['id']}/alias", json={"alias": "production"})
     hub.patch(f"/api/runs/{kept['id']}", json={"tags": ["보관"]})
     gone_files = view(gone)["files"]
+    gone_model = view(gone)["model"]["id"]
     assert hub.delete(f"/api/runs/{gone['id']}").status_code == 200
 
     database = Database(settings.database_url)
@@ -811,11 +861,17 @@ def test_storage_policy_and_cleanup(hub, release, settings, monkeypatch):
     row = next(p for p in usage["projects"] if p["id"] == project)
     assert row["outputs"] > 0 and row["models"] > 0 and row["checkpoints"] > 0
 
-    # Keep for ever: only what nothing uses can go (the deleted run's files).
+    # Keep for ever: nothing goes. The deleted run waits in the trash with its files.
     preview = hub.get("/api/storage/cleanup").json()
-    assert preview["outputs"]["files"] == 0 and preview["checkpoints"]["runs"] == 0
-    # Its history.csv goes; its epoch.txt holds the same bytes as the other runs' (stored once) and stays.
-    assert {f["name"] for f in gone_files} == {"epoch.txt", "logs/history.csv"} and preview["removed"]["files"] == 1
+    assert preview["outputs"]["files"] == 0 and preview["checkpoints"]["runs"] == 0 and preview["removed"]["files"] == 0
+    assert hub.get("/api/storage").json()["parts"]["trash"] > 0
+    # Emptied (with the model it trained): its history.csv goes; its epoch.txt holds the same bytes
+    # as the other runs' (stored once) and stays.
+    assert {f["name"] for f in gone_files} == {"epoch.txt", "logs/history.csv"}
+    assert hub.delete(f"/api/models/{gone_model}").status_code == 200
+    emptied = hub.post("/api/trash/empty", json={"runs": [gone["id"]], "models": [gone_model]}).json()
+    assert (emptied["runs"], emptied["models"], emptied["kept"]) == (1, 1, []) and emptied["files"] >= 1
+    assert hub.get("/api/storage").json()["parts"]["trash"] == 0
 
     assert hub.put("/api/storage/policy", json={"outputs_days": 7, "checkpoint_days": 7}).json()["outputs_days"] == 7
     assert hub.put("/api/storage/policy", json={"outputs_days": -1, "checkpoint_days": 0}).status_code == 400

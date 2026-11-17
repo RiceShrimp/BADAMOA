@@ -5,7 +5,7 @@ import { ModelOps } from "./ModelOps";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { ClassTable } from "./Training";
 import { api } from "./api";
-import { bytesLabel, taskLabel } from "./catalogTypes";
+import { announceTrash, bytesLabel, taskLabel } from "./catalogTypes";
 import {
   METRIC_LABEL,
   type ModelDetail,
@@ -401,8 +401,10 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
     }
   };
   const remove = async () => {
-    if (!window.confirm(`${model.name} v${model.version} 모델을 삭제할까요?`)) return;
+    if (!window.confirm(`${model.name} v${model.version} 모델을 휴지통으로 옮길까요? 휴지통에서 되살릴 수 있습니다. alias는 떼어집니다.`))
+      return;
     await api(`/models/${model.id}`, { method: "DELETE" });
+    announceTrash();
     window.location.hash = "#/models";
   };
   const classRows = [...model.class_metrics].sort((a, b) => classScore(b) - classScore(a));

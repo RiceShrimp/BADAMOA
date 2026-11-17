@@ -9,7 +9,7 @@ import { EpochChart, type EpochSeries } from "./EpochChart";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { RunTable } from "./RunTable";
 import { type Job, type LogLine, type MetricHistory, api } from "./api";
-import { type LabelClass, type ReleaseInfo, type TreeDataset, taskLabel } from "./catalogTypes";
+import { type LabelClass, type ReleaseInfo, type TreeDataset, announceTrash, taskLabel } from "./catalogTypes";
 import {
   ACTIVE,
   type Environment,
@@ -340,9 +340,10 @@ function RunView({ runId }: { runId: string }) {
       window.location.hash = `#/training/${next.id}`;
     });
   const remove = () => {
-    if (!window.confirm(`${run.name} 실행 기록을 지울까요? 등록된 모델은 남습니다.`)) return;
+    if (!window.confirm(`${run.name} 학습을 휴지통으로 옮길까요? 휴지통에서 되살릴 수 있고, 등록된 모델은 그대로 남습니다.`)) return;
     void act(async () => {
       await api(`/runs/${run.id}`, { method: "DELETE" });
+      announceTrash();
       window.location.hash = "#/training";
     });
   };

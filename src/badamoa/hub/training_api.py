@@ -199,12 +199,19 @@ def resume(
 
 
 @router.delete("/runs/{run_id}")
-def delete_run(
-    run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
-) -> dict:
-    training.delete_run(db, user, run_id, catalog.storage_for(str(hub.settings.storage_dir)))
+def delete_run(run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    training.delete_run(db, user, run_id)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/runs/{run_id}/restore")
+def restore_run(
+    run_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    done = training.restore_run(db, user, run_id, catalog.storage_for(str(hub.settings.storage_dir)))
+    db.commit()
+    return done
 
 
 # ---- models --------------------------------------------------------------------------
@@ -293,6 +300,15 @@ def delete_model(model_id: str, user: User = Depends(admin_user), db: Session = 
     training.delete_model(db, user, model_id)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/models/{model_id}/restore")
+def restore_model(
+    model_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    done = training.restore_model(db, user, model_id, catalog.storage_for(str(hub.settings.storage_dir)))
+    db.commit()
+    return done
 
 
 # ---- node protocol -------------------------------------------------------------------

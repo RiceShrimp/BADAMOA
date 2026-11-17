@@ -449,18 +449,26 @@ def test_cards_and_release_tabs(hub, tmp_path):
 def test_project_trash_and_restore(hub, tmp_path):
     project = hub.post("/api/projects", json={"name": "지울 것", "task": "detect"}).json()
     v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
-    empty = {"projects": [], "releases": []}
+    empty = {"projects": [], "releases": [], "runs": [], "models": [], "templates": []}
     assert hub.get("/api/trash").json() == empty
+
+    # ---- a whole dataset: every version to the trash at once (picked cards), each comes back on its own
+    (dataset,) = hub.get(f"/api/projects/{project['id']}/datasets").json()
+    assert hub.delete(f"/api/datasets/{dataset['id']}").json() == {"ok": True, "versions": 1}
+    assert [r["id"] for r in hub.get("/api/trash").json()["releases"]] == [v1]
+    assert hub.post(f"/api/releases/{v1}/restore").status_code == 200
+    assert hub.delete("/api/datasets/no-such").status_code == 404
 
     # ---- a version to the trash, then the whole project (its versions go with it)
     assert hub.delete(f"/api/releases/{v1}").status_code == 200
     trash = hub.get("/api/trash").json()
     assert [r["id"] for r in trash["releases"]] == [v1] and trash["releases"][0]["project"]["name"] == "지울 것"
-    assert hub.get("/api/trash/count").json() == {"projects": 0, "releases": 1, "total": 1}  # the sidebar's count
+    none = {"projects": 0, "releases": 0, "runs": 0, "models": 0, "templates": 0}
+    assert hub.get("/api/trash/count").json() == {**none, "releases": 1, "total": 1}  # the sidebar's count
     assert hub.delete(f"/api/projects/{project['id']}").status_code == 200
     trash = hub.get("/api/trash").json()
     assert [p["id"] for p in trash["projects"]] == [project["id"]] and trash["releases"] == []
-    assert hub.get("/api/trash/count").json() == {"projects": 1, "releases": 0, "total": 1}
+    assert hub.get("/api/trash/count").json() == {**none, "projects": 1, "total": 1}
     assert (trash["projects"][0]["items"], trash["projects"][0]["releases"]) == (8, 0)
     assert all(c["id"] != project["id"] for c in hub.get("/api/project-cards").json())
     assert hub.get(f"/api/projects/{project['id']}/overview").status_code == 404
@@ -582,7 +590,7 @@ def test_empty_the_trash(hub, tmp_path, settings):
     assert hub.get("/api/trash").json()["releases"][0]["in_use"] == []
     done = hub.post("/api/trash/empty", json={"releases": [v2]}).json()
     assert (done["projects"], done["releases"], done["kept"]) == (0, 1, [])
-    assert hub.get("/api/trash").json() == {"projects": [], "releases": []}
+    assert hub.get("/api/trash").json() == {"projects": [], "releases": [], "runs": [], "models": [], "templates": []}
     tree = hub.get(f"/api/projects/{project['id']}/datasets", params={"trash": True}).json()
     assert [r["version"] for d in tree for r in d["releases"]] == ["v1"]
     assert hub.get(f"/api/releases/{v1}").json()["stats"]["items"] == 8 and all(blob(t).is_file() for t in thumbs)
@@ -607,7 +615,7 @@ def test_empty_the_trash(hub, tmp_path, settings):
     gone = hub.post("/api/trash/empty", json={}).json()
     assert (gone["projects"], gone["kept"]) == (1, []) and gone["files"] >= len(thumbs) + 1 and gone["bytes"] > 0
     assert not any(blob(t).exists() for t in thumbs) and not blob(model["sha256"]).exists()
-    assert hub.get("/api/trash").json() == {"projects": [], "releases": []}
+    assert hub.get("/api/trash").json() == {"projects": [], "releases": [], "runs": [], "models": [], "templates": []}
     assert hub.get(f"/api/runs/{run['id']}").status_code == 404
     assert hub.post("/api/projects", json={"name": "비울 것"}).status_code == 200  # the name is free again
     actions = [a["action"] for a in hub.get("/api/activity?limit=5").json()]

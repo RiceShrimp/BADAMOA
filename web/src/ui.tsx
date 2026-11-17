@@ -238,25 +238,59 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
-export function CopyBlock({ label, text }: { label?: string; text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
+/**
+ * Put text on the clipboard. The clipboard API only exists on https and localhost, and the Hub is
+ * usually opened at its LAN address over plain http, so there a hidden text box and the older copy
+ * command do it. ``near`` is where the box goes: inside an open dialog, so focus may move to it.
+ */
+export async function copyText(text: string, near?: HTMLElement | null): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard) {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      return true;
     } catch {
-      /* clipboard blocked: the text stays selectable */
+      /* refused: try the old way */
     }
+  }
+  const box = document.createElement("textarea");
+  box.value = text;
+  box.setAttribute("readonly", "");
+  Object.assign(box.style, { position: "fixed", top: "0", left: "0", width: "1px", height: "1px", opacity: "0" });
+  const host = near ?? document.body;
+  const before = document.activeElement as HTMLElement | null;
+  host.appendChild(box);
+  box.focus();
+  box.select();
+  box.setSelectionRange(0, text.length);
+  let done = false;
+  try {
+    done = document.execCommand("copy");
+  } catch {
+    done = false;
+  }
+  box.remove();
+  before?.focus?.();
+  return done;
+}
+
+export function CopyBlock({ label, text }: { label?: string; text: string }) {
+  const [state, setState] = useState<"" | "copied" | "select">("");
+  const row = useRef<HTMLDivElement>(null);
+  const shown = useRef<HTMLPreElement>(null);
+  const copy = async () => {
+    const done = await copyText(text, row.current);
+    if (!done && shown.current) window.getSelection()?.selectAllChildren(shown.current); // copying by hand is one key away
+    setState(done ? "copied" : "select");
+    setTimeout(() => setState(""), done ? 1500 : 4000);
   };
   return (
     <div className="copy-block">
       {label && <div className="eyebrow">{label}</div>}
-      <div className="copy-row">
-        <pre>{text}</pre>
-        <button onClick={copy}>
-          <Icon name={copied ? "check" : "copy"} size={14} />
-          {copied ? "복사됨" : "복사"}
+      <div className="copy-row" ref={row}>
+        <pre ref={shown}>{text}</pre>
+        <button onClick={copy} title={state === "select" ? "브라우저가 복사를 막았습니다. 선택된 글자를 Ctrl+C로 복사하세요" : undefined}>
+          <Icon name={state === "copied" ? "check" : "copy"} size={14} />
+          {state === "copied" ? "복사됨" : state === "select" ? "Ctrl+C로 복사" : "복사"}
         </button>
       </div>
     </div>

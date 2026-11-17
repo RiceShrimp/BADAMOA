@@ -1444,16 +1444,7 @@ button.legend-item:hover {
   stroke-opacity: 0.5;
 }
 
-/* the trash, under 데이터셋 in the sidebar */
-.nav-item.nav-sub {
-  padding: 5px 8px 5px 28px;
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--muted);
-}
-.nav-item.nav-sub.active {
-  color: var(--text);
-}
+/* how many things are in the trash, beside 휴지통 in the sidebar */
 .nav-count {
   margin-left: auto;
   font: 600 11px/1 var(--mono);

@@ -1,12 +1,15 @@
-"""Emptying the trash: deleted projects and versions removed for good, with the stored files only they used.
+"""Emptying the trash: what is in it removed for good, with the stored files only it used.
 
 What goes with a project: its datasets, versions, image records and labels, runs (metrics, files,
 checkpoints), models and their evaluations, exports and tests, searches and tags. The images
 themselves stay where they were registered; BADAMOA never wrote them and does not remove them.
+A run goes with its metrics, files, checkpoint and tags; a model with its weights, evaluations,
+exports and tests; a template with every version of its code (runs made with it keep their record
+but can no longer be started again).
 
-A version that runs, models or evaluations point at stays in the trash: removing it would leave
-those records saying "trained on something that no longer exists". Remove the project instead,
-or keep the version.
+Lineage is kept whole: a version that runs, models or evaluations point at, and a run a model was
+trained by, stay in the trash (with the reason) until what points at them goes first. Models go
+before runs and runs before versions, so emptying everything at once removes the whole chain.
 """
 
 from __future__ import annotations
@@ -17,15 +20,16 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from . import catalog, cleanup, services
+from . import catalog, cleanup, services, trash
 from .catalog_models import Dataset, Item, Project, Release, ReleaseItem
 from .config import HubSettings
 from .db import utcnow
-from .models import User
+from .models import Job, User
 from .services import ServiceError
-from .train_models import ModelJob, ModelVersion, Run, RunFile
+from .train_models import ModelJob, ModelVersion, Run, RunFile, Tag, Template
 
 CHUNK = 900  # SQLite's limit on bound parameters is 999
+KINDS = ("projects", "releases", "runs", "models", "templates")
 
 
 def _chunks(values: list[Any]) -> list[list[Any]]:
@@ -99,6 +103,26 @@ def _drop_release(db: Session, release: Release) -> set[str]:
     return thumbs
 
 
+def _drop_model(db: Session, model: ModelVersion) -> set[str]:
+    blobs = {model.blob}
+    for op in db.scalars(select(ModelJob).where(ModelJob.model_id == model.id)):
+        blobs.update(f["blob"] for f in op.files or [] if f.get("blob"))
+        blobs.update(i["blob"] for i in (op.params or {}).get("images") or [] if i.get("blob"))
+    db.execute(delete(ModelJob).where(ModelJob.model_id == model.id))
+    db.execute(delete(Tag).where(Tag.kind == "model", Tag.object_id == model.id))
+    db.execute(delete(ModelVersion).where(ModelVersion.id == model.id))
+    return blobs
+
+
+def _drop_run(db: Session, run: Run) -> set[str]:
+    blobs = set(db.scalars(select(RunFile.blob).where(RunFile.run_id == run.id)))
+    if (run.checkpoint or {}).get("blob"):
+        blobs.add(run.checkpoint["blob"])
+    db.execute(delete(Tag).where(Tag.kind == "run", Tag.object_id == run.id))
+    db.execute(delete(Run).where(Run.id == run.id))  # its metrics and file records go with it (ON DELETE CASCADE)
+    return blobs
+
+
 def empty_trash(
     db: Session,
     settings: HubSettings,
@@ -106,17 +130,22 @@ def empty_trash(
     *,
     projects: list[str] | None = None,
     releases: list[str] | None = None,
+    runs: list[str] | None = None,
+    models: list[str] | None = None,
+    templates: list[str] | None = None,
     older_than_days: int = 0,
     via: str = "ui",
 ) -> dict[str, Any]:
-    """Remove deleted projects and versions for good. With no ids, everything in the trash.
+    """Remove what is in the trash for good. With no ids at all, everything in it.
 
     ``older_than_days`` keeps what went to the trash more recently (the Hub's own pass under the
-    retention policy). A version something still points at, and a project with work under way, stay.
+    retention policy). What something still points at, and what has work under way, stays.
+    A template is named by the id of any of its versions.
     """
     if user is not None:
         services.require_admin(user)
-    everything = projects is None and releases is None
+    wanted = {"projects": projects, "releases": releases, "runs": runs, "models": models, "templates": templates}
+    everything = all(ids is None for ids in wanted.values())
     query_p = select(Project).where(Project.deleted_at.is_not(None))
     query_r = (
         select(Release)
@@ -124,27 +153,62 @@ def empty_trash(
         .join(Project, Project.id == Dataset.project_id)
         .where(Release.deleted_at.is_not(None), Project.deleted_at.is_(None))
     )
+    query_run, query_m = trash.runs_query(), trash.models_query()
+    groups = trash.template_groups(db)
     if older_than_days > 0:
         cutoff = utcnow() - timedelta(days=older_than_days)
         query_p = query_p.where(Project.deleted_at < cutoff)
         query_r = query_r.where(Release.deleted_at < cutoff)
-    picked_p = [p for p in db.scalars(query_p) if everything or p.id in (projects or [])]
-    picked_r = [r for r in db.scalars(query_r) if everything or r.id in (releases or [])]
-    if not everything and len(picked_p) + len(picked_r) < len(projects or []) + len(releases or []):
-        raise ServiceError(404, "휴지통에 없는 항목이 있습니다. 화면을 새로 고친 뒤 다시 시도하세요.")
+        query_run = query_run.where(Run.deleted_at < cutoff)
+        query_m = query_m.where(ModelVersion.deleted_at < cutoff)
+        groups = [g for g in groups if max(t.deleted_at for t in g) < cutoff]
+    binned: dict[str, list[Any]] = {
+        "projects": list(db.scalars(query_p)),
+        "releases": list(db.scalars(query_r)),
+        "runs": list(db.scalars(query_run)),
+        "models": list(db.scalars(query_m)),
+        "templates": groups,
+    }
+    picked: dict[str, list[Any]] = {}
+    for kind, rows in binned.items():
+        ids_of = (lambda g: {t.id for t in g}) if kind == "templates" else (lambda r: {r.id})
+        asked = set(wanted[kind] or [])
+        if not asked <= set().union(*(ids_of(r) for r in rows)):
+            raise ServiceError(404, "휴지통에 없는 항목이 있습니다. 화면을 새로 고친 뒤 다시 시도하세요.")
+        picked[kind] = [r for r in rows if everything or ids_of(r) & asked]
 
     kept: list[dict[str, str]] = []
     candidates: set[str] = set()
-    done_p = done_r = 0
-    for project in picked_p:
+    done = dict.fromkeys(KINDS, 0)
+    for model in picked["models"]:
+        running = [
+            op
+            for op in db.scalars(select(ModelJob).where(ModelJob.model_id == model.id))
+            if not cleanup._finished(db, op.job_id)
+        ]
+        if running:
+            kept.append({"id": model.id, "name": f"{model.name} v{model.version}", "reason": "평가 · 내보내기 진행 중"})
+            continue
+        candidates |= _drop_model(db, model)
+        done["models"] += 1
+    db.flush()
+    for run in picked["runs"]:
+        made = db.scalar(select(func.count(ModelVersion.id)).where(ModelVersion.run_id == run.id)) or 0
+        if made:
+            kept.append({"id": run.id, "name": run.name, "reason": f"모델 {made}개가 이 학습에서 나옴"})
+            continue
+        candidates |= _drop_run(db, run)
+        done["runs"] += 1
+    db.flush()
+    for project in picked["projects"]:
         busy = catalog._busy(db, project.id)
         if busy:
             kept.append({"id": project.id, "name": project.name, "reason": f"{', '.join(busy)} 진행 중"})
             continue
         candidates |= _project_blobs(db, project.id)
         _drop_project(db, project)
-        done_p += 1
-    for release in picked_r:
+        done["projects"] += 1
+    for release in picked["releases"]:
         dataset = db.get(Dataset, release.dataset_id)
         users = catalog.release_users(db, release.id)
         if users:
@@ -152,11 +216,22 @@ def empty_trash(
             kept.append({"id": release.id, "name": f"{dataset.name} {release.version}", "reason": reason})
             continue
         candidates |= _drop_release(db, release)
-        done_r += 1
+        done["releases"] += 1
+    for group in picked["templates"]:
+        name = group[-1].name
+        running = db.scalar(
+            select(func.count(Run.id))
+            .join(Job, Job.id == Run.job_id)
+            .where(Run.trainer == name, Job.status.in_(catalog.ACTIVE))
+        )
+        if running:
+            kept.append({"id": group[-1].id, "name": group[-1].title or name, "reason": f"학습 {running}개가 쓰는 중"})
+            continue
+        candidates |= {t.blob for t in group if t.blob}
+        db.execute(delete(Template).where(Template.id.in_([t.id for t in group])))
+        done["templates"] += 1
     db.flush()
     files, freed = _remove_unused(settings, db, candidates)
-    if done_p or done_r:
-        services.audit(
-            db, user.id if user else None, via, "trash.empty", "", projects=done_p, releases=done_r, files=files, bytes=freed
-        )
-    return {"projects": done_p, "releases": done_r, "files": files, "bytes": freed, "kept": kept}
+    if any(done.values()):
+        services.audit(db, user.id if user else None, via, "trash.empty", "", **done, files=files, bytes=freed)
+    return {**done, "files": files, "bytes": freed, "kept": kept}

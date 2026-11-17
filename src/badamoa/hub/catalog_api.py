@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
 from . import catalog, originals, overview, purge, services
+from . import trash as trash_box
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
 from .models import Node, User
@@ -75,26 +76,31 @@ def restore_project(project_id: str, user: User = Depends(current_user), db: Ses
 
 @router.get("/trash/count")
 def trash_count(_: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, int]:
-    return catalog.trash_count(db)
+    return trash_box.count(db)
 
 
 @router.get("/trash")
-def trash(_: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
-    """Deleted projects and versions, to bring back."""
-    return catalog.trash(db)
+def trash(
+    _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """What was deleted (projects, dataset versions, runs, models, templates), to bring back."""
+    return trash_box.listing(db, catalog.storage_for(str(hub.settings.storage_dir)))
 
 
 class EmptyTrash(BaseModel):
-    projects: list[str] | None = None  # both left out: everything in the trash
+    projects: list[str] | None = None  # all left out: everything in the trash
     releases: list[str] | None = None
+    runs: list[str] | None = None
+    models: list[str] | None = None
+    templates: list[str] | None = None  # the id of any version of each
 
 
 @router.post("/trash/empty")
 def empty_trash(
     body: EmptyTrash, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
-    """Remove deleted projects and versions for good, and the stored files only they used. Cannot be undone."""
-    result = purge.empty_trash(db, hub.settings, user, projects=body.projects, releases=body.releases)
+    """Remove what is in the trash for good, and the stored files only it used. Cannot be undone."""
+    result = purge.empty_trash(db, hub.settings, user, **body.model_dump())
     db.commit()
     return result
 
@@ -383,6 +389,14 @@ def class_color(
     result = overview.set_class_color(db, release_id, class_id, body.color)
     db.commit()
     return result
+
+
+@router.delete("/datasets/{dataset_id}")
+def delete_dataset(dataset_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
+    """Every version of the dataset to the trash."""
+    versions = catalog.delete_dataset(db, user, dataset_id)
+    db.commit()
+    return {"ok": True, "versions": versions}
 
 
 @router.delete("/releases/{release_id}")

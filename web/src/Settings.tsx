@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { GpuBusyPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
-import type { Project } from "./catalogTypes";
+import { type Project, announceTrash } from "./catalogTypes";
 import type { Environment, EnvironmentNode, Template } from "./trainTypes";
 import { Badge, CopyBlock, Icon, Modal, timeAgo, usePolling } from "./ui";
 
@@ -103,7 +103,7 @@ interface Usage {
   files: number;
   free: number;
   disk: number;
-  parts: { models: number; outputs: number; checkpoints: number; other: number };
+  parts: { models: number; outputs: number; checkpoints: number; trash: number; other: number };
   policy: Policy;
   projects: { id: string; name: string; models: number; outputs: number; checkpoints: number; total: number }[];
 }
@@ -126,6 +126,7 @@ const PART_LABEL: [keyof Usage["parts"], string, string][] = [
   ["models", "모델", "등록된 모델의 가중치"],
   ["outputs", "산출물", "학습 · 평가 · 내보내기 · 테스트가 남긴 파일"],
   ["checkpoints", "체크포인트", "끝나지 않은 실행을 이어 가기 위한 것"],
+  ["trash", "휴지통", "지운 학습 · 모델의 파일. 휴지통을 비우면 지워집니다"],
   ["other", "그 밖", "썸네일, 모델 종류의 코드, 기록(DB)"],
 ];
 
@@ -282,7 +283,7 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
       </div>
       <div className="form-row">
         <label>
-          휴지통 (지운 프로젝트 · 버전) <span className="muted small">{Number(draft.trash) > 0 ? `${draft.trash}일 뒤 완전히 지움` : "비울 때까지 보관"}</span>
+          휴지통에 둔 것 <span className="muted small">{Number(draft.trash) > 0 ? `${draft.trash}일 뒤 완전히 지움` : "비울 때까지 보관"}</span>
           <input type="number" min={0} max={3650} value={draft.trash} onChange={(e) => setDraft({ ...draft, trash: e.target.value })} />
         </label>
         <label>
@@ -373,8 +374,10 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
     }
   };
   const remove = async (t: Template) => {
-    if (!window.confirm(`${t.title} 템플릿을 목록에서 지울까요? 이 템플릿으로 만든 학습 기록과 모델은 남습니다.`)) return;
+    if (!window.confirm(`${t.title} 모델 종류를 휴지통으로 옮길까요? 휴지통에서 되살릴 수 있고, 이것으로 만든 학습 기록과 모델은 남습니다.`))
+      return;
     await api(`/templates/${t.id}`, { method: "DELETE" });
+    announceTrash();
     await refresh();
   };
 

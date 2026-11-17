@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent as KeyEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import {
   SPLIT_LABEL,
@@ -8,6 +8,7 @@ import {
   announceTrash,
   bytesLabel,
   classColor,
+  eachOf,
   keypointsOf,
   taskLabel,
 } from "./catalogTypes";
@@ -204,6 +205,93 @@ const SORTS = [
 
 const NEW_FOLDER = "\u0000new";
 
+// ---- picking several cards to act on together (to the trash) ----------------------------------
+
+/** Cards picked by id while picking is on; Esc stops. */
+function usePicking() {
+  const [on, setOn] = useState(false);
+  const [ids, setIds] = useState<string[]>([]);
+  const stop = () => {
+    setOn(false);
+    setIds([]);
+  };
+  useEffect(() => {
+    if (!on) return;
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && stop();
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [on]);
+  const toggle = (id: string) => setIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  return { on, ids, setIds, start: () => setOn(true), stop, toggle };
+}
+
+interface Picking {
+  selected: boolean;
+  onToggle: () => void;
+}
+
+/** A card while picking: the whole card is a checkbox. */
+function pickProps(p: Picking, name: string) {
+  return {
+    role: "checkbox",
+    "aria-checked": p.selected,
+    "aria-label": `${name} 선택`,
+    tabIndex: 0,
+    onClick: p.onToggle,
+    onKeyDown: (e: KeyEvent) => {
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        p.onToggle();
+      }
+    },
+  };
+}
+
+function CardCheck({ selected }: { selected: boolean }) {
+  return (
+    <span className="card-check" aria-hidden="true">
+      {selected && <Icon name="check" size={12} />}
+    </span>
+  );
+}
+
+/** Above the cards while picking: how many, all or none, what to do with them. */
+function PickBar({
+  count,
+  total,
+  onAll,
+  onNone,
+  onCancel,
+  children,
+}: {
+  count: number;
+  total: number;
+  onAll: () => void;
+  onNone: () => void;
+  onCancel: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="pick-bar" role="toolbar" aria-label="고른 카드">
+      <strong>{count}개 고름</strong>
+      {count < total ? (
+        <button className="link small" onClick={onAll}>
+          모두 고르기 ({total})
+        </button>
+      ) : (
+        <button className="link small" onClick={onNone}>
+          모두 풀기
+        </button>
+      )}
+      <span className="spacer" />
+      {children}
+      <button className="ghost-btn" onClick={onCancel}>
+        그만 고르기
+      </button>
+    </div>
+  );
+}
+
 /** A folder and how many projects (not in the trash) are in it; a folder may be empty. */
 export interface FolderInfo {
   name: string;
@@ -266,10 +354,24 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   const [makingFolder, setMakingFolder] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  const picking = usePicking();
   const reload = () => {
     void refresh();
     void refreshFolders();
     void refreshTrash();
+  };
+  const trashPicked = async () => {
+    const chosen = (cards ?? []).filter((c) => picking.ids.includes(c.id));
+    if (chosen.length === 0) return;
+    const lines = chosen.slice(0, 8).map((c) => `· ${c.name} — 데이터셋 ${c.datasets} · 학습 ${c.runs} · 모델 ${c.models}`);
+    if (chosen.length > 8) lines.push(`· 그 밖에 ${chosen.length - 8}개`);
+    const text = `프로젝트 ${chosen.length}개를 휴지통으로 옮길까요?\n${lines.join("\n")}\n\n휴지통에서 되살릴 수 있고, 이미지 파일은 지워지지 않습니다.`;
+    if (!window.confirm(text)) return;
+    const failures = await eachOf(chosen, (c) => api(`/projects/${c.id}`, { method: "DELETE" }), (c) => c.name);
+    announceTrash();
+    picking.stop();
+    setFailed(failures.length ? failures.join("\n") : null);
+    reload();
   };
 
   // Chips: every folder (empty ones too), then "no folder" when there are folders and some project is in none.
@@ -394,6 +496,12 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
               </option>
             ))}
           </select>
+          {!picking.on && shown.length > 0 && (
+            <button className="ghost-btn" onClick={picking.start} title="여러 프로젝트를 골라 한 번에 휴지통으로">
+              <Icon name="check" size={13} />
+              고르기
+            </button>
+          )}
         </div>
       )}
       {filters > 0 && (
@@ -427,10 +535,24 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
           </button>
         </div>
       )}
-      {failed && <div className="error">{failed}</div>}
+      {failed && <div className="error lines">{failed}</div>}
+      {picking.on && (
+        <PickBar
+          count={picking.ids.length}
+          total={shown.length}
+          onAll={() => picking.setIds(shown.map((c) => c.id))}
+          onNone={() => picking.setIds([])}
+          onCancel={picking.stop}
+        >
+          <button className="danger" disabled={picking.ids.length === 0} onClick={() => void trashPicked()}>
+            <Icon name="trash" size={14} />
+            휴지통으로
+          </button>
+        </PickBar>
+      )}
       {cards && cards.length === 0 && binned > 0 && (
         <p className="muted small">
-          지운 프로젝트가 있습니다. <a href="#/datasets/trash">휴지통 {binned}</a>
+          지운 프로젝트가 있습니다. <a href="#/trash">휴지통 {binned}</a>
         </p>
       )}
 
@@ -466,9 +588,15 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
       )}
       <div className="card-grid">
         {shown.map((c) => (
-          <ProjectCard key={c.id} card={c} onEdit={() => setEditing(c)} highlight={wanted} />
+          <ProjectCard
+            key={c.id}
+            card={c}
+            onEdit={() => setEditing(c)}
+            highlight={wanted}
+            picking={picking.on ? { selected: picking.ids.includes(c.id), onToggle: () => picking.toggle(c.id) } : undefined}
+          />
         ))}
-        {cards && (cards.length > 0 || names.length > 0) && (
+        {cards && (cards.length > 0 || names.length > 0) && !picking.on && (
           <button className="add-tile" onClick={() => onNewProject(folder ?? "")}>
             <Icon name="plus" size={18} />새 프로젝트{folder ? ` (${folder})` : ""}
           </button>
@@ -665,13 +793,22 @@ function FilterPanel({
   );
 }
 
-export function ProjectCard({ card, onEdit, highlight = [] }: { card: ProjectCardInfo; onEdit?: () => void; highlight?: string[] }) {
+export function ProjectCard({
+  card,
+  onEdit,
+  highlight = [],
+  picking,
+}: {
+  card: ProjectCardInfo;
+  onEdit?: () => void;
+  highlight?: string[];
+  picking?: Picking; // set while cards are being picked: a click picks instead of opening
+}) {
   const matched = highlight
     .map((w) => (card.classes ?? []).find((c) => c.name.toLowerCase() === w.toLowerCase()))
     .filter((c): c is ProjectCardInfo["classes"][number] => Boolean(c));
-  return (
-    <div className="data-card">
-      <a href={`#/datasets/project/${card.id}`} onClick={() => rememberProject(card.id)} className="data-card-link">
+  const body = (
+    <>
         <Collage shots={card.collage} colorOf={classColor} />
         <div className="data-card-body">
           <div className="data-card-title">
@@ -701,8 +838,21 @@ export function ProjectCard({ card, onEdit, highlight = [] }: { card: ProjectCar
           )}
           <div className="muted small">{timeAgo(card.updated_at)} 수정</div>
         </div>
-      </a>
-      {onEdit && (
+    </>
+  );
+  return (
+    <div className={`data-card${picking ? " picking" : ""}${picking?.selected ? " selected" : ""}`}>
+      {picking ? (
+        <div className="data-card-link" {...pickProps(picking, card.name)}>
+          <CardCheck selected={picking.selected} />
+          {body}
+        </div>
+      ) : (
+        <a href={`#/datasets/project/${card.id}`} onClick={() => rememberProject(card.id)} className="data-card-link">
+          {body}
+        </a>
+      )}
+      {onEdit && !picking && (
         <button className="icon-btn data-card-menu" onClick={onEdit} title="이름 · 폴더 · 설명" aria-label={`${card.name} 설정`}>
           <Icon name="settings" size={14} />
         </button>
@@ -861,195 +1011,6 @@ function RenameFolder({ name, onClose }: { name: string; onClose: (renamed: stri
   );
 }
 
-// ---- the trash: deleted projects and versions, to bring back ----------------------------------
-
-interface Emptied {
-  projects: number;
-  releases: number;
-  files: number;
-  bytes: number;
-  kept: { id: string; name: string; reason: string }[];
-}
-
-export function TrashPage({ isAdmin }: { isAdmin: boolean }) {
-  const { data: trash, error, refresh } = usePolling(() => api<TrashInfo>("/trash"), 30000);
-  const [failed, setFailed] = useState<string | null>(null);
-  const [emptied, setEmptied] = useState<Emptied | null>(null);
-  const [busy, setBusy] = useState(false);
-  const restore = async (path: string) => {
-    try {
-      setFailed(null);
-      setEmptied(null);
-      await api(path, { method: "POST" });
-      announceTrash();
-      await refresh();
-    } catch (e) {
-      setFailed(e instanceof Error ? e.message : String(e));
-    }
-  };
-  // Removing for good: the records and the Hub's files only they used. The images on the nodes stay.
-  const purge = async (what: string, body: { projects?: string[]; releases?: string[] }) => {
-    const text = `${what}
-
-데이터셋 · 버전 · 라벨 기록, 학습 기록 · 모델과 그 파일이 Hub에서 지워지고 되돌릴 수 없습니다. 노드에 등록한 이미지 파일은 그대로 남습니다.`;
-    if (!window.confirm(text)) return;
-    setBusy(true);
-    try {
-      setFailed(null);
-      setEmptied(await api<Emptied>("/trash/empty", { body }));
-      announceTrash();
-      await refresh();
-    } catch (e) {
-      setFailed(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const count = (trash?.projects.length ?? 0) + (trash?.releases.filter((r) => r.in_use.length === 0).length ?? 0);
-  if (error && !trash) return <div className="error">{error}</div>;
-  return (
-    <>
-      <nav className="page-crumbs">
-        <a href="#/datasets">데이터셋</a>
-        <strong>휴지통</strong>
-      </nav>
-      <div className="page-head">
-        <div>
-          <h1>휴지통</h1>
-          <p className="muted">
-            지운 프로젝트와 버전입니다. 되살리면 데이터셋 · 학습 · 모델이 그대로 돌아옵니다. 이미지 파일은 처음부터 지우지 않습니다.
-          </p>
-        </div>
-        {isAdmin && count > 0 && (
-          <div className="head-actions">
-            <button className="danger" disabled={busy} onClick={() => void purge(`휴지통의 ${count}개를 완전히 지울까요?`, {})}>
-              <Icon name="trash" />
-              휴지통 비우기
-            </button>
-          </div>
-        )}
-      </div>
-      {failed && <div className="error">{failed}</div>}
-      {emptied && (
-        <div className="notice">
-          {emptied.projects + emptied.releases > 0
-            ? `프로젝트 ${emptied.projects}개 · 버전 ${emptied.releases}개를 완전히 지웠습니다. ` +
-              (emptied.files > 0
-                ? `Hub 파일 ${emptied.files.toLocaleString()}개 (${bytesLabel(emptied.bytes)})를 비웠습니다.`
-                : "함께 비울 Hub 파일은 없었습니다 (같은 이미지를 다른 프로젝트가 쓰는 경우 등).")
-            : "지운 것이 없습니다."}
-          {emptied.kept.map((k) => (
-            <div key={k.id} className="small">
-              남김: {k.name} — {k.reason}
-            </div>
-          ))}
-        </div>
-      )}
-      {!trash && <p className="muted">불러오는 중…</p>}
-      {trash && trash.projects.length + trash.releases.length === 0 && <div className="card empty">휴지통이 비어 있습니다.</div>}
-      {trash && trash.projects.length > 0 && (
-        <section className="card home-block">
-          <div className="card-head">
-            <h3>프로젝트</h3>
-            <span className="muted small">만든 사람이나 관리자가 되살릴 수 있습니다</span>
-          </div>
-          <table className="plain">
-            <thead>
-              <tr>
-                <th>이름</th>
-                <th className="right">버전</th>
-                <th className="right">이미지</th>
-                <th>지운 때</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {trash.projects.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    <strong>{p.name}</strong>
-                    {p.folder && <span className="muted small"> · {p.folder}</span>}
-                  </td>
-                  <td className="num right">{p.releases}</td>
-                  <td className="num right">{p.items.toLocaleString()}</td>
-                  <td>{timeAgo(p.deleted_at)}</td>
-                  <td className="right row-buttons">
-                    <button className="small" onClick={() => void restore(`/projects/${p.id}/restore`)}>
-                      되살리기
-                    </button>
-                    {isAdmin && (
-                      <button
-                        className="small danger"
-                        disabled={busy}
-                        onClick={() => void purge(`${p.name} 프로젝트를 완전히 지울까요?`, { projects: [p.id] })}
-                      >
-                        완전히 지우기
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-      {trash && trash.releases.length > 0 && (
-        <section className="card home-block">
-          <div className="card-head">
-            <h3>버전</h3>
-            {!isAdmin && <span className="muted small">버전은 관리자가 되살릴 수 있습니다</span>}
-          </div>
-          <table className="plain">
-            <thead>
-              <tr>
-                <th>버전</th>
-                <th>프로젝트</th>
-                <th className="right">이미지</th>
-                <th>지운 때</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {trash.releases.map((r) => (
-                <tr key={r.id}>
-                  <td>
-                    <strong>
-                      {r.dataset} {r.version}
-                    </strong>
-                  </td>
-                  <td>
-                    <a href={`#/datasets/project/${r.project.id}`}>{r.project.name}</a>
-                  </td>
-                  <td className="num right">{r.items.toLocaleString()}</td>
-                  <td>{timeAgo(r.deleted_at)}</td>
-                  <td className="right row-buttons">
-                    {isAdmin && (
-                      <button className="small" onClick={() => void restore(`/releases/${r.id}/restore`)}>
-                        되살리기
-                      </button>
-                    )}
-                    {isAdmin && (
-                      <button
-                        className="small danger"
-                        disabled={busy || r.in_use.length > 0}
-                        title={r.in_use.length > 0 ? `${r.in_use.join(", ")}가 이 버전을 씁니다. 계보가 끊기지 않게 남겨 둡니다.` : undefined}
-                        onClick={() => void purge(`${r.dataset} ${r.version} 버전을 완전히 지울까요?`, { releases: [r.id] })}
-                      >
-                        완전히 지우기
-                      </button>
-                    )}
-                    {r.in_use.length > 0 && <div className="muted small">{r.in_use.join(" · ")}가 씀</div>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-    </>
-  );
-}
-
 // ---- a project: its datasets as cards ------------------------------------------------------
 
 const TASK_HINT_TEXT = (task: string) => (TASK_LABEL[task] ? `${taskLabel(task)}: ${TASK_HINT[task]}` : `${task}: 직접 정한 태스크`);
@@ -1074,9 +1035,11 @@ function TaskTags({ tasks }: { tasks: string[] }) {
   );
 }
 
-export function ProjectPage({ projectId, onImport }: { projectId: string; onImport: () => void }) {
+export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: string; onImport: () => void; isAdmin: boolean }) {
   const { data: page, error, refresh } = usePolling(() => api<ProjectPageInfo>(`/projects/${projectId}/overview`), 15000, [projectId]);
   const [editing, setEditing] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const picking = usePicking();
   const { data: folderList } = useFolders();
   const importing = useImports().filter(
     (i) => i.project.id === projectId && (i.status === "queued" || i.status === "running"),
@@ -1085,6 +1048,19 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
   if (!page) return <div className="muted">불러오는 중…</div>;
   const colorOf = (cards: DatasetCardInfo) => (id: number) =>
     cards.top_classes.find((c) => c.id === id)?.color ?? classColor(id);
+  const trashPicked = async () => {
+    const chosen = page.dataset_cards.filter((d) => picking.ids.includes(d.id));
+    if (chosen.length === 0) return;
+    const lines = chosen.slice(0, 8).map((d) => `· ${d.name} — 버전 ${d.releases} · 이미지 ${d.items.toLocaleString()}`);
+    if (chosen.length > 8) lines.push(`· 그 밖에 ${chosen.length - 8}개`);
+    const text = `데이터셋 ${chosen.length}개의 모든 버전을 휴지통으로 옮길까요?\n${lines.join("\n")}\n\n휴지통에서 버전마다 되살릴 수 있고, 이미지 파일은 지워지지 않습니다.`;
+    if (!window.confirm(text)) return;
+    const failures = await eachOf(chosen, (d) => api(`/datasets/${d.id}`, { method: "DELETE" }), (d) => d.name);
+    announceTrash();
+    picking.stop();
+    setFailed(failures.length ? failures.join("\n") : null);
+    void refresh();
+  };
   return (
     <>
       <nav className="page-crumbs">
@@ -1108,6 +1084,12 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
           <button className="icon-btn" onClick={() => setEditing(true)} title="이름 · 폴더 · 설명 · 휴지통" aria-label={`${page.name} 설정`}>
             <Icon name="settings" />
           </button>
+          {isAdmin && !picking.on && page.dataset_cards.length > 0 && (
+            <button className="ghost-btn" onClick={picking.start} title="여러 데이터셋을 골라 한 번에 휴지통으로">
+              <Icon name="check" size={13} />
+              고르기
+            </button>
+          )}
           <a className="btn" href="#/training" onClick={() => rememberProject(page.id)}>
             학습
           </a>
@@ -1118,6 +1100,21 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
         </div>
       </div>
 
+      {failed && <div className="error lines">{failed}</div>}
+      {picking.on && (
+        <PickBar
+          count={picking.ids.length}
+          total={page.dataset_cards.length}
+          onAll={() => picking.setIds(page.dataset_cards.map((d) => d.id))}
+          onNone={() => picking.setIds([])}
+          onCancel={picking.stop}
+        >
+          <button className="danger" disabled={picking.ids.length === 0} onClick={() => void trashPicked()}>
+            <Icon name="trash" size={14} />
+            모든 버전을 휴지통으로
+          </button>
+        </PickBar>
+      )}
       <div className="project-layout">
         <div className="card-grid">
           {importing.map((i) => (
@@ -1135,8 +1132,10 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
               </div>
             </a>
           ))}
-          {page.dataset_cards.map((d) => (
-            <a key={d.id} className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
+          {page.dataset_cards.map((d) => {
+            const pick = picking.on ? { selected: picking.ids.includes(d.id), onToggle: () => picking.toggle(d.id) } : null;
+            const body = (
+              <>
               <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />
               <div className="data-card-body">
                 <div className="data-card-title">
@@ -1163,13 +1162,26 @@ export function ProjectPage({ projectId, onImport }: { projectId: string; onImpo
                 </div>
                 <SplitBar splits={d.splits} />
               </div>
-            </a>
-          ))}
+              </>
+            );
+            return pick ? (
+              <div key={d.id} className={`data-card data-card-link picking${pick.selected ? " selected" : ""}`} {...pickProps(pick, d.name)}>
+                <CardCheck selected={pick.selected} />
+                {body}
+              </div>
+            ) : (
+              <a key={d.id} className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
+                {body}
+              </a>
+            );
+          })}
+          {!picking.on && (
           <button className="add-tile" onClick={onImport}>
             <Icon name="plus" size={18} />
             데이터셋 가져오기
             <span className="muted small">노드의 폴더를 복사 없이 등록 · Det · Seg · Kpt · Cls</span>
           </button>
+          )}
         </div>
 
         <aside className="card project-models">

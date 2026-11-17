@@ -140,7 +140,7 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
             {node.name} <Badge kind={node.status}>{STATUS_LABEL[node.status]}</Badge>
           </h1>
           <p className="muted">
-            {node.info.hostname} · {node.info.os_release ?? node.os} · 에이전트 v{node.agent_version} · 업타임{" "}
+            {node.info.hostname} · {node.info.os_release ?? node.os} · 버전 v{node.agent_version} · 업타임{" "}
             {uptime(m.uptime_s)} · 수집 {timeAgo(node.last_seen_at)}
           </p>
         </div>
