@@ -105,7 +105,7 @@
 }
 .board-row {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-columns: 210px minmax(0, 1fr);
   gap: 16px;
   padding: 14px 0;
   border-bottom: 1px solid var(--border);
@@ -154,26 +154,11 @@
 .warn-text {
   color: var(--warn);
 }
-/* processor, memory and disk tiles, a divider, then the GPU tiles (which wrap among themselves) */
 .board-gpus {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 12px;
-  align-items: flex-start;
-}
-.board-sys {
-  display: flex;
-  flex: none;
-  gap: 8px;
-  padding-right: 12px;
-  border-right: 1px solid var(--border);
-}
-.gpu-grid {
   display: grid;
-  flex: 1 1 300px; /* narrower than this, the GPUs go below the processor, memory and disk */
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
-  min-width: 0;
+  align-content: start;
 }
 .board-nogpu {
   padding: 10px 0;
@@ -288,6 +273,9 @@ a.gpu-who:hover {
   .board-row {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+  .board-gpus {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -514,48 +502,61 @@ details.node-more > summary {
   gap: 4px;
 }
 
-.sys-tile {
+/* processor, memory, disk under a server's name: a line and a thin bar each, in their own hue */
+.sys-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 6px;
+}
+.sys-item {
   --c: var(--sys-cpu);
   --c-soft: var(--sys-cpu-soft);
-  position: relative;
-  flex: 0 0 108px;
-  min-height: 84px;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
-  border-radius: 10px;
-  background: var(--surface);
 }
-.sys-tile.memory {
+.sys-item.memory {
   --c: var(--sys-memory);
   --c-soft: var(--sys-memory-soft);
 }
-.sys-tile.disk {
+.sys-item.disk {
   --c: var(--sys-disk);
   --c-soft: var(--sys-disk-soft);
 }
-.sys-tile.full {
+.sys-item.full {
   --c: var(--bad);
   --c-soft: var(--sys-full-soft);
 }
-/* the fill alone shows the level: a line on top would cross the label when nearly full */
-.sys-level {
-  position: absolute;
-  inset: auto 0 0 0;
-  background: var(--c-soft);
-  transition: height 0.6s ease;
+.sys-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
-.sys-value {
+.sys-line strong {
   overflow: hidden;
   color: var(--text);
-  font-size: 13.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sys-tile.full .sys-value,
-.sys-tile.full .gpu-head {
+.sys-item.full .sys-line,
+.sys-item.full .sys-line strong {
   color: var(--bad);
+}
+.sys-bar {
+  height: 4px;
+  margin-top: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--c-soft);
+}
+.sys-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c);
+  transition: width 0.6s ease;
 }
 .swatch.cpu {
   background: var(--sys-cpu);
@@ -569,17 +570,4 @@ details.node-more > summary {
 .swatch.full {
   background: var(--bad);
 }
-@media (max-width: 640px) {
-  .board-sys {
-    flex: 1 1 100%;
-    padding-right: 0;
-    border-right: 0;
-  }
-  .sys-tile {
-    flex: 1 1 0;
-    min-width: 0;
-  }
-  .gpu-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
+

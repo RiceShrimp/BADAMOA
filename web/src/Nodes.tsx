@@ -202,7 +202,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
           <span>
             <i className="swatch full" /> 90% 넘음
           </span>
-          <span>칸이 차오른 높이 = 쓰는 만큼(GPU는 메모리)</span>
+          <span>칸이 차오른 높이 = GPU 메모리</span>
         </div>
       )}
 
@@ -257,7 +257,7 @@ function ServerRow({
     onChanged();
   };
   const online = node.status === "online";
-  const sys = systemTiles(node);
+  const sys = systemBars(node);
   return (
     <div className={`board-row ${online ? "" : "away"}`}>
       <div className="board-server">
@@ -269,6 +269,7 @@ function ServerRow({
           {node.gpus.length > 0 ? `${node.gpu_name ?? "GPU"} × ${node.gpus.length}` : "GPU 없음"}
           {node.is_local ? " · Hub" : ""}
         </div>
+        {sys.length > 0 && <SysBars bars={sys} />}
         {!online && (
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
         )}
@@ -302,19 +303,10 @@ function ServerRow({
         )}
       </div>
       <div className="board-gpus">
-        {sys.length > 0 && (
-          <div className="board-sys">
-            {sys.map((tile) => (
-              <SysTile key={tile.kind} tile={tile} />
-            ))}
-          </div>
-        )}
-        <div className="gpu-grid">
-          {node.gpus.length === 0 && <div className="muted small board-nogpu">GPU 없음 · CPU 작업만 받습니다</div>}
-          {node.gpus.map((gpu) => (
-            <GpuTile key={gpu.index} gpu={gpu} />
-          ))}
-        </div>
+        {node.gpus.length === 0 && <div className="muted small board-nogpu">이 서버는 CPU 작업만 받습니다.</div>}
+        {node.gpus.map((gpu) => (
+          <GpuTile key={gpu.index} gpu={gpu} />
+        ))}
       </div>
     </div>
   );
@@ -325,27 +317,25 @@ function capacity(gbValue: number): string {
   return gbValue >= 1000 ? `${(gbValue / 1024).toFixed(1)} TB` : `${Math.round(gbValue)} GB`;
 }
 
-const FULL_PCT = 90; // from here a processor, memory or disk tile turns red
+const FULL_PCT = 90; // from here a processor, memory or disk bar turns red
 
-interface SysTileInfo {
+interface SysInfo {
   kind: "cpu" | "memory" | "disk";
   label: string;
   value: string;
-  sub: string;
   pct: number | null;
   title?: string;
 }
 
-/** Processor, memory and disks as tiles beside the GPUs, each filling from the bottom as it is used. */
-function systemTiles(node: BoardNode): SysTileInfo[] {
-  const tiles: SysTileInfo[] = [];
+/** Processor, memory and disks (added up): always the same three lines under a server's name. */
+function systemBars(node: BoardNode): SysInfo[] {
+  const bars: SysInfo[] = [];
   const cpu = node.cpu;
   if (cpu && (cpu.pct != null || cpu.cores)) {
-    tiles.push({
+    bars.push({
       kind: "cpu",
       label: "CPU",
-      value: cpu.pct != null ? `${Math.round(cpu.pct)}%` : "–",
-      sub: cpu.cores ? `${cpu.cores}코어` : "",
+      value: [cpu.pct != null ? `${Math.round(cpu.pct)}%` : null, cpu.cores ? `${cpu.cores}코어` : null].filter(Boolean).join(" · "),
       pct: cpu.pct,
       title: cpu.model ?? undefined,
     });
@@ -353,12 +343,12 @@ function systemTiles(node: BoardNode): SysTileInfo[] {
   if (node.memory) {
     const { used_gb, total_gb } = node.memory;
     const pct = total_gb ? (used_gb / total_gb) * 100 : null;
-    tiles.push({
+    bars.push({
       kind: "memory",
       label: "메모리",
       value: `${Math.round(used_gb)} / ${Math.round(total_gb)} GB`,
-      sub: pct != null ? `${Math.round(pct)}%` : "",
       pct,
+      title: pct != null ? `${Math.round(pct)}% 사용` : undefined,
     });
   }
   const disks = node.disks ?? [];
@@ -366,34 +356,37 @@ function systemTiles(node: BoardNode): SysTileInfo[] {
     const total = disks.reduce((n, d) => n + d.total_gb, 0);
     const free = disks.reduce((n, d) => n + d.free_gb, 0);
     const fullest = disks.reduce((a, d) => (d.pct > a.pct ? d : a));
-    const each = disks.map((d) => `${d.mount} ${capacity(d.free_gb)} 남음 / ${capacity(d.total_gb)} (${Math.round(d.pct)}%)`).join("\n");
     const full = fullest.pct >= FULL_PCT;
-    tiles.push({
+    const each = disks.map((d) => `${d.mount} ${capacity(d.free_gb)} 남음 / ${capacity(d.total_gb)} (${Math.round(d.pct)}%)`);
+    bars.push({
       kind: "disk",
-      // A disk nearly full is named on the tile; otherwise the disks are added up.
+      // Added up; a disk nearly full is named instead.
       label: full ? `${fullest.mount} ${Math.round(fullest.pct)}%` : disks.length > 1 ? `디스크 ${disks.length}개` : "디스크",
       value: `${capacity(full ? fullest.free_gb : free)} 남음`,
-      sub: full ? (disks.length > 1 ? `디스크 ${disks.length}개` : `/ ${capacity(fullest.total_gb)}`) : `/ ${capacity(total)}`,
       pct: full ? fullest.pct : total ? ((total - free) / total) * 100 : null,
-      title: each,
+      title: [`전체 ${capacity(free)} 남음 / ${capacity(total)}`, ...each].join("\n"),
     });
   }
-  return tiles;
+  return bars;
 }
 
-function SysTile({ tile }: { tile: SysTileInfo }) {
-  const level = Math.min(100, Math.max(0, tile.pct ?? 0));
-  const full = tile.pct != null && tile.pct >= FULL_PCT;
+function SysBars({ bars }: { bars: SysInfo[] }) {
   return (
-    <div className={`sys-tile ${tile.kind}${full ? " full" : ""}`} title={tile.title}>
-      <div className="sys-level" style={{ height: `${level}%` }} />
-      <div className="gpu-body">
-        <div className="gpu-head">
-          <span>{tile.label}</span>
-        </div>
-        <div className="sys-value">{tile.value}</div>
-        {tile.sub && <div className="gpu-what">{tile.sub}</div>}
-      </div>
+    <div className="sys-bars">
+      {bars.map((b) => {
+        const full = b.pct != null && b.pct >= FULL_PCT;
+        return (
+          <div key={b.kind} className={`sys-item ${b.kind}${full ? " full" : ""}`} title={b.title}>
+            <div className="sys-line">
+              <span>{b.label}</span>
+              <strong>{b.value}</strong>
+            </div>
+            <div className="sys-bar">
+              <i style={{ width: `${Math.min(100, Math.max(0, b.pct ?? 0))}%` }} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
