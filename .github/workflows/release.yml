@@ -1,22 +1,27 @@
 name: Release
 
-# Every version in CHANGELOG.md becomes a GitHub release with the same notes.
-# - A push to main that changes the version tags that commit vX.Y.Z and publishes its release.
-# - Pushing a tag vX.Y.Z (e.g. for an older version) publishes or refreshes that one.
-# The newest version is marked "Latest"; older ones never take it over.
+# Every version in CHANGELOG.md that has a vX.Y.Z tag is a GitHub release with the same notes.
+# A push to main that changes the version tags that commit, then every tagged version's release
+# is created or brought up to date (oldest first, so the list reads newest on top).
+# The newest version is marked "Latest". Titles are the version alone ("v0.37.1").
+# Older versions are tagged by pushing vX.Y.Z tags at the commits that made them; the next run
+# here picks them up (a tag push on its own runs nothing: those commits predate this file).
 
 on:
   push:
     branches: [main]
-    paths: [src/badamoa/__init__.py, CHANGELOG.md]
-    tags: ["v*"]
+    paths:
+      - src/badamoa/__init__.py
+      - CHANGELOG.md
+      - scripts/release_notes.py
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -25,34 +30,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # the tags, to know which version is the newest
+          fetch-depth: 0 # all tags
 
-      - name: Publish the release
+      - name: Tag this version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/badamoa/__init__.py)"
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+
+      - name: Publish releases from CHANGELOG.md
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag="$GITHUB_REF_NAME"
-          else
-            tag="v$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/badamoa/__init__.py)"
-            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-              git tag "$tag" "$GITHUB_SHA"
-              git push origin "refs/tags/$tag"
-            fi
-          fi
-          version="${tag#v}"
-          python3 scripts/release_notes.py "$version" > notes.md
-          title="$(python3 scripts/release_notes.py "$version" --title)"
-
           newest="$(git tag -l 'v*' --sort=-v:refname | head -n 1)"
-          latest="--latest=false"
-          [[ "$tag" == "$newest" ]] && latest="--latest"
-
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "$title" --notes-file notes.md "$latest"
-          else
-            gh release create "$tag" --verify-tag --title "$title" --notes-file notes.md "$latest"
-          fi
-          echo "published $tag: $title" >> "$GITHUB_STEP_SUMMARY"
+          existing="$(gh release list --limit 1000 --json tagName --jq '.[].tagName')"
+          for version in $(python3 scripts/release_notes.py --versions | tac); do
+            tag="v$version"
+            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "no tag $tag: skipped" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            python3 scripts/release_notes.py "$version" > notes.md
+            title="$(python3 scripts/release_notes.py "$version" --title)"
+            latest="--latest=false"
+            [[ "$tag" == "$newest" ]] && latest="--latest"
+            if grep -qx "$tag" <<< "$existing"; then
+              gh release edit "$tag" --title "$title" --notes-file notes.md "$latest" >/dev/null
+              echo "updated $tag" >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh release create "$tag" --verify-tag --title "$title" --notes-file notes.md "$latest" >/dev/null
+              echo "created $tag" >> "$GITHUB_STEP_SUMMARY"
+              sleep 1 # stay under GitHub's limit on creating many things at once
+            fi
+          done
