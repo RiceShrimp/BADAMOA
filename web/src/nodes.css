@@ -7,6 +7,25 @@
   --gpu-person-soft: #fbefd9;
   --gpu-person-text: #6b4405;
 }
+/* processor, memory, disk: each its own hue, apart from the GPU ones; red when nearly full */
+:root {
+  --sys-cpu: #378add;
+  --sys-cpu-soft: #dcebfa;
+  --sys-memory: #7f77dd;
+  --sys-memory-soft: #e9e7fc;
+  --sys-disk: #d4537e;
+  --sys-disk-soft: #fbe3ec;
+  --sys-full-soft: #fbe4e2;
+}
+:root[data-theme="dark"] {
+  --sys-cpu: #6aa8e8;
+  --sys-cpu-soft: rgb(55 138 221 / 0.3);
+  --sys-memory: #a29be9;
+  --sys-memory-soft: rgb(127 119 221 / 0.32);
+  --sys-disk: #e683a6;
+  --sys-disk-soft: rgb(212 83 126 / 0.3);
+  --sys-full-soft: rgb(226 75 74 / 0.32);
+}
 :root[data-theme="dark"] {
   --gpu-job-soft: rgb(42 170 186 / 0.22);
   --gpu-job-text: #8fdbe4;
@@ -91,64 +110,8 @@
   padding: 14px 0;
   border-bottom: 1px solid var(--border);
 }
-.board-row.away .board-res {
+.board-row.away .board-gpus {
   opacity: 0.55;
-}
-.board-res {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-}
-/* processor, memory and disks: a thin bar each, above the GPU tiles */
-.board-sys {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 6px 10px;
-}
-.sys-meter {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.sys-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.sys-line .num {
-  color: var(--text);
-  white-space: nowrap;
-}
-.sys-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sys-bar {
-  height: 5px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  overflow: hidden;
-}
-.sys-bar i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 0.6s ease;
-}
-.sys-meter.warn .sys-bar i {
-  background: var(--warn);
-}
-.sys-meter.bad .sys-bar i {
-  background: var(--bad);
-}
-.sys-meter.bad .sys-line .num {
-  color: var(--bad);
 }
 .board-server {
   display: flex;
@@ -191,11 +154,26 @@
 .warn-text {
   color: var(--warn);
 }
+/* processor, memory and disk tiles, a divider, then the GPU tiles (which wrap among themselves) */
 .board-gpus {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: flex-start;
+}
+.board-sys {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+}
+.gpu-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  flex: 1 1 300px; /* narrower than this, the GPUs go below the processor, memory and disk */
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 10px;
-  align-content: start;
+  min-width: 0;
 }
 .board-nogpu {
   padding: 10px 0;
@@ -310,9 +288,6 @@ a.gpu-who:hover {
   .board-row {
     grid-template-columns: 1fr;
     gap: 10px;
-  }
-  .board-gpus {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -537,4 +512,74 @@ details.node-more > summary {
   padding-left: 18px;
   display: grid;
   gap: 4px;
+}
+
+.sys-tile {
+  --c: var(--sys-cpu);
+  --c-soft: var(--sys-cpu-soft);
+  position: relative;
+  flex: 0 0 108px;
+  min-height: 84px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.sys-tile.memory {
+  --c: var(--sys-memory);
+  --c-soft: var(--sys-memory-soft);
+}
+.sys-tile.disk {
+  --c: var(--sys-disk);
+  --c-soft: var(--sys-disk-soft);
+}
+.sys-tile.full {
+  --c: var(--bad);
+  --c-soft: var(--sys-full-soft);
+}
+/* the fill alone shows the level: a line on top would cross the label when nearly full */
+.sys-level {
+  position: absolute;
+  inset: auto 0 0 0;
+  background: var(--c-soft);
+  transition: height 0.6s ease;
+}
+.sys-value {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sys-tile.full .sys-value,
+.sys-tile.full .gpu-head {
+  color: var(--bad);
+}
+.swatch.cpu {
+  background: var(--sys-cpu);
+}
+.swatch.memory {
+  background: var(--sys-memory);
+}
+.swatch.disk {
+  background: var(--sys-disk);
+}
+.swatch.full {
+  background: var(--bad);
+}
+@media (max-width: 640px) {
+  .board-sys {
+    flex: 1 1 100%;
+    padding-right: 0;
+    border-right: 0;
+  }
+  .sys-tile {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .gpu-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

@@ -196,7 +196,13 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
           <span>
             <i className="swatch reserved" /> 사람 전용 (작업을 보내지 않음)
           </span>
-          <span>칸이 차오른 높이 = GPU 메모리</span>
+          <span>
+            <i className="swatch cpu" /> CPU · <i className="swatch memory" /> 메모리 · <i className="swatch disk" /> 디스크
+          </span>
+          <span>
+            <i className="swatch full" /> 90% 넘음
+          </span>
+          <span>칸이 차오른 높이 = 쓰는 만큼(GPU는 메모리)</span>
         </div>
       )}
 
@@ -251,6 +257,7 @@ function ServerRow({
     onChanged();
   };
   const online = node.status === "online";
+  const sys = systemTiles(node);
   return (
     <div className={`board-row ${online ? "" : "away"}`}>
       <div className="board-server">
@@ -294,10 +301,16 @@ function ServerRow({
           </div>
         )}
       </div>
-      <div className="board-res">
-        <SystemMeters node={node} />
-        <div className="board-gpus">
-          {node.gpus.length === 0 && <div className="muted small board-nogpu">이 서버는 CPU 작업만 받습니다.</div>}
+      <div className="board-gpus">
+        {sys.length > 0 && (
+          <div className="board-sys">
+            {sys.map((tile) => (
+              <SysTile key={tile.kind} tile={tile} />
+            ))}
+          </div>
+        )}
+        <div className="gpu-grid">
+          {node.gpus.length === 0 && <div className="muted small board-nogpu">GPU 없음 · CPU 작업만 받습니다</div>}
           {node.gpus.map((gpu) => (
             <GpuTile key={gpu.index} gpu={gpu} />
           ))}
@@ -307,59 +320,80 @@ function ServerRow({
   );
 }
 
-/** "931 GB" / "1.8 TB" */
+/** "931 GB" / "2.7 TB" */
 function capacity(gbValue: number): string {
   return gbValue >= 1000 ? `${(gbValue / 1024).toFixed(1)} TB` : `${Math.round(gbValue)} GB`;
 }
 
-/** Processor, memory and every disk of a server, each a thin bar: what is left at a glance. */
-function SystemMeters({ node }: { node: BoardNode }) {
-  const meters: { key: string; label: string; value: string; pct: number | null; title?: string }[] = [];
+const FULL_PCT = 90; // from here a processor, memory or disk tile turns red
+
+interface SysTileInfo {
+  kind: "cpu" | "memory" | "disk";
+  label: string;
+  value: string;
+  sub: string;
+  pct: number | null;
+  title?: string;
+}
+
+/** Processor, memory and disks as tiles beside the GPUs, each filling from the bottom as it is used. */
+function systemTiles(node: BoardNode): SysTileInfo[] {
+  const tiles: SysTileInfo[] = [];
   const cpu = node.cpu;
   if (cpu && (cpu.pct != null || cpu.cores)) {
-    meters.push({
-      key: "cpu",
+    tiles.push({
+      kind: "cpu",
       label: "CPU",
-      value: [cpu.pct != null ? `${Math.round(cpu.pct)}%` : null, cpu.cores ? `${cpu.cores}코어` : null].filter(Boolean).join(" · "),
+      value: cpu.pct != null ? `${Math.round(cpu.pct)}%` : "–",
+      sub: cpu.cores ? `${cpu.cores}코어` : "",
       pct: cpu.pct,
       title: cpu.model ?? undefined,
     });
   }
   if (node.memory) {
     const { used_gb, total_gb } = node.memory;
-    meters.push({
-      key: "memory",
+    const pct = total_gb ? (used_gb / total_gb) * 100 : null;
+    tiles.push({
+      kind: "memory",
       label: "메모리",
-      value: `${used_gb.toFixed(1)} / ${total_gb.toFixed(1)} GB`,
-      pct: total_gb ? (used_gb / total_gb) * 100 : null,
+      value: `${Math.round(used_gb)} / ${Math.round(total_gb)} GB`,
+      sub: pct != null ? `${Math.round(pct)}%` : "",
+      pct,
     });
   }
-  for (const d of node.disks ?? []) {
-    meters.push({
-      key: `disk:${d.mount}`,
-      label: d.mount,
-      value: `${capacity(d.free_gb)} 남음 / ${capacity(d.total_gb)}`,
-      pct: d.pct,
-      title: `디스크 ${d.mount} · ${Math.round(d.pct)}% 사용`,
+  const disks = node.disks ?? [];
+  if (disks.length > 0) {
+    const total = disks.reduce((n, d) => n + d.total_gb, 0);
+    const free = disks.reduce((n, d) => n + d.free_gb, 0);
+    const fullest = disks.reduce((a, d) => (d.pct > a.pct ? d : a));
+    const each = disks.map((d) => `${d.mount} ${capacity(d.free_gb)} 남음 / ${capacity(d.total_gb)} (${Math.round(d.pct)}%)`).join("\n");
+    const full = fullest.pct >= FULL_PCT;
+    tiles.push({
+      kind: "disk",
+      // A disk nearly full is named on the tile; otherwise the disks are added up.
+      label: full ? `${fullest.mount} ${Math.round(fullest.pct)}%` : disks.length > 1 ? `디스크 ${disks.length}개` : "디스크",
+      value: `${capacity(full ? fullest.free_gb : free)} 남음`,
+      sub: full ? (disks.length > 1 ? `디스크 ${disks.length}개` : `/ ${capacity(fullest.total_gb)}`) : `/ ${capacity(total)}`,
+      pct: full ? fullest.pct : total ? ((total - free) / total) * 100 : null,
+      title: each,
     });
   }
-  if (meters.length === 0) return null;
+  return tiles;
+}
+
+function SysTile({ tile }: { tile: SysTileInfo }) {
+  const level = Math.min(100, Math.max(0, tile.pct ?? 0));
+  const full = tile.pct != null && tile.pct >= FULL_PCT;
   return (
-    <div className="board-sys">
-      {meters.map((m) => {
-        const level = m.pct == null ? "" : m.pct >= 90 ? "bad" : m.pct >= 75 ? "warn" : "";
-        return (
-          <div key={m.key} className={`sys-meter ${level}`} title={m.title}>
-            <div className="sys-line">
-              <span className="sys-label">{m.label}</span>
-              <span className="num">{m.value}</span>
-            </div>
-            <div className="sys-bar">
-              <i style={{ width: `${Math.min(100, Math.max(0, m.pct ?? 0))}%` }} />
-            </div>
-          </div>
-        );
-      })}
+    <div className={`sys-tile ${tile.kind}${full ? " full" : ""}`} title={tile.title}>
+      <div className="sys-level" style={{ height: `${level}%` }} />
+      <div className="gpu-body">
+        <div className="gpu-head">
+          <span>{tile.label}</span>
+        </div>
+        <div className="sys-value">{tile.value}</div>
+        {tile.sub && <div className="gpu-what">{tile.sub}</div>}
+      </div>
     </div>
   );
 }
