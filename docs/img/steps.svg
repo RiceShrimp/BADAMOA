@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="236" viewBox="0 0 880 236" role="img" aria-label="1 Hub 실행, 2 서버를 노드로 붙이기, 3 데이터 등록하고 학습">
+  <defs>
+    <style>
+      .ko { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", sans-serif; }
+      .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, "SFMono-Regular", monospace; }
+      .card { fill: #0b1a21; stroke: #1f4250; }
+      .num { fill: #12a3b5; }
+      .title { font-size: 17px; font-weight: 700; fill: #eaf6f8; }
+      .cap { font-size: 12.5px; fill: #93b6bf; }
+    </style>
+  </defs>
+
+  <!-- 1 -->
+  <g transform="translate(14 8)">
+    <rect class="card" width="272" height="220" rx="16"/>
+    <circle class="num" cx="30" cy="32" r="15"/>
+    <text x="30" y="38" text-anchor="middle" class="ko" font-size="16" font-weight="800" fill="#fff">1</text>
+    <text x="54" y="38" class="ko title">Hub 실행</text>
+    <g transform="translate(18 62)">
+      <rect width="236" height="94" rx="10" fill="#050d11" stroke="#173540"/>
+      <circle cx="14" cy="13" r="3.2" fill="#ff8a80" opacity="0.7"/>
+      <circle cx="25" cy="13" r="3.2" fill="#f0c35a" opacity="0.7"/>
+      <circle cx="36" cy="13" r="3.2" fill="#6fd69a" opacity="0.7"/>
+      <text x="14" y="44" class="mono" font-size="12" fill="#e4f4f7"><tspan fill="#4fd0e2">$</tspan> badamoa hub run</text>
+      <text x="14" y="64" class="mono" font-size="10.5" fill="#6f9aa5">BADAMOA Hub 0.37.0</text>
+      <text x="14" y="81" class="mono" font-size="10.5" fill="#6fd69a">웹 UI : http://192.168.0.10:8470</text>
+    </g>
+    <text x="20" y="182" class="ko cap">브라우저에서 관리자 계정을 만들면 끝.</text>
+    <text x="20" y="201" class="ko cap">이 PC가 첫 번째 노드가 됩니다.</text>
+  </g>
+
+  <!-- arrow -->
+  <path d="M292 118 l8 0 m-4 -5 l5 5 l-5 5" fill="none" stroke="#2f6d7c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 2 -->
+  <g transform="translate(304 8)">
+    <rect class="card" width="272" height="220" rx="16"/>
+    <circle class="num" cx="30" cy="32" r="15"/>
+    <text x="30" y="38" text-anchor="middle" class="ko" font-size="16" font-weight="800" fill="#fff">2</text>
+    <text x="54" y="38" class="ko title">서버를 노드로</text>
+    <g transform="translate(18 62)">
+      <!-- hub -->
+      <rect x="84" y="0" width="68" height="34" rx="9" fill="#12a3b5"/>
+      <path d="M96 15c2.2-2.6 3.7-2.6 5.9 0s3.6 2.6 5.8 0 3.7-2.6 5.9 0M96 22c2.2-2.6 3.7-2.6 5.9 0s3.6 2.6 5.8 0 3.7-2.6 5.9 0" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+      <text x="138" y="22" text-anchor="middle" class="ko" font-size="11" font-weight="700" fill="#fff">Hub</text>
+      <!-- servers -->
+      <g fill="#0f2f37" stroke="#2a6070">
+        <rect x="0" y="62" width="64" height="32" rx="7"/>
+        <rect x="86" y="62" width="64" height="32" rx="7"/>
+        <rect x="172" y="62" width="64" height="32" rx="7"/>
+      </g>
+      <g class="mono" font-size="10" fill="#cfe9ee" text-anchor="middle">
+        <text x="32" y="82">gpu-01</text>
+        <text x="118" y="82">gpu-02</text>
+        <text x="204" y="82">nas</text>
+      </g>
+      <g fill="#6fd69a">
+        <circle cx="8" cy="70" r="2.6"/><circle cx="94" cy="70" r="2.6"/><circle cx="180" cy="70" r="2.6"/>
+      </g>
+      <g stroke="#4fd0e2" stroke-width="1.6" fill="none" stroke-dasharray="3 3">
+        <path d="M32 60 C 32 46, 96 46, 104 36"/>
+        <path d="M118 60 V 36"/>
+        <path d="M204 60 C 204 46, 140 46, 132 36"/>
+      </g>
+    </g>
+    <text x="20" y="182" class="ko cap">웹 UI가 주는 한 줄 명령을 서버에서 실행.</text>
+    <text x="20" y="201" class="ko cap">Ubuntu · Windows · 포트 개방 불필요.</text>
+  </g>
+
+  <!-- arrow -->
+  <path d="M582 118 l8 0 m-4 -5 l5 5 l-5 5" fill="none" stroke="#2f6d7c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 3 -->
+  <g transform="translate(594 8)">
+    <rect class="card" width="272" height="220" rx="16"/>
+    <circle class="num" cx="30" cy="32" r="15"/>
+    <text x="30" y="38" text-anchor="middle" class="ko" font-size="16" font-weight="800" fill="#fff">3</text>
+    <text x="54" y="38" class="ko title">데이터 등록 → 학습</text>
+    <g transform="translate(18 64)">
+      <!-- dataset grid -->
+      <g>
+        <rect x="0" y="0" width="22" height="22" rx="4" fill="#1b4b57"/>
+        <rect x="26" y="0" width="22" height="22" rx="4" fill="#2a6070"/>
+        <rect x="0" y="26" width="22" height="22" rx="4" fill="#2a6070"/>
+        <rect x="26" y="26" width="22" height="22" rx="4" fill="#1b4b57"/>
+        <rect x="4" y="5" width="12" height="10" rx="1.5" fill="none" stroke="#f0c35a" stroke-width="1.4"/>
+        <rect x="30" y="31" width="13" height="11" rx="1.5" fill="none" stroke="#4fd0e2" stroke-width="1.4"/>
+      </g>
+      <text x="24" y="66" text-anchor="middle" class="ko" font-size="10.5" fill="#93b6bf">데이터셋</text>
+      <path d="M58 24 h20 m-5 -5 l5 5 l-5 5" fill="none" stroke="#2f6d7c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- chart -->
+      <g transform="translate(88 0)">
+        <rect width="60" height="48" rx="7" fill="#0f2f37"/>
+        <path d="M8 40 C 18 34, 22 22, 32 18 S 46 10, 54 9" fill="none" stroke="#4fd0e2" stroke-width="2" stroke-linecap="round"/>
+        <path d="M8 41 C 18 38, 26 30, 36 27 S 48 23, 54 22" fill="none" stroke="#b18cff" stroke-width="1.6" stroke-linecap="round"/>
+      </g>
+      <text x="118" y="66" text-anchor="middle" class="ko" font-size="10.5" fill="#93b6bf">학습</text>
+      <path d="M158 24 h20 m-5 -5 l5 5 l-5 5" fill="none" stroke="#2f6d7c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- model box -->
+      <g transform="translate(188 2)">
+        <path d="M24 0 L46 11 V35 L24 46 L2 35 V11 Z" fill="#0f2f37" stroke="#4fd0e2" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M2 11 L24 22 L46 11 M24 22 V46" fill="none" stroke="#4fd0e2" stroke-width="1.4" stroke-linejoin="round"/>
+      </g>
+      <text x="212" y="66" text-anchor="middle" class="ko" font-size="10.5" fill="#93b6bf">모델</text>
+    </g>
+    <text x="20" y="182" class="ko cap">노드의 폴더를 고르면 복사 없이 등록.</text>
+    <text x="20" y="201" class="ko cap">릴리스 고르고 학습 → 모델로 자동 등록.</text>
+  </g>
+</svg>

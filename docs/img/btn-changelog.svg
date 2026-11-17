@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="64" viewBox="0 0 280 64" role="img" aria-label="릴리즈 노트 — 버전별로 바뀐 점">
+  <defs>
+    <style>
+      .ko { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", sans-serif; }
+    </style>
+  </defs>
+  <rect width="280" height="64" rx="14" fill="#11202a"/>
+  <rect x="0.5" y="0.5" width="279" height="63" rx="13.5" fill="none" stroke="#2a5664"/>
+  <!-- notes -->
+  <g transform="translate(22 16)" fill="none" stroke="#4fd0e2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="1" width="24" height="30" rx="4"/>
+    <path d="M8 10h12M8 16h12M8 22h7"/>
+  </g>
+  <text x="62" y="30" class="ko" font-size="18" font-weight="800" fill="#eaf6f8">릴리즈 노트</text>
+  <text x="62" y="49" class="ko" font-size="12" fill="#93b6bf">버전별로 바뀐 점</text>
+  <path d="M250 26l7 6-7 6" fill="none" stroke="#93b6bf" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
