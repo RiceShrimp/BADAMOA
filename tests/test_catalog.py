@@ -69,6 +69,21 @@ def hub(live_hub, tmp_path, monkeypatch):
         runner.stop()
 
 
+def _place(settings, release_id, **values):
+    """Site or camera on every image of a version, written straight to the database: since 0.50.1 nothing in
+    BADAMOA reads them from file names, but images registered before keep theirs and the filters still use them."""
+    from sqlalchemy import select, update
+
+    from badamoa.hub.catalog_models import Item, ReleaseItem
+    from badamoa.hub.db import Database
+
+    database = Database(settings.database_url)
+    with database.session() as db:
+        ids = select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id)
+        db.execute(update(Item).where(Item.id.in_(ids)).values(**values))
+    database.engine.dispose()
+
+
 def _import(hub, project_id, path, version, **extra):
     body = {"node_id": hub.node_id, "path": str(path), "dataset": "street", "version": version, **extra}
     resp = hub.post(f"/api/projects/{project_id}/imports", json=body)
@@ -85,12 +100,13 @@ def _import(hub, project_id, path, version, **extra):
     return job["result"]["release_id"]
 
 
-def test_import_browse_and_compare_releases(hub, tmp_path):
+def test_import_browse_and_compare_releases(hub, tmp_path, settings):
     root = make_yolo(tmp_path / "ds")
     project = hub.post("/api/projects", json={"name": "주차장", "task": "detect"}).json()
     assert hub.post("/api/projects", json={"name": "주차장"}).status_code == 409
 
-    v1 = _import(hub, project["id"], root, "v1", site="Hangang", camera="4Kx4", note="첫 릴리스")
+    v1 = _import(hub, project["id"], root, "v1", note="첫 릴리스")
+    _place(settings, v1, site="Hangang", camera="4Kx4")
 
     # ---- the release and its numbers
     tree = hub.get(f"/api/projects/{project['id']}/datasets").json()
@@ -101,7 +117,7 @@ def test_import_browse_and_compare_releases(hub, tmp_path):
     stats = release["stats"]
     assert stats["items"] == 8 and stats["splits"]["train"]["items"] == 6 and stats["splits"]["val"]["items"] == 2
     assert stats["states"] == {"labelled": 6, "background": 2, "unlabelled": 0}
-    assert stats["sites"] == ["Hangang"] and stats["bytes"] > 0
+    assert stats["sites"] == [] and stats["bytes"] > 0  # counted when imported, before the values were placed
     assert [c["name"] for c in release["label_space"]["classes"]] == CLASSES and release["base"] is None
     assert sum(c["boxes"] for c in stats["classes"].values()) == stats["boxes"] > 0
 
@@ -193,10 +209,12 @@ def test_import_of_missing_folder_fails_with_a_clear_log(hub, tmp_path):
     assert "data.import" not in [t["type"] for t in hub.get("/api/job-types").json()]
 
 
-def test_new_releases_from_existing_ones(hub, tmp_path):
+def test_new_releases_from_existing_ones(hub, tmp_path, settings):
     project = hub.post("/api/projects", json={"name": "새 릴리스", "task": "detect"}).json()
-    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1", camera="cam1")
-    more = _import(hub, project["id"], make_yolo(tmp_path / "b", train=4, val=0, seed=5), "more", camera="cam2")
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
+    more = _import(hub, project["id"], make_yolo(tmp_path / "b", train=4, val=0, seed=5), "more")
+    _place(settings, v1, camera="cam1")
+    _place(settings, more, camera="cam2")
 
     def make(**body):
         return hub.post("/api/releases", json={"sources": [v1], **body})
@@ -485,38 +503,17 @@ def test_project_trash_and_restore(hub, tmp_path):
     assert hub.delete("/api/projects/no-such").status_code == 404
 
 
-def test_site_and_camera_from_file_names(hub, tmp_path):
+def test_site_and_camera_are_not_filled_from_file_names(hub, tmp_path):
+    """Gone in 0.50.1: the version screen's 사이트 · 카메라 dialog and the import's rule and fixed values."""
     project = hub.post("/api/projects", json={"name": "이름 규칙", "task": "detect"}).json()
-    # read while importing: images/train/train_0000.jpg → site "train"; the fixed camera goes to every image
+    # an older client's fields are ignored, not refused
     v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1", camera="cam", name_pattern="{site}_*")
     stats = hub.get(f"/api/releases/{v1}").json()["stats"]
-    assert (stats["sites"], stats["cameras"]) == (["train", "val"], ["cam"])
-    bad_import = {"node_id": hub.node_id, "path": "x", "dataset": "d", "version": "v9", "name_pattern": "{weather}"}
-    assert hub.post(f"/api/projects/{project['id']}/imports", json=bad_import).status_code == 400
-
-    def rule(pattern, dry_run=True):
-        return hub.post(f"/api/releases/{v1}/names", json={"pattern": pattern, "dry_run": dry_run})
-
-    # ---- a dry run shows what the rule finds, and changes nothing
-    preview = rule("{camera}_{site}").json()
-    assert (preview["items"], preview["matched"], preview["changed"], preview["fields"]) == (8, 8, 8, ["camera", "site"])
-    assert preview["values"]["camera"]["count"] == 2 and preview["values"]["site"]["count"] == 6
-    assert preview["examples"][0] == {"path": "images/train/train_0000.jpg", "camera": "train", "site": "0000"}
-    assert hub.get(f"/api/releases/{v1}").json()["stats"]["cameras"] == ["cam"]
-    folders = rule("{camera}/*").json()  # the folder the file sits in
-    assert folders["matched"] == 8 and folders["examples"][0]["camera"] == "train"
-    missed = rule("{site}-{camera}").json()
-    assert missed["matched"] == 0 and len(missed["misses"]) == 4
-    assert rule("{site}-{camera}", dry_run=False).status_code == 400
-    for wrong in ("", "*", "{weather}_*", "{site}_{site}"):
-        assert rule(wrong).status_code == 400, wrong
-
-    # ---- applied: every version holding the images offers the new values
-    assert rule("{camera}_{site}", dry_run=False).json()["changed"] == 8
-    stats = hub.get(f"/api/releases/{v1}").json()["stats"]
-    assert stats["cameras"] == ["train", "val"] and len(stats["sites"]) == 6
-    assert hub.get(f"/api/releases/{v1}/items", params={"camera": "val"}).json()["total"] == 2
-    assert rule("{camera}_{site}").json()["changed"] == 0
+    assert (stats["sites"], stats["cameras"]) == ([], [])
+    first = hub.get(f"/api/releases/{v1}/items", params={"limit": 1}).json()["items"][0]
+    detail = hub.get(f"/api/releases/{v1}/items/{first['id']}").json()
+    assert (detail["site"], detail["camera"]) == ("", "")
+    assert hub.post(f"/api/releases/{v1}/names", json={"pattern": "{camera}_{site}"}).status_code in (404, 405)
 
 
 def test_rename_merge_and_drop_classes_as_a_new_version(hub, tmp_path):

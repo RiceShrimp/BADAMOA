@@ -127,6 +127,9 @@ export function ItemViewer({
   const [fill, setFill] = useState(false);
   const [onlyHere, setOnlyHere] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set()); // class names
+  const [hiddenBoxes, setHiddenBoxes] = useState<Set<string>>(new Set()); // single labels turned off: "revision:index"
+  const [hoverBox, setHoverBox] = useState<number | null>(null); // the label pointed at in the list
+  const [focusBox, setFocusBox] = useState<number | null>(null); // the label picked in the list: the others dim
   const [full, setFull] = useState<"loading" | "ok" | "error">("loading"); // the original image
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
@@ -251,6 +254,9 @@ export function ItemViewer({
         setLetBe(page.items[0].let_be ?? null);
         setLetBeNote("");
         setFull(detail.image_url ? "loading" : "error");
+        setHiddenBoxes(new Set());
+        setHoverBox(null);
+        setFocusBox(null);
         setRevisionId(detail.revision_id);
         setCompareId(null);
         setNote(null);
@@ -712,6 +718,7 @@ export function ItemViewer({
     return !hidden.has(name) && !(onlyHere && foreign(r) && classes.length > 0 && !here.has(name));
   };
   const visible = (r: Revision) => r.boxes.filter((b) => shownBox(r, b));
+  const boxOff = (r: Revision, i: number) => hiddenBoxes.has(`${r.id}:${i}`);
 
   // While fixing, the labels being fixed are drawn like a revision of this version's classes.
   const editRevision: Revision | null =
@@ -742,9 +749,12 @@ export function ItemViewer({
 
   const drawBoxes = (r: Revision) => {
     const names = namesOf(r);
+    // the label pointed at (or picked) in the list stands out; the others step back
+    const active = r.id === shownRevision?.id ? (hoverBox ?? focusBox) : null;
     return (
       <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
-        {visible(r).map((b, i) => {
+        {r.boxes.map((b, i) => {
+          if (!shownBox(r, b) || boxOff(r, i)) return null;
           // A classification label has no geometry: it is drawn as a frame around the whole image.
           const [cls, cx = 0.5, cy = 0.5, bw = 1, bh = 1] = b;
           const x = (cx - bw / 2) * w;
@@ -761,8 +771,21 @@ export function ItemViewer({
           const thin = outline.length >= 6 || keypoints.length > 0;
           // dots sized to the person, so a crowd of small people stays readable
           const dot = Math.min(font * 0.32, Math.max(font * 0.12, (Math.min(bw * w, bh * h) * 0.045) / zoom));
+          const lit = active === i;
           return (
-            <g key={i}>
+            <g key={i} opacity={active != null && !lit ? 0.35 : 1} className={lit ? "label-lit" : undefined}>
+              {lit && (
+                <rect
+                  x={x}
+                  y={y}
+                  width={bw * w}
+                  height={bh * h}
+                  fill="none"
+                  stroke="#fff"
+                  strokeWidth="6"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
               {outline.length >= 6 && (
                 <polygon
                   points={points}
@@ -778,11 +801,11 @@ export function ItemViewer({
                 y={y}
                 width={bw * w}
                 height={bh * h}
-                strokeDasharray={thin ? "4 3" : undefined}
-                fill={fill && !thin ? color : "none"}
-                fillOpacity={0.25}
+                strokeDasharray={thin && !lit ? "4 3" : undefined}
+                fill={(fill || lit) && !thin ? color : "none"}
+                fillOpacity={lit ? 0.18 : 0.25}
                 stroke={color}
-                strokeWidth="2"
+                strokeWidth={lit ? 3 : 2}
                 vectorEffect="non-scaling-stroke"
               />
               {(kindOf?.skeleton ?? []).map(([a, c], n) =>
@@ -1492,6 +1515,32 @@ export function ItemViewer({
           )}
         </section>
 
+        {item && shownRevision && task !== "classify" && shownRevision.boxes.length > 0 && (
+          <LabelList
+            revision={shownRevision}
+            order={counts.map(([name]) => name)}
+            width={w}
+            height={h}
+            colorIn={colorIn}
+            classHidden={(name) => hidden.has(name)}
+            off={(i) => boxOff(shownRevision, i)}
+            active={hoverBox ?? focusBox}
+            picked={editing ? selected : focusBox}
+            editing={editing}
+            onHover={setHoverBox}
+            onPick={(i) => (editing ? select(i) : setFocusBox(focusBox === i ? null : i))}
+            onToggle={(i) => {
+              const key = `${shownRevision.id}:${i}`;
+              const next = new Set(hiddenBoxes);
+              if (next.has(key)) next.delete(key);
+              else next.add(key);
+              setHiddenBoxes(next);
+              if (focusBox === i) setFocusBox(null);
+            }}
+            onShowAll={() => setHiddenBoxes(new Set())}
+          />
+        )}
+
         {item && (
           <>
             <section>
@@ -1579,5 +1628,110 @@ export function ItemViewer({
         )}
       </aside>
     </div>
+  );
+}
+
+/** Where a label sits in the image, in words: 왼쪽 위, 가운데, 오른쪽 아래 … */
+function placeOf(cx: number, cy: number): string {
+  const col = cx < 1 / 3 ? "왼쪽" : cx < 2 / 3 ? "가운데" : "오른쪽";
+  const row = cy < 1 / 3 ? "위" : cy < 2 / 3 ? "가운데" : "아래";
+  if (col === "가운데") return row === "가운데" ? "가운데" : `가운데 ${row}`;
+  return row === "가운데" ? col : `${col} ${row}`;
+}
+
+/** Every label of the labels shown, one row each, in words: its class and its number within the class (top to
+ * bottom, left to right), where it is and how big. Pointing at a row makes its label blink on the image; a row turns
+ * its label off on its own (while viewing) or picks it (while fixing). */
+function LabelList({
+  revision,
+  order,
+  width,
+  height,
+  colorIn,
+  classHidden,
+  off,
+  active,
+  picked,
+  editing,
+  onHover,
+  onPick,
+  onToggle,
+  onShowAll,
+}: {
+  revision: Revision;
+  order: string[]; // classes as the chips list them
+  width: number;
+  height: number;
+  colorIn: (r: Revision, cls: number) => string;
+  classHidden: (name: string) => boolean;
+  off: (index: number) => boolean;
+  active: number | null;
+  picked: number | null;
+  editing: boolean;
+  onHover: (index: number | null) => void;
+  onPick: (index: number) => void;
+  onToggle: (index: number) => void;
+  onShowAll: () => void;
+}) {
+  const names = Object.fromEntries(revision.classes.map((c) => [c.id, c.name])) as Record<number, string>;
+  const rows = revision.boxes
+    .map((b, i) => ({ b, i, name: names[b[0]] ?? String(b[0]) }))
+    .filter(({ b }) => b.length >= 5)
+    .sort((a, z) => order.indexOf(a.name) - order.indexOf(z.name) || a.b[2] - z.b[2] || a.b[1] - z.b[1]);
+  const seen = new Map<string, number>();
+  const numbered = rows.map((row) => {
+    const n = (seen.get(row.name) ?? 0) + 1;
+    seen.set(row.name, n);
+    return { ...row, n };
+  });
+  const turnedOff = rows.filter(({ i }) => off(i)).length;
+  return (
+    <section className="label-list-panel">
+      <div className="label-list-head">
+        <div className="eyebrow">라벨 {rows.length}개</div>
+        {!editing && turnedOff > 0 && (
+          <button className="link small" onClick={onShowAll}>
+            끈 {turnedOff}개 다시 보이기
+          </button>
+        )}
+      </div>
+      <div className="label-list" onMouseLeave={() => onHover(null)}>
+        {numbered.map(({ b, i, name, n }) => {
+          const [, cx, cy, bw, bh] = b;
+          const classOff = classHidden(name);
+          const isOff = classOff || off(i);
+          const color = colorIn(revision, b[0]);
+          return (
+            <div
+              key={i}
+              className={`label-row ${isOff ? "off" : ""} ${active === i ? "lit" : ""} ${picked === i ? "picked" : ""}`}
+              onMouseEnter={() => onHover(i)}
+            >
+              <button className="label-pick" onClick={() => onPick(i)} title={editing ? "이 라벨 고르기" : "이 라벨을 계속 깜박이게 (다시 누르면 풀기)"}>
+                <i style={{ background: color }} />
+                <span className="label-name">
+                  {name} <span className="muted">{n}</span>
+                </span>
+                <span className="muted small label-where">
+                  {placeOf(cx, cy)} · {Math.round(bw * width)}×{Math.round(bh * height)}
+                </span>
+              </button>
+              {!editing && (
+                <button
+                  className="icon-btn label-eye"
+                  onClick={() => onToggle(i)}
+                  disabled={classOff}
+                  aria-pressed={!isOff}
+                  title={classOff ? "클래스가 꺼져 있습니다 (위의 클래스 칩)" : isOff ? "이 라벨 보이기" : "이 라벨만 끄기"}
+                  aria-label={`${name} ${n} ${isOff ? "보이기" : "끄기"}`}
+                >
+                  <Icon name={isOff ? "eye-off" : "eye"} size={15} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }

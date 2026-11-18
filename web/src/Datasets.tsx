@@ -17,7 +17,7 @@ import { CHANGE_LABEL } from "./labelDiff";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
 import { Fingerprint, ReleaseCopies } from "./NodeCopies";
-import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog, describeFilter } from "./ReleaseMaker";
+import { ExportDialog, type ItemFilter, NewReleaseDialog, describeFilter } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
 import { type Job, type NodeInfo, api } from "./api";
 import {
@@ -199,7 +199,6 @@ function ReleaseView({
   const [compareWith, setCompareWith] = useState("");
   const [making, setMaking] = useState<"" | "items" | "classes">("");
   const [labelingSet, setLabelingSet] = useState(false); // making a labeling set of the filtered images
-  const [naming, setNaming] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   const filterQuery = useMemo(() => {
@@ -492,11 +491,6 @@ function ReleaseView({
             <Icon name="edit" size={13} /> 라벨링 묶음 만들기
           </button>
         )}
-        {release.status === "ready" && (
-          <button className="ghost-btn" onClick={() => setNaming(true)} title="파일 이름에서 사이트 · 카메라를 읽어 채웁니다">
-            사이트 · 카메라
-          </button>
-        )}
         {task !== "classify" && (
           <label className="check inline-check">
             <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />
@@ -661,16 +655,6 @@ function ReleaseView({
           onCreated={(id) => {
             setMaking("");
             window.location.hash = `#/datasets/${id}`;
-          }}
-        />
-      )}
-      {naming && (
-        <NamesDialog
-          release={release}
-          onClose={() => setNaming(false)}
-          onDone={() => {
-            setNaming(false);
-            void refresh();
           }}
         />
       )}
@@ -891,9 +875,6 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
     dataset: "",
     version: "v1",
     format: "auto",
-    site: "",
-    camera: "",
-    name_pattern: "",
     note: "",
     unlabelled: "auto", // an image without a label file: auto | background | unlabelled
     classes: "", // class names for a folder of images to label, "car, person"
@@ -1128,30 +1109,6 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
               </>
             )}
           </div>
-          <details className="advanced" open={Boolean(form.site || form.camera || form.name_pattern)}>
-            <summary>
-              사이트 · 카메라 <span className="muted">(선택 · 필터와 split 묶음에 쓰임)</span>
-            </summary>
-            <label>
-              파일 이름 규칙
-              <input value={form.name_pattern} onChange={set("name_pattern")} placeholder="{site}_{camera}_*" className="mono" />
-            </label>
-            <p className="muted small">
-              <code>{"{site}"}</code> · <code>{"{camera}"}</code> 자리의 글자를 읽고, <code>*</code>는 아무 글자입니다. 예: seoul_cam03_0001.jpg →{" "}
-              <code>{"{site}_{camera}_*"}</code>, seoul/cam03/0001.jpg → <code>{"{site}/{camera}/*"}</code>. 등록한 뒤에도 버전 화면에서 채울 수
-              있습니다.
-            </p>
-            <div className="form-row">
-              <label>
-                모든 이미지의 사이트
-                <input value={form.site} onChange={set("site")} placeholder="규칙에 맞지 않을 때" />
-              </label>
-              <label>
-                모든 이미지의 카메라
-                <input value={form.camera} onChange={set("camera")} placeholder="규칙에 맞지 않을 때" />
-              </label>
-            </div>
-          </details>
           <details className="advanced" open={form.unlabelled !== "auto" || Boolean(form.classes)}>
             <summary>
               라벨이 없는 이미지 <span className="muted">(라벨할 이미지를 가져올 때)</span>

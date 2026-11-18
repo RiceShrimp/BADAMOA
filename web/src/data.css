@@ -845,20 +845,6 @@ label > textarea {
   border-radius: 2px;
   vertical-align: baseline;
 }
-.rule-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: -4px 0 8px;
-}
-.rule-presets button.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.names-preview .path {
-  overflow-wrap: anywhere;
-  font-size: 12px;
-}
 
 /* ---- home ---- */
 .stats.six {

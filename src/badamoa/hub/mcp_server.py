@@ -412,7 +412,6 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         ctx: Context,
         format: str = "auto",
         note: str = "",
-        name_pattern: str = "",
         task: str = "",
         unlabelled: str = "auto",
         classes: list[str] | None = None,
@@ -422,7 +421,6 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         node_id는 데이터가 있는 노드, path는 그 노드에서의 폴더 경로입니다. format: auto | yolo | coco.
         task: 데이터셋의 태스크 — Det · Seg · Kpt · Cls 또는 팀이 정한 이름(예: OCR). 비우면 폴더를 보고 정합니다.
         이미 있는 데이터셋의 새 버전이면 그 데이터셋의 태스크를 따릅니다.
-        name_pattern: 파일 이름에서 사이트 · 카메라를 읽는 규칙, 예: "{site}_{camera}_*" 또는 "{site}/{camera}/*".
         unlabelled: 라벨 파일이 없는 이미지 — "background"(배경), "unlabelled"(아직 라벨 안 함), "auto"(폴더에 라벨
         파일이 하나도 없으면 아직 안 함, 아니면 배경). classes: 클래스 이름이 없는 폴더(라벨할 이미지)에 쓸 클래스 목록.
         작업을 반환하므로 wait_for_job으로 완료를 기다린 뒤 result.release_id를 get_release로 확인하세요.
@@ -439,7 +437,6 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
                 version=version,
                 fmt=format,
                 note=note,
-                name_pattern=name_pattern,
                 task=task,
                 unlabelled=unlabelled,
                 classes=classes,

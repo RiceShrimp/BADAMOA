@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, select
 from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
@@ -474,9 +474,6 @@ def start_import(
     version: str,
     fmt: str = "auto",
     label_space: str = "",
-    site: str = "",
-    camera: str = "",
-    name_pattern: str = "",
     note: str = "",
     base_release_id: str = "",
     task: str = "",
@@ -504,8 +501,6 @@ def start_import(
         raise ServiceError(400, "unlabelled는 auto, background, unlabelled 중 하나여야 합니다.")
     if version == drafts.DRAFT:
         raise ServiceError(400, f"'{version}'은 버전 이름으로 쓸 수 없습니다.")
-    if name_pattern.strip():
-        name_rule(name_pattern)  # a wrong rule is turned away now, not after the node has read every file
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
     if existing and db.scalar(select(Release).where(Release.dataset_id == existing.id, Release.version == version)):
         raise ServiceError(409, f"{dataset} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
@@ -524,148 +519,12 @@ def start_import(
         "path": path,
         "format": fmt,
         "label_space": label_space.strip(),
-        "site": site.strip(),
-        "camera": camera.strip(),
-        "name_pattern": name_pattern.strip(),
         "note": note,
         "base_release_id": base_release_id,
         "unlabelled": unlabelled,
         "classes": list(dict.fromkeys(c.strip() for c in classes or [] if c.strip())),
     }
     return services.create_job(db, user, "data.import", params, node_id, via=via)
-
-
-# ---- site and camera from file names ---------------------------------------------------
-#
-# A rule such as ``{site}_{camera}_*`` is matched against the file name without its extension;
-# with folders in it (``{site}/{camera}/*``) against as many trailing folders of the path.
-
-NAME_FIELDS = ("site", "camera")
-
-
-def name_rule(pattern: str) -> tuple[re.Pattern[str], int, list[str]]:
-    """The rule as a regular expression, how many path parts it covers, and the fields it fills."""
-    pattern = pattern.strip().replace("\\", "/").strip("/")
-    if not pattern:
-        raise ServiceError(400, "파일 이름 규칙을 적으세요. 예: {site}_{camera}_*")
-    regex, fields = [], []
-    for part in re.split(r"(\{[^{}]*\}|\*)", pattern):
-        if not part:
-            continue
-        if part == "*":
-            regex.append(r"[^/]*")
-        elif part.startswith("{") and part.endswith("}"):
-            name = part[1:-1].strip()
-            if name not in NAME_FIELDS:
-                raise ServiceError(400, f"규칙에는 {{site}}와 {{camera}}만 쓸 수 있습니다. ({part})")
-            if name in fields:
-                raise ServiceError(400, f"{part}가 두 번 나옵니다.")
-            fields.append(name)
-            regex.append(f"(?P<{name}>[^/]+?)")
-        else:
-            regex.append(re.escape(part))
-    if not fields:
-        raise ServiceError(400, "규칙에 {site}나 {camera}를 하나 이상 넣으세요.")
-    return re.compile("".join(regex)), pattern.count("/") + 1, fields
-
-
-def names_from(rule: tuple[re.Pattern[str], int, list[str]], path: str) -> dict[str, str] | None:
-    """{"site": …, "camera": …} read from a file path by the rule, or None when it does not fit."""
-    regex, depth, _ = rule
-    parts = path.replace("\\", "/").strip("/").split("/")
-    if len(parts) < depth:
-        return None
-    stem, dot, _ext = parts[-1].rpartition(".")
-    parts[-1] = stem if dot and stem else parts[-1]
-    found = regex.fullmatch("/".join(parts[-depth:]))
-    if found is None:
-        return None
-    values = {k: v.strip()[:64] for k, v in found.groupdict().items()}
-    return values if all(values.values()) else None
-
-
-def _places(db: Session, release: Release) -> None:
-    """Refresh the sites and cameras a release's filters offer."""
-    stats = dict(release.stats or {})
-    for field in NAME_FIELDS:
-        values = db.scalars(
-            select(getattr(Item, field))
-            .join(ReleaseItem, ReleaseItem.item_id == Item.id)
-            .where(ReleaseItem.release_id == release.id)
-            .distinct()
-        ).all()
-        stats[f"{field}s"] = sorted(v for v in values if v)
-    release.stats = stats
-
-
-def fill_names(
-    db: Session, user: User, release_id: str, pattern: str, dry_run: bool = False, via: str = "api"
-) -> dict[str, Any]:
-    """Read site and camera from the file names of a release's images; ``dry_run`` shows what the rule finds.
-
-    Site and camera belong to the image, so every version holding it sees the new values.
-    Images the rule does not fit keep what they had.
-    """
-    release = get_release(db, release_id)
-    project = get_project(db, db.get(Dataset, release.dataset_id).project_id)
-    rule = name_rule(pattern)
-    fields = rule[2]
-    rows = db.execute(
-        select(Item.id, Item.rel_path, Item.file_name, Item.site, Item.camera)
-        .join(ReleaseItem, ReleaseItem.item_id == Item.id)
-        .where(ReleaseItem.release_id == release.id)
-        .order_by(Item.id)
-    ).all()
-    found: dict[int, dict[str, str]] = {}
-    changed: dict[tuple[str, ...], list[int]] = {}
-    examples: list[dict[str, str]] = []
-    misses: list[str] = []
-    counts = {field: Counter() for field in fields}
-    for item_id, rel_path, file_name, site, camera in rows:
-        path = rel_path or file_name
-        values = names_from(rule, path)
-        if values is None:
-            if len(misses) < 4:
-                misses.append(path)
-            continue
-        found[item_id] = values
-        for field in fields:
-            counts[field][values[field]] += 1
-        if len(examples) < 6:
-            examples.append({"path": path, **values})
-        if any(values[field] != now for field, now in (("site", site), ("camera", camera)) if field in fields):
-            changed.setdefault(tuple(values[f] for f in fields), []).append(item_id)
-    summary = {
-        "items": len(rows),
-        "matched": len(found),
-        "changed": sum(len(ids) for ids in changed.values()),
-        "fields": fields,
-        "examples": examples,
-        "misses": misses,
-        "values": {
-            field: {"count": len(counts[field]), "top": [{"value": v, "items": n} for v, n in counts[field].most_common(6)]}
-            for field in fields
-        },
-    }
-    if dry_run:
-        return summary
-    _may_edit(project, user)
-    if not found:
-        raise ServiceError(400, "규칙에 맞는 파일이 없습니다. 예시의 경로를 보고 규칙을 고치세요.")
-    for values, ids in changed.items():
-        new = dict(zip(fields, values, strict=True))
-        for start in range(0, len(ids), 900):
-            db.execute(update(Item).where(Item.id.in_(ids[start : start + 900])).values(new))
-    db.flush()
-    touched = db.scalars(
-        select(Release)
-        .join(Dataset, Dataset.id == Release.dataset_id)
-        .where(Dataset.project_id == project.id, Release.status == "ready")
-    ).all()
-    for each in touched:
-        _places(db, each)
-    services.audit(db, user.id, via, "items.names", release.id, pattern=pattern.strip(), changed=summary["changed"])
-    return summary
 
 
 def _import_job(db: Session, node: Node, job_id: str) -> Job:
@@ -800,8 +659,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     batch = db.get(Batch, release.batch_id)
     space = db.get(LabelSpace, release.label_space_id)
     project_id = job.params["project_id"]
+    # Imports before 0.50.1 could set site and camera (fixed, or read from file names by a rule).
     site, camera = job.params.get("site", ""), job.params.get("camera", "")
-    rule = name_rule(job.params["name_pattern"]) if job.params.get("name_pattern") else None
     class_ids = [c["id"] for c in space.classes]
     # Outlines (Seg), keypoints (Kpt) or whatever a named task's labels hold follow the box; Det keeps the box.
     whole = release_task(db, release) not in ("detect", "classify")
@@ -819,7 +678,6 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
                 thumb_key = storage.put_blob(base64.b64decode(data.thumb_b64))
             except (binascii.Error, ValueError):
                 thumb_key = None
-        named = (names_from(rule, data.rel_path or data.file_name) if rule else None) or {}
         items[sha] = Item(
             project_id=project_id,
             sha256=sha,
@@ -827,8 +685,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
             width=data.width,
             height=data.height,
             bytes=data.bytes,
-            site=named.get("site", site),
-            camera=named.get("camera", camera),
+            site=site,
+            camera=camera,
             location_id=batch.location_id,
             rel_path=data.rel_path,
             thumb_key=thumb_key,

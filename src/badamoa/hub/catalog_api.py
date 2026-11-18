@@ -188,9 +188,6 @@ class ImportRequest(BaseModel):
     version: str
     format: str = "auto"
     label_space: str = ""
-    site: str = ""
-    camera: str = ""
-    name_pattern: str = ""  # e.g. "{site}_{camera}_*": site and camera read from each file name
     note: str = ""
     base_release_id: str = ""
     task: str = ""  # Det · Seg · Kpt · Cls, a named task, or "" to read it from the folder
@@ -219,9 +216,6 @@ def start_import(
         unlabelled=body.unlabelled,
         classes=body.classes,
         label_space=body.label_space,
-        site=body.site,
-        camera=body.camera,
-        name_pattern=body.name_pattern,
         note=body.note,
         base_release_id=body.base_release_id,
         task=body.task,
@@ -364,22 +358,6 @@ def new_release(body: NewRelease, user: User = Depends(current_user), db: Sessio
         dry_run=body.dry_run,
         via="ui",
     )
-    if not body.dry_run:
-        db.commit()
-    return result
-
-
-class NameRule(BaseModel):
-    pattern: str  # "{site}_{camera}_*", "{site}/{camera}/*" …
-    dry_run: bool = False
-
-
-@router.post("/releases/{release_id}/names")
-def fill_names(
-    release_id: str, body: NameRule, user: User = Depends(current_user), db: Session = Depends(db_session)
-) -> dict[str, Any]:
-    """Site and camera read from the file names of a release's images; ``dry_run`` only shows what the rule finds."""
-    result = catalog.fill_names(db, user, release_id, body.pattern, dry_run=body.dry_run, via="ui")
     if not body.dry_run:
         db.commit()
     return result
