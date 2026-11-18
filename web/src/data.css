@@ -1281,13 +1281,13 @@ tr.clickable:hover td {
   height: 26px;
   margin-left: auto;
 }
-.board-rows {
+.board-lines {
   display: grid;
   gap: 2px;
   padding: 6px 8px 8px;
   border-top: 1px solid var(--border);
 }
-.board-row {
+.board-line {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1298,7 +1298,7 @@ tr.clickable:hover td {
   font-size: 12.5px;
   text-decoration: none;
 }
-.board-row:hover {
+.board-line:hover {
   background: var(--surface-2);
 }
 .board-aliases {

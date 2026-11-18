@@ -258,9 +258,9 @@ export function TrainingBoard() {
                 </div>
               </a>
               {c.recent.length > 0 && (
-                <div className="board-rows">
+                <div className="board-lines">
                   {c.recent.map((r) => (
-                    <a key={r.id} href={`#/training/${r.id}`} className="board-row">
+                    <a key={r.id} href={`#/training/${r.id}`} className="board-line">
                       <Badge kind={STATUS_KIND[r.status] ?? "idle"}>{STATUS_LABEL[r.status] ?? r.status}</Badge>
                       <span className="ellipsis">{r.name}</span>
                       <span className="num muted">{r.value != null ? metric(r.value) : r.status === "running" ? `${r.epoch}/${r.epochs}` : ""}</span>
@@ -363,10 +363,10 @@ export function ModelsBoard() {
               </div>
             </a>
             {c.models > 0 && (
-              <div className="board-rows">
+              <div className="board-lines">
                 {c.aliased.length === 0 && <div className="muted small">별칭 붙은 모델이 없습니다</div>}
                 {c.aliased.map((m) => (
-                  <a key={m.id} href={`#/models/${m.id}`} className="board-row">
+                  <a key={m.id} href={`#/models/${m.id}`} className="board-line">
                     <span className="board-aliases">
                       {m.aliases.map((a) => (
                         <AliasChip key={a} alias={a} />
