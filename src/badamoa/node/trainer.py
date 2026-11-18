@@ -20,6 +20,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -33,7 +34,7 @@ from badamoa import templates as shipped
 from badamoa.core import templates as template_format
 
 from . import cache as image_cache
-from . import envs, exporter, sync
+from . import containers, envs, exporter, sync
 
 EVENT_PREFIX = "@@badamoa "
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # colours and cursor moves; the job log is plain text
@@ -214,6 +215,98 @@ def command_for(entrypoint: str, python: Path, config_path: Path) -> list[str]:
     return [part.replace("{config}", str(config_path)) for part in parts]
 
 
+def container_args(entrypoint: str, config_inside: str) -> list[str]:
+    """``python train.py --config {config}`` as the container runs it: its own Python, the config's path inside."""
+    parts = [part.strip('"') for part in shlex.split(entrypoint, posix=True)]
+    return [part.replace("{config}", config_inside) for part in parts]
+
+
+def ready_environment(
+    home: Path, spec: dict[str, Any], log: Callable[[str], None] = print
+) -> tuple[Path | None, list[str], dict[str, Any]]:
+    """Have a run's environment ready on this node.
+
+    Returns the Python to start (None for a Docker image, which runs as a container), what is installed
+    in it, and facts for the run's record (the image and its id).
+    """
+    if spec.get("kind") == "docker":
+        image = str(spec.get("image") or "")
+        image_id = containers.ensure(home, image, log)
+        return None, containers.packages(image, envs.PACKAGES), {"image": image, "image_id": image_id}
+    python = envs.resolve(home, spec, log)
+    return python, envs.packages(python), {}
+
+
+def launch(
+    *,
+    job_id: str,
+    home: Path,
+    spec: dict[str, Any],
+    python: Path | None,
+    entrypoint: str,
+    config: dict[str, Any],
+    config_path: Path,
+    code: Path,
+    work: Path,
+    mounts: list[tuple[Path, bool]],
+) -> tuple[list[str], dict[str, str], Callable[[str], Path]]:
+    """How to start a template's entry point, and write its config.
+
+    In a virtual environment (or a server's Python) the code runs as a process here; with a Docker image,
+    as a container with ``work``, the code, the SDK, the caches and ``mounts`` (node folder, read-only)
+    mounted in. Returns the command, the environment of the process that starts it (never the node's
+    credentials), and how to turn a path the code reports into a path on this node.
+    """
+    plain = {"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "NO_COLOR": "1"}
+    ultralytics = home / "cache" / "ultralytics"  # Ultralytics keeps its settings here, not in the user's own
+    if spec.get("kind") != "docker":
+        config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+        env = envs.code_env(
+            {
+                **plain,
+                # Template code can ``import badamoa_sdk`` without shipping or installing it.
+                "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
+                "YOLO_CONFIG_DIR": str(ultralytics),
+            }
+        )
+
+        def here(text: str) -> Path:
+            path = Path(text)
+            return path if path.is_absolute() else code / path
+
+        return command_for(entrypoint, python or Path(sys.executable), config_path), env, here
+
+    folders = [work, home, *(folder for folder, _ in mounts)]
+    config_path.write_text(json.dumps(containers.translate(config, folders), ensure_ascii=False), encoding="utf-8")
+    if config.get("data"):
+        containers.rewrite_data_yaml(Path(str(config["data"])))
+    cache = Path(str(config.get("cache") or work))
+    inner = {
+        **plain,
+        "PYTHONPATH": containers.inside(shipped.SDK),
+        "YOLO_CONFIG_DIR": containers.inside(ultralytics),
+        # pretrained weights other libraries fetch: kept between runs like in a virtual environment
+        "TORCH_HOME": containers.inside(cache / "torch"),
+        "HF_HOME": containers.inside(cache / "huggingface"),
+    }
+    every = [(work, False), (code, True), (shipped.SDK, True), (ultralytics, False), (cache, False), *mounts]
+    command = containers.command(
+        str(spec.get("image") or ""),
+        job_id,
+        container_args(entrypoint, containers.inside(config_path)),
+        mounts=every,
+        workdir=code,
+        env=inner,
+        gpus=containers.gpu_list(),
+    )
+
+    def there(text: str) -> Path:
+        path = Path(containers.outside(text))
+        return path if path.is_absolute() else code / path
+
+    return command, envs.code_env(), there
+
+
 def run(params: dict[str, Any]) -> dict[str, Any]:
     hub, token, job_id, home = (
         os.environ.get(k) for k in ("BADAMOA_HUB_URL", "BADAMOA_NODE_TOKEN", "BADAMOA_JOB_ID", "BADAMOA_NODE_HOME")
@@ -253,10 +346,14 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
 
         items = placed(listed)
         print(f"{header['dataset']} {header['version']} 버전을 학습 형식으로 준비합니다: {work / 'data'}")
+        spec = params.get("environment") or {}
+        in_container = spec.get("kind") == "docker"
         options = exporter.ExportOptions(
             classes=[int(c) for c in params.get("classes") or []],
             unlabelled=params.get("unlabelled") or "exclude",
             val_fraction=float(params.get("val_fraction", 0.2)),
+            # a Linux container on Windows cannot follow a link to C:\…: hard links or copies
+            symlinks=not (in_container and os.name == "nt"),
         )
         shutil.rmtree(work, ignore_errors=True)
         data_format = template.get("data_format", "yolo")
@@ -285,10 +382,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         # 2–3. code and environment
         stage("env")
         code = template_dir(client, base, node_home, template)
-        python = envs.resolve(node_home, params.get("environment") or {})
-        installed = envs.packages(python)
-        if installed:
-            post("/report", {"event": "info", "data": {"packages": installed}})
+        python, installed, facts = ready_environment(node_home, spec)
+        if installed or facts:
+            post("/report", {"event": "info", "data": {**({"packages": installed} if installed else {}), **facts}})
 
         # 4. train
         cache = node_home / "cache" / "template-data" / template["name"]
@@ -331,22 +427,24 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 config["resume_checkpoint"] = str(target)
                 print(f"Hub에 보관된 체크포인트(epoch {resume.get('epoch')})를 받아 이어 갑니다.")
         config_path = work / "config.json"
-        config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+        # In a container the images' own folders are mounted too (the export links to them), read-only.
+        mounts = [(Path(root), True) for root in locations.values() if root] if os.name != "nt" else []
+        mounts += [(node_home / "cache" / "models", True), (previous, True)]
         # The node's environment without its credentials: the template's code never acts on the Hub itself.
-        env = envs.code_env(
-            {
-                "PYTHONUNBUFFERED": "1",
-                "PYTHONIOENCODING": "utf-8",
-                "PYTHONUTF8": "1",
-                "NO_COLOR": "1",  # the log is plain text
-                # Template code can ``import badamoa_sdk`` without shipping or installing it.
-                "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
-                # Ultralytics keeps its settings here instead of touching the user's own.
-                "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
-            }
+        command, env, where = launch(
+            job_id=job_id,
+            home=node_home,
+            spec=spec,
+            python=python,
+            entrypoint=template["entrypoint"],
+            config=config,
+            config_path=config_path,
+            code=code,
+            work=work,
+            mounts=mounts,
         )
-        command = command_for(template["entrypoint"], python, config_path)
-        print(f"학습 시작: {template['name']} {template['version']} · 장치 {config['device']}", flush=True)
+        place = f" · Docker {spec.get('image')}" if in_container else ""
+        print(f"학습 시작: {template['name']} {template['version']} · 장치 {config['device']}{place}", flush=True)
         stage("train")
         try:
             proc = subprocess.Popen(
@@ -390,8 +488,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
 
         def upload_file(event: dict[str, Any]) -> None:
             """A file the code recorded (a plot, sample predictions): stored with the run, never fatal."""
-            path = Path(str(event.get("path", "")))
-            path = path if path.is_absolute() else code / path
+            path = where(str(event.get("path", "")))
             if not path.is_file():
                 print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
                 return
@@ -407,8 +504,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         def note_checkpoint(event: dict[str, Any]) -> None:
             """Remember where the newest checkpoint is; now and then put a copy on the Hub."""
             nonlocal sent_checkpoint
-            path = Path(str(event.get("path", "")))
-            path = path if path.is_absolute() else code / path
+            path = where(str(event.get("path", "")))
             if not path.is_file():
                 return
             # Keep our own copy: the code overwrites its file every epoch, and a run stopped in the
@@ -480,9 +576,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         # 5. weights → Hub, then register the model
         stage("upload")
         uploaded: dict[str, Any] = {}
-        weights = Path(outcome["weights"]) if outcome.get("weights") else None
-        if weights is not None and not weights.is_absolute():
-            weights = code / weights
+        weights = where(str(outcome["weights"])) if outcome.get("weights") else None
         if weights is not None and weights.is_file():
             print(f"가중치 업로드: {weights.name} ({weights.stat().st_size / 1024**2:.1f} MB)", flush=True)
             with weights.open("rb") as stream:

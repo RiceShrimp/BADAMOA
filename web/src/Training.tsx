@@ -1336,9 +1336,13 @@ function NewRun({
                 환경
                 <select value={extra.environment} onChange={setExtraField("environment")}>
                   <option value="">자동{defaultEnv ? ` (${template?.environment.default})` : ""}</option>
+                  {template?.environment.declared_image && (
+                    <option value="docker">Docker 이미지 ({template.environment.declared_image})</option>
+                  )}
                   {environments.map((env) => (
                     <option key={env.id} value={env.id}>
                       {env.name}
+                      {env.kind === "docker" ? " · Docker" : ""}
                     </option>
                   ))}
                 </select>

@@ -54,7 +54,10 @@ class Environment(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(64), unique=True)
-    kind: Mapped[str] = mapped_column(String(16), default="python")  # python (docker comes later)
+    # python: an interpreter already on each server (``nodes`` has its path per node)
+    # docker: an image every server with Docker can run (``image``; ``nodes`` holds each server's check)
+    kind: Mapped[str] = mapped_column(String(16), default="python")
+    image: Mapped[str] = mapped_column(String(512), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     nodes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)

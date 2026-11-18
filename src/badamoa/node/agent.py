@@ -25,7 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
-from badamoa.node import browse, cache, dataserver, envs, remover, updater, workdirs
+from badamoa.node import browse, cache, containers, dataserver, envs, remover, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -252,7 +252,12 @@ class NodeAgent:
                 }
                 body: dict[str, Any] = {"agent_version": __version__, "metrics": metrics, "running_job_ids": running}
                 if not sent_info:
-                    body["info"] = {**sysinfo.static_info(), "envs": envs.listing(self.home)}
+                    body["info"] = {
+                        **sysinfo.static_info(),
+                        # what environments are ready here, and whether this node can run containers
+                        "envs": envs.listing(self.home) + containers.listing(self.home),
+                        "docker": containers.capability(),
+                    }
                 resp = self._client.post("/api/agent/heartbeat", json=body, timeout=15)
                 if resp.status_code == 200:
                     sent_info = True
@@ -439,7 +444,7 @@ class NodeAgent:
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
                     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
-                if job["type"].startswith(("data.", "train.", "model.", "env.prepare")):
+                if job["type"].startswith(("data.", "train.", "model.", "env.")):
                     # These jobs exchange data with the Hub themselves (import chunks, metrics, weights).
                     env["BADAMOA_HUB_URL"] = self.config.hub_url
                     env["BADAMOA_NODE_TOKEN"] = self.config.node_token
@@ -487,6 +492,8 @@ class NodeAgent:
             error = f"{type(e).__name__}: {e}"
             emit(error, "system")
         finally:
+            if status != "succeeded" and job["type"].startswith(("train.", "model.")):
+                containers.kill(job_id)  # a container its stopped process left behind
             if status != "succeeded" and job["type"].startswith("train."):
                 self._keep_checkpoint(job_id, emit)
             for _ in range(20):

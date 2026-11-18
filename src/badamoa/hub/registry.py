@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from badamoa import templates as shipped
 from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
-from badamoa.core.templates import TemplateError, TemplateManifest, load_manifest, read_bundle
+from badamoa.core.templates import IMAGE_RE, TemplateError, TemplateManifest, load_manifest, read_bundle
 
 from . import cleanup, services
 from .catalog_models import Project
@@ -144,6 +144,8 @@ def template_view(db: Session, row: Template, versions: int = 1, models: int = 0
         "environment": {
             "default": manifest.environment.default,
             "requirements": manifest.environment.requirements,
+            # an image declared next to the requirements: offered as the environment "docker" in the dialog
+            "declared_image": manifest.environment.image if manifest.environment.requirements else "",
             **environment_status(db, row, manifest),
         },
         "bytes": row.bytes,
@@ -228,13 +230,30 @@ def _clean_paths(db: Session, paths: dict[str, str], previous: dict[str, Any]) -
 
 
 def save_environment(
-    db: Session, user: User, *, name: str, description: str = "", paths: dict[str, str] | None = None, env_id: str = ""
+    db: Session,
+    user: User,
+    *,
+    name: str,
+    description: str = "",
+    paths: dict[str, str] | None = None,
+    env_id: str = "",
+    kind: str = "python",
+    image: str = "",
 ) -> Environment:
-    """Create or update an "existing Python" environment: per node, the path of its interpreter."""
+    """Create or update a registered environment.
+
+    ``python``: an interpreter already on each server (``paths``: per node, its path).
+    ``docker``: an image (``image``) every server with Docker runs; nothing to set per server.
+    """
     services.require_admin(user)
     name = name.strip()
     if not _ENV_NAME_RE.match(name) or name == AUTO["name"]:
         raise ServiceError(400, "환경 이름은 1~63자의 글자·숫자·공백·`-`·`_`·`.`로 지어 주세요.")
+    if kind not in ("python", "docker"):
+        raise ServiceError(400, "환경의 방식은 python(서버의 Python) 또는 docker(Docker 이미지)입니다.")
+    image = image.strip()
+    if kind == "docker" and not IMAGE_RE.match(image):
+        raise ServiceError(400, "Docker 이미지 이름을 적어 주세요 (예: registry.local:5000/team/train:1.2).")
     env = db.get(Environment, env_id) if env_id else None
     if env_id and env is None:
         raise ServiceError(404, "환경을 찾을 수 없습니다.")
@@ -242,12 +261,19 @@ def save_environment(
     if clash is not None and (env is None or clash.id != env.id):
         raise ServiceError(409, "같은 이름의 환경이 이미 있습니다.")
     if env is None:
-        env = Environment(name=name, kind="python", created_by=user.id)
+        env = Environment(name=name, kind=kind, created_by=user.id)
         db.add(env)
+    elif env.kind != kind:
+        raise ServiceError(400, "등록한 환경의 방식은 바꿀 수 없습니다. 새 환경으로 등록하세요.")
     env.name, env.description = name, description.strip()
-    env.nodes = _clean_paths(db, paths or {}, env.nodes or {})
+    if kind == "docker":
+        if env.image != image:
+            env.nodes = {}  # another image: what was checked no longer holds
+        env.image = image
+    else:
+        env.nodes = _clean_paths(db, paths or {}, env.nodes or {})
     db.flush()
-    services.audit(db, user.id, "api", "environment.save", env.id, name=name)
+    services.audit(db, user.id, "api", "environment.save", env.id, name=name, kind=kind, image=image or None)
     return env
 
 
@@ -264,6 +290,7 @@ def environment_view(db: Session, settings: HubSettings, env: Environment) -> di
         "id": env.id,
         "name": env.name,
         "kind": env.kind,
+        "image": env.image or "",
         "description": env.description,
         "created_at": iso(env.created_at),
         "nodes": [
@@ -280,15 +307,47 @@ def environment_view(db: Session, settings: HubSettings, env: Environment) -> di
     }
 
 
-# ---- automatically installed environments, ahead of the first training ------------------
+# ---- installing environments on servers ahead of the first training ----------------------
+
+TRAINS = "compute"  # the node role that trains (shown as 학습·오토라벨): environments go only there
+REMOVE_SINCE = (0, 47, 0)  # nodes from here on remove an installed environment (``env.remove``)
+
+
+def trains(node: Node) -> bool:
+    return node.enabled and TRAINS in (node.roles or [])
+
+
+def has_docker(node: Node) -> bool:
+    return bool((node.info or {}).get("docker"))
 
 
 def _auto_spec(manifest: TemplateManifest) -> dict[str, Any]:
-    return {**AUTO, **manifest.environment.model_dump(exclude={"default"})}
+    """What a template installs by itself: a virtual environment from its requirements, or the image it
+    declares when it declares nothing else to install."""
+    declared = manifest.environment
+    if declared.image and not declared.requirements:
+        return {"kind": "docker", "name": "Docker 이미지", "image": declared.image}
+    return {**AUTO, **declared.model_dump(exclude={"default", "image"})}
+
+
+def install_spec(db: Session, manifest: TemplateManifest) -> dict[str, Any] | None:
+    """What "미리 준비" puts on a server for a template: its virtual environment, its image, or the image of
+    the registered Docker environment it names. None when there is nothing to install (a server's own
+    Python, or code that needs only the standard library)."""
+    if manifest.environment.default:
+        env = _environment(db, manifest.environment.default)
+        if env is not None:
+            if env.kind == "docker":
+                return {"kind": "docker", "id": env.id, "name": env.name, "image": env.image}
+            return None
+    spec = _auto_spec(manifest)
+    return spec if spec["kind"] == "docker" or spec.get("requirements") else None
 
 
 def _same_env(found: dict[str, Any], spec: dict[str, Any]) -> bool:
     """An environment a node reported is the one a template installs (older reports carry no torch flag)."""
+    if spec.get("kind") == "docker" or found.get("kind") == "docker":
+        return found.get("kind") == spec.get("kind") == "docker" and found.get("image") == spec.get("image")
     return (
         sorted(found.get("requirements") or []) == sorted(spec.get("requirements") or [])
         and (found.get("python") or "3.12") == (spec.get("python") or "3.12")
@@ -296,43 +355,114 @@ def _same_env(found: dict[str, Any], spec: dict[str, Any]) -> bool:
     )
 
 
-def environment_status(db: Session, row: Template, manifest: TemplateManifest | None = None) -> dict[str, Any]:
-    """Where a template's automatically installed environment is ready, and where it is being prepared.
+def _why_not(node: Node, spec: dict[str, Any]) -> str:
+    """Why an environment cannot be installed on a server ("" when it can)."""
+    if not trains(node):
+        return "학습 역할 아님"
+    if spec.get("kind") == "docker" and not has_docker(node):
+        return "Docker 없음"
+    return ""
 
-    ``installs``: whether there is anything to install at all (a template that names an
-    environment an admin registered, or needs only the standard library, has nothing to prepare).
+
+def environment_status(db: Session, row: Template, manifest: TemplateManifest | None = None) -> dict[str, Any]:
+    """Where a template's environment is installed, where it is being installed, and on which servers it may be.
+
+    ``installs``: whether there is anything to install at all. ``servers``: every server switched on,
+    with ``state`` (ready · preparing · "") and ``why`` it cannot have the environment ("" when it can).
     """
     manifest = manifest or manifest_of(row)
-    spec = _auto_spec(manifest)
-    if manifest.environment.default or not spec.get("requirements"):
-        return {"installs": False, "ready": [], "preparing": []}
+    spec = install_spec(db, manifest)
+    if spec is None:
+        return {"installs": False, "ready": [], "preparing": [], "servers": []}
     nodes = [n for n in db.scalars(select(Node).order_by(Node.name)) if n.enabled]
-    ready = [n.name for n in nodes if any(_same_env(e, spec) for e in (n.info or {}).get("envs") or [])]
+    ready = {n.id for n in nodes if any(_same_env(e, spec) for e in (n.info or {}).get("envs") or [])}
     active = db.scalars(select(Job).where(Job.type == "env.prepare", Job.status.in_(("queued", "running"))))
-    names = {n.id: n.name for n in nodes}
-    mine = [j for j in active if (j.params or {}).get("template") == row.name]
-    preparing = sorted({names.get(j.target_node_id or j.node_id or "", "") for j in mine} - {""})
-    return {"installs": True, "ready": ready, "preparing": preparing, "nodes": len(nodes)}
+    preparing = {j.target_node_id or j.node_id for j in active if (j.params or {}).get("template") == row.name}
+    now = utcnow()
+    servers = [
+        {
+            "id": n.id,
+            "name": n.name,
+            "status": "online" if n.last_seen_at and (now - n.last_seen_at).total_seconds() < 120 else "offline",
+            "trains": trains(n),
+            "why": _why_not(n, spec),
+            "state": "preparing" if n.id in preparing else "ready" if n.id in ready else "",
+        }
+        for n in nodes
+    ]
+    return {
+        "installs": True,
+        "kind": spec["kind"],
+        "image": spec.get("image", ""),
+        "ready": [s["name"] for s in servers if s["state"] == "ready"],
+        "preparing": [s["name"] for s in servers if s["state"] == "preparing"],
+        "nodes": sum(1 for s in servers if not s["why"]),
+        "servers": servers,
+    }
 
 
 def prepare_environment(
     db: Session, user: User, template_id: str, node_ids: list[str] | None = None, via: str = "api"
 ) -> list[Job]:
-    """Install a template's environment on servers before anyone trains with it (all enabled ones by default)."""
+    """Install a template's environment on servers before anyone trains with it.
+
+    ``node_ids``: the servers to install on (none: every server that trains and can take it). A server
+    without the training role, or without Docker for an image, is turned away with the reason.
+    """
     services.require_admin(user)
     row = get_template(db, template_id)
     manifest = manifest_of(row)
-    if not environment_status(db, row, manifest)["installs"]:
-        reason = "등록된 환경이나 서버의 Python을 씁니다"
-        raise ServiceError(400, f"{row.title}은(는) 자동으로 설치할 환경이 없습니다 ({reason}).")
-    nodes = [db.get(Node, n) for n in node_ids] if node_ids else list(db.scalars(select(Node).order_by(Node.name)))
-    nodes = [n for n in nodes if n is not None and n.enabled]
+    spec = install_spec(db, manifest)
+    if spec is None:
+        reason = "등록된 서버의 Python이나 표준 라이브러리만 씁니다"
+        raise ServiceError(400, f"{row.title}은(는) 미리 설치할 환경이 없습니다 ({reason}).")
+    if node_ids:
+        nodes = [services.get_node(db, n) for n in dict.fromkeys(node_ids)]
+        for node in nodes:
+            why = "작업을 받지 않도록 꺼 둠" if not node.enabled else _why_not(node, spec)
+            if why == "학습 역할 아님":
+                hint = "노드 설정에서 '학습·오토라벨'을 켜세요"
+                raise ServiceError(400, f"{node.name}은(는) 학습 역할이 아니라 학습 환경을 두지 않습니다. {hint}.")
+            if why:
+                raise ServiceError(400, f"{node.name}에는 이 환경을 설치할 수 없습니다: {why}.")
+    else:
+        nodes = [n for n in db.scalars(select(Node).order_by(Node.name)) if n.enabled and not _why_not(n, spec)]
     if not nodes:
-        raise ServiceError(400, "환경을 준비할 서버가 없습니다.")
-    params = {"template": row.name, "version": row.version, "environment": _auto_spec(manifest)}
+        need = "학습 역할이 있고 Docker가 있는" if spec["kind"] == "docker" else "학습 역할이 있는"
+        raise ServiceError(400, f"환경을 준비할 서버가 없습니다. {need} 서버가 있어야 합니다.")
+    params = {"template": row.name, "version": row.version, "environment": spec}
     jobs = [services.create_job(db, user, "env.prepare", params, n.id, via=via, gpus=0) for n in nodes]
     services.audit(db, user.id, via, "environment.prepare", row.id, template=row.name, nodes=[n.name for n in nodes])
     return jobs
+
+
+def _runs_here(job: Job, node_id: str) -> bool:
+    if job.node_id:
+        return job.node_id == node_id
+    return job.target_node_id == node_id or node_id in ((job.requirements or {}).get("nodes") or [])
+
+
+def remove_environment(db: Session, user: User, template_id: str, node_id: str, via: str = "api") -> Job:
+    """Take a template's installed environment off a server: the virtual environment's folder, or the image
+    if BADAMOA pulled it (an image that was there before is only forgotten). Refused while a job there uses it."""
+    services.require_admin(user)
+    row = get_template(db, template_id)
+    spec = install_spec(db, manifest_of(row))
+    if spec is None:
+        raise ServiceError(400, f"{row.title}은(는) 서버에 설치하는 환경이 없습니다.")
+    node = services.get_node(db, node_id)
+    version = tuple(int(p) for p in (node.agent_version or "0").split(".")[:3] if p.isdigit())
+    if version < REMOVE_SINCE:
+        need = ".".join(str(n) for n in REMOVE_SINCE)
+        raise ServiceError(400, f"{node.name}의 BADAMOA는 설치한 환경을 지울 수 없습니다. {need} 이상으로 업데이트하세요.")
+    kinds = ("train.run", "model.run", "env.prepare")
+    for job in db.scalars(select(Job).where(Job.type.in_(kinds), Job.status.in_(("queued", "running")))):
+        if _runs_here(job, node.id) and _same_env((job.params or {}).get("environment") or {}, spec):
+            raise ServiceError(409, f"{node.name}에서 이 환경을 쓰는 작업이 있습니다. 끝난 뒤에 지우세요.")
+    params = {"template": row.name, "environment": spec}
+    job = services.create_job(db, user, "env.remove", params, node.id, via=via, gpus=0)
+    services.audit(db, user.id, via, "environment.remove", row.id, template=row.name, node=node.name)
+    return job
 
 
 def list_environments(db: Session, settings: HubSettings) -> list[dict[str, Any]]:
@@ -340,11 +470,26 @@ def list_environments(db: Session, settings: HubSettings) -> list[dict[str, Any]
 
 
 def check_environment(db: Session, user: User, env_id: str) -> list[Job]:
-    """Ask every node the environment is set up on to try it. Results arrive when the jobs finish."""
+    """Ask the servers to try a registered environment. Results arrive when the jobs finish.
+
+    A server's Python: every server it is set up on. A Docker image: every server that trains and has
+    Docker (it pulls the image if it has not, and runs Python in it).
+    """
     services.require_admin(user)
     env = get_environment(db, env_id)
     jobs = []
     nodes = dict(env.nodes or {})
+    if env.kind == "docker":
+        targets = [n for n in db.scalars(select(Node).order_by(Node.name)) if trains(n) and has_docker(n)]
+        for node in targets:
+            params = {"environment_id": env.id, "kind": "docker", "image": env.image}
+            job = services.create_job(db, user, "env.check", params, node.id, via="ui", gpus=0)
+            nodes[node.id] = {**(nodes.get(node.id) or {}), "ok": None, "job_id": job.id}
+            jobs.append(job)
+        env.nodes = nodes
+        if not jobs:
+            raise ServiceError(400, "학습 역할이 있고 Docker가 있는 서버가 없습니다.")
+        return jobs
     for node_id, entry in nodes.items():
         node = db.get(Node, node_id)
         if node is None or not node.enabled:
@@ -374,20 +519,30 @@ def on_job_finished(db: Session, job: Job) -> None:
     env.nodes = {**env.nodes, job.node_id: {**entry, "ok": ok, "detail": detail, "checked_at": iso(utcnow())}}
 
 
+DECLARED_IMAGE = "docker"  # a run's ``environment``: the image the template declares next to its requirements
+
+
 def environment_for_run(db: Session, manifest: TemplateManifest, wanted: str, node: Node) -> dict[str, Any]:
     """The environment a run will use on ``node``, as a snapshot the node can act on.
 
     ``wanted`` is an environment id or name; empty means the template's default, and
-    when the template names none, the automatically installed one.
+    when the template names none, the one it installs itself (``_auto_spec``).
+    ``docker``: the image the template declares, when it declares requirements as well.
     """
-    auto = {**AUTO, **manifest.environment.model_dump(exclude={"default"})}
+    auto = _auto_spec(manifest)
     if wanted in ("auto", AUTO["name"]):
         return auto
+    if wanted == DECLARED_IMAGE:
+        if not manifest.environment.image:
+            raise ServiceError(400, "이 모델 종류에는 Docker 이미지가 적혀 있지 않습니다.")
+        return {"kind": "docker", "name": "Docker 이미지", "image": manifest.environment.image}
     env = _environment(db, wanted or manifest.environment.default) if (wanted or manifest.environment.default) else None
     if env is None:
         if wanted:
             raise ServiceError(404, f"환경을 찾을 수 없습니다: {wanted}")
         return auto  # the template's default is not registered on this Hub: fall back to installing
+    if env.kind == "docker":
+        return {"kind": "docker", "id": env.id, "name": env.name, "image": env.image}
     entry = (env.nodes or {}).get(node.id)
     if not entry or not entry.get("path"):
         where = f"'{env.name}' 환경이 {node.name} 서버에"

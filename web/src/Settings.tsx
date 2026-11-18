@@ -338,6 +338,93 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
 
 // ---- model templates -----------------------------------------------------------------
 
+/** "환경 관리": install a model kind's environment on chosen servers now, or take it off one. Only servers that train qualify. */
+function PrepareDialog({
+  template,
+  onStart,
+  onRemove,
+  onClose,
+}: {
+  template: Template;
+  onStart: (nodeIds: string[]) => Promise<void>;
+  onRemove: (nodeId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const env = template.environment;
+  const servers = env.servers ?? [];
+  const [picked, setPicked] = useState<string[]>(() => servers.filter((s) => !s.why && !s.state).map((s) => s.id));
+  const [busy, setBusy] = useState(false);
+  const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  const docker = env.kind === "docker";
+  const what = docker ? `Docker 이미지 ${env.image}` : `가상환경, 패키지 ${env.requirements.length}개`;
+  const remove = (id: string, name: string) => {
+    if (!window.confirm(`${name}에서 ${template.title}의 환경을 지울까요? 다음 학습 때 다시 설치합니다.`)) return;
+    setBusy(true);
+    void onRemove(id).finally(() => setBusy(false));
+  };
+  return (
+    <Modal title={`${template.title} 환경 관리`} onClose={onClose}>
+      <p className="muted small">
+        고른 서버에 이 모델 종류의 학습 환경({what})을 지금 {docker ? "받습니다" : "설치합니다"}. 첫 학습이 기다리지 않습니다.
+        학습 · 오토라벨 역할이 있는 서버만 고를 수 있습니다. 준비된 서버에서는 지울 수 있습니다
+        {docker ? " (BADAMOA가 받기 전부터 있던 이미지는 남김)" : ""}.
+      </p>
+      <div className="node-pick">
+        {servers.map((s) => {
+          const why = s.why || (s.state === "ready" ? "준비됨" : s.state === "preparing" ? "준비 중" : "");
+          return (
+            <label key={s.id} className={s.why ? "off" : ""}>
+              <input type="checkbox" checked={picked.includes(s.id)} disabled={Boolean(why)} onChange={() => toggle(s.id)} />
+              <span className="node-pick-name">
+                <i className={`dot ${s.status}`} />
+                {s.name}
+              </span>
+              {s.state === "ready" ? (
+                <button
+                  type="button"
+                  className="mini"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    remove(s.id, s.name);
+                  }}
+                >
+                  지우기
+                </button>
+              ) : (
+                <span />
+              )}
+              <span className={`tag ${why ? "muted" : ""}`}>{why || (docker ? "받기" : "설치")}</span>
+            </label>
+          );
+        })}
+      </div>
+      {servers.length > 0 && !servers.some((s) => !s.why) && (
+        <p className="error">
+          {servers.some((s) => s.trains)
+            ? "Docker가 있는 학습 서버가 없습니다."
+            : "학습 역할이 있는 서버가 없습니다. 노드의 설정에서 \u201c학습·오토라벨\u201d 역할을 켜세요."}
+        </p>
+      )}
+      <div className="modal-actions">
+        <button type="button" onClick={onClose}>
+          취소
+        </button>
+        <button
+          className="primary"
+          disabled={busy || picked.length === 0}
+          onClick={() => {
+            setBusy(true);
+            void onStart(picked).finally(() => setBusy(false));
+          }}
+        >
+          {picked.length ? `서버 ${picked.length}대에 설치` : "설치할 서버를 고르세요"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function Templates({ isAdmin }: { isAdmin: boolean }) {
   const hubUrl = useHubUrl();
   const [watching, setWatching] = useState(false);
@@ -364,13 +451,27 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
       if (picker.current) picker.current.value = "";
     }
   };
-  const prepare = async (t: Template) => {
+  const [preparingFor, setPreparingFor] = useState<Template | null>(null);
+  const prepare = async (t: Template, nodeIds: string[]) => {
     setMessage(null);
     try {
-      await api(`/templates/${t.id}/prepare`, { body: { node_ids: [] } });
-      setMessage({ kind: "ok", text: `${t.title}의 환경을 서버에 설치하기 시작했습니다. 첫 학습이 설치를 기다리지 않게 됩니다.` });
+      await api(`/templates/${t.id}/prepare`, { body: { node_ids: nodeIds } });
+      setMessage({ kind: "ok", text: `${t.title}의 환경을 고른 서버에 설치하기 시작했습니다. 첫 학습이 설치를 기다리지 않게 됩니다.` });
+      setPreparingFor(null);
       setWatching(true);
       await refresh();
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setPreparingFor(null);
+    }
+  };
+  const removeEnv = async (t: Template, nodeId: string) => {
+    setMessage(null);
+    try {
+      await api(`/templates/${t.id}/environment/${nodeId}`, { method: "DELETE" });
+      setMessage({ kind: "ok", text: `${t.title}의 환경을 지우기 시작했습니다.` });
+      setWatching(true);
+      window.setTimeout(() => void refresh(), 4000); // the server reports what it has left after the job
     } catch (e) {
       setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     }
@@ -435,7 +536,7 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
                   ))}
                 </td>
                 <td>
-                  {t.environment.default || "자동 설치"}
+                  {t.environment.default || (t.environment.kind === "docker" ? `Docker ${t.environment.image}` : "자동 설치")}
                   {t.environment.installs && (
                     <div className="muted small">
                       {t.environment.preparing.length > 0
@@ -449,14 +550,14 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
                 <td className="num right">{t.models}</td>
                 {isAdmin && (
                   <td className="right">
-                    {t.environment.installs && t.environment.ready.length < (t.environment.nodes ?? 1) && (
+                    {t.environment.installs && (t.environment.servers ?? []).some((s) => !s.why) && (
                       <button
                         className="mini"
-                        onClick={() => void prepare(t)}
+                        onClick={() => setPreparingFor(t)}
                         disabled={t.environment.preparing.length > 0}
-                        title="모든 서버에 이 모델 종류의 학습 환경을 지금 설치합니다"
+                        title="고른 서버에 이 모델 종류의 학습 환경을 지금 설치하거나 지웁니다"
                       >
-                        미리 준비
+                        환경 관리
                       </button>
                     )}{" "}
                     {!t.builtin && (
@@ -471,6 +572,14 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
           </tbody>
         </table>
       </div>
+      {preparingFor && (
+        <PrepareDialog
+          template={templates?.find((t) => t.id === preparingFor.id) ?? preparingFor}
+          onStart={(ids) => prepare(preparingFor, ids)}
+          onRemove={(nodeId) => removeEnv(preparingFor, nodeId)}
+          onClose={() => setPreparingFor(null)}
+        />
+      )}
       {guide && (
         <Modal title="모델 종류 추가하기" onClose={() => setGuide(false)}>
           <p className="muted">
@@ -564,7 +673,7 @@ function Environments({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo[] 
         {environments?.map((env) => (
           <div className="env" key={env.id}>
             <div className="env-head">
-              <strong>{env.name}</strong> <span className="tag">서버에 있는 환경</span>
+              <strong>{env.name}</strong> <span className="tag">{env.kind === "docker" ? "Docker 이미지" : "서버에 있는 환경"}</span>
               {isAdmin && (
                 <span className="env-actions">
                   <button className="mini" onClick={() => void check(env)}>
@@ -579,8 +688,15 @@ function Environments({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo[] 
                 </span>
               )}
             </div>
+            {env.kind === "docker" && <div className="mono small">{env.image}</div>}
             {env.description && <div className="muted small">{env.description}</div>}
-            {env.nodes.length === 0 && <div className="muted small">아직 어느 서버에도 연결하지 않았습니다.</div>}
+            {env.nodes.length === 0 && (
+              <div className="muted small">
+                {env.kind === "docker"
+                  ? "아직 확인하지 않았습니다. 연결 확인을 누르면 Docker가 있는 학습 서버가 이미지를 받아 실행해 봅니다."
+                  : "아직 어느 서버에도 연결하지 않았습니다."}
+              </div>
+            )}
             {env.nodes.map((node) => {
               const state = nodeState(node);
               return (
@@ -624,6 +740,8 @@ function EnvironmentForm({
   onSaved: (env: Environment) => void;
 }) {
   const [name, setName] = useState(env?.name ?? "");
+  const [kind, setKind] = useState(env?.kind ?? "python");
+  const [image, setImage] = useState(env?.image ?? "");
   const [description, setDescription] = useState(env?.description ?? "");
   const [paths, setPaths] = useState<Record<string, string>>(() =>
     Object.fromEntries((env?.nodes ?? []).map((n) => [n.node_id, n.path ?? ""])),
@@ -634,7 +752,7 @@ function EnvironmentForm({
     e.preventDefault();
     try {
       setError(null);
-      const body = { name, description, paths };
+      const body = { name, description, paths, kind, image };
       const saved = env
         ? await api<Environment>(`/environments/${env.id}`, { method: "PUT", body })
         : await api<Environment>("/environments", { body });
@@ -647,9 +765,21 @@ function EnvironmentForm({
   return (
     <Modal title={env ? "환경 수정" : "환경 추가"} onClose={onClose}>
       <form onSubmit={submit}>
+        <div className="segmented" role="radiogroup" aria-label="환경의 방식">
+          <span className="eyebrow">방식</span>
+          {[
+            ["python", "서버에 있는 Python"],
+            ["docker", "Docker 이미지"],
+          ].map(([value, label]) => (
+            <button key={value} type="button" disabled={Boolean(env)} className={kind === value ? "active" : ""} onClick={() => setKind(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
         <p className="muted">
-          서버에 이미 만들어 둔 Python 환경(conda, venv)을 이름으로 등록합니다. 저장하면 각 서버에서 실제로 실행되는지 바로
-          확인합니다.
+          {kind === "docker"
+            ? "레지스트리에 있는 학습 이미지를 이름으로 등록합니다. Docker가 있는 학습 서버가 이 이미지로 학습하고, 모델 종류의 코드와 데이터는 서버가 넣어 줍니다. 저장하면 서버들이 이미지를 받아 실행해 봅니다."
+            : "서버에 이미 만들어 둔 Python 환경(conda, venv)을 이름으로 등록합니다. 저장하면 각 서버에서 실제로 실행되는지 바로 확인합니다."}
         </p>
         <div className="form-row">
           <label>
@@ -661,9 +791,22 @@ function EnvironmentForm({
             <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="예: torch 2.5 · cu121" />
           </label>
         </div>
-        <div className="eyebrow">서버별 위치 — 이 환경이 있는 서버에만 적습니다</div>
-        {nodes.length === 0 && <p className="muted small">연결된 서버가 없습니다.</p>}
-        {nodes.map((node) => (
+        {kind === "docker" && (
+          <label>
+            이미지
+            <input
+              className="mono"
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+              required
+              placeholder="예: registry.local:5000/team/train:1.2"
+            />
+          </label>
+        )}
+        {kind === "python" && <div className="eyebrow">서버별 위치 — 이 환경이 있는 서버에만 적습니다</div>}
+        {kind === "python" && nodes.length === 0 && <p className="muted small">연결된 서버가 없습니다.</p>}
+        {kind === "python" &&
+          nodes.map((node) => (
           <label key={node.id} className="env-path">
             <span>{node.name}</span>
             <input

@@ -18,9 +18,7 @@ from typing import Any
 
 import httpx
 
-from badamoa import templates as shipped
-
-from . import envs, exporter, trainer
+from . import exporter, trainer
 
 
 def _fetch(client: httpx.Client, url: str, target: Path, params: dict[str, Any] | None = None) -> Path:
@@ -66,12 +64,20 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             "train_params": params.get("train_params") or {},
         }
 
+        spec = params.get("environment") or {}
+        in_container = spec.get("kind") == "docker"
+        roots: list[str] = []  # the images' own folders (a container needs them mounted to follow the export's links)
         if action == "eval":
             header, items = trainer.manifest_stream(client, base)
+            roots = [root for root in header["locations"].values() if root]
             build = exporter.BUILDERS.get(template.get("data_format", "yolo"))
             if build is None:
                 raise RuntimeError("이 노드의 BADAMOA는 이 데이터 형식을 지원하지 않습니다. 노드를 업데이트하세요.")
-            options = exporter.ExportOptions(classes=[int(c) for c in params.get("class_ids") or []], keep_splits=True)
+            options = exporter.ExportOptions(
+                classes=[int(c) for c in params.get("class_ids") or []],
+                keep_splits=True,
+                symlinks=not (in_container and os.name == "nt"),
+            )
             summary = build(items, header["classes"], header["locations"], work / "data", options)
             split = params.get("split") or "val"
             if not summary["items"].get(split):
@@ -87,20 +93,20 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             config["params"] = {k: v for k, v in config["params"].items() if k != "images"}
 
         code = trainer.template_dir(client, base + "/blob", node_home, template)
-        python = envs.resolve(node_home, params.get("environment") or {})
-        config_path = work / "config.json"
-        config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-        env = envs.code_env(  # without the node's credentials, as for training
-            {
-                "PYTHONUNBUFFERED": "1",
-                "PYTHONIOENCODING": "utf-8",
-                "PYTHONUTF8": "1",
-                "NO_COLOR": "1",
-                "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
-                "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
-            }
+        python, _, _ = trainer.ready_environment(node_home, spec)
+        mounts = [(Path(root), True) for root in roots] if os.name != "nt" else []
+        command, env, where = trainer.launch(  # without the node's credentials, as for training
+            job_id=job_id,
+            home=node_home,
+            spec=spec,
+            python=python,
+            entrypoint=template["entrypoint"],
+            config=config,
+            config_path=work / "config.json",
+            code=code,
+            work=work,
+            mounts=[*mounts, (node_home / "cache" / "models", True)],
         )
-        command = trainer.command_for(template["entrypoint"], python, config_path)
         try:
             proc = subprocess.Popen(
                 command,
@@ -136,8 +142,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             if kind == "result":
                 outcome = event
             elif kind == "artifact":
-                path = Path(str(event.get("path", "")))
-                path = path if path.is_absolute() else code / path
+                path = where(str(event.get("path", "")))
                 if path.is_file():
                     query = {"name": str(event.get("name") or path.name)}
                     fields = ("key", "step", "caption", "media")

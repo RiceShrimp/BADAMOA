@@ -327,6 +327,8 @@ def start_sweep(
     catalog.require_ready(release)
     candidates, _ = training.placement(db, release, nodes)
     problems, _ = training.data_checks(db, release, manifest, sorted(set(classes or [])), candidates, val_fraction)
+    env = registry.environment_for_run(db, manifest, environment, candidates[0])
+    problems += training.fitting(candidates, env, gpus)[1]
     if problems:
         raise ServiceError(400, " ".join(problems))
     metric = metric.strip() or training.PRIMARY_METRIC.get(task, "map50_95")

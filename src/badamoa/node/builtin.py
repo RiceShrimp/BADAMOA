@@ -97,9 +97,21 @@ def model_run(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def env_check(params: dict[str, Any]) -> dict[str, Any]:
-    from badamoa.node import envs
+    from badamoa.node import containers, envs
 
-    found = envs.check(str(params.get("python", "")))
+    if params.get("kind") == "docker":  # a registered Docker image: have it here, then run Python in it
+        home = os.environ.get("BADAMOA_NODE_HOME")
+        if not home:
+            raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
+        image = str(params.get("image", ""))
+        image_id = containers.ensure(Path(home).resolve(), image)
+        gpus = bool((containers.capability() or {}).get("gpu"))
+        done = containers.run_python(image, envs.PROBE, gpus=gpus)
+        if done.returncode != 0:
+            raise RuntimeError(f"이미지 안의 Python이 오류로 끝났습니다: {done.stderr.strip()[-400:]}")
+        found = {"ok": True, "image": image, "image_id": image_id, **json.loads(done.stdout.strip().splitlines()[-1])}
+    else:
+        found = envs.check(str(params.get("python", "")))
     print(f"python  : {found.get('python')} ({found.get('executable')})")
     for name, version in found.get("packages", {}).items():
         print(f"{name:<8}: {version}")
@@ -111,17 +123,36 @@ def env_check(params: dict[str, Any]) -> dict[str, Any]:
 
 def env_prepare(params: dict[str, Any]) -> dict[str, Any]:
     """Build a template's environment ahead of its first training, so that one does not wait for the install."""
-    from badamoa.node import envs
+    from badamoa.node import containers, envs
 
     home = os.environ.get("BADAMOA_NODE_HOME")
     if not home:
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     started = time.monotonic()
+    spec = params.get("environment") or {}
+    if spec.get("kind") == "docker":  # an image: pull it now
+        image_id = containers.ensure(Path(home).resolve(), str(spec.get("image", "")))
+        took = time.monotonic() - started
+        print(f"{params.get('template', '')} Docker 이미지 준비됨: {spec.get('image')} ({image_id[:19]}, {took:.0f}초)")
+        return {"image": spec.get("image"), "image_id": image_id}
     python = envs.resolve(Path(home).resolve(), params.get("environment") or {})
     installed = envs.packages(python)
     took = time.monotonic() - started
     print(f"{params.get('template', '')} 환경 준비됨: {python} (패키지 {len(installed)}개, {took:.0f}초)")
     return {"python": str(python), "packages": len(installed)}
+
+
+def env_remove(params: dict[str, Any]) -> dict[str, Any]:
+    """Take a template's installed environment off this node (a virtual environment, or an image BADAMOA pulled)."""
+    from badamoa.node import containers, envs
+
+    home = os.environ.get("BADAMOA_NODE_HOME")
+    if not home:
+        raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
+    spec = params.get("environment") or {}
+    if spec.get("kind") == "docker":
+        return containers.remove(Path(home).resolve(), str(spec.get("image", "")))
+    return envs.remove(Path(home).resolve(), spec)
 
 
 HANDLERS = {
@@ -136,6 +167,7 @@ HANDLERS = {
     "model.run": model_run,
     "env.check": env_check,
     "env.prepare": env_prepare,
+    "env.remove": env_remove,
 }
 
 

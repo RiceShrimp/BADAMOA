@@ -78,7 +78,9 @@ def restore_template(template_id: str, user: User = Depends(admin_user), db: Ses
 class EnvironmentBody(BaseModel):
     name: str
     description: str = ""
-    paths: dict[str, str] = Field(default_factory=dict)  # node id → path of that node's Python
+    kind: str = "python"  # python: a server's Python · docker: a Docker image
+    paths: dict[str, str] = Field(default_factory=dict)  # python: node id → path of that node's Python
+    image: str = ""  # docker: the image, e.g. registry.local:5000/team/train:1.2
 
 
 @router.get("/environments")
@@ -97,7 +99,9 @@ def list_environments(
 def create_environment(
     body: EnvironmentBody, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
-    env = registry.save_environment(db, user, name=body.name, description=body.description, paths=body.paths)
+    env = registry.save_environment(
+        db, user, name=body.name, description=body.description, paths=body.paths, kind=body.kind, image=body.image
+    )
     db.commit()
     return registry.environment_view(db, hub.settings, env)
 
@@ -111,14 +115,21 @@ def update_environment(
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     env = registry.save_environment(
-        db, user, name=body.name, description=body.description, paths=body.paths, env_id=env_id
+        db,
+        user,
+        name=body.name,
+        description=body.description,
+        paths=body.paths,
+        env_id=env_id,
+        kind=body.kind,
+        image=body.image,
     )
     db.commit()
     return registry.environment_view(db, hub.settings, env)
 
 
 class PrepareBody(BaseModel):
-    node_ids: list[str] = []  # empty: every enabled server
+    node_ids: list[str] = []  # empty: every server that trains and can take the environment
 
 
 @router.post("/templates/{template_id}/prepare")
@@ -129,6 +140,16 @@ def prepare_environment(
     jobs = registry.prepare_environment(db, user, template_id, body.node_ids or None, via="ui")
     db.commit()
     return {"jobs": [job.id for job in jobs]}
+
+
+@router.delete("/templates/{template_id}/environment/{node_id}")
+def remove_environment(
+    template_id: str, node_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Take the template's installed environment off a server (refused while a job there uses it)."""
+    job = registry.remove_environment(db, user, template_id, node_id, via="ui")
+    db.commit()
+    return {"job": job.id}
 
 
 @router.post("/environments/{env_id}/check")

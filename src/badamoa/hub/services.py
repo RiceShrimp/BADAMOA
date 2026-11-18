@@ -310,6 +310,7 @@ def serialize_node(
                 {k: g.get(k) for k in ("index", "name", "memory_total_mb", "driver_version")}
                 for g in info.get("gpus", [])
             ],
+            "docker": info.get("docker"),  # {"version", "os", "gpu"} when the node can run containers
         },
         "metrics": node.metrics or {},
         "reserved_gpus": node.reserved_gpus or [],

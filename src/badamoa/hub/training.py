@@ -193,6 +193,8 @@ def check_run(
     nodes: list[str] | None = None,
     val_fraction: float = 0.2,
     space: dict[str, Any] | None = None,
+    environment: str = "",
+    gpus: int | None = None,
 ) -> dict[str, list[str]]:
     """What starting this run would run into, without starting it: ``problems`` stop it, ``notes`` do not.
 
@@ -219,10 +221,36 @@ def check_run(
         known = {int(c["id"]) for c in db.get(LabelSpace, release.label_space_id).classes}
         chosen = sorted({int(c) for c in classes or []} & known)
         candidates, _ = placement(db, release, nodes)
+        env = registry.environment_for_run(db, manifest, environment, candidates[0])
     except ServiceError as e:
         return {"problems": [*problems, e.message], "notes": []}
     found, notes = data_checks(db, release, manifest, chosen, candidates, val_fraction)
-    return {"problems": problems + found, "notes": notes}
+    return {"problems": problems + found + fitting(candidates, env, gpus)[1], "notes": notes}
+
+
+def fitting(nodes: list[Node], env: dict[str, Any], gpus: int | None) -> tuple[list[Node], list[str]]:
+    """Of the servers a run may go to, those that can run it: they train (the role), and for a Docker
+    environment they have Docker (with GPUs when the run takes some). The reasons when none can."""
+    why: dict[str, list[str]] = {}
+    for node in nodes:
+        found = why.setdefault(node.id, [])
+        if not registry.trains(node):
+            hint = "학습할 노드를 고르거나 노드 설정에서 '학습·오토라벨'을 켜세요"
+            found.append(f"{node.name}은(는) 학습 역할이 아닙니다. {hint}.")
+        if env.get("kind") == "docker":
+            docker = (node.info or {}).get("docker")
+            wants_gpu = bool((node.info or {}).get("gpus")) if gpus is None else gpus > 0
+            if not docker:
+                found.append(f"{node.name}에는 Docker가 없어 '{env.get('name')}' 환경으로 학습할 수 없습니다.")
+            elif wants_gpu and not docker.get("gpu"):
+                found.append(
+                    f"{node.name}의 Docker는 GPU를 넘기지 못합니다(NVIDIA Container Toolkit 필요). "
+                    "GPU 0개로 학습하거나 다른 노드를 고르세요."
+                )
+    usable = [n for n in nodes if not why[n.id]]
+    if usable:
+        return usable, []
+    return nodes, list(dict.fromkeys(reason for reasons in why.values() for reason in reasons))
 
 
 def start_run(
@@ -290,11 +318,13 @@ def start_run(
         raise ServiceError(400, f"라벨 공간 {space.name}에 없는 클래스 id가 있습니다: {sorted(set(chosen) - known)}")
     candidates, receiver = placement(db, release, nodes)
     problems, _ = data_checks(db, release, manifest, chosen, candidates, val_fraction)
+    env = registry.environment_for_run(db, manifest, environment, candidates[0])
+    candidates, unfit = fitting(candidates, env, gpus)
+    problems += unfit
     if problems:
         raise ServiceError(400, " ".join(problems))
     after = transfers.sync_job(db, user, release.id, receiver, via).id if receiver else None
     node = candidates[0]
-    env = registry.environment_for_run(db, manifest, environment, node)
     if env.get("path"):  # a registered environment is a folder on one server
         candidates = [node]
     interrupted = get_run(db, resume_run_id) if resume_run_id else None

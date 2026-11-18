@@ -35,7 +35,12 @@ export interface Template {
     installs: boolean; // an automatically installed environment, which can be prepared ahead
     ready: string[]; // servers where it is installed
     preparing: string[];
-    nodes?: number;
+    nodes?: number; // servers that can have it (they train; with Docker for an image)
+    kind?: string; // auto (a virtual environment) or docker
+    image?: string;
+    declared_image?: string; // an image declared next to the requirements: the environment "docker" of a run
+    // every server switched on: why it cannot have the environment ("" when it can) and whether it is there
+    servers?: { id: string; name: string; status: string; trains: boolean; why: string; state: "" | "ready" | "preparing" }[];
   };
   bytes: number;
   models: number;
@@ -54,7 +59,8 @@ export interface EnvironmentNode {
 export interface Environment {
   id: string;
   name: string;
-  kind: string;
+  kind: string; // python: a server's Python · docker: a Docker image
+  image?: string;
   description: string;
   nodes: EnvironmentNode[];
 }

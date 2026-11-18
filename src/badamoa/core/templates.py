@@ -38,6 +38,8 @@ RESERVED = {
 MAX_BUNDLE_BYTES = 64 * 1024**2
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".vscode", "runs", "wandb"}
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")
+# registry/name:tag or …@sha256:…, as docker reads it (loosely: no spaces, no scheme)
+IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/:]*(@sha256:[0-9a-f]{64})?$")
 
 
 class TemplateError(ValueError):
@@ -65,6 +67,9 @@ class EnvironmentSpec(BaseModel):
     requirements: list[str] = Field(default_factory=list)
     python: str = "3.12"
     torch: bool = False  # pick the PyTorch build that matches the node's GPU driver
+    # A Docker image that holds the environment (the code is mounted in). With no requirements the
+    # template runs in it; with both, a virtual environment is the default and the image an option.
+    image: str = ""
 
 
 class ClassRange(BaseModel):
@@ -234,6 +239,9 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
     if data.classes.max and data.classes.max < data.min_classes(manifest.task):
         raise TemplateError("[data] classes의 max가 min보다 작습니다.")
     _check_requirements(manifest.environment.requirements)
+    manifest.environment.image = manifest.environment.image.strip()
+    if manifest.environment.image and not IMAGE_RE.match(manifest.environment.image):
+        raise TemplateError(f"environment.image '{manifest.environment.image}'은 Docker 이미지 이름이 아닙니다.")
     unknown = set(manifest.entrypoints) - set(ENTRYPOINTS)
     if unknown:
         raise TemplateError(f"알 수 없는 진입점: {', '.join(sorted(unknown))}. {', '.join(ENTRYPOINTS)}만 쓸 수 있습니다.")

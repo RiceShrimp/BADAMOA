@@ -37,7 +37,7 @@ def code_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 # Run by ``check`` inside the environment being examined: nothing but the standard library.
-_PROBE = """
+PROBE = """
 import json, sys
 found = {"python": sys.version.split()[0], "executable": sys.executable, "packages": {}}
 for name in ("torch", "torchvision", "ultralytics", "numpy"):
@@ -162,6 +162,25 @@ def listing(home: Path) -> list[dict[str, Any]]:
     return found
 
 
+def remove(home: Path, spec: dict[str, Any], log: Callable[[str], None] = print) -> dict[str, Any]:
+    """Take an automatically installed environment off this node: its folder. Refused while it is being built."""
+    env = env_dir(home, list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")))
+    if (env.parent / f"{env.name}.lock").exists():
+        raise RuntimeError("이 환경을 만드는 작업이 있습니다. 끝난 뒤에 지우세요.")
+    if not env.exists():
+        log("이 서버에는 이 환경이 없습니다.")
+        return {"removed": False}
+    size = sum(p.stat().st_size for p in env.rglob("*") if p.is_file() and not p.is_symlink())
+    marker = env / "badamoa-env.json"
+    marker.unlink(missing_ok=True)  # no longer ready, even if a file below is in use and stays
+    try:
+        shutil.rmtree(env)
+    except OSError as e:
+        raise RuntimeError(f"환경 폴더를 다 지우지 못했습니다 (쓰는 프로그램이 있을 수 있음): {e}") from e
+    log(f"가상환경을 지웠습니다: {env} ({size / 1024**2:,.0f} MB)")
+    return {"removed": True, "bytes": size}
+
+
 def existing(path: str) -> Path:
     """An interpreter the admin registered for this node."""
     python = Path(path).expanduser()
@@ -173,13 +192,15 @@ def existing(path: str) -> Path:
 
 
 def resolve(home: Path, spec: dict[str, Any], log: Callable[[str], None] = print) -> Path:
-    """The Python a run should use, from the environment snapshot the Hub sent."""
+    """The Python a run should use, from the environment snapshot the Hub sent (not for Docker: ``containers``)."""
+    if spec.get("kind") == "docker":
+        raise RuntimeError("Docker 환경에는 Python 경로가 없습니다 (컨테이너로 실행합니다).")
     if spec.get("kind") == "python":
         return existing(str(spec.get("path", "")))
     return ensure(home, list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")), log)
 
 
-_PACKAGES = (
+PACKAGES = (
     "import importlib.metadata as m, json;"
     "print(json.dumps(sorted({f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions() if d.metadata['Name']})))"
 )
@@ -189,7 +210,7 @@ def packages(python: Path) -> list[str]:
     """What is installed in an environment (``name==version``), for the run's record. Empty if it cannot be read."""
     try:
         done = subprocess.run(
-            [str(python), "-c", _PACKAGES], capture_output=True, text=True, timeout=60, check=False, env=code_env()
+            [str(python), "-c", PACKAGES], capture_output=True, text=True, timeout=60, check=False, env=code_env()
         )
         return list(json.loads(done.stdout.strip().splitlines()[-1]))[:1000] if done.returncode == 0 else []
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
@@ -201,7 +222,7 @@ def check(path: str) -> dict[str, Any]:
     python = existing(path)
     try:
         done = subprocess.run(
-            [str(python), "-c", _PROBE], capture_output=True, text=True, timeout=120, check=False, env=code_env()
+            [str(python), "-c", PROBE], capture_output=True, text=True, timeout=120, check=False, env=code_env()
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         raise RuntimeError(f"환경의 Python을 실행하지 못했습니다: {e}") from e

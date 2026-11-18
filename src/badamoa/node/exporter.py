@@ -28,6 +28,7 @@ class ExportOptions:
     # Evaluation wants the release's splits exactly as they are: no stand-in for a missing val split.
     keep_splits: bool = False
     masks: bool = False  # write outlines (segmentation) instead of boxes where a label has one
+    symlinks: bool = True  # False: hard links or copies only (code in a container that cannot follow a link)
 
 
 def select_boxes(item: dict[str, Any], keep: dict[int, int], options: ExportOptions) -> tuple[list[list[float]] | None, str]:
@@ -68,14 +69,17 @@ def _may_be_rewritten(source: Path) -> bool:
         return False
 
 
-def _place(source: Path, target: Path) -> str:
+def _place(source: Path, target: Path, symlinks: bool = True) -> str:
     """Hard link, else symlink, else copy. Returns which one worked.
 
     Registered images are never modified: a file the trainer might write to gets its own copy.
+    ``symlinks=False``: no symbolic links (code in a container that cannot follow them).
     """
     if target.exists():
         target.unlink()
-    links = () if _may_be_rewritten(source) else (("hardlink", os.link), ("symlink", os.symlink))
+    links: tuple = () if _may_be_rewritten(source) else (("hardlink", os.link), ("symlink", os.symlink))
+    if not symlinks:
+        links = tuple(link for link in links if link[0] != "symlink")
     for name, make in links:
         try:
             make(source, target)
@@ -154,7 +158,7 @@ def build(
         label = out / "labels" / split / f"{stem}.txt"
         image.parent.mkdir(parents=True, exist_ok=True)
         label.parent.mkdir(parents=True, exist_ok=True)
-        method = _place(source, image)
+        method = _place(source, image, options.symlinks)
         methods[method] = methods.get(method, 0) + 1
         label.write_text("".join(_label_line(row, options.masks) for row in boxes), encoding="utf-8")
         registered[stem] = item["rel_path"]
@@ -247,7 +251,7 @@ def build_imagefolder(
             continue
         target = out / split / folders[label] / f"{item['sha256']}{source.suffix.lower()}"
         target.parent.mkdir(parents=True, exist_ok=True)
-        method = _place(source, target)
+        method = _place(source, target, options.symlinks)
         methods[method] = methods.get(method, 0) + 1
         registered[item["sha256"]] = item["rel_path"]
         counts[split] += 1

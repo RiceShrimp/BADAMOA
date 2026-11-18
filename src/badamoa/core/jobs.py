@@ -153,7 +153,12 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             hidden=True,
             params_schema={
                 "type": "object",
-                "properties": {"environment_id": {"type": "string"}, "python": {"type": "string"}},
+                "properties": {
+                    "environment_id": {"type": "string"},
+                    "python": {"type": "string"},  # a server's Python
+                    "kind": {"type": "string", "default": "python"},  # docker: run Python in ``image``
+                    "image": {"type": "string", "default": ""},
+                },
             },
         ),
         JobTypeSpec(
@@ -166,8 +171,18 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                 "properties": {
                     "template": {"type": "string"},
                     "version": {"type": "string"},
-                    "environment": {"type": "object"},  # kind=auto: requirements, python, torch
+                    "environment": {"type": "object"},  # kind=auto: requirements, python, torch · docker: image
                 },
+            },
+        ),
+        JobTypeSpec(
+            type="env.remove",
+            title="설치한 환경 지우기",
+            description="모델 종류의 학습 환경(가상환경, 또는 BADAMOA가 받은 Docker 이미지)을 서버에서 지웁니다.",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {"template": {"type": "string"}, "environment": {"type": "object"}},
             },
         ),
         JobTypeSpec(

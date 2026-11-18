@@ -79,8 +79,14 @@ def _start(
         raise ServiceError(409, "이 모델을 학습한 서버가 연결되어 있지 않아 실행할 곳이 없습니다.")
     run = db.get(Run, model.run_id) if model.run_id else None
     wanted = (run.environment or {}) if run else {}
-    same = wanted.get("id") or ("auto" if wanted.get("kind") == "auto" else "")  # the environment it was trained in
+    # the environment it was trained in: a registered one, the one the template installs, or its declared image
+    same = wanted.get("id") or {"auto": "auto", "docker": registry.DECLARED_IMAGE}.get(wanted.get("kind", ""), "")
+    if same == registry.DECLARED_IMAGE and not manifest.environment.image:
+        same = ""
     env = registry.environment_for_run(db, manifest, same, node)
+    _, unfit = training.fitting([node], env, gpus)
+    if unfit:
+        raise ServiceError(400, " ".join(unfit))
     declared = manifest.params
     op = ModelJob(model_id=model.id, kind=kind, release_id=release_id, params=params, created_by=user.id)
     db.add(op)

@@ -224,6 +224,8 @@ class RunCheck(BaseModel):
     nodes: list[str] = Field(default_factory=list)
     val_fraction: float = 0.2
     space: dict[str, Any] = Field(default_factory=dict)  # a search: the settings it would try
+    environment: str = ""
+    gpus: int | None = None
 
 
 @router.post("/runs/check")
