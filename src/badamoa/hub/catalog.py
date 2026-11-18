@@ -1183,6 +1183,7 @@ def list_items(
     part: int | None = None,
     check: str = "",
     mistake: str = "",
+    changed: str = "",
     offset: int = 0,
     limit: int = 60,
 ) -> dict[str, Any]:
@@ -1190,7 +1191,8 @@ def list_items(
     ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first.
     ``label_set`` (and ``part``): only a labeling set's images, in the set's order.
     ``check``: a label check's id (``qa.CHECKS``): only the images it flagged. ``mistake`` with ``suspect``:
-    ``extra`` (objects the model found that no label has) or ``missed`` (labels it did not find)."""
+    ``extra`` (objects the model found that no label has) or ``missed`` (labels it did not find).
+    ``changed``: with ``edited``, only the images the work in progress changed that way (``drafts.KINDS``)."""
     release = get_release(db, release_id)
     draft = drafts.fixing(db, release)
     if edited and draft is None:
@@ -1198,6 +1200,10 @@ def list_items(
     query = _item_filter(release_id, split, state, class_id, site, camera, q.strip())
     if edited:
         query = query.where(ReleaseItem.item_id.in_(drafts.edited_items(draft)))
+        if changed:
+            if changed not in drafts.KINDS:
+                raise ServiceError(400, "changed는 added, removed, moved, reclassed 중 하나여야 합니다.")
+            query = query.where(ReleaseItem.item_id.in_(drafts.items_changed(db, draft, changed)))
     limit = max(1, min(limit, MAX_PAGE))
     order = [ReleaseItem.item_id]
     if suspect:
@@ -1238,6 +1244,7 @@ def list_items(
         else {}
     )
     fixed = drafts.edited_ids(db, draft, [item.id for _, item in rows]) if draft is not None and rows else set()
+    change = drafts.change_counts(db, draft, list(fixed)) if fixed else {}
     in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
     found = qa.flagged(db, release.id, check, [item.id for _, item in rows]) if check else {}
     revisions = {
@@ -1260,6 +1267,8 @@ def list_items(
                 "thumb_url": media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
                 "boxes": [light_shape(b) for b in revisions.get(member.revision_id, [])[:GRID_BOXES]],
                 "fixed": item.id in fixed,  # changed in the work in progress
+                # how: labels added, removed, moved, reclassed (against the base version)
+                **({"change": change[item.id]} if item.id in change else {}),
                 # the evaluation's found / missed / extra (sorting by likely wrong labels)
                 **({"check": mistakes[item.id]} if item.id in mistakes else {}),
                 # in a labeling set: how far it got (todo / labelled / approved / rejected) and why it was sent back

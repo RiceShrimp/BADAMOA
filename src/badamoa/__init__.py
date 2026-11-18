@@ -1,3 +1,3 @@
 """BADAMOA — Build · Annotate · Develop · Automate / MLOps Orchestration & Agents."""
 
-__version__ = "0.43.1"
+__version__ = "0.44.0"

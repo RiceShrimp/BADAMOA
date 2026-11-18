@@ -11,7 +11,8 @@ import {
 } from "./DataBoard";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
-import { DraftActions, DraftLine, DraftNotice } from "./DraftBar";
+import { ChangeSummary, DraftActions, DraftLine, DraftNotice } from "./DraftBar";
+import { CHANGE_LABEL } from "./labelDiff";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
 import { Fingerprint, ReleaseCopies } from "./NodeCopies";
@@ -19,7 +20,9 @@ import { ExportDialog, type ItemFilter, NamesDialog, NewReleaseDialog, describeF
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
 import { type Job, type NodeInfo, api } from "./api";
 import {
+  type ChangeKind,
   type CompareResult,
+  type DraftChanges,
   type ItemPage,
   type Project,
   type ReleaseCheck,
@@ -178,6 +181,7 @@ function ReleaseView({
   const [camera, setCamera] = useState("");
   const [q, setQ] = useState("");
   const [fixedOnly, setFixedOnly] = useState(false); // only the images the work in progress changed
+  const [changeKind, setChangeKind] = useState<ChangeKind | "">(""); // and only those changed this way
   const [suspect, setSuspect] = useState(""); // an evaluation: its images, likely wrong labels first
   const [page, setPage] = useState(0);
   const [pageSize, setPageSizeState] = useState(rememberedPageSize);
@@ -206,9 +210,10 @@ function ReleaseView({
     if (camera) params.set("camera", camera);
     if (q.trim()) params.set("q", q.trim());
     if (fixedOnly) params.set("edited", "true");
+    if (fixedOnly && changeKind) params.set("changed", changeKind);
     if (suspect) params.set("suspect", suspect);
     return params.toString();
-  }, [split, state, classId, site, camera, q, fixedOnly, suspect]);
+  }, [split, state, classId, site, camera, q, fixedOnly, changeKind, suspect]);
   // Evaluations of this dataset's models that can sort the images by likely wrong labels.
   const { data: checks } = usePolling(() => api<ReleaseCheck[]>(`/releases/${releaseId}/checks`), 60000, [releaseId]);
   const check = checks?.find((c) => c.id === suspect);
@@ -245,6 +250,10 @@ function ReleaseView({
   const isDraft = release.status === "draft";
   // The work in progress that changes this version's images: this one, or the one based on it.
   const fixing = isDraft || release.draft?.base?.id === release.id ? release.draft : null;
+  const pickChange = (kind: ChangeKind | "") => {
+    setChangeKind(kind);
+    if (kind) setFixedOnly(true);
+  };
   const title = isDraft ? "작업 중" : release.version;
   const pages = Math.max(1, Math.ceil((items?.total ?? 0) / pageSize));
   const present = Object.keys(stats.classes ?? {}).length;
@@ -344,6 +353,9 @@ function ReleaseView({
         )}
       </div>
       <DraftNotice release={release} />
+      {isDraft && fixing && fixing.edited > 0 && (
+        <DraftChangesCard releaseId={release.id} edited={fixing.edited} picked={changeKind} onPick={pickChange} />
+      )}
 
       <div className="stats five">
         <Stat icon="images" label="전체 항목" value={(stats.items ?? 0).toLocaleString()} sub={bytesLabel(stats.bytes)} />
@@ -434,9 +446,26 @@ function ReleaseView({
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="파일 이름에 포함…" aria-label="파일 이름" />
         {fixing && fixing.edited > 0 && (
           <label className="check inline-check" title="작업 중에서 라벨을 고친 이미지만 봅니다">
-            <input type="checkbox" checked={fixedOnly} onChange={(e) => setFixedOnly(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={fixedOnly}
+              onChange={(e) => {
+                setFixedOnly(e.target.checked);
+                if (!e.target.checked) setChangeKind("");
+              }}
+            />
             고친 것만 ({fixing.edited.toLocaleString()})
           </label>
+        )}
+        {fixing && fixedOnly && (
+          <select value={changeKind} onChange={(e) => setChangeKind(e.target.value as ChangeKind | "")} aria-label="바뀐 종류">
+            <option value="">모든 바뀜</option>
+            {(Object.keys(CHANGE_LABEL) as ChangeKind[]).map((k) => (
+              <option key={k} value={k}>
+                {CHANGE_LABEL[k]}된 라벨이 있는 것
+              </option>
+            ))}
+          </select>
         )}
         {(checks?.length ?? 0) > 0 && (
           <select
@@ -572,11 +601,12 @@ function ReleaseView({
                 <Icon name="images" size={22} />
               )}
               <span className="split-dot" style={{ background: SPLIT_COLOR[item.split] }} title={SPLIT_LABEL[item.split] ?? item.split} />
-              {item.fixed && (
+              {item.fixed && !item.change && (
                 <span className="fixed-mark" title={isDraft ? "이 작업 중에서 고친 이미지" : "작업 중에서 고친 이미지 (이 버전은 그대로)"}>
                   <Icon name="edit" size={11} />
                 </span>
               )}
+              {item.fixed && item.change && <ChangeBadge change={item.change} draft={isDraft} />}
               {item.check && item.check.missed + item.check.extra > 0 && (
                 <span className="check-mark" title={`모델이 못 찾은 라벨 ${item.check.missed} · 라벨에 없는 예측 ${item.check.extra} (평가할 때 기준)`}>
                   {item.check.missed > 0 && `놓침 ${item.check.missed}`}
@@ -660,6 +690,51 @@ function ReleaseView({
         />
       )}
     </>
+  );
+}
+
+/** On a thumbnail: how the work in progress changed this image's labels (+added −removed ⤢moved ⇄reclassed). */
+function ChangeBadge({ change, draft }: { change: Record<ChangeKind, number>; draft: boolean }) {
+  const parts: [ChangeKind, string][] = [
+    ["added", "+"],
+    ["removed", "−"],
+    ["moved", "⤢"],
+    ["reclassed", "⇄"],
+  ];
+  const title = parts.map(([k]) => `${CHANGE_LABEL[k]} ${change[k]}`).join(" · ");
+  const shown = parts.filter(([k]) => change[k] > 0);
+  return (
+    <span className="change-badge" title={`${draft ? "이 작업 중에서" : "작업 중에서"} 고침: ${title}`}>
+      <Icon name="edit" size={10} />
+      {shown.length === 0 ? <span>상태</span> : shown.map(([k, sign]) => (
+        <span key={k} className={`change-${k}`}>
+          {sign}
+          {change[k]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** The work in progress's change summary, above its grid: a kind of change filters the grid. */
+function DraftChangesCard({
+  releaseId,
+  edited,
+  picked,
+  onPick,
+}: {
+  releaseId: string;
+  edited: number;
+  picked: ChangeKind | "";
+  onPick: (kind: ChangeKind | "") => void;
+}) {
+  const { data: changes } = usePolling(() => api<DraftChanges>(`/releases/${releaseId}/changes`), 30000, [releaseId, edited]);
+  if (!changes) return null;
+  return (
+    <div className="card draft-changes">
+      <div className="eyebrow">바뀐 내용 · {changes.base?.version ?? "바탕"}과 비교 · 이미지 {changes.images.toLocaleString()}장</div>
+      <ChangeSummary changes={changes} picked={picked} onPick={onPick} />
+    </div>
   );
 }
 

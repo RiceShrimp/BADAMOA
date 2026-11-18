@@ -95,6 +95,7 @@ export interface GridItem {
   thumb_url: string | null;
   boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
   fixed?: boolean; // changed in the work in progress
+  change?: ChangeCounts; // how: labels added, removed, moved, reclassed against the base version
   check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
   set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
   qa?: { check: string; boxes: number[]; note: string }; // flagged by a label check (검수): which labels, why
@@ -214,6 +215,22 @@ export interface ItemEdit {
   draft_id: string | null;
   revision_id: number | null; // the work in progress's labels, else this version's
   fixed: boolean; // fixed in the work in progress (looking at its base version)
+  base_revision_id: number | null; // the base version's labels: what a fix is compared with
+}
+
+export type ChangeKind = "added" | "removed" | "moved" | "reclassed";
+export type ChangeCounts = Record<ChangeKind, number>;
+
+/** What a work in progress changed against its base version, like a commit's summary. */
+export interface DraftChanges {
+  release_id: string;
+  base: { id: string; version: string } | null;
+  images: number;
+  boxes: ChangeCounts; // labels
+  images_by_kind: ChangeCounts; // images with at least one such change
+  class_changes: { from: string; to: string; count: number }[];
+  states: { from: string; to: string; count: number }[];
+  editors: { name: string; images: number }[];
 }
 
 /** Everything deleted, to bring back or remove for good. */

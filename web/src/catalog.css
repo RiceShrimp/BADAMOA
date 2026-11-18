@@ -1138,3 +1138,87 @@ select.active-select {
 .qa-panel p {
   margin: 0;
 }
+
+/* ---- what the work in progress changed ---- */
+.draft-changes {
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+.change-summary {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.change-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.change-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 400;
+}
+.change-chip.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.change-chip:disabled {
+  opacity: 0.55;
+}
+.change-added strong,
+.change-badge .change-added {
+  color: var(--ok);
+}
+.change-removed strong,
+.change-badge .change-removed {
+  color: var(--bad);
+}
+.change-moved strong,
+.change-badge .change-moved {
+  color: var(--accent);
+}
+.change-reclassed strong,
+.change-badge .change-reclassed {
+  color: var(--warn);
+}
+.thumb-image .change-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.95);
+  color: var(--text);
+  font: 700 11px/1.3 var(--mono);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+.thumb-image .change-badge svg {
+  color: var(--accent);
+}
+:root[data-theme="dark"] .thumb-image .change-badge .change-added {
+  color: #158a4f;
+}
+.change-panel {
+  display: grid;
+  gap: 6px;
+}
+.change-panel .eyebrow {
+  margin: 0;
+}
+.change-panel .change-added strong {
+  color: var(--ok);
+}
+.change-panel .change-removed strong {
+  color: var(--bad);
+}
+.change-panel .change-moved strong {
+  color: var(--accent);
+}
+.change-panel .change-reclassed strong {
+  color: var(--warn);
+}

@@ -284,6 +284,7 @@ def list_items(
     part: int | None = None,
     check: str = "",
     mistake: str = "",
+    changed: str = "",
     offset: int = 0,
     limit: int = 60,
     _: User = Depends(current_user),
@@ -306,6 +307,7 @@ def list_items(
         part=part,
         check=check,
         mistake=mistake,
+        changed=changed,
         offset=offset,
         limit=limit,
     )
@@ -417,6 +419,15 @@ def delete_dataset(dataset_id: str, user: User = Depends(admin_user), db: Sessio
 
 
 # ---- likely wrong labels: what evaluated models predicted ---------------------------------
+
+
+@router.get("/releases/{release_id}/changes")
+def draft_changes(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    """What the dataset's work in progress changed against its base: labels added, removed, moved, reclassed."""
+    draft = drafts.fixing(db, catalog.get_release(db, release_id))
+    if draft is None:
+        raise services.ServiceError(404, "고친 것이 없습니다(작업 중이 없음).")
+    return drafts.changes(db, draft)
 
 
 @router.get("/releases/{release_id}/qa")

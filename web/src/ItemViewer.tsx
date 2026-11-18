@@ -27,6 +27,7 @@ import {
   polygonShape,
   withKeypoints,
 } from "./LabelEditor";
+import { CHANGE_LABEL, diffLabels } from "./labelDiff";
 import { Icon } from "./ui";
 
 interface Props {
@@ -145,6 +146,7 @@ export function ItemViewer({
   // ---- an evaluated model's predictions for this image (when the grid is sorted by one)
   const [pred, setPred] = useState<ItemPredictions | null>(null);
   const [showPred, setShowPred] = useState(true);
+  const [showDiff, setShowDiff] = useState(true); // what the work in progress changed, over the image
 
   // ---- zoom: 1 fits the image; pan is where the zoomed image sits inside its frame (screen pixels)
   const [zoom, setZoomState] = useState(1);
@@ -651,6 +653,7 @@ export function ItemViewer({
     else if (key === "n") setShowNames((v) => !v);
     else if (key === "f") setFill((v) => !v);
     else if (key === "p") setShowPred((v) => !v);
+    else if (key === "d") setShowDiff((v) => !v);
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keyRef.current(e);
@@ -843,6 +846,53 @@ export function ItemViewer({
       })}
     </svg>
   );
+  /** A tag goes under its box; at the image's bottom edge, inside the box instead. */
+  const tagTop = (bottom: number) => (bottom + font * 1.2 <= h ? bottom : bottom - font * 1.2);
+  // What changed against the base version: the labels shown (or being fixed) next to the base's.
+  const baseRevision = item?.edit.base_revision_id != null ? item.revisions.find((r) => r.id === item.edit.base_revision_id) : undefined;
+  const afterLabels = editing ? boxes : revision && revision.id !== baseRevision?.id ? revision.boxes : null;
+  const changes =
+    baseRevision && afterLabels && (editing || revision?.label_space.id === baseRevision.label_space.id)
+      ? diffLabels(baseRevision.boxes, afterLabels)
+      : null;
+  const changeCount = changes ? changes.added.length + changes.removed.length + changes.moved.length + changes.reclassed.length : 0;
+  /** Added in green, removed as red dashes, moved with its old place dashed, reclassed in orange with old → new. */
+  const drawChanges = (before: number[][], after: number[][]) => {
+    if (!changes) return null;
+    const rect = (b: number[]) => ({ x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h });
+    const tag = (b: number[], text: string, color: string, key: string) => {
+      const r = rect(b);
+      const width = text.length * font * 0.55 + font * 0.6;
+      const top = tagTop(r.y + r.height); // under the box, or inside it at the image's bottom edge
+      return (
+        <g key={key}>
+          <rect x={r.x} y={top} width={width} height={font * 1.2} fill={color} />
+          <text x={r.x + font * 0.3} y={top + font * 0.9} fontSize={font * 0.8} fill="#fff" fontWeight="700">
+            {text}
+          </text>
+        </g>
+      );
+    };
+    const frame = (b: number[], color: string, dashed: boolean, key: string) =>
+      b.length >= 5 ? (
+        <g key={key}>
+          <rect {...rect(b)} fill="none" stroke="rgb(0 0 0 / 0.55)" strokeWidth="5" vectorEffect="non-scaling-stroke" />
+          <rect {...rect(b)} fill="none" stroke={color} strokeWidth="3" strokeDasharray={dashed ? "7 5" : undefined} vectorEffect="non-scaling-stroke" />
+        </g>
+      ) : null;
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="changes">
+        {changes.removed.map((i) => before[i]?.length >= 5 && [frame(before[i], "#e5484d", true, `r${i}`), tag(before[i], "지움", "#e5484d", `rt${i}`)])}
+        {changes.moved.map(([i, j]) => [frame(before[i], "#5fb3ff", true, `m${i}`), frame(after[j], "#2f8fff", false, `mn${j}`), tag(after[j], "옮김", "#2f8fff", `mt${j}`)])}
+        {changes.reclassed.map(([i, j]) =>
+          after[j]?.length >= 5
+            ? [frame(after[j], "#f5a524", false, `c${j}`), tag(after[j], `${className(before[i][0])} → ${className(after[j][0])}`, "#d4860b", `ct${j}`)]
+            : null,
+        )}
+        {changes.added.map((j) => after[j]?.length >= 5 && [frame(after[j], "#30a46c", false, `a${j}`), tag(after[j], "추가", "#30a46c", `at${j}`)])}
+      </svg>
+    );
+  };
   /** The model's predictions over the image: dashed, with how sure it was. */
   const drawPredictions = (labels: number[][], scores: number[]) => (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="predictions">
@@ -873,9 +923,9 @@ export function ItemViewer({
               ))}
             <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="4" vectorEffect="non-scaling-stroke" />
             <rect {...box} fill="none" stroke="#fff" strokeWidth="2" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
-            <rect x={box.x} y={box.y + box.height} width={tag.length * font * 0.5 + font * 0.5} height={font * 1.2} fill="rgb(20 26 34 / 0.85)" />
-            <rect x={box.x} y={box.y + box.height} width={font * 0.25} height={font * 1.2} fill={color} />
-            <text x={box.x + font * 0.4} y={box.y + box.height + font * 0.9} fontSize={font * 0.8} fill="#fff" fontWeight="600">
+            <rect x={box.x} y={tagTop(box.y + box.height)} width={tag.length * font * 0.5 + font * 0.5} height={font * 1.2} fill="rgb(20 26 34 / 0.85)" />
+            <rect x={box.x} y={tagTop(box.y + box.height)} width={font * 0.25} height={font * 1.2} fill={color} />
+            <text x={box.x + font * 0.4} y={tagTop(box.y + box.height) + font * 0.9} fontSize={font * 0.8} fill="#fff" fontWeight="600">
               {tag}
             </text>
           </g>
@@ -953,6 +1003,7 @@ export function ItemViewer({
                     {(showLabels || editing) && r && task !== "classify" && drawBoxes(r)}
                     {showPred && pred?.evaluated && n === 0 && task !== "classify" && drawPredictions(pred.labels, pred.scores)}
                     {flagged && !editing && n === 0 && r && item && r.id === item.revision_id && drawFlagged(r.boxes, flagged.boxes)}
+                    {showDiff && changeCount > 0 && n === 0 && baseRevision && afterLabels && drawChanges(baseRevision.boxes, afterLabels)}
                     {editing && shapes && fitWidth > 0 && (
                       <EditLayer
                         width={w}
@@ -1228,6 +1279,31 @@ export function ItemViewer({
               </button>
             )}
             <p className="muted small">← → 저장하고 넘기기 · Esc 고르기 풀기 · Ctrl+C / Ctrl+V 복사 · 휠 확대 · 0 맞추기</p>
+          </section>
+        )}
+
+        {item && baseRevision && afterLabels && (
+          <section className="change-panel">
+            <div className="eyebrow">바뀐 것 · 바탕 버전과 비교</div>
+            {changeCount === 0 ? (
+              <p className="muted small">바탕 버전의 라벨과 같습니다.</p>
+            ) : (
+              <>
+                <div className="small">
+                  {(Object.keys(CHANGE_LABEL) as (keyof typeof CHANGE_LABEL)[])
+                    .filter((k) => changes && changes[k].length > 0)
+                    .map((k, n) => (
+                      <span key={k} className={`change-${k}`}>
+                        {n > 0 && " · "}
+                        {CHANGE_LABEL[k]} <strong>{changes?.[k].length}</strong>
+                      </span>
+                    ))}
+                </div>
+                <label className="check">
+                  <input type="checkbox" checked={showDiff} onChange={(e) => setShowDiff(e.target.checked)} /> 바뀐 것 보기 <kbd>D</kbd>
+                </label>
+              </>
+            )}
           </section>
         )}
 

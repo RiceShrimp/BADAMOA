@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, literal, select
 from sqlalchemy.orm import Session, aliased
 
-from . import catalog, labeling, services
+from . import catalog, label_diff, labeling, services
 from .catalog_models import Dataset, LabelRevision, LabelSpace, Release, ReleaseItem, RevisionClass
 from .db import iso, utcnow
 from .models import User
@@ -433,4 +433,79 @@ def item_edit_view(db: Session, release: Release, item_id: int) -> dict[str, Any
         "revision_id": start,  # the labels a fix starts from: the work in progress's, else this version's
         # the work in progress changed this image (its labels differ from the base version's)
         "fixed": bool(member and base and member.revision_id != base.revision_id),
+        "base_revision_id": base.revision_id if base else None,  # the base version's labels, what a fix is compared with
+    }
+
+
+# ---- what the work in progress changed ------------------------------------------------
+
+KINDS = ("added", "removed", "moved", "reclassed")
+
+
+def _changed_labels(db: Session, draft: Release, item_ids: list[int] | None = None):
+    """(item id, base revision, draft revision) of the images the work in progress changed."""
+    query, mine, base = _changed_rows(draft)
+    if item_ids is not None:
+        query = query.where(mine.item_id.in_(item_ids))
+    rows = [(m.item_id, b.revision_id, m.revision_id) for m, b in db.execute(query).all()]
+    wanted = list({r for _, b, m in rows for r in (b, m)})
+    revisions: dict[int, LabelRevision] = {}
+    for start in range(0, len(wanted), 2000):
+        chunk = wanted[start : start + 2000]
+        revisions.update({r.id: r for r in db.scalars(select(LabelRevision).where(LabelRevision.id.in_(chunk)))})
+    return [(item, revisions[b], revisions[m]) for item, b, m in rows if b in revisions and m in revisions]
+
+
+def change_counts(db: Session, draft: Release, item_ids: list[int]) -> dict[int, dict[str, int]]:
+    """For a page of images: how many labels each one got added, removed, moved and reclassed."""
+    if not item_ids:
+        return {}
+    return {
+        item: label_diff.counts(label_diff.diff(before.boxes or [], after.boxes or []))
+        for item, before, after in _changed_labels(db, draft, item_ids)
+    }
+
+
+def items_changed(db: Session, draft: Release, kind: str) -> list[int]:
+    """The images the work in progress changed in this way (added, removed, moved or reclassed labels)."""
+    return [
+        item
+        for item, before, after in _changed_labels(db, draft)
+        if label_diff.diff(before.boxes or [], after.boxes or [])[kind]
+    ]
+
+
+def changes(db: Session, draft: Release) -> dict[str, Any]:
+    """What the work in progress changed against its base version, as a commit's summary would."""
+    space = db.get(LabelSpace, draft.label_space_id)
+    names = {int(c["id"]): c["name"] for c in (space.classes if space else [])}
+    boxes: Counter = Counter()
+    images: Counter = Counter()
+    reclassed: Counter = Counter()
+    states: Counter = Counter()
+    editors: Counter = Counter()
+    rows = _changed_labels(db, draft)
+    for _, before, after in rows:
+        found = label_diff.diff(before.boxes or [], after.boxes or [])
+        for kind in KINDS:
+            boxes[kind] += len(found[kind])
+            images[kind] += 1 if found[kind] else 0
+        for i, j in found["reclassed"]:
+            old, new = int(before.boxes[i][0]), int(after.boxes[j][0])
+            reclassed[(names.get(old, str(old)), names.get(new, str(new)))] += 1
+        if before.state != after.state:
+            states[(before.state, after.state)] += 1
+        if after.created_by:
+            editors[after.created_by] += 1
+    people = dict(db.execute(select(User.id, User.username).where(User.id.in_(list(editors)))).all()) if editors else {}
+    base = db.get(Release, draft.base_release_id) if draft.base_release_id else None
+    return {
+        "release_id": draft.id,
+        "base": {"id": base.id, "version": base.version} if base else None,
+        "images": len(rows),
+        "boxes": {kind: boxes[kind] for kind in KINDS},
+        "images_by_kind": {kind: images[kind] for kind in KINDS},
+        "class_changes": [{"from": a, "to": b, "count": n} for (a, b), n in reclassed.most_common(20)],
+        "states": [{"from": a, "to": b, "count": n} for (a, b), n in states.most_common()],
+        "editors": [{"name": people.get(uid, "?"), "images": n} for uid, n in editors.most_common()],
     }

@@ -1,8 +1,74 @@
 import { type FormEvent, useState } from "react";
 import { api } from "./api";
-import type { ReleaseInfo } from "./catalogTypes";
+import type { ChangeKind, DraftChanges, ReleaseInfo } from "./catalogTypes";
+import { CHANGE_LABEL } from "./labelDiff";
 import { nextVersion } from "./ReleaseMaker";
-import { Icon, Modal, timeAgo } from "./ui";
+import { Icon, Modal, timeAgo, usePolling } from "./ui";
+
+const KINDS: ChangeKind[] = ["added", "removed", "moved", "reclassed"];
+const STATE_WORD: Record<string, string> = { labelled: "라벨 있음", background: "배경", unlabelled: "아직 안 함" };
+
+/** What the work in progress changed, like a commit's summary: labels added, removed, moved and reclassed,
+ * class changes, state changes, who fixed. ``onPick`` filters the grid to the images changed that way. */
+export function ChangeSummary({
+  changes,
+  picked,
+  onPick,
+}: {
+  changes: DraftChanges;
+  picked?: ChangeKind | "";
+  onPick?: (kind: ChangeKind | "") => void;
+}) {
+  const sign: Record<ChangeKind, string> = { added: "+", removed: "−", moved: "", reclassed: "" };
+  return (
+    <div className="change-summary">
+      <div className="change-chips">
+        {KINDS.map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            className={`change-chip change-${kind} ${picked === kind ? "active" : ""}`}
+            disabled={!onPick || changes.boxes[kind] === 0}
+            onClick={() => onPick?.(picked === kind ? "" : kind)}
+            title={onPick ? `${CHANGE_LABEL[kind]} 라벨이 있는 이미지 ${changes.images_by_kind[kind].toLocaleString()}장만 보기` : undefined}
+          >
+            <strong>
+              {sign[kind]}
+              {changes.boxes[kind].toLocaleString()}
+            </strong>{" "}
+            {CHANGE_LABEL[kind]}
+            <span className="muted"> · {changes.images_by_kind[kind].toLocaleString()}장</span>
+          </button>
+        ))}
+      </div>
+      {changes.class_changes.length > 0 && (
+        <div className="small">
+          <span className="muted">클래스 바뀜: </span>
+          {changes.class_changes.map((c, n) => (
+            <span key={n}>
+              {n > 0 && " · "}
+              {c.from} → {c.to} <span className="muted">{c.count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {changes.states.length > 0 && (
+        <div className="small">
+          <span className="muted">상태 바뀜: </span>
+          {changes.states.map((c, n) => (
+            <span key={n}>
+              {n > 0 && " · "}
+              {STATE_WORD[c.from] ?? c.from} → {STATE_WORD[c.to] ?? c.to} <span className="muted">{c.count}장</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {changes.editors.length > 0 && (
+        <div className="small muted">고친 사람: {changes.editors.map((e) => `${e.name} ${e.images}장`).join(" · ")}</div>
+      )}
+    </div>
+  );
+}
 
 interface Rebased {
   base: string;
@@ -120,6 +186,7 @@ export function DraftLine({ release }: { release: ReleaseInfo }) {
 }
 
 function ConfirmDraft({ release, onClose, onDone }: { release: ReleaseInfo; onClose: () => void; onDone: () => void }) {
+  const { data: changes } = usePolling(() => api<DraftChanges>(`/releases/${release.id}/changes`), 0, [release.id]);
   const draft = release.draft!;
   const [version, setVersion] = useState(() => {
     const taken = new Set(release.siblings.map((s) => s.version));
@@ -158,6 +225,10 @@ function ConfirmDraft({ release, onClose, onDone }: { release: ReleaseInfo; onCl
           메모
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder={`비우면 "이미지 ${draft.edited.toLocaleString()}장의 라벨을 고침"`} />
         </label>
+        <div className="field-label">
+          바뀐 내용 <span className="muted small">({draft.base?.version ?? "바탕"}과 비교)</span>
+          {changes ? <ChangeSummary changes={changes} /> : <span className="muted small">세는 중…</span>}
+        </div>
         <p className="muted small">split을 다시 나누거나 클래스를 바꾸려면, 확정한 뒤 그 버전에서 "새 버전"을 쓰세요.</p>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">

@@ -217,3 +217,37 @@ def test_fix_outlines_keypoints_and_classes(hub, tmp_path):  # noqa: F811
     saved = _save(hub, cls, item["id"], [[other]])
     assert saved.status_code == 200 and saved.json()["state"] == "labelled"
     assert _save(hub, cls, item["id"], [[0], [1]]).status_code == 400
+
+
+def test_label_diff_pairs_labels_by_overlap():
+    from badamoa.hub import label_diff
+
+    before = [[0, 0.3, 0.3, 0.2, 0.2], [1, 0.7, 0.7, 0.2, 0.2], [2, 0.5, 0.1, 0.1, 0.1]]
+    after = [[2, 0.3, 0.3, 0.2, 0.2], [1, 0.71, 0.7, 0.2, 0.2], [0, 0.9, 0.9, 0.05, 0.05]]
+    found = label_diff.diff(before, after)
+    assert found == {"added": [2], "removed": [2], "moved": [(1, 1)], "reclassed": [(0, 0)]}
+    assert label_diff.counts(label_diff.diff(before, before)) == {"added": 0, "removed": 0, "moved": 0, "reclassed": 0}
+    assert label_diff.diff([[0]], [[1]])["reclassed"] == [(0, 0)]  # classification: one class for another
+    assert label_diff.diff([], [[1, 0.5, 0.5, 0.1, 0.1]])["added"] == [0]
+
+
+def test_what_the_work_in_progress_changed(hub, tmp_path):  # noqa: F811
+    project = hub.post("/api/projects", json={"name": "바뀐 것"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "ds"), "v1")
+    item = next(i for i in _items(hub, v1)["items"] if i["box_count"] >= 2)
+    before = next(r for r in _detail(hub, v1, item["id"])["revisions"])["boxes"]
+    other = (int(before[0][0]) + 1) % len(CLASSES)
+    after = [[other, *before[0][1:]], *before[2:], [0, 0.97, 0.97, 0.04, 0.04]]  # reclassed, removed, added
+    draft = _save(hub, v1, item["id"], after).json()["release_id"]
+    summary = hub.get(f"/api/releases/{draft}/changes").json()
+    assert summary["images"] == 1 and summary["base"]["version"] == "v1"
+    assert summary["boxes"]["reclassed"] == 1 and summary["boxes"]["removed"] == 1 and summary["boxes"]["added"] == 1
+    assert summary["class_changes"] == [{"from": CLASSES[int(before[0][0])], "to": CLASSES[other], "count": 1}]
+    assert summary["editors"] == [{"name": ADMIN["username"], "images": 1}]
+    assert hub.get(f"/api/releases/{v1}/changes").json()["images"] == 1  # asked of the base version too
+    page = _items(hub, draft, "edited=true")["items"]
+    assert page[0]["change"] == {"added": 1, "removed": 1, "moved": 0, "reclassed": 1}
+    assert _items(hub, draft, "edited=true&changed=moved")["total"] == 0
+    assert _items(hub, draft, "edited=true&changed=reclassed")["total"] == 1
+    assert hub.get(f"/api/releases/{draft}/items", params={"edited": "true", "changed": "nope"}).status_code == 400
+    assert _detail(hub, draft, item["id"])["edit"]["base_revision_id"] == _detail(hub, v1, item["id"])["revision_id"]
