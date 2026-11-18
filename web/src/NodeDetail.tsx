@@ -116,7 +116,8 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
     ? `${zoom ? "확대한 구간" : RANGES.find((r) => r.id === range)?.label} · ${STEP_LABEL[history.resolution]} ${mode === "avg" ? "평균" : "최대"}`
     : "";
   const charts: { title: string; unit: string; yMax?: number; series: Series[] }[] = [
-    { title: "CPU · 메모리 사용률", unit: "%", yMax: 100, series: only(pick("cpu", "CPU"), pick("mem", "메모리")) },
+    { title: "CPU 사용률", unit: "%", yMax: 100, series: only(pick("cpu", "CPU")) },
+    { title: "메모리(RAM) 사용률", unit: "%", yMax: 100, series: only(pick("mem", "메모리")) },
     { title: "GPU 사용률", unit: "%", yMax: 100, series: gpuSeries("util") },
     { title: "GPU 메모리 사용률", unit: "%", yMax: 100, series: gpuSeries("mem") },
     { title: "GPU 온도", unit: "°C", series: gpuSeries("temp") },
