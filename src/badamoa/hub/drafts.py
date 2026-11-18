@@ -363,6 +363,9 @@ def confirm(db: Session, user: User, draft_id: str, version: str, note: str = ""
     if db.scalar(taken) is not None:
         dataset = db.get(Dataset, draft.dataset_id)
         raise ServiceError(409, f"{dataset.name} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
+    from . import review  # noqa: PLC0415  (review reads drafts)
+
+    draft.review = review.record(db, draft)  # 검수 kept with the version: problems before and after, who
     draft.version = version
     draft.note = note.strip() or f"이미지 {edited:,}장의 라벨을 고침"
     draft.status = "ready"

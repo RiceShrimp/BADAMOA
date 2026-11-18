@@ -2,7 +2,7 @@ import { FileList } from "./Files";
 import { LoggedTable } from "./Media";
 import { type FormEvent, Fragment, useEffect, useState } from "react";
 import { api, apiUpload } from "./api";
-import type { ReleaseInfo, TreeDataset } from "./catalogTypes";
+import { type ReleaseInfo, type TreeDataset, sameTask, taskLabel } from "./catalogTypes";
 import { METRIC_LABEL, type ModelDetail, type ModelOp, keyMetrics, metric } from "./trainTypes";
 import { Badge, Icon, Modal, STATUS_LABEL, timeAgo, usePolling } from "./ui";
 
@@ -274,10 +274,13 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${model.project_id}/datasets`).then((data) => {
       setTree(data);
-      const ready = data.flatMap((d) => d.releases).filter((r) => r.status === "ready");
+      const ready = data.filter((d) => sameTask(d.task, model.task)).flatMap((d) => d.releases).filter((r) => r.status === "ready");
       setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
     });
-  }, [model.project_id]);
+  }, [model.project_id, model.task]);
+  // Only the datasets of the model's task: a Seg model says nothing useful about a Det dataset.
+  const fitting = tree?.filter((d) => sameTask(d.task, model.task)) ?? [];
+  const hidden = (tree?.length ?? 0) - fitting.length;
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -291,11 +294,11 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
           고른 버전으로 이 모델의 지표를 잽니다. 서로 다른 데이터로 학습한 모델도 같은 버전으로 평가하면 공정하게 비교할 수
           있습니다.
         </p>
-        <div className="form-row">
+        <div className="form-row" hidden={!!tree && fitting.length === 0}>
           <label>
             버전
             <select value={release} onChange={(e) => setRelease(e.target.value)} required>
-              {tree?.map((d) => (
+              {fitting.map((d) => (
                 <optgroup key={d.id} label={d.name}>
                   {d.releases
                     .filter((r) => r.status === "ready" && !r.deleted_at)
@@ -322,6 +325,12 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
             </select>
           </label>
         </div>
+        {hidden > 0 && (
+          <p className="muted small">
+            태스크가 다른 데이터셋 {hidden}개는 뺐습니다({taskLabel(model.task)} 모델은 {taskLabel(model.task)} 데이터셋으로만 평가합니다).
+          </p>
+        )}
+        {fitting.length === 0 && tree && <div className="notice">이 프로젝트에는 이 모델로 평가할 {taskLabel(model.task)} 데이터셋이 없습니다.</div>}
         {split === "train" && release === model.release?.id && (
           <div className="notice">이 모델이 학습에 쓴 이미지가 들어 있습니다. 지표가 실제보다 높게 나옵니다.</div>
         )}

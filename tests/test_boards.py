@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 
-from sample_data import make_yolo
+from sample_data import make_imagefolder, make_yolo
 from test_labeling import _login
 from test_training import _logs, _train, _wait, hub, release  # noqa: F401  (the fixtures)
 
 
-def _import(hub, project_id, root, **extra):  # noqa: F811
-    body = {"node_id": hub.node_id, "path": str(root), "dataset": "street", "version": "v1", **extra}
+def _import(hub, project_id, root, dataset="street", **extra):  # noqa: F811
+    body = {"node_id": hub.node_id, "path": str(root), "dataset": dataset, "version": "v1", **extra}
     job = _wait(hub, hub.post(f"/api/projects/{project_id}/imports", json=body).json()["id"])
     assert job["status"] == "succeeded", _logs(hub, job["id"])
     return job["result"]["release_id"]
@@ -115,3 +116,45 @@ def test_training_and_model_boards(hub, release):  # noqa: F811
     assert card["latest"]["version"] == 2
     assert models["projects"][1]["project"]["id"] == empty["id"] and models["projects"][1]["latest"] is None
     assert models["totals"] == {"models": 2, "families": 1, "aliased": 1, "production": 0, "projects": 1}
+
+
+def test_review_checks_with_models_that_fit(hub, release, tmp_path):  # noqa: F811
+    done, job = _train(hub, release, {"epochs": 2})
+    assert job["status"] == "succeeded", _logs(hub, job["id"])
+    model = hub.get(f"/api/runs/{done['id']}").json()["model"]
+    pets = _import(hub, release["project_id"], make_imagefolder(tmp_path / "pets"), dataset="pets")
+
+    # ---- which of the project's models can check a version: the dataset's task, the version's classes
+    choices = hub.get(f"/api/releases/{release['id']}/eval-models").json()
+    assert choices["task"] == "detect" and choices["evaluate"]["id"] == release["id"]
+    assert choices["splits"] == {"train": 6, "val": 2}
+    [fit] = choices["models"]
+    assert (fit["id"], fit["fits"], fit["why"], fit["task"], fit["trained_on"]) == (model["id"], True, "", "detect", True)
+    other = hub.get(f"/api/releases/{pets}/eval-models").json()
+    assert other["task"] == "classify" and other["models"][0]["fits"] is False
+    assert other["models"][0]["why"] == "Det 모델이라 Cls 데이터셋에는 쓸 수 없습니다"
+
+    # ---- a work in progress is checked as its base version
+    item = hub.get(f"/api/releases/{release['id']}/items", params={"limit": 1}).json()["items"][0]
+    draft = hub.put(f"/api/releases/{release['id']}/items/{item['id']}/labels", json={"boxes": []}).json()["release_id"]
+    assert hub.get(f"/api/releases/{draft}/eval-models").json()["evaluate"]["id"] == release["id"]
+
+    # ---- checked with the model: the 검수 screen names it, with its task and aliases
+    hub.post(f"/api/models/{model['id']}/alias", json={"alias": "champion"})
+    op = hub.post(f"/api/models/{model['id']}/eval", json={"release_id": release["id"], "split": "val", "gpus": 0}).json()
+    pending = hub.get(f"/api/releases/{draft}/qa").json()["pending"]
+    assert pending == [] or (pending[0]["id"] == op["id"] and pending[0]["model"]["id"] == model["id"])
+    assert _wait(hub, op["job_id"])["status"] == "succeeded", _logs(hub, op["job_id"])
+    summary = hub.get(f"/api/releases/{draft}/qa").json()
+    assert summary["pending"] == []
+    [used] = summary["evaluations"]
+    assert used["id"] == op["id"] and used["model"]["task"] == "detect" and used["model"]["aliases"] == ["champion"]
+
+    # ---- an evaluation by a model of another task is no check of these labels (one made before evaluations were refused)
+    database = sqlite3.connect(hub.hub_home / "hub.db")
+    database.execute("UPDATE model_versions SET task = 'segment' WHERE id = ?", (model["id"],))
+    database.commit()
+    database.close()
+    assert hub.get(f"/api/releases/{release['id']}/checks").json() == []
+    assert hub.get(f"/api/releases/{draft}/qa").json()["evaluations"] == []
+    assert hub.get(f"/api/releases/{release['id']}/eval-models").json()["models"][0]["fits"] is False

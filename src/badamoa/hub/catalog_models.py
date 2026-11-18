@@ -165,6 +165,8 @@ class Release(Base):
     stats: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     # A fingerprint of the content, like a commit hash (``catalog.release_digest``); "" until it is ready
     digest: Mapped[str] = mapped_column(String(64), default="")
+    # 검수 when a work in progress became this version: problems before and after, what was fixed or let be
+    review: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -283,3 +285,23 @@ class QaResult(Base):
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     boxes: Mapped[list[int]] = mapped_column(JSON, default=list)
     note: Mapped[str] = mapped_column(String(255), default="")
+
+
+class QaDismissal(Base):
+    """Someone looked at what a check flagged and found the labels right ("문제 없음").
+
+    Kept for the labels they looked at (``revision_id``): a later version with the same labels for the image
+    keeps the judgement; once the labels change, the check counts it again. ``check`` is a rule check's id or
+    ``extra`` / ``missed`` (what a model's evaluation found).
+    """
+
+    __tablename__ = "qa_dismissals"
+    __table_args__ = (Index("ix_qa_dismissals_dataset", "dataset_id", "check"),)
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    check: Mapped[str] = mapped_column(String(24), primary_key=True)
+    revision_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"))
+    note: Mapped[str] = mapped_column(String(255), default="")
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

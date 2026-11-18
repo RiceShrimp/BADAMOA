@@ -23,7 +23,14 @@ from badamoa.core import tasks as task_names
 from badamoa.core.protocol import ImportBegin, ImportChunk
 from badamoa.core.storage import Storage
 
-from . import checks, drafts, labeling, qa, services  # these import this module too: each uses the other only when called
+from . import (  # these import this module too: each uses the other only when called
+    checks,
+    drafts,
+    labeling,
+    qa,
+    review,
+    services,
+)
 from .catalog_models import (
     Batch,
     Dataset,
@@ -443,6 +450,8 @@ def tree(db: Session, project_id: str, include_deleted: bool = False) -> list[di
                         "created_at": iso(r.created_at),
                         "deleted_at": iso(r.deleted_at),
                         **({"edited": drafts.edited_count(db, r)} if r.status == "draft" else {}),
+                        # 검수: a record kept when it was confirmed, the flagged images left (once checked)
+                        **({"review": review.badge(db, r)} if r.status == "ready" and not r.deleted_at else {}),
                     }
                     for r in releases
                 ],
@@ -1185,6 +1194,7 @@ def list_items(
     check: str = "",
     mistake: str = "",
     changed: str = "",
+    let_be: bool = False,
     offset: int = 0,
     limit: int = 60,
 ) -> dict[str, Any]:
@@ -1193,7 +1203,9 @@ def list_items(
     ``label_set`` (and ``part``): only a labeling set's images, in the set's order.
     ``check``: a label check's id (``qa.CHECKS``): only the images it flagged. ``mistake`` with ``suspect``:
     ``extra`` (objects the model found that no label has) or ``missed`` (labels it did not find).
-    ``changed``: with ``edited``, only the images the work in progress changed that way (``drafts.KINDS``)."""
+    ``changed``: with ``edited``, only the images the work in progress changed that way (``drafts.KINDS``).
+    With ``check`` (or ``suspect`` and ``mistake``), what someone judged right ("문제 없음") is left out;
+    ``let_be`` lists only that instead."""
     release = get_release(db, release_id)
     draft = drafts.fixing(db, release)
     if edited and draft is None:
@@ -1223,6 +1235,10 @@ def list_items(
         qa.run(db, release)
         joined = and_(QaResult.release_id == release.id, QaResult.check == check, QaResult.item_id == ReleaseItem.item_id)
         query = query.join(QaResult, joined)
+    judged = check or (mistake if suspect and mistake in checks.MISTAKES else "")  # whose "문제 없음" counts
+    if judged:
+        kept = checks.let_be(judged, ReleaseItem.item_id, ReleaseItem.revision_id)
+        query = query.where(kept if let_be else ~kept)
     if label_set:
         labeling.get_set(db, label_set)
         joined = and_(LabelSetItem.set_id == label_set, LabelSetItem.item_id == ReleaseItem.item_id)
@@ -1248,6 +1264,7 @@ def list_items(
     change = drafts.change_counts(db, draft, list(fixed)) if fixed else {}
     in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
     found = qa.flagged(db, release.id, check, [item.id for _, item in rows]) if check else {}
+    kept_as = qa.judgements(db, release.id, judged, [item.id for _, item in rows]) if judged and let_be else {}
     revisions = {
         rev.id: rev.boxes or []
         for rev in db.scalars(select(LabelRevision).where(LabelRevision.id.in_([m.revision_id for m, _ in rows])))
@@ -1276,6 +1293,8 @@ def list_items(
                 **({"set": in_set[item.id]} if item.id in in_set else {}),
                 # flagged by a label check: which labels (indices) and why
                 **({"qa": found[item.id]} if item.id in found else {}),
+                # judged right for the check in play ("문제 없음"): by whom, why
+                **({"let_be": kept_as[item.id]} if item.id in kept_as else {}),
             }
             for member, item in rows
         ],

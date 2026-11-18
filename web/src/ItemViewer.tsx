@@ -51,6 +51,10 @@ interface Props {
   labeling?: LabelingMode;
   /** Opened from a label check (검수): its name; the labels it flagged are marked on the image. */
   qaTitle?: string;
+  /** The check in play (a rule's id, or extra / missed of a model): what "문제 없음" is kept for. */
+  qaCheck?: string;
+  /** The images are the ones someone judged right: the viewer offers to count each again. */
+  qaLetBe?: boolean;
 }
 
 export interface LabelingMode {
@@ -109,8 +113,11 @@ export function ItemViewer({
   checkOp,
   labeling,
   qaTitle,
+  qaCheck,
+  qaLetBe = false,
 }: Props) {
   const [index, setIndex] = useState(start);
+  const [reloads, setReloads] = useState(0); // the list changed under the same index: load it again
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revisionId, setRevisionId] = useState<number | null>(null);
@@ -127,6 +134,9 @@ export function ItemViewer({
   // ---- a labeling set's part: this image's state in it, and how far the part got
   const [inSet, setInSet] = useState<{ state: SetState; note: string } | null>(null);
   const [flagged, setFlagged] = useState<{ boxes: number[]; note: string } | null>(null); // what a label check found
+  const [letBe, setLetBe] = useState<{ note: string; by: string | null; at: string } | null>(null); // "문제 없음"
+  const [letBeNote, setLetBeNote] = useState("");
+  const [judging, setJudging] = useState(false);
   const [progress, setProgress] = useState<{ size: number; states: Record<SetState, number> } | null>(null);
   const refreshProgress = async () => {
     if (!labeling) return;
@@ -238,6 +248,8 @@ export function ItemViewer({
         setItem(detail);
         setInSet(page.items[0].set ? { state: page.items[0].set.state, note: page.items[0].set.note } : null);
         setFlagged(page.items[0].qa ? { boxes: page.items[0].qa.boxes, note: page.items[0].qa.note } : null);
+        setLetBe(page.items[0].let_be ?? null);
+        setLetBeNote("");
         setFull(detail.image_url ? "loading" : "error");
         setRevisionId(detail.revision_id);
         setCompareId(null);
@@ -255,7 +267,7 @@ export function ItemViewer({
     return () => {
       alive = false;
     };
-  }, [releaseId, filterQuery, index]);
+  }, [releaseId, filterQuery, index, reloads]);
 
   useEffect(() => {
     setPred(null);
@@ -654,6 +666,7 @@ export function ItemViewer({
     else if (key === "f") setFill((v) => !v);
     else if (key === "p") setShowPred((v) => !v);
     else if (key === "d") setShowDiff((v) => !v);
+    else if (key === "o" && qaCheck) void judge();
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keyRef.current(e);
@@ -829,23 +842,67 @@ export function ItemViewer({
     ));
   };
 
+  /** "문제 없음": what the check flagged on this image is right (or, listing those, count it again). The image
+   * leaves the list it was in: the same place shows the next one. */
+  const judge = async () => {
+    if (!item || !qaCheck || judging) return;
+    setJudging(true);
+    try {
+      const path = `/releases/${releaseId}/items/${item.id}/let-be`;
+      if (qaLetBe) await api(`${path}?check=${encodeURIComponent(qaCheck)}`, { method: "DELETE" });
+      else await api(path, { method: "PUT", body: { check: qaCheck, note: letBeNote } });
+      onSaved?.();
+      if (total <= 1) close();
+      else if (index >= total - 1) setIndex(index - 1);
+      else setReloads((n) => n + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setJudging(false);
+    }
+  };
   const className = (id: number) => classes.find((c) => c.id === id)?.name ?? String(id);
-  /** The labels a check flagged: a thick yellow frame around each (on the version's own labels only). */
-  const drawFlagged = (labels: number[][], indices: number[]) => (
+  /** The labels a check flagged: a thick yellow frame around each with its number and class over it (on the
+   * version's own labels only); the panel lists the same numbers. */
+  const drawFlagged = (labels: number[][], indices: number[]) => {
+    // Flagged labels often lie on each other (that is what some checks find): their tags go side by side.
+    const placed: { x: number; y: number; width: number }[] = [];
+    const tall = font * 1.25;
+    return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="flagged">
-      {indices.map((i) => {
+      {indices.map((i, n) => {
         const b = labels[i];
         if (!b || b.length < 5) return null;
         const box = { x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h };
+        const text = `${n + 1} ${className(b[0])}`;
+        const width = text.length * font * 0.6 + font * 0.7;
+        // under the box (the label's own name is on its top edge); inside it at the image's bottom edge
+        let top = box.y + box.height + tall <= h ? box.y + box.height : box.y + box.height - tall;
+        let left = Math.min(Math.max(0, box.x), Math.max(0, w - width));
+        const row = (top + tall * 3 <= h ? 1 : -1) * (tall + font * 0.1); // more rows go down, or up near the bottom
+        const hits = () => placed.find((p) => Math.abs(p.y - top) < tall && left < p.x + p.width && p.x < left + width);
+        for (let hit = hits(), tries = 0; hit && tries < 40; hit = hits(), tries++) {
+          left = hit.x + hit.width + font * 0.2;
+          if (left + width > w) {
+            left = Math.min(Math.max(0, box.x), Math.max(0, w - width));
+            top += row; // no room to the right: another row
+          }
+        }
+        placed.push({ x: left, y: top, width });
         return (
           <g key={i}>
             <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="6" vectorEffect="non-scaling-stroke" />
             <rect {...box} fill="none" stroke="#ffd400" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+            <rect x={left} y={top} width={width} height={tall} fill="#ffd400" stroke="rgb(0 0 0 / 0.6)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+            <text x={left + font * 0.35} y={top + font * 0.95} fontSize={font * 0.85} fill="#111" fontWeight="700">
+              {text}
+            </text>
           </g>
         );
       })}
     </svg>
-  );
+    );
+  };
   /** A tag goes under its box; at the image's bottom edge, inside the box instead. */
   const tagTop = (bottom: number) => (bottom + font * 1.2 <= h ? bottom : bottom - font * 1.2);
   // What changed against the base version: the labels shown (or being fixed) next to the base's.
@@ -1102,7 +1159,57 @@ export function ItemViewer({
               <strong>{qaTitle}</strong>
               {flagged?.note && <span className="muted"> · {flagged.note}</span>}
             </div>
-            {flagged && flagged.boxes.length > 0 && <p className="muted small">해당 라벨을 노란 테두리로 표시했습니다(이 버전의 라벨을 볼 때).</p>}
+            {flagged && flagged.boxes.length > 0 && (
+              <>
+                <ol className="qa-labels">
+                  {flagged.boxes.map((i, n) => {
+                    const b = item.revisions.find((r) => r.id === item.revision_id)?.boxes[i];
+                    if (!b) return null;
+                    return (
+                      <li key={i}>
+                        <span className="qa-number">{n + 1}</span>
+                        <i className="class-dot" style={{ background: colorOf(b[0]) }} />
+                        <strong>{className(b[0])}</strong>
+                        {b.length >= 5 && (
+                          <span className="muted">
+                            {" "}
+                            {Math.round(b[3] * w)}×{Math.round(b[4] * h)}px
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+                <p className="muted small">이미지 위에 같은 번호와 클래스로 노란 테두리를 쳤습니다(이 버전의 라벨을 볼 때).</p>
+              </>
+            )}
+            {qaCheck && !editing && (
+              qaLetBe ? (
+                <div className="qa-judge">
+                  <span className="small">
+                    문제 없음 · {letBe?.by ?? "?"}
+                    {letBe?.note ? ` · ${letBe.note}` : ""}
+                  </span>
+                  <span className="spacer" />
+                  <button className="small" onClick={() => void judge()} disabled={judging} title="이 검사에 다시 걸리게 합니다">
+                    다시 검사에 넣기 <kbd>O</kbd>
+                  </button>
+                </div>
+              ) : (
+                <div className="qa-judge">
+                  <input
+                    value={letBeNote}
+                    onChange={(e) => setLetBeNote(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    placeholder="이유(선택): 예) 실제로 겹친 두 물체"
+                    aria-label="문제 없음의 이유"
+                  />
+                  <button className="small" onClick={() => void judge()} disabled={judging} title="라벨이 맞습니다: 이 라벨이 그대로인 동안 다음 버전에서도 세지 않습니다">
+                    <Icon name="check" size={12} /> 문제 없음 <kbd>O</kbd>
+                  </button>
+                </div>
+              )
+            )}
           </section>
         )}
 

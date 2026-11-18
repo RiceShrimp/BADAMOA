@@ -17,7 +17,9 @@ from typing import Any
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
-from .catalog_models import Dataset, Item, ItemPrediction, Release, ReleaseItem
+from badamoa.core import tasks as task_names
+
+from .catalog_models import Dataset, Item, ItemPrediction, QaDismissal, Release, ReleaseItem
 from .db import iso
 from .models import Job
 from .services import ServiceError
@@ -81,18 +83,41 @@ def ingest(db: Session, op: ModelJob, raw: bytes) -> int:
 
 
 def _offered(db: Session, release: Release) -> list[ModelJob]:
-    """Evaluations on this release or another version of its dataset with the same classes, newest first."""
+    """Evaluations on this release or another version of its dataset with the same classes, newest first,
+    by a model of the dataset's task: a Seg model's view of a Det dataset is no check of its labels."""
     siblings = select(Release.id).where(
         Release.dataset_id == release.dataset_id, Release.label_space_id == release.label_space_id
     )
     has_rows = select(ItemPrediction.op_id).where(ItemPrediction.op_id == ModelJob.id).exists()
-    return list(
-        db.scalars(
-            select(ModelJob)
-            .where(ModelJob.kind == "eval", ModelJob.release_id.in_(siblings), has_rows)
-            .order_by(ModelJob.created_at.desc())
-        )
+    ops = db.scalars(
+        select(ModelJob)
+        .where(ModelJob.kind == "eval", ModelJob.release_id.in_(siblings), has_rows)
+        .order_by(ModelJob.created_at.desc())
+    ).all()
+    dataset = db.get(Dataset, release.dataset_id)
+    task = (dataset.task if dataset else "") or "detect"
+    models = {m.id: m for m in db.scalars(select(ModelVersion).where(ModelVersion.id.in_({op.model_id for op in ops})))}
+    return [op for op in ops if op.model_id not in models or task_names.same(models[op.model_id].task or "detect", task)]
+
+
+MISTAKES = ("extra", "missed")  # what an evaluation finds, judged like a rule check's finding
+
+
+def let_be(check: Any, item_id: Any, revision_id: Any) -> Any:
+    """SQL: someone found this image's labels (this revision of them) right for this check ("문제 없음")."""
+    return (
+        select(QaDismissal.item_id)
+        .where(QaDismissal.item_id == item_id, QaDismissal.check == check, QaDismissal.revision_id == revision_id)
+        .exists()
     )
+
+
+def model_ref(model: ModelVersion | None) -> dict[str, Any] | None:
+    """The model an evaluation is by, as the 검수 screen names it."""
+    if model is None:
+        return None
+    aliases = list(model.aliases or ([model.alias] if model.alias else []))
+    return {"id": model.id, "name": model.name, "version": model.version, "task": model.task or "detect", "aliases": aliases}
 
 
 def release_checks(db: Session, release: Release) -> list[dict[str, Any]]:
@@ -114,7 +139,7 @@ def release_checks(db: Session, release: Release) -> list[dict[str, Any]]:
         out.append(
             {
                 "id": op.id,
-                "model": {"id": model.id, "name": model.name, "version": model.version} if model else None,
+                "model": model_ref(model),
                 "release": {"id": evaluated.id, "version": evaluated.version} if evaluated else None,
                 "split": (op.params or {}).get("split", ""),
                 "created_at": iso(op.created_at),
@@ -141,13 +166,46 @@ def newest(db: Session, release: Release) -> dict[str, Any] | None:
         model = db.get(ModelVersion, op.model_id)
         return {
             "id": op.id,
-            "model": {"id": model.id, "name": model.name, "version": model.version} if model else None,
+            "model": model_ref(model),
             "created_at": iso(op.created_at),
             "images": images,
-            "extra": db.scalar(base.where(*mine, ItemPrediction.extra > 0)) or 0,
-            "missed": db.scalar(base.where(*mine, ItemPrediction.missed > 0)) or 0,
+            **{
+                kind: db.scalar(
+                    base.where(
+                        *mine,
+                        getattr(ItemPrediction, kind) > 0,
+                        ~let_be(kind, ItemPrediction.item_id, ReleaseItem.revision_id),
+                    )
+                )
+                or 0
+                for kind in MISTAKES
+            },
         }
     return None
+
+
+def pending(db: Session, release: Release) -> list[dict[str, Any]]:
+    """Evaluations of this dataset's versions still waiting or running: their view comes when they end."""
+    siblings = select(Release.id).where(
+        Release.dataset_id == release.dataset_id, Release.label_space_id == release.label_space_id
+    )
+    rows = db.execute(
+        select(ModelJob, Job.status)
+        .join(Job, Job.id == ModelJob.job_id)
+        .where(ModelJob.kind == "eval", ModelJob.release_id.in_(siblings), Job.status.in_(("queued", "running")))
+        .order_by(ModelJob.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": op.id,
+            "job_id": op.job_id,
+            "status": status,
+            "split": (op.params or {}).get("split", ""),
+            "model": model_ref(db.get(ModelVersion, op.model_id)),
+            "created_at": iso(op.created_at),
+        }
+        for op, status in rows
+    ]
 
 
 def check_of(db: Session, release: Release, op_id: str) -> ModelJob:
@@ -163,7 +221,7 @@ def item_predictions(db: Session, release: Release, item_id: int, op_id: str) ->
     model = db.get(ModelVersion, op.model_id)
     return {
         "op_id": op.id,
-        "model": {"id": model.id, "name": model.name, "version": model.version} if model else None,
+        "model": model_ref(model),
         "split": (op.params or {}).get("split", ""),
         "evaluated": row is not None,
         "labels": row.labels if row else [],

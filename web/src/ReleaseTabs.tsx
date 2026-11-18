@@ -413,6 +413,7 @@ export function ReleasesTab({ release, onCompare }: { release: ReleaseInfo; onCo
           <tr>
             <th>버전</th>
             <th className="right">항목</th>
+            <th>검수</th>
             <th>라벨 공간</th>
             <th className="right">만든 때</th>
             <th />
@@ -428,6 +429,22 @@ export function ReleasesTab({ release, onCompare }: { release: ReleaseInfo; onCo
                 {r.status === "draft" && <span className="tag accent">고친 것 {(r.edited ?? 0).toLocaleString()} · 아직 버전 아님</span>}
               </td>
               <td className="num right">{r.items.toLocaleString()}</td>
+              <td>
+                {r.review ? (
+                  <a className="review-badge" href={`#/review/${r.id}`} title="검수 화면에서 보기">
+                    {r.review.recorded && <span className="tag ok">검수 기록</span>}
+                    {r.review.open != null ? (
+                      <span className={r.review.open ? "warn-text small" : "muted small"}>
+                        {r.review.open ? `남은 문제 ${r.review.open.toLocaleString()}장` : "걸린 것 없음"}
+                      </span>
+                    ) : (
+                      !r.review.recorded && <span className="muted small">검사 전</span>
+                    )}
+                  </a>
+                ) : (
+                  <span className="muted">–</span>
+                )}
+              </td>
               <td className="muted">{r.label_space}</td>
               <td className="muted right">{timeAgo(r.created_at)}</td>
               <td className="right">
