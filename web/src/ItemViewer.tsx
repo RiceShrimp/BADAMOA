@@ -830,22 +830,47 @@ export function ItemViewer({
   };
 
   const className = (id: number) => classes.find((c) => c.id === id)?.name ?? String(id);
-  /** The labels a check flagged: a thick yellow frame around each (on the version's own labels only). */
-  const drawFlagged = (labels: number[][], indices: number[]) => (
+  /** The labels a check flagged: a thick yellow frame around each with its number and class over it (on the
+   * version's own labels only); the panel lists the same numbers. */
+  const drawFlagged = (labels: number[][], indices: number[]) => {
+    // Flagged labels often lie on each other (that is what some checks find): their tags go side by side.
+    const placed: { x: number; y: number; width: number }[] = [];
+    const tall = font * 1.25;
+    return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="flagged">
-      {indices.map((i) => {
+      {indices.map((i, n) => {
         const b = labels[i];
         if (!b || b.length < 5) return null;
         const box = { x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h };
+        const text = `${n + 1} ${className(b[0])}`;
+        const width = text.length * font * 0.6 + font * 0.7;
+        // under the box (the label's own name is on its top edge); inside it at the image's bottom edge
+        let top = box.y + box.height + tall <= h ? box.y + box.height : box.y + box.height - tall;
+        let left = Math.min(Math.max(0, box.x), Math.max(0, w - width));
+        const row = (top + tall * 3 <= h ? 1 : -1) * (tall + font * 0.1); // more rows go down, or up near the bottom
+        const hits = () => placed.find((p) => Math.abs(p.y - top) < tall && left < p.x + p.width && p.x < left + width);
+        for (let hit = hits(), tries = 0; hit && tries < 40; hit = hits(), tries++) {
+          left = hit.x + hit.width + font * 0.2;
+          if (left + width > w) {
+            left = Math.min(Math.max(0, box.x), Math.max(0, w - width));
+            top += row; // no room to the right: another row
+          }
+        }
+        placed.push({ x: left, y: top, width });
         return (
           <g key={i}>
             <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="6" vectorEffect="non-scaling-stroke" />
             <rect {...box} fill="none" stroke="#ffd400" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+            <rect x={left} y={top} width={width} height={tall} fill="#ffd400" stroke="rgb(0 0 0 / 0.6)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+            <text x={left + font * 0.35} y={top + font * 0.95} fontSize={font * 0.85} fill="#111" fontWeight="700">
+              {text}
+            </text>
           </g>
         );
       })}
     </svg>
-  );
+    );
+  };
   /** A tag goes under its box; at the image's bottom edge, inside the box instead. */
   const tagTop = (bottom: number) => (bottom + font * 1.2 <= h ? bottom : bottom - font * 1.2);
   // What changed against the base version: the labels shown (or being fixed) next to the base's.
@@ -1102,7 +1127,30 @@ export function ItemViewer({
               <strong>{qaTitle}</strong>
               {flagged?.note && <span className="muted"> · {flagged.note}</span>}
             </div>
-            {flagged && flagged.boxes.length > 0 && <p className="muted small">해당 라벨을 노란 테두리로 표시했습니다(이 버전의 라벨을 볼 때).</p>}
+            {flagged && flagged.boxes.length > 0 && (
+              <>
+                <ol className="qa-labels">
+                  {flagged.boxes.map((i, n) => {
+                    const b = item.revisions.find((r) => r.id === item.revision_id)?.boxes[i];
+                    if (!b) return null;
+                    return (
+                      <li key={i}>
+                        <span className="qa-number">{n + 1}</span>
+                        <i className="class-dot" style={{ background: colorOf(b[0]) }} />
+                        <strong>{className(b[0])}</strong>
+                        {b.length >= 5 && (
+                          <span className="muted">
+                            {" "}
+                            {Math.round(b[3] * w)}×{Math.round(b[4] * h)}px
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+                <p className="muted small">이미지 위에 같은 번호와 클래스로 노란 테두리를 쳤습니다(이 버전의 라벨을 볼 때).</p>
+              </>
+            )}
           </section>
         )}
 

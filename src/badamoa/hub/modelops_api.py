@@ -85,6 +85,12 @@ def start_eval(
     return modelops.op_view(db, hub.settings, op)
 
 
+@router.get("/releases/{release_id}/eval-models")
+def eval_models(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """The project's models for checking this version's labels, the ones that fit first, with why others do not."""
+    return modelops.eval_choices(db, catalog.get_release(db, release_id))
+
+
 @router.post("/models/{model_id}/export")
 def start_export(
     model_id: str,

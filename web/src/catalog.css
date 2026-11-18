@@ -260,6 +260,9 @@ button.mini {
   display: flex;
   gap: 10px;
 }
+.form-row[hidden] {
+  display: none;
+}
 .form-row label {
   flex: 1;
   min-width: 0;
@@ -1048,13 +1051,8 @@ select.active-select {
 .check-groups {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  align-items: start;
-}
-@media (max-width: 900px) {
-  .check-groups {
-    grid-template-columns: 1fr;
-  }
+  column-gap: 12px;
+  row-gap: 8px;
 }
 .check-group {
   background: var(--surface-2);
@@ -1062,8 +1060,20 @@ select.active-select {
   padding: 10px;
   display: grid;
   grid-template-columns: minmax(0, 1fr); /* a card never grows past its column */
+  grid-template-rows: subgrid; /* the rows of all groups: same heights, cards side by side line up */
   gap: 8px;
   min-width: 0;
+}
+@media (max-width: 900px) {
+  .check-groups {
+    grid-template-columns: 1fr;
+    grid-template-rows: none !important;
+    row-gap: 12px;
+  }
+  .check-group {
+    grid-row: auto !important;
+    grid-template-rows: none;
+  }
 }
 .check-group header {
   display: flex;
@@ -1221,4 +1231,141 @@ select.active-select {
 }
 .change-panel .change-reclassed strong {
   color: var(--warn);
+}
+
+/* ---- 검수: which model the check is based on, and picking one ---- */
+.model-basis {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  margin: 10px 0 14px;
+}
+.model-basis-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.model-basis-head .eyebrow {
+  margin: 0;
+}
+.model-basis-head select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 240px;
+  max-width: 100%;
+}
+.model-basis-head .spacer {
+  flex: 1;
+}
+.model-basis-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.model-name {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.model-name a {
+  color: var(--text);
+  text-decoration: none;
+}
+.model-name a:hover {
+  color: var(--accent);
+}
+.model-of {
+  font-weight: 400;
+}
+.eval-choices {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+.eval-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.eval-choice > .muted {
+  grid-column: 2;
+}
+.eval-choice.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.eval-choice.disabled {
+  grid-template-columns: minmax(0, 1fr);
+  cursor: default;
+  opacity: 0.75;
+}
+.eval-choice.disabled > .muted {
+  grid-column: 1;
+}
+.eval-others {
+  margin: 6px 0 10px;
+}
+.eval-others .eval-choice {
+  margin-top: 6px;
+}
+
+/* a check that needs a model: dashed until there is an evaluation to count from */
+.check-card.model-check {
+  border-style: dashed;
+}
+.check-card.model-check.waiting .check-count {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.check-card.model-check.waiting:hover {
+  border-color: var(--accent);
+}
+.tag.model-tag {
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+/* the labels a check flagged, by the numbers drawn on the image */
+.qa-labels {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 2px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.qa-labels li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.qa-number {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #ffd400;
+  color: #111;
+  font: 700 11px/1 var(--mono);
+}
+.qa-labels .class-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
 }

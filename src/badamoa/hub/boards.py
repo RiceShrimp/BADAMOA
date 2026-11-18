@@ -265,14 +265,20 @@ def review_board(db: Session, settings: HubSettings) -> dict[str, Any]:
 # ---- 학습 ------------------------------------------------------------------------------
 
 
-def _eta(db: Session, run: Run) -> int | None:
-    """About how many seconds are left: the time the reported epochs took, times the epochs to go."""
-    if not run.epochs or run.epoch < 2 or run.epoch >= run.epochs:
+def _eta(db: Session, run: Run, elapsed: float | None) -> int | None:
+    """About how many seconds are left: the time the reported epochs took, times the epochs to go.
+
+    From the steps' timestamps when they came one by one; when they came together (a node reports in
+    batches), from the time the job has run so far (setting up included: an estimate on the long side)."""
+    if not run.epochs or run.epoch < 1 or run.epoch >= run.epochs:
         return None
     first, last = db.execute(select(func.min(RunMetric.ts), func.max(RunMetric.ts)).where(RunMetric.run_id == run.id)).one()
-    if first is None or last is None or last <= first:
+    if run.epoch >= 2 and first is not None and last is not None and (last - first).total_seconds() >= 1:
+        per_epoch = (last - first).total_seconds() / (run.epoch - 1)  # the first report comes after epoch 1
+    elif elapsed:
+        per_epoch = elapsed / run.epoch
+    else:
         return None
-    per_epoch = (last - first).total_seconds() / (run.epoch - 1)  # the first report comes after epoch 1
     return int(per_epoch * (run.epochs - run.epoch))
 
 
@@ -305,7 +311,7 @@ def training_board(db: Session, settings: HubSettings) -> dict[str, Any]:
                 "project": {"id": run.project_id, "name": names[run.project_id]},
                 "metric": metric,
                 "value": _number(view["metrics"].get(metric)),
-                "eta_s": _eta(db, run) if status == "running" else None,
+                "eta_s": _eta(db, run, view["duration_s"]) if status == "running" else None,
             }
         )
     going.sort(key=lambda r: (r["status"] != "running", r["project"]["name"]))

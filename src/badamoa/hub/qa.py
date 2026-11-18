@@ -47,6 +47,7 @@ TINY_PX = 3
 HUGE = 0.98
 RARE = 2
 CHUNK = 2000
+RULES = "2"  # bumped when what the checks find or how they word it changes: results are worked out again
 
 
 def _iou(a: list[float], b: list[float]) -> float:
@@ -65,32 +66,50 @@ def _fingerprint(db: Session, release: Release) -> str:
             ReleaseItem.release_id == release.id
         )
     ).one()
-    return hashlib.sha1(f"{count}:{total}:{release.label_space_id}".encode()).hexdigest()
+    return hashlib.sha1(f"{count}:{total}:{release.label_space_id}:{RULES}".encode()).hexdigest()
 
 
-def _flags(boxes: list[list[float]], width: int, height: int, rare: set[int], task: str) -> dict[str, tuple[list[int], str]]:
-    """The checks one image fails: {check: (label indices, note)}."""
+def _flags(
+    boxes: list[list[float]], width: int, height: int, rare: set[int], task: str, names: dict[int, str] | None = None
+) -> dict[str, tuple[list[int], str]]:
+    """The checks one image fails: {check: (label indices, note)}. The note names the classes involved
+    ("car 2개", "person ↔ bicycle 겹침"), so a list of images says which labels to look at."""
+    names = names or {}
+
+    def name(i: int) -> str:
+        return str(names.get(int(boxes[i][0]), int(boxes[i][0])))
+
+    def named(indices: list[int]) -> str:
+        counts: dict[str, int] = {}
+        for i in indices:
+            counts[name(i)] = counts.get(name(i), 0) + 1
+        return ", ".join(f"{n} {c}개" for n, c in counts.items())
+
     out: dict[str, tuple[list[int], str]] = {}
     if task != "classify":
         geometric = [(i, b) for i, b in enumerate(boxes) if len(b) >= 5]
         tiny = [i for i, b in geometric if b[3] * width < TINY_PX or b[4] * height < TINY_PX]
         if tiny:
-            out["tiny"] = (tiny, f"{len(tiny)}개")
+            out["tiny"] = (tiny, named(tiny))
         huge = [i for i, b in geometric if b[3] * b[4] >= HUGE]
         if huge:
-            out["huge"] = (huge, f"{len(huge)}개")
-        same, other = set(), set()
+            out["huge"] = (huge, named(huge))
+        same, other, pairs = set(), set(), {}
         for n, (i, a) in enumerate(geometric):
             for j, b in geometric[n + 1 :]:
                 if _iou(a, b) >= OVERLAP:
-                    (same if int(a[0]) == int(b[0]) else other).update((i, j))
+                    if int(a[0]) == int(b[0]):
+                        same.update((i, j))
+                    else:
+                        other.update((i, j))
+                        pairs[" ↔ ".join(sorted((name(i), name(j))))] = True
         if same:
-            out["duplicate"] = (sorted(same), f"{len(same)}개가 겹침")
+            out["duplicate"] = (sorted(same), f"{named(sorted(same))} 겹침")
         if other:
-            out["class_overlap"] = (sorted(other), f"{len(other)}개가 겹침")
+            out["class_overlap"] = (sorted(other), f"{' · '.join(pairs)} 겹침")
     odd = [i for i, b in enumerate(boxes) if b and int(b[0]) in rare]
     if odd:
-        out["rare_class"] = (odd, "")
+        out["rare_class"] = (odd, ", ".join(dict.fromkeys(name(i) for i in odd)))
     return out
 
 
@@ -133,9 +152,7 @@ def run(db: Session, release: Release) -> QaRun:
             if state == "unlabelled":
                 found.append({"release_id": release.id, "check": "unlabelled", "item_id": item_id, "boxes": [], "note": ""})
                 continue
-            for check, (indices, note) in _flags(boxes or [], width or 1, height or 1, rare, task).items():
-                if check == "rare_class":
-                    note = ", ".join(sorted({names.get(int(boxes[i][0]), str(boxes[i][0])) for i in indices}))
+            for check, (indices, note) in _flags(boxes or [], width or 1, height or 1, rare, task, names).items():
                 row = {"release_id": release.id, "check": check, "item_id": item_id, "boxes": indices, "note": note[:255]}
                 found.append(row)
         if found:
@@ -175,6 +192,7 @@ def summary(db: Session, release: Release) -> dict[str, Any]:
         "computed_at": iso(done.computed_at),
         "checks": [{"id": cid, **meta, "images": done.counts.get(cid, 0)} for cid, meta in CHECKS.items()],
         "evaluations": evaluations,
+        "pending": checks.pending(db, release),  # evaluations still going: the model's view comes when they end
     }
 
 

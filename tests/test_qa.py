@@ -39,9 +39,15 @@ def test_rules_flag_duplicates_class_overlaps_tiny_huge_and_rare(hub, tmp_path):
     }
     flagged = hub.get(f"/api/releases/{v1}/items", params={"check": "duplicate"}).json()
     assert flagged["total"] == 1 and flagged["items"][0]["file_name"] == "train_0000.jpg"
-    assert flagged["items"][0]["qa"] == {"check": "duplicate", "boxes": [0, 1], "note": "2개가 겹침"}
+    assert flagged["items"][0]["qa"] == {"check": "duplicate", "boxes": [0, 1], "note": "person 2개 겹침"}
     rare = hub.get(f"/api/releases/{v1}/items", params={"check": "rare_class"}).json()["items"]
     assert [(i["file_name"], i["qa"]["note"]) for i in rare] == [("val_0000.jpg", "dog")]
+    # each note names the classes involved, so the list says which labels to look at
+    notes = {
+        check: hub.get(f"/api/releases/{v1}/items", params={"check": check}).json()["items"][0]["qa"]["note"]
+        for check in ("class_overlap", "tiny", "huge")
+    }
+    assert notes == {"class_overlap": "car ↔ person 겹침", "tiny": "car 1개", "huge": "car 1개"}
     assert hub.get(f"/api/releases/{v1}/items", params={"check": "nope"}).status_code == 400
 
     # ---- fixing in the work in progress: its checks follow the fix

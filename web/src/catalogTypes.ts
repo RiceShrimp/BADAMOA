@@ -143,9 +143,18 @@ export interface LabelSetView extends LabelSetSummary {
 }
 
 /** An evaluation that can sort a version's images by likely wrong labels. */
+/** The model an evaluation is by. */
+export interface CheckModel {
+  id: string;
+  name: string;
+  version: number;
+  task: string;
+  aliases: string[];
+}
+
 export interface ReleaseCheck {
   id: string;
-  model: { id: string; name: string; version: number } | null;
+  model: CheckModel | null;
   release: { id: string; version: string } | null;
   split: string;
   created_at: string;
@@ -325,6 +334,9 @@ export const TASK_HINT: Record<string, string> = {
   classify: "이미지 분류",
 };
 export const taskLabel = (task: string | undefined | null) => (task ? (TASK_LABEL[task] ?? task) : "Det");
+/** Two tasks are the same one (no task means detection, as the Hub reads it). */
+export const sameTask = (a: string | undefined | null, b: string | undefined | null) =>
+  (a || "detect").toLowerCase() === (b || "detect").toLowerCase();
 
 export function classColor(id: number): string {
   return `hsl(${(id * 137.5) % 360} 72% 52%)`;

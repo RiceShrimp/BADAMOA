@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
 
-from . import catalog, checks, registry, services, training
+from . import catalog, checks, drafts, registry, services, training
 from .catalog_models import Dataset, LabelSpace, Release
 from .config import HubSettings
 from .db import iso
@@ -159,6 +159,75 @@ def start_eval(
     gpus = (1 if node.info.get("gpus") else 0) if gpus is None else gpus
     extra = {"release_id": release.id, "split": split, "class_ids": class_ids}
     return _start(db, user, model, "eval", node, {"split": split}, release_id=release.id, extra=extra, gpus=gpus, via=via)
+
+
+ALIAS_ORDER = ("production", "champion", "staging", "challenger")
+
+
+def eval_problem(db: Session, model: ModelVersion, release: Release) -> str:
+    """Why the model cannot evaluate (and so check the labels of) this version, or "" when it can:
+    a model of another task, classes the version does not have or has in another order, no eval code."""
+    task = catalog.release_task(db, release)
+    if not task_names.same(model.task or "detect", task):
+        return f"{task_names.short(model.task)} 모델이라 {task_names.short(task)} 데이터셋에는 쓸 수 없습니다"
+    space = db.get(LabelSpace, release.label_space_id)
+    ids = {str(c["name"]): int(c["id"]) for c in (space.classes if space else [])}
+    missing = [name for name in model.classes or [] if name not in ids]
+    if missing:
+        more = f" 외 {len(missing) - 3}개" if len(missing) > 3 else ""
+        return f"이 버전에 없는 클래스가 있습니다: {', '.join(missing[:3])}{more}"
+    class_ids = [ids[name] for name in model.classes or []]
+    if class_ids != sorted(class_ids):
+        return "클래스 순서가 이 버전과 다릅니다"
+    if "eval" not in actions(db, model):
+        return "이 모델의 템플릿에는 평가 코드가 없습니다"
+    return ""
+
+
+def eval_choices(db: Session, release: Release) -> dict[str, Any]:
+    """The project's models for checking this version's labels: the ones that fit first (an alias, then the
+    best), each with why it does not when it does not. A work in progress is evaluated as its base version."""
+    dataset = db.get(Dataset, release.dataset_id)
+    target = drafts.latest_ready(db, dataset.id) if release.status == "draft" else release
+    splits: dict[str, int] = {}
+    for name, part in ((target.stats or {}).get("splits") or {}).items() if target else []:
+        key = name or "train"  # images without a split are trained on
+        splits[key] = splits.get(key, 0) + int(part.get("items") or 0)
+    rows = []
+    for model in db.scalars(
+        select(ModelVersion)
+        .where(ModelVersion.project_id == dataset.project_id, ModelVersion.deleted_at.is_(None))
+        .order_by(ModelVersion.created_at.desc())
+    ):
+        why = eval_problem(db, model, target or release)
+        metric = training.PRIMARY_METRIC.get(model.task or "detect", "map50_95")
+        value = (model.metrics or {}).get(metric)
+        rows.append(
+            {
+                **checks.model_ref(model),
+                "arch": model.arch,
+                "metric": metric,
+                "value": value if isinstance(value, int | float) else None,
+                "created_at": iso(model.created_at),
+                "trained_on": model.release_id == (target.id if target else None),  # its train split was learned
+                "fits": not why,
+                "why": why,
+            }
+        )
+
+    def rank(row: dict[str, Any]) -> tuple:
+        known = [ALIAS_ORDER.index(a) for a in row["aliases"] if a in ALIAS_ORDER]
+        return (not row["fits"], min(known) if known else len(ALIAS_ORDER), -(row["value"] or -1))
+
+    rows.sort(key=rank)
+    return {
+        "release_id": release.id,
+        # where the evaluation runs: the version itself, or a work in progress's base
+        "evaluate": {"id": target.id, "version": target.version} if target else None,
+        "task": catalog.dataset_task(dataset),
+        "splits": splits,
+        "models": rows,
+    }
 
 
 def start_export(db: Session, user: User, model_id: str, fmt: str = "onnx", via: str = "api") -> ModelJob:
