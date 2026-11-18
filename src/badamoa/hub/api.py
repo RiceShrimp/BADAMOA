@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import address, admin, asks, gpus, prometheus, resources, services
+from . import address, admin, asks, gpus, node_storage, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands, node_wheel
@@ -195,6 +195,31 @@ def get_node(
     names = {node.id: node.name}
     data["recent_jobs"] = [services.serialize_job(j, names) for j in services.list_jobs(db, None, node.id, 10)]
     return data
+
+
+@router.get("/nodes/{node_id}/storage")
+def node_storage_view(node_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """What BADAMOA keeps on the server, by kind, as it last measured, and what each item is for."""
+    return node_storage.view(db, services.get_node(db, node_id))
+
+
+class StorageClean(BaseModel):
+    kind: str = ""  # envs · containers · models · templates · template_data · runs · uv; "" = only measure again
+    items: list[str] = Field(default_factory=list)
+    all: bool = False  # every item of the kind no job uses
+
+
+@router.post("/nodes/{node_id}/storage/clean")
+def node_storage_clean(
+    node_id: str, body: StorageClean, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Remove what BADAMOA kept on the server (admins), or with no ``kind`` have it measured again."""
+    if body.kind:
+        job = node_storage.clean(db, user, node_id, body.kind, body.items, body.all, via="ui")
+    else:
+        job = node_storage.measure(db, user, node_id, via="ui")
+    db.commit()
+    return {"job_id": job.id, **node_storage.view(db, services.get_node(db, node_id))}
 
 
 @router.get("/nodes/{node_id}/browse")

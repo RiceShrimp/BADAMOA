@@ -155,6 +155,22 @@ def env_remove(params: dict[str, Any]) -> dict[str, Any]:
     return envs.remove(Path(home).resolve(), spec)
 
 
+def node_clean(params: dict[str, Any]) -> dict[str, Any]:
+    """Remove what BADAMOA kept here, of one kind: the items named, or all (the Hub checked no job uses them)."""
+    from badamoa.node import storage
+
+    home = os.environ.get("BADAMOA_NODE_HOME")
+    if not home:
+        raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
+    kind = str(params.get("kind") or "")
+    if not kind:  # only measure again (the agent measures after this job)
+        print("저장한 것을 다시 잽니다.")
+        return {"removed": 0, "bytes": 0}
+    running = {j for j in os.environ.get("BADAMOA_RUNNING", "").split(",") if j}
+    items = list(params.get("items") or [])
+    return storage.clean(Path(home).resolve(), kind, items, bool(params.get("all")), running=running)
+
+
 HANDLERS = {
     "system.info": system_info,
     "system.gpu": system_gpu,
@@ -168,6 +184,7 @@ HANDLERS = {
     "env.check": env_check,
     "env.prepare": env_prepare,
     "env.remove": env_remove,
+    "node.clean": node_clean,
 }
 
 

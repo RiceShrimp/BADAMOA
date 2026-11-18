@@ -25,6 +25,7 @@ from typing import Any
 
 LOCK_STALE_S = 3600.0
 LOCK_WAIT_S = 3600.0
+USED = "badamoa-used"  # touched whenever a job uses the environment: when it was last used
 # What the node keeps to itself: code it runs without having written it (a template, a package's
 # build script) never sees these. With the token such code could act on the Hub as the node.
 SECRETS = ("BADAMOA_NODE_TOKEN",)
@@ -111,6 +112,7 @@ def ensure(
     env = env_dir(home, requirements, python, torch)
     ready = env / "badamoa-env.json"
     if ready.is_file():
+        _touch(env)
         return python_of(env)
 
     env.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +134,7 @@ def ensure(
             waited += 2
     try:
         if ready.is_file():
+            _touch(env)
             return python_of(env)
         uv = find_uv()
         started = time.monotonic()
@@ -149,8 +152,15 @@ def ensure(
         shutil.rmtree(lock, ignore_errors=True)
 
 
+def _touch(env: Path) -> None:
+    try:
+        (env / USED).write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def listing(home: Path) -> list[dict[str, Any]]:
-    """The automatically installed environments ready on this node (what defines each, not where it is)."""
+    """The automatically installed environments ready on this node: what defines each, and its folder's name."""
     found = []
     for marker in sorted((home / "envs").glob("*/badamoa-env.json")):
         try:
@@ -158,7 +168,14 @@ def listing(home: Path) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
         requirements = sorted(data.get("requirements") or [])
-        found.append({"requirements": requirements, "python": data.get("python"), "torch": data.get("torch")})
+        found.append(
+            {
+                "id": marker.parent.name,
+                "requirements": requirements,
+                "python": data.get("python"),
+                "torch": data.get("torch"),
+            }
+        )
     return found
 
 

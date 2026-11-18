@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CrosshairProvider, LineChart, type Series } from "./Chart";
 import { GpuTimeline } from "./GpuTimeline";
 import { NodeCopies } from "./NodeCopies";
+import { NodeStorage } from "./NodeStorage";
 import { type MetricHistory, type NodeDetailInfo, api } from "./api";
 import { Badge, Icon, Meter, RefreshButton, STATUS_LABEL, Stat, duration, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
@@ -47,7 +48,7 @@ function occupant(state: NodeDetailInfo["gpu_states"][number] | undefined): stri
   return state.users.length ? state.users.join(", ") : "다른 프로세스";
 }
 
-export function NodeDetail({ nodeId }: { nodeId: string }) {
+export function NodeDetail({ nodeId, isAdmin }: { nodeId: string; isAdmin: boolean }) {
   const [range, setRange] = useState("1h");
   const [mode, setMode] = useState<"avg" | "max">("avg");
   // A window dragged on a chart (Grafana's zoom); null: the chosen range up to now.
@@ -508,6 +509,7 @@ export function NodeDetail({ nodeId }: { nodeId: string }) {
       </details>
       </CrosshairProvider>
 
+      <NodeStorage nodeId={nodeId} isAdmin={isAdmin} />
       <NodeCopies nodeId={nodeId} />
 
       <section className="card table-wrap">

@@ -184,7 +184,7 @@ export function NodeCopies({ nodeId }: { nodeId: string }) {
   const left = (last.unknown?.files ?? 0) - (last.removed?.files ?? 0);
   const leftBytes = (last.unknown?.bytes ?? 0) - (last.removed?.bytes ?? 0);
   return (
-    <section className="card copies">
+    <section className="card copies" id="node-copies">
       <div className="card-head">
         <h3>받아 둔 버전</h3>
         <span className="muted small">

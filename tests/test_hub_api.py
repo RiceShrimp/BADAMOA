@@ -181,7 +181,7 @@ def test_template_environments_ready_and_prepared_ahead(client, admin, tmp_path)
     marker.write_text(json.dumps({"requirements": list(reversed(yolo_needs)), "python": "3.12", "torch": True}))
     (tmp_path / "envs" / "broken").mkdir()
     reported = envs.listing(tmp_path)
-    assert reported == [{"requirements": sorted(yolo_needs), "python": "3.12", "torch": True}]
+    assert reported == [{"id": "abc123", "requirements": sorted(yolo_needs), "python": "3.12", "torch": True}]
 
     ready_id, ready_auth = _join(client, admin)
     other_id, _ = _join(client, admin)

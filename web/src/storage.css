@@ -1,0 +1,160 @@
+/* what BADAMOA keeps on a server (NodeStorage.tsx) */
+.storage .card-head .spacer {
+  flex: 1;
+}
+.storage {
+  --kind-images: #0f766e;
+  --kind-envs: #6366f1;
+  --kind-containers: #0284c7;
+  --kind-models: #d97706;
+  --kind-templates: #a855f7;
+  --kind-template_data: #db2777;
+  --kind-runs: #64748b;
+  --kind-uv: #84cc16;
+}
+.storage-bar {
+  display: flex;
+  height: 10px;
+  margin: 2px 16px 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.storage-bar i {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+}
+.storage .kind-images {
+  background: var(--kind-images);
+}
+.storage .kind-envs {
+  background: var(--kind-envs);
+}
+.storage .kind-containers {
+  background: var(--kind-containers);
+}
+.storage .kind-models {
+  background: var(--kind-models);
+}
+.storage .kind-templates {
+  background: var(--kind-templates);
+}
+.storage .kind-template_data {
+  background: var(--kind-template_data);
+}
+.storage .kind-runs {
+  background: var(--kind-runs);
+}
+.storage .kind-uv {
+  background: var(--kind-uv);
+}
+.storage-kinds,
+.storage-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.storage-kinds > li {
+  border-top: 1px solid var(--border);
+}
+.storage-kind,
+.storage-items li {
+  display: grid;
+  grid-template-columns: minmax(150px, auto) minmax(0, 1fr) 80px 78px;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 8px 16px;
+}
+.storage-name {
+  display: inline-flex;
+  justify-self: start;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.storage-name:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.storage-name .muted {
+  font-weight: 400;
+}
+.storage-name .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.storage-about {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-size {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.storage-kind > button.small,
+.storage-items button.small {
+  justify-self: end;
+}
+.storage-items {
+  padding-bottom: 6px;
+  background: var(--surface-2);
+}
+.storage-items li {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-top: 1px solid var(--border);
+}
+.storage-item-name {
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 18px;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-items li > .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-items .badge {
+  justify-self: end;
+}
+.storage-rest {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+}
+.storage-note {
+  margin: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 640px) {
+  .storage-kind,
+  .storage-items li {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .storage-kind > .storage-about,
+  .storage-items li > .muted {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+}

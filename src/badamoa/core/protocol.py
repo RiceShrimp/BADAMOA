@@ -36,6 +36,8 @@ class HeartbeatRequest(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     running_job_ids: list[str] = Field(default_factory=list)
     info: dict[str, Any] | None = None
+    # What BADAMOA keeps on the node, by kind (``node.storage``): sent after each measurement, not every beat
+    storage: dict[str, Any] | None = None
 
 
 class HeartbeatResponse(BaseModel):

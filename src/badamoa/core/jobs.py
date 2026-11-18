@@ -186,6 +186,16 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             },
         ),
         JobTypeSpec(
+            type="node.clean",
+            title="서버 정리",
+            description="BADAMOA가 서버에 둔 것(가상환경, Docker 이미지, 가중치 · 코드 캐시, 작업 폴더)을 지웁니다.",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {"kind": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}}},
+            },
+        ),
+        JobTypeSpec(
             type="debug.sleep",
             title="테스트 대기",
             description="지정한 초 동안 1초마다 로그를 출력합니다. 로그 스트리밍·취소 테스트용.",

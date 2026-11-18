@@ -25,7 +25,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home
-from badamoa.node import browse, cache, containers, dataserver, envs, remover, updater, workdirs
+from badamoa.node import browse, cache, containers, dataserver, envs, remover, storage, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -33,7 +33,7 @@ HEARTBEAT_INTERVAL_S = 10.0
 CLAIM_WAIT_S = 20.0
 LOG_FLUSH_INTERVAL_S = 1.0
 LOG_BATCH_MAX = 500
-CACHE_USAGE_EVERY_S = 1800.0  # how often the size of the received images is counted again
+CACHE_USAGE_EVERY_S = 1800.0  # how often what BADAMOA keeps here is measured again (and after jobs that change it)
 
 
 def data_port() -> int:
@@ -170,6 +170,7 @@ class NodeAgent:
         self._data = dataserver.DataServer(config.hub_url, config.node_token, config.node_id, data_port())
         self._cache_setting = ""  # the admin's choice, from the Hub ("" = the node picks)
         self._cache_usage: tuple[int, int] | None = None
+        self._storage_report: dict[str, Any] | None = None  # measured, not yet delivered to the Hub
         self._recount = threading.Event()
         self._first_beat = threading.Event()  # the Hub's settings (where to keep images) are known
         self._client = httpx.Client(
@@ -251,6 +252,9 @@ class NodeAgent:
                     },
                 }
                 body: dict[str, Any] = {"agent_version": __version__, "metrics": metrics, "running_job_ids": running}
+                report = self._storage_report
+                if report is not None:
+                    body["storage"] = report
                 if not sent_info:
                     body["info"] = {
                         **sysinfo.static_info(),
@@ -261,6 +265,8 @@ class NodeAgent:
                 resp = self._client.post("/api/agent/heartbeat", json=body, timeout=15)
                 if resp.status_code == 200:
                     sent_info = True
+                    if report is not None and self._storage_report is report:
+                        self._storage_report = None  # delivered: the next one after the next measurement
                     reply = resp.json()
                     self._request_cancel(reply.get("cancel_job_ids", []))
                     setting = str(reply.get("cache_dir") or "")
@@ -275,12 +281,19 @@ class NodeAgent:
             self.stop_event.wait(HEARTBEAT_INTERVAL_S)
 
     def _count_cache(self) -> None:
-        """Now and then (and after images arrived), how much the received images take."""
+        """Now and then (and after a job that adds or removes something), what BADAMOA keeps here and how much."""
         while not self.stop_event.is_set():
             try:
-                self._cache_usage = cache.usage(self.cache_root())
-            except OSError:
-                pass
+                report = storage.measure(self.home, self.cache_root())
+                images = report["kinds"]["images"]
+                self._cache_usage = (images["bytes"], images["files"])
+                self._storage_report = report  # the next heartbeat takes it to the Hub
+            except Exception:  # noqa: BLE001 - a measurement must never stop the node
+                log.exception("measuring what is kept here failed")
+                try:
+                    self._cache_usage = cache.usage(self.cache_root())
+                except OSError:
+                    pass
             self._recount.wait(CACHE_USAGE_EVERY_S)
             self._recount.clear()
 
@@ -451,6 +464,10 @@ class NodeAgent:
                     env["BADAMOA_JOB_ID"] = job_id
                     env["BADAMOA_NODE_HOME"] = str(self.home)
                     env["BADAMOA_CACHE_DIR"] = str(self.cache_root())
+                if job["type"] == "node.clean":  # removes what BADAMOA keeps here, never what runs now
+                    env["BADAMOA_NODE_HOME"] = str(self.home)
+                    with self._lock:
+                        env["BADAMOA_RUNNING"] = ",".join(j for j in self._running if j != job_id)
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "badamoa.node.builtin", job["type"], str(params_path), str(result_path)],
                     stdout=subprocess.PIPE,
@@ -502,10 +519,11 @@ class NodeAgent:
                     break
                 time.sleep(0.5)
             self._complete(job_id, status, result, error)
-            if job["type"].startswith(("env.", "train.", "model.")):
-                self._envs_changed.set()
-            if job["type"] in ("data.sync", "data.check", "train.run"):
-                self._recount.set()
+            changes = job["type"].startswith(("env.", "train.", "model.")) or job["type"] == "node.clean"
+            if changes:
+                self._envs_changed.set()  # tell the Hub which environments are here now
+            if changes or job["type"] in ("data.sync", "data.check"):
+                self._recount.set()  # measure again what is kept here
             with self._lock:
                 self._running.pop(job_id, None)
             log.info("job %s %s", job_id, status)

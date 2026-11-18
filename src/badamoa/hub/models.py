@@ -78,6 +78,9 @@ class Node(Base):
     # The last check of its received copies against the Hub's records (``node_data``): when, what it
     # found that no version needs, what it removed, or why it failed.
     data_check: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # What BADAMOA keeps there, by kind, as the node last measured it, and what the last clean did
+    # (``node_storage``).
+    storage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

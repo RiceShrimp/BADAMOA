@@ -284,7 +284,7 @@ function Shell({
           {page === "review" && <Review releaseId={sub} />}
           {page === "training" && <Training runId={sub} arg={arg} />}
           {page === "models" && <Models modelId={sub} arg={arg} isAdmin={isAdmin} />}
-          {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
+          {page === "nodes" && (sub ? <NodeDetail nodeId={sub} isAdmin={isAdmin} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}
           {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}

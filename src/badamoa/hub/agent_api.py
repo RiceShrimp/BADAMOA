@@ -23,7 +23,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import asks, cleanup, node_data, originals, registry, services, sweeps, transfers
+from . import asks, cleanup, node_data, node_storage, originals, registry, services, sweeps, transfers
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -46,6 +46,8 @@ def heartbeat(
 ) -> HeartbeatResponse:
     seen = request.client.host if request.client else ""
     cancel_ids = services.heartbeat(db, node, body, seen_from=seen)
+    if body.storage:
+        node_storage.save(node, body.storage)
     db.commit()
     days = cleanup.get_policy(db)["workdir_days"]
     return HeartbeatResponse(
@@ -189,6 +191,7 @@ def complete(
     registry.on_job_finished(db, job)
     transfers.on_job_finished(db, job)
     node_data.on_job_finished(db, job)
+    node_storage.on_job_finished(db, job)
     db.commit()
     sweeps.on_job_finished(job)  # a search may start its next run
     return {"status": job.status}

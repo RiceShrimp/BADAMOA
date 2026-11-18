@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -136,8 +137,38 @@ def _known(home: Path) -> dict[str, dict[str, Any]]:
 def _remember(home: Path, image: str, image_id: str, pulled: bool) -> None:
     known = _known(home)
     # an image that was here before BADAMOA first used it stays the node's own: removing it only forgets it
-    known[image] = {"id": image_id, "pulled": pulled or bool((known.get(image) or {}).get("pulled"))}
+    known[image] = {
+        "id": image_id,
+        "pulled": pulled or bool((known.get(image) or {}).get("pulled")),
+        "last_used": time.time(),
+    }
     (home / PULLED).write_text(json.dumps(known, ensure_ascii=False), encoding="utf-8")
+
+
+def details(home: Path, image: str) -> dict[str, Any]:
+    """An image's size on disk, whether BADAMOA pulled it, and when a job last used it."""
+    entry = _known(home).get(image) or {}
+    size = 0
+    command = docker()
+    if command:
+        try:
+            done = subprocess.run(
+                [command, "image", "inspect", "--format", "{{.Size}}", image],
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_S,
+                check=False,
+            )
+            text = done.stdout.strip()
+            size = int(text) if done.returncode == 0 and text.isdigit() else 0
+        except (OSError, subprocess.TimeoutExpired):
+            size = 0
+    used = entry.get("last_used")
+    return {
+        "bytes": size,
+        "pulled": bool(entry.get("pulled")),
+        "last_used": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(used)) if used else None,
+    }
 
 
 def listing(home: Path) -> list[dict[str, Any]]:
