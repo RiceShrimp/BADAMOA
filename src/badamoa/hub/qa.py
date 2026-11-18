@@ -186,3 +186,20 @@ def flagged(db: Session, release_id: str, check: str, item_ids: list[int]) -> di
         select(QaResult).where(QaResult.release_id == release_id, QaResult.check == check, QaResult.item_id.in_(item_ids))
     )
     return {r.item_id: {"check": check, "boxes": r.boxes, "note": r.note} for r in rows}
+
+
+def is_fresh(db: Session, release: Release) -> bool:
+    """The rule checks have run on the release's labels as they are now."""
+    done = db.get(QaRun, release.id)
+    return done is not None and done.fingerprint == _fingerprint(db, release)
+
+
+def groups(db: Session, release_id: str) -> dict[str, int]:
+    """Images the rule checks flag, by group (an image flagged twice counts once), and in all."""
+    distinct = select(func.count(func.distinct(QaResult.item_id))).where(QaResult.release_id == release_id)
+    out = {}
+    for group in ("missing", "wrong", "boxes"):
+        ids = [cid for cid, meta in CHECKS.items() if meta["group"] == group]
+        out[group] = db.scalar(distinct.where(QaResult.check.in_(ids))) or 0
+    out["any"] = db.scalar(distinct) or 0
+    return out

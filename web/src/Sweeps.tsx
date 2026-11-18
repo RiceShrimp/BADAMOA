@@ -378,7 +378,7 @@ export function SweepView({ sweepId }: { sweepId: string }) {
 
   return (
     <>
-      <a className="link back" href="#/training">
+      <a className="link back" href={projectId ? `#/training/project/${projectId}` : "#/training"}>
         ← 학습 목록
       </a>
       <div className="page-head">

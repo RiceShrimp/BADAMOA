@@ -280,10 +280,10 @@ function Shell({
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
           {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}
-          {page === "labeling" && <Labeling setId={sub} />}
-          {page === "review" && <Review />}
+          {page === "labeling" && <Labeling setId={sub} arg={arg} />}
+          {page === "review" && <Review releaseId={sub} />}
           {page === "training" && <Training runId={sub} arg={arg} />}
-          {page === "models" && <Models modelId={sub} isAdmin={isAdmin} />}
+          {page === "models" && <Models modelId={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}

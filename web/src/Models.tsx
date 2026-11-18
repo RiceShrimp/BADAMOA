@@ -2,6 +2,8 @@ import { LineageGraph } from "./Lineage";
 import { AliasChip, AliasEditor, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
 import { useEffect, useState } from "react";
 import { ModelOps } from "./ModelOps";
+import { ModelsBoard } from "./Boards";
+import { rememberProject } from "./DataBoard";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { ClassTable } from "./Training";
 import { api } from "./api";
@@ -19,10 +21,25 @@ import {
 } from "./trainTypes";
 import { Stat, timeAgo, usePolling } from "./ui";
 
-export function Models({ modelId, isAdmin }: { modelId?: string; isAdmin: boolean }) {
-  const { projects, projectId, choose } = useProject();
+export function Models({ modelId, arg, isAdmin }: { modelId?: string; arg?: string; isAdmin: boolean }) {
+  const { projects, choose } = useProject();
+  const routed = modelId === "project" ? (arg ?? "") : ""; // #/models/project/<id>: that project's models
+  useEffect(() => {
+    if (routed) rememberProject(routed);
+  }, [routed]);
+  if (routed)
+    return (
+      <ModelList
+        projects={projects}
+        projectId={projects?.some((p) => p.id === routed) ? routed : ""}
+        onProject={(id) => {
+          choose(id);
+          window.location.hash = `#/models/project/${id}`;
+        }}
+      />
+    );
   if (modelId) return <ModelView key={modelId} modelId={modelId} isAdmin={isAdmin} />;
-  return <ModelList projects={projects} projectId={projectId} onProject={choose} />;
+  return <ModelsBoard />;
 }
 
 
@@ -65,9 +82,14 @@ function ModelList({
   const families = new Set(models?.map((m) => m.name)).size;
   const best = [...(models ?? [])].sort((a, b) => (b.metrics[primary] ?? 0) - (a.metrics[primary] ?? 0))[0];
   const champion = models?.find((m) => m.aliases.includes("champion"));
+  const project = projects?.find((p) => p.id === projectId);
 
   return (
     <>
+      <nav className="page-crumbs">
+        <a href="#/models">모델</a>
+        <strong>{project?.name ?? "…"}</strong>
+      </nav>
       <div className="page-head">
         <div>
           <h1>모델</h1>
@@ -405,7 +427,7 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
       return;
     await api(`/models/${model.id}`, { method: "DELETE" });
     announceTrash();
-    window.location.hash = "#/models";
+    window.location.hash = `#/models/project/${model.project_id}`;
   };
   const classRows = [...model.class_metrics].sort((a, b) => classScore(b) - classScore(a));
   const info = model.info as { ultralytics?: string; torch?: string };
@@ -413,7 +435,7 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
 
   return (
     <>
-      <a className="link back" href="#/models">
+      <a className="link back" href={`#/models/project/${model.project_id}`}>
         ← 모델 목록
       </a>
       <div className="page-head">

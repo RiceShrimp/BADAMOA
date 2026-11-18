@@ -125,6 +125,31 @@ def release_checks(db: Session, release: Release) -> list[dict[str, Any]]:
     return out
 
 
+def newest(db: Session, release: Release) -> dict[str, Any] | None:
+    """The newest evaluation that measured this release's images: how many it found objects no label
+    has on (``extra``) and labels it did not find on (``missed``)."""
+    for op in _offered(db, release):
+        mine = (ItemPrediction.op_id == op.id, ReleaseItem.release_id == release.id)
+        base = (
+            select(func.count())
+            .select_from(ItemPrediction)
+            .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
+        )
+        images = db.scalar(base.where(*mine)) or 0
+        if not images:
+            continue
+        model = db.get(ModelVersion, op.model_id)
+        return {
+            "id": op.id,
+            "model": {"id": model.id, "name": model.name, "version": model.version} if model else None,
+            "created_at": iso(op.created_at),
+            "images": images,
+            "extra": db.scalar(base.where(*mine, ItemPrediction.extra > 0)) or 0,
+            "missed": db.scalar(base.where(*mine, ItemPrediction.missed > 0)) or 0,
+        }
+    return None
+
+
 def check_of(db: Session, release: Release, op_id: str) -> ModelJob:
     op = db.get(ModelJob, op_id)
     if op is None or op.kind != "eval" or op not in _offered(db, release):

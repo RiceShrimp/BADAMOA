@@ -162,7 +162,7 @@ export function Shot({
   );
 }
 
-function Collage({ shots, colorOf, more }: { shots: Shot[]; colorOf: (id: number) => string; more?: number }) {
+export function Collage({ shots, colorOf, more }: { shots: Shot[]; colorOf: (id: number) => string; more?: number }) {
   return (
     <div className="collage">
       {[0, 1, 2, 3].map((i) =>
@@ -1031,7 +1031,7 @@ const tasksCounted = (tasks: string[]) => {
 };
 
 /** The tasks of a project's datasets as tags (none before its first dataset). */
-function TaskTags({ tasks }: { tasks: string[] }) {
+export function TaskTags({ tasks }: { tasks: string[] }) {
   return (
     <>
       {tasks.map((t) => (
@@ -1098,7 +1098,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
               고르기
             </button>
           )}
-          <a className="btn" href="#/training" onClick={() => rememberProject(page.id)}>
+          <a className="btn" href={`#/training/project/${page.id}`} onClick={() => rememberProject(page.id)}>
             학습
           </a>
           <button className="primary" onClick={onImport}>
@@ -1231,7 +1231,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
             {page.model_groups.length === 1 && `${METRIC_NAME[page.model_groups[0].metric] ?? page.model_groups[0].metric} 기준 · `}
             학습 {page.runs}회 · 탐색 {page.sweeps}회
           </div>
-          <a className="link small" href="#/training" onClick={() => rememberProject(page.id)}>
+          <a className="link small" href={`#/training/project/${page.id}`} onClick={() => rememberProject(page.id)}>
             학습 화면에서 비교 <Icon name="arrow" size={12} />
           </a>
         </aside>

@@ -1113,3 +1113,202 @@ tr.clickable:hover td {
   width: 28px;
   padding-right: 0;
 }
+
+/* ---- first screens of 라벨링 · 검수 · 학습 · 모델 ---- */
+.board-section {
+  margin: 22px 0 6px;
+}
+.board-section > h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+.board-group {
+  margin: 0 0 18px;
+}
+.board-group > h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.board-group > h3 a {
+  color: var(--text);
+  text-decoration: none;
+}
+.board-group > h3 a:hover {
+  color: var(--accent);
+}
+.btn.small {
+  padding: 4px 9px;
+  font-size: 12.5px;
+}
+.btn.primary {
+  background: var(--primary-bg);
+  border-color: var(--primary-bg);
+  color: var(--primary-text);
+  font-weight: 600;
+}
+.btn.primary:hover {
+  background: var(--primary-bg);
+  opacity: 0.88;
+}
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* my parts (라벨링) */
+.my-parts {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.my-part {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+}
+.my-part.waiting {
+  border-left-color: var(--border-strong);
+}
+.my-part .part-title a {
+  min-width: 0;
+  color: var(--text);
+  text-decoration: none;
+}
+.my-part .part-title a:hover {
+  color: var(--accent);
+}
+.my-part .set-progress {
+  margin: 2px 0 0;
+}
+
+/* counts on a 검수 card */
+.review-counts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+.review-count {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+.review-count strong {
+  color: var(--text);
+  font: 700 17px/1.2 var(--mono);
+}
+.review-count.has-missing strong {
+  color: var(--warn);
+}
+.review-count.has-wrong strong {
+  color: var(--bad);
+}
+.review-count.has-boxes strong {
+  color: var(--accent);
+}
+.review-count.zero strong {
+  color: var(--muted);
+}
+
+/* runs going on now (학습) */
+.going-list {
+  display: grid;
+  gap: 8px;
+}
+.going-run {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  color: inherit;
+  text-decoration: none;
+}
+.going-run:hover {
+  border-color: var(--accent);
+}
+.going-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.going-bar {
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.going-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s;
+}
+.going-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+/* a project's best number, its runs or models under it (학습 · 모델) */
+.board-best {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.board-best strong {
+  font-size: 18px;
+}
+.board-trend {
+  flex: 1;
+  min-width: 40px;
+  max-width: 120px;
+  height: 26px;
+  margin-left: auto;
+}
+.board-rows {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--border);
+}
+.board-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 12.5px;
+  text-decoration: none;
+}
+.board-row:hover {
+  background: var(--surface-2);
+}
+.board-aliases {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.board-foot {
+  padding: 2px 4px 0;
+}
+.data-card.board-quiet {
+  opacity: 0.75;
+}
