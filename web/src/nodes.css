@@ -246,6 +246,26 @@ a.gpu-who:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* utilization and memory, each as a number under the tile's text */
+.gpu-stats {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 8px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.gpu-stats dt {
+  color: var(--muted);
+}
+.gpu-stats dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .board-add {
   display: flex;
   align-items: center;

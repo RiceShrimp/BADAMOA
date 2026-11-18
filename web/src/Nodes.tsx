@@ -407,6 +407,9 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
   const o = gpu.occupant;
   const kind = gpu.state === "job" ? "job" : gpu.state === "busy" ? "busy" : gpu.state === "reserved" ? "reserved" : gpu.state === "offline" ? "offline" : "free";
   const hot = (gpu.temperature_c ?? 0) >= 83;
+  // how hard it computes, and how much of its memory is taken: two different things, both as numbers
+  const util = gpu.utilization_pct != null ? `${Math.round(gpu.utilization_pct)}%` : null;
+  const vram = gpu.memory_total_mb ? `${(used / 1024).toFixed(1)} / ${Math.round(gpu.memory_total_mb / 1024)} GB` : null;
   const detail = [
     gpu.utilization_pct != null ? `사용률 ${Math.round(gpu.utilization_pct)}%` : null,
     gpu.memory_total_mb ? `메모리 ${(used / 1024).toFixed(1)} / ${gb(gpu.memory_total_mb)}` : null,
@@ -421,7 +424,6 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
       <div className="gpu-body">
         <div className="gpu-head">
           <span>{gpu.index}</span>
-          {gpu.utilization_pct != null && kind !== "free" && <span>{Math.round(gpu.utilization_pct)}%</span>}
           {hot && <span className="bad-text">{gpu.temperature_c}°C</span>}
         </div>
         {kind === "job" && o && (
@@ -444,12 +446,26 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
         {(kind === "free" || kind === "reserved") && (
           <>
             <div className="gpu-who quiet">{kind === "reserved" ? "사람 전용" : "비어 있음"}</div>
-            <div className="gpu-what">
-              {o?.light ? `${o.who || "누군가"} ${(used / 1024).toFixed(1)} GB 사용 중` : gb(gpu.memory_total_mb)}
-            </div>
+            {o?.light && <div className="gpu-what">{`${o.who || "누군가"} 사용 중`}</div>}
           </>
         )}
         {kind === "offline" && <div className="gpu-who quiet">연결 끊김</div>}
+        {kind !== "offline" && (util || vram) && (
+          <dl className="gpu-stats">
+            {util && (
+              <>
+                <dt>사용률</dt>
+                <dd>{util}</dd>
+              </>
+            )}
+            {vram && (
+              <>
+                <dt>VRAM</dt>
+                <dd>{vram}</dd>
+              </>
+            )}
+          </dl>
+        )}
       </div>
     </div>
   );
