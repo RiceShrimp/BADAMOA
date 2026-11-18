@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { api } from "./api";
 import type { ChangeKind, DraftChanges, ReleaseInfo } from "./catalogTypes";
 import { CHANGE_LABEL } from "./labelDiff";
+import { type ReviewRecord, ReviewSummary } from "./ReviewRecord";
 import { nextVersion } from "./ReleaseMaker";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
@@ -187,6 +188,7 @@ export function DraftLine({ release }: { release: ReleaseInfo }) {
 
 function ConfirmDraft({ release, onClose, onDone }: { release: ReleaseInfo; onClose: () => void; onDone: () => void }) {
   const { data: changes } = usePolling(() => api<DraftChanges>(`/releases/${release.id}/changes`), 0, [release.id]);
+  const { data: review } = usePolling(() => api<ReviewRecord>(`/releases/${release.id}/review`), 0, [release.id]);
   const draft = release.draft!;
   const [version, setVersion] = useState(() => {
     const taken = new Set(release.siblings.map((s) => s.version));
@@ -228,6 +230,10 @@ function ConfirmDraft({ release, onClose, onDone }: { release: ReleaseInfo; onCl
         <div className="field-label">
           바뀐 내용 <span className="muted small">({draft.base?.version ?? "바탕"}과 비교)</span>
           {changes ? <ChangeSummary changes={changes} /> : <span className="muted small">세는 중…</span>}
+        </div>
+        <div className="field-label">
+          검수 기록 <span className="muted small">(버전에 함께 남음 · 걸린 이미지 {draft.base?.version ?? "바탕"} → 이 버전)</span>
+          {review ? <ReviewSummary record={review} /> : <span className="muted small">세는 중…</span>}
         </div>
         <p className="muted small">split을 다시 나누거나 클래스를 바꾸려면, 확정한 뒤 그 버전에서 "새 버전"을 쓰세요.</p>
         {error && <div className="error">{error}</div>}

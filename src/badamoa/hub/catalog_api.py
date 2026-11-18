@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk
 
-from . import catalog, checks, drafts, originals, overview, purge, qa, services
+from . import catalog, checks, drafts, originals, overview, purge, qa, review, services
 from . import trash as trash_box
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
@@ -285,6 +285,7 @@ def list_items(
     check: str = "",
     mistake: str = "",
     changed: str = "",
+    let_be: bool = False,
     offset: int = 0,
     limit: int = 60,
     _: User = Depends(current_user),
@@ -308,6 +309,7 @@ def list_items(
         check=check,
         mistake=mistake,
         changed=changed,
+        let_be=let_be,
         offset=offset,
         limit=limit,
     )
@@ -419,6 +421,39 @@ def delete_dataset(dataset_id: str, user: User = Depends(admin_user), db: Sessio
 
 
 # ---- likely wrong labels: what evaluated models predicted ---------------------------------
+
+
+class LetBe(BaseModel):
+    check: str  # a rule check's id, or extra / missed (what a model's evaluation found)
+    note: str = ""
+
+
+@router.put("/releases/{release_id}/items/{item_id}/let-be")
+def let_be(
+    release_id: str, item_id: int, body: LetBe, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """What the check flagged on this image is right ("문제 없음"): kept for these labels, into later versions."""
+    result = qa.let_be(db, user, catalog.get_release(db, release_id), item_id, body.check, body.note)
+    db.commit()
+    return result
+
+
+@router.delete("/releases/{release_id}/items/{item_id}/let-be")
+def take_back(
+    release_id: str, item_id: int, check: str, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Count it again."""
+    result = qa.let_be(db, user, catalog.get_release(db, release_id), item_id, check, undo=True)
+    db.commit()
+    return result
+
+
+@router.get("/releases/{release_id}/review")
+def release_review(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """A version's 검수 record (kept when it was confirmed); a work in progress's, as it would be kept now."""
+    result = review.view(db, catalog.get_release(db, release_id))
+    db.commit()  # checks that ran are kept until the labels change
+    return result
 
 
 @router.get("/releases/{release_id}/changes")

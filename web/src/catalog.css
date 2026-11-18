@@ -1369,3 +1369,68 @@ select.active-select {
   border-radius: 50%;
   flex: none;
 }
+
+/* ---- 검수 kept with a version ---- */
+.review-record-card {
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+.review-record-card .eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.review-record {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.review-record-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.review-step {
+  display: grid;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.review-step strong {
+  font: 700 16px/1.2 var(--mono);
+}
+.review-step .was {
+  color: var(--muted);
+  font-weight: 500;
+}
+.review-step.better strong {
+  color: var(--ok);
+}
+.review-step.worse strong {
+  color: var(--bad);
+}
+.review-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+.tag.ok {
+  color: var(--ok);
+}
+.qa-judge {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+.qa-judge input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  padding: 4px 8px;
+}
+.review-record-card .keep-case {
+  text-transform: none;
+}

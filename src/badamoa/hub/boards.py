@@ -210,6 +210,7 @@ def review_board(db: Session, settings: HubSettings) -> dict[str, Any]:
         }
         if items <= QA_ON_BOARD or qa.is_fresh(db, target):
             done = qa.run(db, target)
+            open_counts = qa.check_counts(db, target.id)  # what someone let be is not a problem
             flagged = list(
                 db.scalars(
                     select(QaResult.item_id)
@@ -226,9 +227,9 @@ def review_board(db: Session, settings: HubSettings) -> dict[str, Any]:
                 groups=qa.groups(db, target.id),
                 checks=sorted(
                     (
-                        {"id": cid, "title": meta["title"], "group": meta["group"], "images": done.counts.get(cid, 0)}
+                        {"id": cid, "title": meta["title"], "group": meta["group"], "images": open_counts[cid][0]}
                         for cid, meta in qa.CHECKS.items()
-                        if done.counts.get(cid)
+                        if open_counts.get(cid, (0, 0))[0]
                     ),
                     key=lambda c: -c["images"],
                 ),

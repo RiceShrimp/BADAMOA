@@ -37,6 +37,7 @@ _ADDED_COLUMNS = [
     ("node_releases", "checked_at", "DATETIME"),
     ("nodes", "data_check", "JSON DEFAULT '{}'"),
     ("environments", "image", "VARCHAR(512) DEFAULT ''"),
+    ("releases", "review", "JSON DEFAULT '{}'"),
 ]
 
 

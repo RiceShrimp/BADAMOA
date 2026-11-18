@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
 
-from .catalog_models import Dataset, Item, ItemPrediction, Release, ReleaseItem
+from .catalog_models import Dataset, Item, ItemPrediction, QaDismissal, Release, ReleaseItem
 from .db import iso
 from .models import Job
 from .services import ServiceError
@@ -100,6 +100,18 @@ def _offered(db: Session, release: Release) -> list[ModelJob]:
     return [op for op in ops if op.model_id not in models or task_names.same(models[op.model_id].task or "detect", task)]
 
 
+MISTAKES = ("extra", "missed")  # what an evaluation finds, judged like a rule check's finding
+
+
+def let_be(check: Any, item_id: Any, revision_id: Any) -> Any:
+    """SQL: someone found this image's labels (this revision of them) right for this check ("문제 없음")."""
+    return (
+        select(QaDismissal.item_id)
+        .where(QaDismissal.item_id == item_id, QaDismissal.check == check, QaDismissal.revision_id == revision_id)
+        .exists()
+    )
+
+
 def model_ref(model: ModelVersion | None) -> dict[str, Any] | None:
     """The model an evaluation is by, as the 검수 screen names it."""
     if model is None:
@@ -157,8 +169,17 @@ def newest(db: Session, release: Release) -> dict[str, Any] | None:
             "model": model_ref(model),
             "created_at": iso(op.created_at),
             "images": images,
-            "extra": db.scalar(base.where(*mine, ItemPrediction.extra > 0)) or 0,
-            "missed": db.scalar(base.where(*mine, ItemPrediction.missed > 0)) or 0,
+            **{
+                kind: db.scalar(
+                    base.where(
+                        *mine,
+                        getattr(ItemPrediction, kind) > 0,
+                        ~let_be(kind, ItemPrediction.item_id, ReleaseItem.revision_id),
+                    )
+                )
+                or 0
+                for kind in MISTAKES
+            },
         }
     return None
 

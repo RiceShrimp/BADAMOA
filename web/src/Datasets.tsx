@@ -1,3 +1,4 @@
+import { ReviewRecordCard } from "./ReviewRecord";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   FOLDER_HINT,
@@ -353,6 +354,7 @@ function ReleaseView({
         )}
       </div>
       <DraftNotice release={release} />
+      {release.status === "ready" && <ReviewRecordCard releaseId={release.id} />}
       {isDraft && fixing && fixing.edited > 0 && (
         <DraftChangesCard releaseId={release.id} edited={fixing.edited} picked={changeKind} onPick={pickChange} />
       )}

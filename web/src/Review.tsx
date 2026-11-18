@@ -27,13 +27,14 @@ interface Rule {
   title: string;
   hint: string;
   images: number;
+  let_be: number; // images someone judged right ("문제 없음"): not counted in ``images``
 }
 
 interface Summary {
   release_id: string;
   computed_at: string;
   checks: Rule[];
-  evaluations: (ReleaseCheck & { extra: number; missed: number })[];
+  evaluations: (ReleaseCheck & { extra: number; missed: number; extra_let_be: number; missed_let_be: number })[];
   pending: { id: string; job_id: string; status: string; split: string; model: CheckModel | null; created_at: string }[];
 }
 
@@ -291,6 +292,8 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   }, [summary, pick]);
   useEffect(() => setPage(0), [pick, op]);
 
+  const [showLetBe, setShowLetBe] = useState(false); // the images someone judged right, instead
+  useEffect(() => setShowLetBe(false), [pick, op]);
   const query = useMemo(() => {
     if (!pick) return "";
     const params = new URLSearchParams();
@@ -299,8 +302,9 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
       params.set("suspect", op);
       params.set("mistake", pick.mistake);
     }
+    if (showLetBe) params.set("let_be", "true");
     return params.toString();
-  }, [pick, op]);
+  }, [pick, op, showLetBe]);
   const { data: items, refresh: refreshItems } = usePolling(
     () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * PAGE}&limit=${PAGE}`) : Promise.resolve(null)),
     0,
@@ -315,6 +319,8 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const evaluation = summary.evaluations.find((e) => e.id === op);
   const rule = pick?.kind === "rule" ? summary.checks.find((c) => c.id === pick.id) : undefined;
   const title = rule ? rule.title : pick?.kind === "model" ? MODEL[pick.mistake].title : "";
+  // what someone judged right for the check in view: listed apart
+  const letBeCount = rule ? rule.let_be : pick?.kind === "model" && evaluation ? evaluation[`${pick.mistake}_let_be`] : 0;
   const total = items?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE));
   const card = (key: string, name: string, hint: string, count: number, active: boolean, onClick: () => void) => (
@@ -429,7 +435,8 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
         <section className="check-results">
           <div className="check-results-head">
             <h2>
-              {title} <span className="muted">{total.toLocaleString()}장</span>
+              {title}
+              {showLetBe && " · 문제 없음으로 둔 것"} <span className="muted">{total.toLocaleString()}장</span>
               {pick.kind === "model" && evaluation?.model && (
                 <span className="muted small model-of">
                   {" "}
@@ -438,7 +445,12 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               )}
             </h2>
             <span className="spacer" />
-            {release.fixable && total > 0 && (
+            {(letBeCount > 0 || showLetBe) && (
+              <button className="link small" onClick={() => setShowLetBe(!showLetBe)}>
+                {showLetBe ? "걸린 것 보기" : `문제 없음으로 둔 것 ${letBeCount.toLocaleString()}장`}
+              </button>
+            )}
+            {release.fixable && total > 0 && !showLetBe && (
               <button onClick={() => setMaking(true)} title="찾은 이미지를 일감으로 나눠 사람에게 맡깁니다">
                 <Icon name="edit" size={13} /> 라벨링 묶음으로 만들기
               </button>
@@ -495,6 +507,8 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           task={task}
           checkOp={pick?.kind === "model" ? op : undefined}
           qaTitle={title}
+          qaCheck={pick?.kind === "rule" ? pick.id : pick?.mistake}
+          qaLetBe={showLetBe}
           onSaved={() => {
             void refresh();
             void refreshItems();

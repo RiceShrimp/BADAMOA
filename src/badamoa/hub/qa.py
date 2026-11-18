@@ -18,12 +18,25 @@ import hashlib
 from collections import Counter
 from typing import Any
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import and_, case, delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from . import catalog, checks
-from .catalog_models import Item, ItemPrediction, LabelRevision, LabelSpace, QaResult, QaRun, Release, ReleaseItem
+from .catalog_models import (
+    Dataset,
+    Item,
+    ItemPrediction,
+    LabelRevision,
+    LabelSpace,
+    QaDismissal,
+    QaResult,
+    QaRun,
+    Release,
+    ReleaseItem,
+)
 from .db import iso, utcnow
+from .models import User
+from .services import ServiceError, audit
 
 # What each check finds, grouped as the screen shows them.
 CHECKS: dict[str, dict[str, str]] = {
@@ -169,9 +182,31 @@ def run(db: Session, release: Release) -> QaRun:
     return done
 
 
+def _in_release(release_id: str) -> Any:
+    """QaResult rows with the release's own labels of the image (whose revision a judgement is kept for)."""
+    return (
+        select(QaResult)
+        .join(ReleaseItem, and_(ReleaseItem.release_id == QaResult.release_id, ReleaseItem.item_id == QaResult.item_id))
+        .where(QaResult.release_id == release_id)
+    )
+
+
+def check_counts(db: Session, release_id: str) -> dict[str, tuple[int, int]]:
+    """Per check: (images still flagged, images someone let be)."""
+    judged = checks.let_be(QaResult.check, QaResult.item_id, ReleaseItem.revision_id)
+    rows = db.execute(
+        _in_release(release_id)
+        .with_only_columns(QaResult.check, func.count(), func.sum(case((judged, 1), else_=0)))
+        .group_by(QaResult.check)
+    ).all()
+    return {check: (total - (gone or 0), gone or 0) for check, total, gone in rows}
+
+
 def summary(db: Session, release: Release) -> dict[str, Any]:
-    """The checks of a release: how many images each found, and the evaluations that can add the model's view."""
+    """The checks of a release: how many images each found (and how many were let be), and the evaluations that
+    can add the model's view."""
     done = run(db, release)
+    counts = check_counts(db, release.id)
     evaluations = []
     for check in checks.release_checks(db, release):
         mine = (ItemPrediction.op_id == check["id"], ReleaseItem.release_id == release.id)
@@ -180,17 +215,20 @@ def summary(db: Session, release: Release) -> dict[str, Any]:
             .select_from(ItemPrediction)
             .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
         )
-        evaluations.append(
-            {
-                **check,
-                "extra": db.scalar(base.where(*mine, ItemPrediction.extra > 0)) or 0,  # objects no label has
-                "missed": db.scalar(base.where(*mine, ItemPrediction.missed > 0)) or 0,  # labels it did not find
-            }
-        )
+        found = {}
+        for kind in checks.MISTAKES:  # extra: objects no label has; missed: labels it did not find
+            judged = checks.let_be(kind, ItemPrediction.item_id, ReleaseItem.revision_id)
+            flagged = base.where(*mine, getattr(ItemPrediction, kind) > 0)
+            found[kind] = db.scalar(flagged.where(~judged)) or 0
+            found[f"{kind}_let_be"] = db.scalar(flagged.where(judged)) or 0
+        evaluations.append({**check, **found})
     return {
         "release_id": release.id,
         "computed_at": iso(done.computed_at),
-        "checks": [{"id": cid, **meta, "images": done.counts.get(cid, 0)} for cid, meta in CHECKS.items()],
+        "checks": [
+            {"id": cid, **meta, "images": counts.get(cid, (0, 0))[0], "let_be": counts.get(cid, (0, 0))[1]}
+            for cid, meta in CHECKS.items()
+        ],
         "evaluations": evaluations,
         "pending": checks.pending(db, release),  # evaluations still going: the model's view comes when they end
     }
@@ -213,11 +251,59 @@ def is_fresh(db: Session, release: Release) -> bool:
 
 
 def groups(db: Session, release_id: str) -> dict[str, int]:
-    """Images the rule checks flag, by group (an image flagged twice counts once), and in all."""
-    distinct = select(func.count(func.distinct(QaResult.item_id))).where(QaResult.release_id == release_id)
+    """Images the rule checks flag, by group (an image flagged twice counts once), and in all; what someone
+    let be ("문제 없음") is left out."""
+    distinct = (
+        _in_release(release_id)
+        .with_only_columns(func.count(func.distinct(QaResult.item_id)))
+        .where(~checks.let_be(QaResult.check, QaResult.item_id, ReleaseItem.revision_id))
+    )
     out = {}
     for group in ("missing", "wrong", "boxes"):
         ids = [cid for cid, meta in CHECKS.items() if meta["group"] == group]
         out[group] = db.scalar(distinct.where(QaResult.check.in_(ids))) or 0
     out["any"] = db.scalar(distinct) or 0
     return out
+
+
+def judgements(db: Session, release_id: str, check: str, item_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """For a page of images: the "문제 없음" kept for this check on the release's labels of each."""
+    if not item_ids:
+        return {}
+    rows = db.execute(
+        select(QaDismissal, User.username)
+        .join(
+            ReleaseItem,
+            and_(ReleaseItem.item_id == QaDismissal.item_id, ReleaseItem.revision_id == QaDismissal.revision_id),
+        )
+        .outerjoin(User, User.id == QaDismissal.created_by)
+        .where(ReleaseItem.release_id == release_id, QaDismissal.check == check, QaDismissal.item_id.in_(item_ids))
+    ).all()
+    return {d.item_id: {"note": d.note, "by": name, "at": iso(d.created_at)} for d, name in rows}
+
+
+def let_be(db: Session, user: User, release: Release, item_id: int, check: str, note: str = "", undo: bool = False) -> dict:
+    """Judge what a check flagged on this image right ("문제 없음"), or take that back. Kept for the image's labels
+    as they are in this release: the next version keeps it while the labels stay the same."""
+    if check not in CHECKS and check not in checks.MISTAKES:
+        raise ServiceError(400, "그런 검사가 없습니다.")
+    member = db.get(ReleaseItem, (release.id, item_id))
+    if member is None:
+        raise ServiceError(404, "이 버전에 없는 이미지입니다.")
+    found = db.get(QaDismissal, (item_id, check, member.revision_id))
+    if undo:
+        if found is not None:
+            db.delete(found)
+            audit(db, user.id, "ui", "qa.undo", release.id, item=item_id, check=check)
+        db.flush()
+        return {"item_id": item_id, "check": check, "let_be": None}
+    dataset = db.get(Dataset, release.dataset_id)
+    if found is None:
+        found = QaDismissal(item_id=item_id, check=check, revision_id=member.revision_id, dataset_id=dataset.id)
+        db.add(found)
+    found.note = note.strip()[:255]
+    found.created_by, found.created_at = user.id, utcnow()
+    audit(db, user.id, "ui", "qa.let_be", release.id, item=item_id, check=check)
+    db.flush()
+    judged = {"note": found.note, "by": user.username, "at": iso(found.created_at)}
+    return {"item_id": item_id, "check": check, "let_be": judged}

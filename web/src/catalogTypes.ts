@@ -19,6 +19,7 @@ export interface TreeRelease {
   created_at: string;
   deleted_at: string | null;
   edited?: number; // the work in progress: how many images it changed
+  review?: { recorded: boolean; open: number | null } | null; // 검수: a record kept on confirming, flagged images left
 }
 
 export interface TreeDataset {
@@ -99,6 +100,7 @@ export interface GridItem {
   check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
   set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
   qa?: { check: string; boxes: number[]; note: string }; // flagged by a label check (검수): which labels, why
+  let_be?: { note: string; by: string | null; at: string }; // judged right for the check in play ("문제 없음")
 }
 
 export type SetState = "todo" | "labelled" | "approved" | "rejected";
