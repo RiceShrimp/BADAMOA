@@ -6,6 +6,8 @@ import { FileList, fileSize } from "./Files";
 import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LineChart } from "./Chart";
 import { EpochChart, type EpochSeries } from "./EpochChart";
+import { TrainingBoard } from "./Boards";
+import { rememberProject } from "./DataBoard";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { RunTable } from "./RunTable";
 import { type Job, type LogLine, type MetricHistory, api } from "./api";
@@ -40,6 +42,10 @@ const COMPARE_CHARTS: Record<string, string[]> = {
 
 export function Training({ runId, arg }: { runId?: string; arg?: string }) {
   const { projects, projectId, choose } = useProject();
+  const routed = runId === "project" ? (arg ?? "") : ""; // #/training/project/<id>: that project's runs
+  useEffect(() => {
+    if (routed) rememberProject(routed); // other screens open on it too
+  }, [routed]);
 
   if (projects && projects.length === 0) {
     return (
@@ -62,15 +68,21 @@ export function Training({ runId, arg }: { runId?: string; arg?: string }) {
     );
   }
   if (runId === "sweep" && arg) return <SweepView key={arg} sweepId={arg} />;
-  if (runId && runId !== "new") return <RunView key={runId} runId={runId} />;
-  return (
-    <RunList
-      projects={projects}
-      projectId={projectId}
-      onProject={choose}
-      startWith={runId === "new" ? (arg ?? "") : undefined}
-    />
-  );
+  if (routed)
+    return (
+      <RunList
+        projects={projects}
+        projectId={projects?.some((p) => p.id === routed) ? routed : ""}
+        onProject={(id) => {
+          choose(id);
+          window.location.hash = `#/training/project/${id}`;
+        }}
+        crumbs
+      />
+    );
+  if (runId === "new") return <RunList projects={projects} projectId={projectId} onProject={choose} startWith={arg ?? ""} />;
+  if (runId) return <RunView key={runId} runId={runId} />;
+  return <TrainingBoard />;
 }
 
 // ---- list + comparison ------------------------------------------------------------------
@@ -80,11 +92,13 @@ function RunList({
   projectId,
   onProject,
   startWith,
+  crumbs = false,
 }: {
   projects: ReturnType<typeof useProject>["projects"];
   projectId: string;
   onProject: (id: string) => void;
   startWith?: string;
+  crumbs?: boolean; // opened from the first screen: the way back to it
 }) {
   const [busy, setBusy] = useState(true);
   const [typed, setTyped] = useState("");
@@ -136,8 +150,15 @@ function RunList({
   };
   const best = (runs ?? []).filter((r) => r.metrics[primary] != null).sort((a, b) => b.metrics[primary] - a.metrics[primary])[0];
 
+  const project = projects?.find((p) => p.id === projectId);
   return (
     <>
+      {crumbs && (
+        <nav className="page-crumbs">
+          <a href="#/training">학습</a>
+          <strong>{project?.name ?? "…"}</strong>
+        </nav>
+      )}
       <div className="page-head">
         <div>
           <h1>학습</h1>
@@ -196,7 +217,7 @@ function RunList({
           releaseId={startWith}
           onClose={() => {
             setCreating(false);
-            if (startWith !== undefined) window.location.hash = "#/training";
+            if (startWith !== undefined) window.location.hash = projectId ? `#/training/project/${projectId}` : "#/training";
           }}
           onStarted={(run) => {
             setCreating(false);
@@ -487,7 +508,7 @@ function RunView({ runId }: { runId: string }) {
     void act(async () => {
       await api(`/runs/${run.id}`, { method: "DELETE" });
       announceTrash();
-      window.location.hash = "#/training";
+      window.location.hash = `#/training/project/${run.project_id}`;
     });
   };
 
@@ -514,7 +535,7 @@ function RunView({ runId }: { runId: string }) {
 
   return (
     <>
-      <a className="link back" href="#/training">
+      <a className="link back" href={`#/training/project/${run.project_id}`}>
         ← 학습 목록
       </a>
       <div className="page-head">

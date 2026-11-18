@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { SPLIT_COLOR, Shot } from "./DataBoard";
+import { type BoardProject, useBoardFilter } from "./Boards";
+import { Collage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
-import { ProjectPicker, useProject } from "./ProjectPicker";
+import { useProject } from "./ProjectPicker";
 import { colorFor } from "./ReleaseTabs";
 import { api } from "./api";
-import { type ItemPage, type ReleaseCheck, type ReleaseInfo, SPLIT_LABEL, type TreeDataset } from "./catalogTypes";
-import { Icon, timeAgo, usePolling } from "./ui";
+import { type ItemPage, type ReleaseCheck, type ReleaseInfo, SPLIT_LABEL, type TreeDataset, classColor } from "./catalogTypes";
+import { Icon, Stat, timeAgo, usePolling } from "./ui";
 
 /** One label check (rules on the labels) as the Hub counts it. */
 interface Rule {
@@ -37,50 +38,151 @@ const MODEL: Record<"extra" | "missed", { group: Rule["group"]; title: string; h
   missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "라벨은 있는데 모델이 찾지 못함: 틀린 라벨일 수 있음" },
 };
 const PAGE = 60;
-const RELEASE_KEY = "badamoa.reviewRelease";
 
-function rememberedRelease(): string {
-  try {
-    return localStorage.getItem(RELEASE_KEY) ?? "";
-  } catch {
-    return "";
-  }
+/** A dataset's newest labels as 검수's first screen shows them. */
+interface ReviewCard {
+  project: BoardProject;
+  dataset: { id: string; name: string };
+  task: string;
+  release: { id: string; version: string; draft: boolean; base: string; edited: number };
+  items: number;
+  checked: boolean; // a big version whose checks are out of date is checked when it is opened
+  computed_at: string | null;
+  groups: Record<Rule["group"] | "any", number> | null;
+  checks: { id: string; title: string; group: Rule["group"]; images: number }[];
+  flagged_shots: boolean; // the pictures are of flagged images
+  collage: Shot[];
+  evaluation: { id: string; model: { id: string; name: string; version: number } | null; images: number; extra: number; missed: number } | null;
 }
 
-/** 검수: images whose labels are probably missing (미라벨) or wrong (오라벨), to fix or hand out as a labeling set. */
-export function Review() {
-  const { projects, projectId, choose } = useProject();
+interface ReviewBoardInfo {
+  datasets: ReviewCard[];
+  totals: { datasets: number; checked: number; flagged: number; missing: number; wrong: number; boxes: number; evaluated: number };
+}
+
+const projectOfCard = (c: ReviewCard) => c.project;
+
+/** 검수: the first screen lists every dataset's problems; a version's own screen finds and fixes them. */
+export function Review({ releaseId }: { releaseId?: string }) {
+  return releaseId ? <ReviewPage key={releaseId} releaseId={releaseId} /> : <ReviewBoard />;
+}
+
+function ReviewBoard() {
+  const { data: board, error } = usePolling(() => api<ReviewBoardInfo>("/boards/review"), 30000);
+  const { shown, tools } = useBoardFilter(board?.datasets, projectOfCard);
+  if (error && !board) return <div className="error">{error}</div>;
+  const t = board?.totals;
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>검수</h1>
+          <p className="muted">
+            데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)에서 라벨이 빠졌거나(미라벨) 틀렸을(오라벨) 이미지 수를 봅니다. 문제가 많은
+            데이터셋이 먼저 나오고, 누르면 그 이미지를 보며 고치거나 라벨링 묶음으로 맡깁니다.
+          </p>
+        </div>
+      </div>
+      <div className="stats five">
+        <Stat icon="database" label="데이터셋" value={t?.datasets ?? "–"} sub={t ? `검사함 ${t.checked}` : " "} />
+        {GROUPS.map((g) => (
+          <Stat key={g.id} icon={g.id === "missing" ? "images" : g.id === "wrong" ? "alert" : "box"} label={g.title} value={(t?.[g.id] ?? 0).toLocaleString()} sub={g.hint} />
+        ))}
+        <Stat icon="chart" label="모델로 평가함" value={t?.evaluated ?? "–"} sub="모델이 본 미라벨 · 오라벨도 셈" />
+      </div>
+      {tools}
+      {board && board.datasets.length === 0 && <div className="card empty">검사할 데이터셋 버전이 없습니다.</div>}
+      <div className="card-grid review-grid">
+        {shown.map((c) => (
+          <a key={c.dataset.id} className="data-card data-card-link review-card" href={`#/review/${c.release.id}`}>
+            <Collage shots={c.collage} colorOf={classColor} />
+            <div className="data-card-body">
+              <div className="data-card-title">
+                <strong>{c.dataset.name}</strong>
+                {c.release.draft && <span className="tag accent">작업 중</span>}
+              </div>
+              <div className="muted small">
+                {c.project.name} · {c.release.draft ? `${c.release.base}에서 고친 것 ${c.release.edited}` : c.release.version} · 이미지{" "}
+                {c.items.toLocaleString()}
+              </div>
+              {c.checked && c.groups ? (
+                <>
+                  <div className="review-counts">
+                    {GROUPS.map((g) => (
+                      <span key={g.id} className={`review-count ${c.groups?.[g.id] ? `has-${g.id}` : "zero"}`} title={g.hint}>
+                        <strong>{(c.groups?.[g.id] ?? 0).toLocaleString()}</strong>
+                        {g.title}
+                      </span>
+                    ))}
+                  </div>
+                  {c.checks.length > 0 ? (
+                    <div className="muted small">
+                      {c.checks
+                        .slice(0, 2)
+                        .map((k) => `${k.title} ${k.images.toLocaleString()}`)
+                        .join(" · ")}
+                      {c.checks.length > 2 ? ` 외 ${c.checks.length - 2}` : ""}
+                    </div>
+                  ) : (
+                    <div className="muted small">규칙 검사에 걸린 이미지가 없습니다</div>
+                  )}
+                </>
+              ) : (
+                <div className="muted small">이미지가 많아 아직 검사하지 않았습니다. 누르면 검사합니다.</div>
+              )}
+              {c.evaluation ? (
+                <div className="small">
+                  {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨에 없는 물체{" "}
+                  <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 못 찾은 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
+                </div>
+              ) : (
+                <div className="muted small">평가한 모델 없음</div>
+              )}
+              <div className="muted small">
+                {c.flagged_shots ? "사진은 걸린 이미지 · " : ""}
+                {c.computed_at ? `검사 ${timeAgo(c.computed_at)}` : "검사 전"}
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** One version's checks: the images each found, to fix or hand out. Other versions of the project are a pick away. */
+function ReviewPage({ releaseId }: { releaseId: string }) {
+  const { projects } = useProject();
+  const { data: release, error } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 0, [releaseId]);
+  const projectId = release?.project_id ?? "";
   const { data: tree } = usePolling(
     () => (projectId ? api<TreeDataset[]>(`/projects/${projectId}/datasets`) : Promise.resolve([] as TreeDataset[])),
     30000,
     [projectId],
   );
-  // The versions to check: the work in progress (where fixes go) first, then the versions, newest first.
+  useEffect(() => {
+    if (projectId) rememberProject(projectId);
+  }, [projectId]);
+  // The versions to check: each dataset's work in progress (where fixes go) first, then its versions, newest first.
   const choices = useMemo(
     () =>
       (tree ?? []).flatMap((d) =>
         d.releases
           .filter((r) => !r.deleted_at && r.status !== "building")
-          .map((r) => ({ id: r.id, label: `${d.name} ${r.version}${r.status === "draft" ? ` · 고친 것 ${r.edited ?? 0}` : ""}` })),
+          .map((r) => ({ id: r.id, label: `${d.name} ${r.status === "draft" ? `작업 중 · 고친 것 ${r.edited ?? 0}` : r.version}` })),
       ),
     [tree],
   );
-  const [releaseId, setReleaseId] = useState(rememberedRelease);
-  useEffect(() => {
-    if (choices.length && !choices.some((c) => c.id === releaseId)) setReleaseId(choices[0].id);
-  }, [choices, releaseId]);
-  const pickRelease = (id: string) => {
-    setReleaseId(id);
-    try {
-      localStorage.setItem(RELEASE_KEY, id);
-    } catch {
-      /* not remembered */
-    }
-  };
-  const ready = choices.some((c) => c.id === releaseId);
+  if (error && !release) return <div className="error">{error}</div>;
+  const project = projects?.find((p) => p.id === projectId);
 
   return (
     <>
+      <nav className="page-crumbs">
+        <a href="#/review">검수</a>
+        <span>{project?.name ?? "…"}</span>
+        <strong>{release ? `${release.dataset.name} ${release.status === "draft" ? "작업 중" : release.version}` : "…"}</strong>
+      </nav>
       <div className="page-head">
         <div>
           <h1>검수</h1>
@@ -91,10 +193,10 @@ export function Review() {
         </div>
       </div>
       <div className="filters review-picker">
-        <ProjectPicker projects={projects ?? null} projectId={projectId} onChange={choose} />
         <label className="project-picker">
           <span className="eyebrow">버전</span>
-          <select value={ready ? releaseId : ""} onChange={(e) => pickRelease(e.target.value)} aria-label="버전">
+          <select value={releaseId} onChange={(e) => (window.location.hash = `#/review/${e.target.value}`)} aria-label="버전">
+            {!choices.some((c) => c.id === releaseId) && <option value={releaseId}>{release ? `${release.dataset.name} ${release.version}` : "…"}</option>}
             {choices.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.label}
@@ -103,8 +205,7 @@ export function Review() {
           </select>
         </label>
       </div>
-      {tree && choices.length === 0 && <div className="card empty">이 프로젝트에는 검사할 데이터셋 버전이 없습니다.</div>}
-      {ready && <ReviewRelease key={releaseId} releaseId={releaseId} />}
+      <ReviewRelease releaseId={releaseId} />
     </>
   );
 }

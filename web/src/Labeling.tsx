@@ -1,4 +1,6 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type BoardProject, useBoardFilter } from "./Boards";
+import { Collage, type Shot } from "./DataBoard";
 import { ItemViewer, type LabelingMode } from "./ItemViewer";
 import type { ItemFilter } from "./ReleaseMaker";
 import { colorFor } from "./ReleaseTabs";
@@ -9,6 +11,7 @@ import {
   type LabelSetView,
   type ReleaseInfo,
   SET_STATE_LABEL,
+  classColor,
   type SetColumn,
   type SetState,
 } from "./catalogTypes";
@@ -45,14 +48,48 @@ function StateCounts({ states }: { states: Record<SetState, number> }) {
   );
 }
 
-/** Labeling: sets of images people label (and review) part by part. */
-export function Labeling({ setId }: { setId?: string }) {
-  return setId ? <SetBoard id={setId} /> : <SetList />;
+/** Labeling: sets of images people label (and review) part by part. ``arg`` ("label-2", "review-0") opens a part. */
+export function Labeling({ setId, arg }: { setId?: string; arg?: string }) {
+  return setId ? <SetBoard key={setId} id={setId} arg={arg} /> : <LabelingBoard />;
 }
 
-function SetList() {
-  const { data: sets, error } = usePolling(() => api<LabelSetSummary[]>("/label-sets"), 15000);
-  if (error && !sets) return <div className="error">{error}</div>;
+/** A part given to the viewer, with what is left for them in it. */
+interface MyPart {
+  set: { id: string; name: string; review: boolean };
+  project: { id: string; name: string };
+  dataset: { id: string; name: string } | null;
+  part: number;
+  size: number;
+  states: Record<SetState, number>;
+  column: SetColumn;
+  roles: ("label" | "review")[];
+  to_label: number;
+  rejected: number;
+  to_review: number;
+}
+
+interface SetCard extends LabelSetSummary {
+  collage: Shot[];
+  open_release_id: string | null;
+  updated_at: string;
+}
+
+interface LabelingBoardInfo {
+  me: { id: string; name: string };
+  mine: MyPart[];
+  projects: { project: BoardProject; sets: SetCard[]; updated_at: string }[];
+  without: BoardProject[];
+  totals: { sets: number; items: number; todo: number; review: number; done: number };
+}
+
+const projectOfGroup = (g: LabelingBoardInfo["projects"][number]) => g.project;
+
+/** 라벨링's first screen: my parts and what is left in them, then every project's sets. */
+function LabelingBoard() {
+  const { data: board, error } = usePolling(() => api<LabelingBoardInfo>("/boards/labeling"), 15000);
+  const { shown, tools } = useBoardFilter(board?.projects, projectOfGroup);
+  if (error && !board) return <div className="error">{error}</div>;
+  const t = board?.totals;
   return (
     <>
       <div className="page-head">
@@ -64,50 +101,137 @@ function SetList() {
           </p>
         </div>
       </div>
-      {sets && sets.length === 0 && (
-        <div className="card empty">
-          아직 라벨링 묶음이 없습니다. 데이터셋의 최신 버전에서 이미지를 거른 뒤(예: 라벨 상태 "아직 안 함") "라벨링 묶음 만들기"를 누르세요.
-        </div>
-      )}
-      <div className="card-grid set-grid">
-        {sets?.map((s) => (
-          <a key={s.id} className="data-card data-card-link set-card" href={`#/labeling/${s.id}`}>
-            <div className="data-card-body">
-              <div className="data-card-title">
-                <strong>{s.name}</strong>
-                {s.mine > 0 && <span className="tag accent">내 일감 {s.mine}</span>}
+      <div className="stats five">
+        <Stat icon="edit" label="라벨링 묶음" value={t?.sets ?? "–"} sub={`이미지 ${(t?.items ?? 0).toLocaleString()}장`} />
+        <Stat icon="images" label="할 일" value={(t?.todo ?? 0).toLocaleString()} sub="라벨링할 · 돌려받은 이미지" />
+        <Stat icon="review" label="검수 대기" value={(t?.review ?? 0).toLocaleString()} sub="라벨링이 끝나 검수를 기다림" />
+        <Stat icon="check" label="완료" value={(t?.done ?? 0).toLocaleString()} sub="승인(검수 없으면 라벨함)" />
+        <Stat icon="activity" label="내 일감" value={board?.mine.length ?? "–"} sub={board ? `${board.me.name}에게 맡겨진 일감` : " "} />
+      </div>
+
+      <section className="board-section">
+        <h2>
+          내 일감 <span className="muted">{board?.mine.length ?? ""}</span>
+        </h2>
+        {board && board.mine.length === 0 && (
+          <p className="muted small">맡겨진 일감이 없습니다. 라벨링 묶음의 보드에서 일감마다 라벨링할 사람과 검수할 사람을 정합니다.</p>
+        )}
+        <div className="card-grid my-parts">
+          {board?.mine.map((m) => (
+            <div key={`${m.set.id}-${m.part}`} className={`card my-part ${m.to_label || m.to_review ? "" : "waiting"}`}>
+              <div className="part-title">
+                <a href={`#/labeling/${m.set.id}`}>
+                  <strong>{m.set.name}</strong> · 일감 {m.part + 1}
+                </a>
+                <span className="muted small">{m.size}장</span>
               </div>
               <div className="muted small">
-                {s.dataset?.name} {s.release?.version} · 이미지 {s.items.toLocaleString()} · 일감 {s.parts}
-                {s.review ? " · 검수함" : " · 검수 없음"}
+                {m.project.name}
+                {m.dataset ? ` · ${m.dataset.name}` : ""} · {m.roles.map((r) => (r === "label" ? "라벨링" : "검수")).join(" · ")}
               </div>
-              <Progress states={s.states} size={s.items} />
-              <StateCounts states={s.states} />
-              <div className="set-columns small">
-                {COLUMNS.filter((c) => s.review || c.id !== "review").map((c) => (
-                  <span key={c.id} className={s.columns[c.id] ? "" : "muted"}>
-                    {c.label} {s.columns[c.id]}
-                  </span>
-                ))}
-              </div>
-              <div className="muted small">
-                {s.created_by ?? "?"} · {timeAgo(s.created_at)}
+              <Progress states={m.states} size={m.size} />
+              <StateCounts states={m.states} />
+              <div className="part-actions">
+                {m.to_label > 0 && (
+                  <a className="btn primary small" href={`#/labeling/${m.set.id}/label-${m.part}`}>
+                    <Icon name="edit" size={12} /> 이어서 라벨링 · {m.to_label}장{m.rejected ? ` (돌려받음 ${m.rejected})` : ""}
+                  </a>
+                )}
+                {m.to_review > 0 && (
+                  <a className={`btn small ${m.to_label ? "" : "primary"}`} href={`#/labeling/${m.set.id}/review-${m.part}`}>
+                    <Icon name="review" size={12} /> 검수 · {m.to_review}장
+                  </a>
+                )}
+                {!m.to_label && !m.to_review && (
+                  <span className="muted small">{m.roles.includes("review") ? "라벨링이 끝나기를 기다리는 중" : "검수를 기다리는 중"}</span>
+                )}
               </div>
             </div>
-          </a>
+          ))}
+        </div>
+      </section>
+
+      <section className="board-section">
+        <h2>프로젝트별 라벨링 묶음</h2>
+        {board && board.projects.length === 0 && (
+          <div className="card empty">
+            아직 라벨링 묶음이 없습니다. 데이터셋의 최신 버전에서 이미지를 거른 뒤(예: 라벨 상태 "아직 안 함") "라벨링 묶음 만들기"를 누르세요.
+          </div>
+        )}
+        {tools}
+        {shown.map((g) => (
+          <div key={g.project.id} className="board-group">
+            <h3>
+              <a href={`#/datasets/project/${g.project.id}`}>{g.project.name}</a>
+              <span className="muted small">
+                {g.project.folder ? `${g.project.folder} · ` : ""}묶음 {g.sets.length} · {timeAgo(g.updated_at)} 작업
+              </span>
+            </h3>
+            <div className="card-grid set-grid">
+              {g.sets.map((s) => (
+                <a key={s.id} className="data-card data-card-link set-card" href={`#/labeling/${s.id}`}>
+                  <Collage shots={s.collage} colorOf={classColor} more={s.items} />
+                  <div className="data-card-body">
+                    <div className="data-card-title">
+                      <strong>{s.name}</strong>
+                      {s.mine > 0 && <span className="tag accent">내 일감 {s.mine}</span>}
+                    </div>
+                    <div className="muted small">
+                      {s.dataset?.name} {s.release?.version} · 이미지 {s.items.toLocaleString()} · 일감 {s.parts}
+                      {s.review ? " · 검수함" : " · 검수 없음"}
+                    </div>
+                    <Progress states={s.states} size={s.items} />
+                    <StateCounts states={s.states} />
+                    <div className="set-columns small">
+                      {COLUMNS.filter((c) => s.review || c.id !== "review").map((c) => (
+                        <span key={c.id} className={s.columns[c.id] ? "" : "muted"}>
+                          {c.label} {s.columns[c.id]}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="muted small">
+                      {s.created_by ?? "?"} · {timeAgo(s.updated_at)} 작업
+                    </div>
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
         ))}
-      </div>
+        {board && board.without.length > 0 && (
+          <p className="muted small">
+            묶음이 없는 프로젝트:{" "}
+            {board.without.map((p, n) => (
+              <span key={p.id}>
+                {n > 0 && " · "}
+                <a href={`#/datasets/project/${p.id}`}>{p.name}</a>
+              </span>
+            ))}{" "}
+            — 데이터셋 버전 화면에서 이미지를 거른 뒤 "라벨링 묶음 만들기"로 만듭니다.
+          </p>
+        )}
+      </section>
     </>
   );
 }
 
-function SetBoard({ id }: { id: string }) {
+function SetBoard({ id, arg }: { id: string; arg?: string }) {
   const { data: set, error, refresh } = usePolling(() => api<LabelSetView>(`/label-sets/${id}`), 15000, [id]);
   const openId = set?.open_release_id ?? "";
   const { data: release } = usePolling(() => (openId ? api<ReleaseInfo>(`/releases/${openId}`) : Promise.resolve(null)), 0, [openId]);
   const [mineOnly, setMineOnly] = useState(false);
   const [open, setOpen] = useState<{ part: LabelSetPart; mode: LabelingMode["mode"] } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  // From "내 일감": #/labeling/<set>/label-2 opens part 2 to label (review-2 to review), once.
+  const asked = useRef(arg ?? "");
+  useEffect(() => {
+    const wanted = /^(label|review)-(\d+)$/.exec(asked.current);
+    if (!wanted || !set || !openId) return;
+    asked.current = "";
+    const part = set.part_list.find((p) => p.part === Number(wanted[2]));
+    if (part) setOpen({ part, mode: wanted[1] as LabelingMode["mode"] });
+    window.history.replaceState(null, "", `#/labeling/${id}`);
+  }, [set, openId, id]);
 
   if (error && !set) return <div className="error">{error}</div>;
   if (!set) return <div className="muted">불러오는 중…</div>;

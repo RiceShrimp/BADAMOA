@@ -17,6 +17,7 @@ from . import (
     admin,
     agent_api,
     api,
+    boards_api,
     catalog,
     catalog_api,
     cleanup,
@@ -135,6 +136,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(catalog_api.agent_router)
     app.include_router(catalog_api.media_router)
     app.include_router(labeling_api.router)
+    app.include_router(boards_api.router)
     app.include_router(exports_api.router)
     app.include_router(exports_api.agent_router)
     app.include_router(exports_api.media_router)
