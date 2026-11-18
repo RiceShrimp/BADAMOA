@@ -58,7 +58,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 | 실험 추적·레지스트리 | **자체** (지표 시계열 + 아티팩트 + alias) | MLflow 내장 — 무거운 의존성, 별도 서버·UI·인증, 레지스트리가 둘이 됨. 필요하면 **미러 플러그인**으로 MLflow/W&B에 복제 |
 | 큐레이션 | 기본(near-dup·uniqueness·대표성)은 **임베딩으로 자체 계산**. FiftyOne Brain은 **플러그인 Job**(노드 venv에서 실행, 점수만 Hub에 기록) | FiftyOne을 Hub 의존성으로 두는 것 — MongoDB가 딸려오고 데이터 저장소가 둘이 됨 |
 | 평가 | **자체** (pycocotools 계열 + 샘플 단위 TP/FP/FN) | 평가만을 위한 FiftyOne 의존 |
-| 라벨링 · 검수 | **내장** — 데이터셋 화면의 바로 고치기에서 시작해 라벨링 묶음 · 에디터 · 스마트 도구 · 검수로 넓힌다 ([LABELING_PLAN.md](LABELING_PLAN.md)). CVAT · Label Studio · Lightly Studio의 장점을 가져온다 | CVAT(Docker 전용), Lightly Studio(torch · DB 엔진이 기본 설치, 여러 사용자 · 권한이 Enterprise), FiftyOne(MongoDB)을 그대로 쓰기. 외부 도구와는 **내보내기/가져오기**로 연결 |
+| 라벨링 · 검수 | **내장** — 데이터셋 화면의 바로 고치기에서 시작해 라벨링 묶음 · 에디터 · 스마트 도구 · 검수로 넓힌다 ([LABELING_PLAN.md](LABELING_PLAN.md)). CVAT · Label Studio · Lightly Studio의 장점을 가져온다 | CVAT(Docker 전용), Lightly Studio(torch · DB 엔진이 기본 설치, 여러 사용자 · 권한이 Enterprise), FiftyOne(MongoDB)을 그대로 쓰기. 외부 도구와는 **내보내기/가져오기**로 연결하고, 이미 쓰는 CVAT는 API · 웹훅으로 연동(LABELING_PLAN 7장) |
 | 저장소 | **저장 위치 4종** (4.3) | 자체 분산 스토리지, MinIO 기본 탑재 |
 | 서빙 | **내장 추론 서비스** (ONNX Runtime / TensorRT), REST | Triton(사실상 Linux 전용)·gRPC — 필요해지면 exporter 플러그인 |
 | Edge | **같은 Node Agent** (Jetson = arm64 노드) | 별도 Edge Agent 앱, 별도 Device 엔티티 |
