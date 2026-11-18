@@ -1061,7 +1061,9 @@ select.active-select {
   border-radius: 10px;
   padding: 10px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr); /* a card never grows past its column */
   gap: 8px;
+  min-width: 0;
 }
 .check-group header {
   display: flex;
@@ -1082,6 +1084,14 @@ select.active-select {
   border: 1px solid var(--border);
   border-radius: 8px;
   font-weight: 400;
+  width: 100%;
+  min-width: 0;
+  white-space: normal; /* buttons keep to one line elsewhere: the hint wraps here */
+}
+.check-card .check-title,
+.check-card .muted {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .check-card:hover {
   border-color: var(--border-strong);
