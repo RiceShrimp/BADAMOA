@@ -15,7 +15,7 @@
 
 <br>
 
-**BADAMOA** is a vision MLOps platform you install on your own servers. Registering image datasets, training on the team's GPU servers, and evaluating and keeping the resulting models all happen in one web app. It runs as a single Python package, with no Docker and no extra server software.
+**BADAMOA** is a vision MLOps platform you install on your own servers. Registering image datasets and refining their labels, training on the team's GPU servers, and evaluating and keeping the resulting models all happen in one web app. Installing it takes no Docker and no extra server software: it runs as a single Python package.
 
 The name is Korean for "gathering the sea": collecting a scattered sea of data into models. It also spells **B**uild · **A**nnotate · **D**evelop · **A**utomate and **M**LOps **O**rchestration & **A**gents.
 
@@ -24,6 +24,8 @@ The name is Korean for "gathering the sea": collecting a scattered sea of data i
 </p>
 
 - **Data stays where it is.** Pick a folder on a training server or a NAS and only the file list and labels go to the Hub. Hundreds of GB never move.
+
+- **Labels get better with the model.** A trained model's predictions point at missing and wrong labels; fix them on the spot or hand them out to teammates in parts. Fixed labels are confirmed as a new version.
 
 - **GPU servers join with one command.** They only connect out to the Hub, so no firewall holes, and GPUs someone is already using are left alone.
 
@@ -104,7 +106,7 @@ On the **Agents** (에이전트) page, issue a token and the connect command app
 claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "Authorization: Bearer <token>"
 ```
 
-Then just ask: "check the nodes", "train yolo11n on coco128 v1 and tell me the metrics when it's done". Agents can see nodes and GPUs, datasets and versions, start runs and hyperparameter sweeps, look up models and their lineage, set aliases, and read job logs to diagnose failures.
+Then just ask: "check the nodes", "train yolo11n on coco128 v1 and tell me the metrics when it's done". Agents can see nodes and GPUs, datasets and versions, run label checks and labeling sets, fix labels and confirm a version, start runs and hyperparameter sweeps, look up models and their lineage, and read job logs to diagnose failures.
 
 <br>
 
@@ -118,7 +120,22 @@ Everything below is a real screen, taken from a Hub that has trained on COCO128 
   <img src="docs/img/feat-images.png" alt="A version's image grid: COCO images with boxes coloured by class" width="880">
 </p>
 
-YOLO, COCO and class-per-folder layouts are read as they are and registered as detection, segmentation, keypoint or classification datasets. Every import makes a version, and versions can be compared. Images can be filtered by split, class and label state. Wrong boxes or classes are fixed right where you see them, and the fixes are confirmed together as a new version; existing versions never change.
+YOLO, COCO and class-per-folder layouts are read as they are and registered as detection, segmentation, keypoint or classification datasets. Every import makes a version with a fingerprint, much like a commit hash, so versions compare at a glance. Images can be filtered by split, class and label state, and you can see where copies sent to other servers for training are still kept.
+
+### Refining labels
+
+<p align="center">
+  <img src="docs/img/feat-review.png" alt="검수 (label checks): the reference model and checks grouped as missing labels, wrong labels and box errors" width="880">
+</p>
+
+**검수** (label checks) finds images whose labels are probably missing or wrong. Rule checks such as overlapping or tiny boxes need no model; once a trained model has been evaluated, it also points at objects it found that have no label and labels it could not find. A label you have checked and found right can be marked "문제 없음" (no problem), and it is not flagged again in later versions while it stays unchanged.
+
+<p align="center">
+  <img src="docs/img/feat-labeling.png" alt="A labeling set's board: parts as cards in the unassigned, labeling, review and done columns" width="49%">
+  <img src="docs/img/feat-label-edit.png" alt="Fixing labels: boxes over the image, the class list, the set's instructions and a done-and-next button" width="49%">
+</p>
+
+Flagged images can be fixed on the spot or turned into a **labeling set** handed out to teammates. A set is split into parts that move through labeling → review → done on a board, and whoever labels sees the instructions while fixing boxes, outlines, keypoints and classes. Fixed labels gather in the dataset's work in progress; look over what changed, confirm, and it becomes a new version. Existing versions never change, and the label-check record stays with the new version.
 
 ### Training and hyperparameter sweeps
 
@@ -207,7 +224,7 @@ badamoa template check my-model
 badamoa template push my-model --hub http://<hub>:8470 --token <admin API token>
 ```
 
-Packages listed under `[environment] requirements` in `badamoa.toml` are installed by the servers. To use a conda or venv environment a server already has, register it under **Settings** (설정) → **Environments** (환경) and put its name in `default`. Raise `version` when you upload changed code; every run remembers the version it used, so "run again" uses the same code.
+By default the training environment is a virtual environment the servers build from the packages under `[environment] requirements` in `badamoa.toml`. If you already have a Docker image, put it under `[environment] image` or register it in **Settings** (설정) → **Environments** (환경), and runs go in a container. Which servers keep an environment ready is chosen under **Settings** → **Model types** (모델 종류) → **Manage environment** (환경 관리). Raise `version` when you upload changed code; every run remembers the version it used, so "run again" uses the same code.
 
 <br>
 
@@ -217,9 +234,9 @@ BADAMOA is in 0.x development. Here is what works and what is still to come; the
 
 | Area | Works | To come |
 |---|---|---|
-| **Build** · data | ✅ Registering in place, versions and label revisions, version diff, node-to-node transfer | 🚧 Sample library, embedding search, curation |
-| **Annotate** · labels | ✅ Viewing boxes, outlines and keypoints; fixing labels in place and confirming them as a version | 🚧 Editing outline and keypoint shapes, autolabel, review |
-| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates | 🚧 TensorRT, keypoint training |
+| **Build** · data | ✅ Registering in place, versions with fingerprints, version diff, node-to-node transfer and copies per server | 🚧 Sample library, embedding search, curation |
+| **Annotate** · labels | ✅ Fixing boxes, outlines, keypoints and classes; work in progress → version; labeling sets with a board; label checks (rules and model) | 🚧 Autolabel, CVAT integration |
+| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates, virtualenv and Docker environments | 🚧 TensorRT, keypoint training |
 | **Automate** · deployment | — | 🚧 Inference service, deployment, pipelines |
 | **MOA** · operations | ✅ Nodes and GPU assignment, self-updating nodes, MCP agents | 🚧 Approval gates, built-in agent |
 
@@ -257,6 +274,7 @@ To ship a version, raise the version in `src/badamoa/__init__.py` together with 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — goals, design principles, structure
 - [docs/ROADMAP.md](docs/ROADMAP.md) — phases and checklists
 - [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) — in-house training code, environments and storage; MLflow · W&B comparison
-- [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — fixing labels and labeling inside BADAMOA
+- [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — fixing labels, labeling sets, label checks, CVAT integration
+- [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) — widening tasks, data formats, models, metrics and environments
 - [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) — screen layouts
 - [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) · [docs/PLANS.md](docs/PLANS.md) — study of reference products, the first sketch
