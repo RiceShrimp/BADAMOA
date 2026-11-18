@@ -1112,18 +1112,47 @@ function NewRun({
   const field = (p: TemplateParam) => (
     <ParamField key={`${templateName}.${p.name}`} spec={p} value={values[p.name] ?? ""} onChange={(v) => setValues({ ...values, [p.name]: v })} />
   );
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!template) return;
-    setBusy(true);
-    setError(null);
+  const collectParams = () => {
     const params: Record<string, unknown> = {};
     for (const p of fields) {
       const v = values[p.name];
       if (p.type === "boolean") params[p.name] = v === true;
       else if (v !== "" && v != null) params[p.name] = p.type === "string" ? String(v).trim() : Number(v);
     }
+    return params;
+  };
+
+  // Whether the version fits the model, asked as one picks: what would stop the start, and what to know first.
+  const [preflight, setPreflight] = useState<{ problems: string[]; notes: string[] } | null>(null);
+  const checkKey = JSON.stringify([release, template?.id, chosen, nodeMode, pickedNodes, trials.map((t) => t.name), values]);
+  useEffect(() => {
+    const nodes = nodeMode === "pick" ? pickedNodes : [];
+    if (!release || !template || (nodeMode === "pick" && nodes.length === 0)) {
+      setPreflight(null);
+      return;
+    }
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      const space = Object.fromEntries(trials.map((t) => [t.name, {}]));
+      void api<{ problems: string[]; notes: string[] }>("/runs/check", {
+        body: { release_id: release, template: template.id, params: collectParams(), classes: chosen, nodes, space },
+      })
+        .then((found) => !stale && setPreflight(found))
+        .catch(() => !stale && setPreflight(null));
+    }, 300);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [checkKey]); // checkKey stands for everything the check reads
+  const blocked = (preflight?.problems.length ?? 0) > 0;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!template) return;
+    setBusy(true);
+    setError(null);
+    const params = collectParams();
     const space: Record<string, SweepSpec> = {};
     for (const t of trials) {
       const parsed = parseTrial(fields.find((p) => p.name === t.name), t.text);
@@ -1368,12 +1397,20 @@ function NewRun({
             어느 서버든 처음 학습할 때는 환경을 준비하느라 몇 분 더 걸릴 수 있습니다.
             {template?.license ? ` ${template.title}은 ${template.license} 라이선스입니다 — 제품에 탑재하기 전에 확인하세요.` : ""}
           </p>
+          {preflight && preflight.notes.length > 0 && <p className="muted small">{preflight.notes.join(" ")}</p>}
+          {blocked && (
+            <div className="error">
+              {preflight?.problems.map((p) => (
+                <div key={p}>{p}</div>
+              ))}
+            </div>
+          )}
           {error && <div className="error">{error}</div>}
           <div className="modal-actions">
             <button type="button" onClick={onClose}>
               취소
             </button>
-            <button className="primary" disabled={busy || !release || !template}>
+            <button className="primary" disabled={busy || !release || !template || blocked}>
               {trials.length > 0 ? "탐색 시작" : "학습 시작"}
             </button>
           </div>

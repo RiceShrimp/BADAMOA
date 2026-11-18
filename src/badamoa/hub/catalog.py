@@ -507,7 +507,8 @@ def start_import(
             "다른 태스크로 가져오려면 새 데이터셋 이름을 쓰세요.",
         )
     params = {
-        "task": task,
+        # a new version keeps its dataset's task; the node reads a named task's labels as they are
+        "task": task or (existing.task if existing else ""),
         "project_id": project_id,
         "dataset": dataset,
         "version": version,

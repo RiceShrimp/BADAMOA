@@ -90,15 +90,16 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         python = envs.resolve(node_home, params.get("environment") or {})
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-        env = {
-            **os.environ,
-            "PYTHONUNBUFFERED": "1",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUTF8": "1",
-            "NO_COLOR": "1",
-            "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
-            "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
-        }
+        env = envs.code_env(  # without the node's credentials, as for training
+            {
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUTF8": "1",
+                "NO_COLOR": "1",
+                "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
+                "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
+            }
+        )
         command = trainer.command_for(template["entrypoint"], python, config_path)
         try:
             proc = subprocess.Popen(

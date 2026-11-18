@@ -323,6 +323,12 @@ def start_sweep(
     _check_used(manifest, resolve_params(manifest, fixed), clean)
     if not 1 <= max_runs <= MAX_RUNS:
         raise ServiceError(400, f"실행 수는 1~{MAX_RUNS}이어야 합니다.")
+    # The data has to fit the model before the first run: a search that cannot start is refused, not left stopped.
+    catalog.require_ready(release)
+    candidates, _ = training.placement(db, release, nodes)
+    problems, _ = training.data_checks(db, release, manifest, sorted(set(classes or [])), candidates, val_fraction)
+    if problems:
+        raise ServiceError(400, " ".join(problems))
     metric = metric.strip() or training.PRIMARY_METRIC.get(task, "map50_95")
     goal = goal or ("minimize" if "loss" in metric else "maximize")
     if goal not in ("maximize", "minimize"):
@@ -442,7 +448,7 @@ def _start_next(db: Session, sweep: Sweep, via: str = "sweep") -> None:
                 via=via,
             )
         except ServiceError as e:  # the release or template went away, or no server holds the data
-            sweep.status, sweep.error = "stopped", e.detail
+            sweep.status, sweep.error = "stopped", e.message
             return
         started += 1
         active += 1

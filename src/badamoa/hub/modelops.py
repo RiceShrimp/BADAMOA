@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
 
 from . import catalog, checks, registry, services, training
@@ -134,6 +135,12 @@ def start_eval(
         raise ServiceError(400, "다른 프로젝트의 버전으로는 평가할 수 없습니다.")
     if split not in ("val", "test", "train"):
         raise ServiceError(400, "split은 val, test, train 중 하나여야 합니다.")
+    task = catalog.dataset_task(dataset)
+    if model.task and not task_names.same(model.task, task):
+        short = task_names.short
+        raise ServiceError(400, f"이 모델은 {short(model.task)}용이고 이 데이터셋은 {short(task)}입니다.")
+    if not (((release.stats or {}).get("splits") or {}).get(split) or {}).get("items"):
+        raise ServiceError(400, f"이 버전의 {split}에는 이미지가 없습니다. 다른 split이나 버전을 고르세요.")
     space = db.get(LabelSpace, release.label_space_id)
     ids = {str(c["name"]): int(c["id"]) for c in space.classes}
     missing = [name for name in model.classes or [] if name not in ids]

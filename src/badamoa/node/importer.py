@@ -26,6 +26,8 @@ from typing import Any
 
 import httpx
 
+from badamoa.core import tasks as task_names
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SPLIT_ALIASES = {"train": "train", "val": "val", "valid": "val", "validation": "val", "test": "test"}
 CHUNK = 200
@@ -140,8 +142,14 @@ def _clamp(v: float) -> float:
     return round(min(1.0, max(0.0, v)), 5)
 
 
-def _read_yolo_label(path: Path, kpt_shape: list[int] | None = None) -> tuple[str, list[list[float]]]:
-    """Boxes of a YOLO label file: [class, cx, cy, w, h], then an outline (segmentation) or keypoints (pose)."""
+def _read_yolo_label(
+    path: Path, kpt_shape: list[int] | None = None, as_is: bool = False
+) -> tuple[str, list[list[float]]]:
+    """Boxes of a YOLO label file: [class, cx, cy, w, h], then an outline (segmentation) or keypoints (pose).
+
+    ``as_is`` (a task a team named): the box, then every value after it exactly as written —
+    nothing is taken for an outline, cut off or moved into 0..1.
+    """
     if not path.is_file():
         return "unlabelled", []  # no label file: background or not labelled yet, by the import's rule (settle)
     boxes = []
@@ -153,6 +161,9 @@ def _read_yolo_label(path: Path, kpt_shape: list[int] | None = None) -> tuple[st
             cls = int(float(parts[0]))
             raw = [float(v) for v in parts[1:]]
         except ValueError:
+            continue
+        if as_is:
+            boxes.append([cls, *(_clamp(v) for v in raw[:4]), *raw[4:]])
             continue
         if kpt_shape:  # pose: box, then K points of (x, y) or (x, y, visibility)
             count, dims = kpt_shape[0], (kpt_shape[1] if len(kpt_shape) > 1 else 3)
@@ -175,7 +186,8 @@ def _read_yolo_label(path: Path, kpt_shape: list[int] | None = None) -> tuple[st
     return ("labelled" if boxes else "background"), boxes
 
 
-def scan_yolo(root: Path) -> Scan:
+def scan_yolo(root: Path, as_is: bool = False) -> Scan:
+    """``as_is``: label values kept as written (see ``_read_yolo_label``)."""
     yaml_files = [p for p in (root / "data.yaml", root / "dataset.yaml") if p.is_file()] or sorted(root.glob("*.yaml"))
     config = parse_yolo_yaml(yaml_files[0].read_text(encoding="utf-8", errors="replace")) if yaml_files else {}
     base = root / config["path"] if config.get("path") and not Path(config["path"]).is_absolute() else root
@@ -205,7 +217,7 @@ def scan_yolo(root: Path) -> Scan:
     entries = []
     for split, directory in split_dirs:
         for image in _images_under(directory):
-            state, boxes = _read_yolo_label(_yolo_label_path(image), kpt_shape)
+            state, boxes = _read_yolo_label(_yolo_label_path(image), kpt_shape, as_is)
             entries.append(Entry(path=image, split=split, state=state, boxes=boxes))
 
     classes = list(config.get("names") or [])
@@ -363,12 +375,20 @@ def settle(found: Scan, rule: str = "auto") -> Scan:
     return found
 
 
-def scan(root: Path, fmt: str = "auto", unlabelled: str = "auto") -> Scan:
-    """The images and labels of a dataset folder. ``unlabelled``: see ``settle``."""
-    return settle(_scan(root, fmt), unlabelled)
+def scan(root: Path, fmt: str = "auto", unlabelled: str = "auto", task: str = "") -> Scan:
+    """The images and labels of a dataset folder. ``unlabelled``: see ``settle``.
+
+    ``task``: what the dataset is labelled for. A task a team named (not Det · Seg · Kpt · Cls) keeps
+    the values of its YOLO labels as written.
+    """
+    try:
+        named = bool(task_names.normalize(task)) and task_names.normalize(task) not in task_names.BUILTIN
+    except ValueError:
+        named = False
+    return settle(_scan(root, fmt, as_is=named), unlabelled)
 
 
-def _scan(root: Path, fmt: str = "auto") -> Scan:
+def _scan(root: Path, fmt: str = "auto", as_is: bool = False) -> Scan:
     if not root.is_dir():
         raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {root}")
     detection_layout = (root / "images").is_dir() or (root / "labels").is_dir() or list(root.glob("*.yaml"))
@@ -379,7 +399,7 @@ def _scan(root: Path, fmt: str = "auto") -> Scan:
         result = scan_coco(root)
         if result.entries or fmt == "coco":
             return result
-    return scan_yolo(root)
+    return scan_yolo(root, as_is=as_is)
 
 
 # ---- reading images and uploading ------------------------------------------------
@@ -457,7 +477,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     root = Path(params["path"]).expanduser()
     print(f"폴더 확인: {root}")
-    found = scan(root, params.get("format") or "auto", params.get("unlabelled") or "auto")
+    found = scan(root, params.get("format") or "auto", params.get("unlabelled") or "auto", params.get("task") or "")
     total = len(found.entries)
     print(f"형식 {found.format} · 클래스 {len(found.classes)}개 · 이미지 {total:,}장")
     waiting = sum(1 for e in found.entries if e.state == "unlabelled")

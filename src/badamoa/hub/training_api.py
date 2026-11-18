@@ -216,6 +216,22 @@ def start_run(
     return training.run_view(db, hub.settings, run)
 
 
+class RunCheck(BaseModel):
+    release_id: str
+    template: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)
+    classes: list[int] = Field(default_factory=list)
+    nodes: list[str] = Field(default_factory=list)
+    val_fraction: float = 0.2
+    space: dict[str, Any] = Field(default_factory=dict)  # a search: the settings it would try
+
+
+@router.post("/runs/check")
+def check_run(body: RunCheck, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """What starting this run would run into, without starting it: ``problems`` stop it, ``notes`` do not."""
+    return training.check_run(db, **body.model_dump())
+
+
 @router.get("/runs/{run_id}")
 def get_run(
     run_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)

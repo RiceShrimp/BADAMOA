@@ -17,7 +17,8 @@ import re
 import shlex
 import tomllib
 import zipfile
-from pathlib import Path
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -66,6 +67,45 @@ class EnvironmentSpec(BaseModel):
     torch: bool = False  # pick the PyTorch build that matches the node's GPU driver
 
 
+class ClassRange(BaseModel):
+    min: int = 0  # 0: the task's own (2 for classification, 1 otherwise)
+    max: int = 0  # 0: no limit
+
+
+class DataSpec(BaseModel):
+    """What data the code takes, checked against the chosen version before a run starts (``[data]``)."""
+
+    classes: ClassRange = Field(default_factory=ClassRange)
+    min_images: int = 1  # labelled images it needs at least
+    keypoints: int = 0  # Kpt: points per object the model takes (0 = any number)
+
+    def min_classes(self, task: str) -> int:
+        return self.classes.min or (2 if task == "classify" else 1)
+
+
+# What each task's labels become in each format the node writes: "" as they are, a note when part of
+# them is left out. A pair not here cannot be written, and a template declaring it is turned away.
+_FITS = {
+    ("detect", "yolo"): "",
+    ("segment", "yolo-seg"): "",
+    ("classify", "imagefolder"): "",
+    ("segment", "yolo"): "윤곽은 버리고 박스만 넘깁니다",
+    ("pose", "yolo"): "점은 버리고 박스만 넘깁니다",
+    ("*", "yolo"): "박스 뒤의 값은 버리고 박스만 넘깁니다",  # a task a team named
+}
+
+
+def format_fit(task: str, data_format: str) -> str | None:
+    """How a task's data fits a format: "" whole, a note on what is left out, None when it cannot be written."""
+    key = (task if task in task_names.BUILTIN else "*", data_format)
+    return _FITS.get(key)
+
+
+def _formats_for(task: str) -> list[str]:
+    kind = task if task in task_names.BUILTIN else "*"
+    return [fmt for (t, fmt), note in _FITS.items() if t == kind]
+
+
 class TemplateManifest(BaseModel):
     name: str
     title: str = ""
@@ -81,6 +121,9 @@ class TemplateManifest(BaseModel):
     entrypoints: dict[str, str] = Field(default_factory=dict)
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     environment: EnvironmentSpec = Field(default_factory=EnvironmentSpec)
+    data: DataSpec = Field(default_factory=DataSpec)
+    # What the checks found worth saying but not worth refusing (set by BADAMOA, not written by hand)
+    notes: list[str] = Field(default_factory=list)
 
 
 # ---- settings declared in the code itself (``badamoa_sdk.params(...)``) ---------------
@@ -176,6 +219,21 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
         raise TemplateError(f"task: {e}") from e
     if manifest.data_format not in DATA_FORMATS:
         raise TemplateError(f"data_format은 지금 {', '.join(DATA_FORMATS)}만 지원합니다.")
+    manifest.notes = []
+    fit = format_fit(manifest.task, manifest.data_format)
+    shown = task_names.short(manifest.task)
+    if fit is None:
+        usable = _formats_for(manifest.task)
+        hint = f" {', '.join(usable)}을(를) 쓰세요." if usable else " 이 태스크를 풀 수 있는 형식이 아직 없습니다."
+        raise TemplateError(f"{shown} 데이터는 data_format {manifest.data_format}으로 풀 수 없습니다.{hint}")
+    if fit:
+        manifest.notes.append(f"{shown} 데이터를 {manifest.data_format}로 풀면 {fit}.")
+    data = manifest.data
+    if data.classes.min < 0 or data.classes.max < 0 or data.min_images < 1 or data.keypoints < 0:
+        raise TemplateError("[data]의 값은 0 이상이어야 합니다 (min_images는 1 이상).")
+    if data.classes.max and data.classes.max < data.min_classes(manifest.task):
+        raise TemplateError("[data] classes의 max가 min보다 작습니다.")
+    _check_requirements(manifest.environment.requirements)
     unknown = set(manifest.entrypoints) - set(ENTRYPOINTS)
     if unknown:
         raise TemplateError(f"알 수 없는 진입점: {', '.join(sorted(unknown))}. {', '.join(ENTRYPOINTS)}만 쓸 수 있습니다.")
@@ -200,13 +258,65 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
     return manifest
 
 
+def _check_requirements(requirements: list[str]) -> None:
+    """Each line is a package as pip and uv write them (``torch>=2.3``, ``mylib @ git+https://…``).
+
+    Paths and options (``./libs/mylib``, ``--extra-index-url …``) are left to the installer.
+    """
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+    except ImportError:  # not installed with this BADAMOA (a node without it): the installer will say
+        return
+    for line in requirements:
+        text = line.strip()
+        if not text or text.startswith(("-", ".", "/", "\\")) or "://" in text.split("@")[0]:
+            continue
+        try:
+            Requirement(text)
+        except InvalidRequirement as e:
+            raise TemplateError(f"environment.requirements의 '{text}'이 패키지 표기에 맞지 않습니다: {e}") from None
+
+
+def check_code(manifest: TemplateManifest, names: list[str], read: Callable[[str], bytes]) -> None:
+    """The scripts the entry points start are in the template, and every Python file in it parses.
+
+    Only read, never run: the same check on the Hub (where code never runs) and by ``template check``.
+    """
+    present = {PurePosixPath(n).as_posix() for n in names}
+    for kind, command in manifest.entrypoints.items():
+        script = entry_script(command)
+        if script and PurePosixPath(script.replace("\\", "/")).as_posix() not in present:
+            raise TemplateError(f"{kind} 명령이 실행하는 {script}이(가) 템플릿에 없습니다.")
+    for name in sorted(present):
+        if not name.endswith(".py"):
+            continue
+        try:
+            ast.parse(read(name), filename=name)
+        except SyntaxError as e:
+            raise TemplateError(f"{name} {e.lineno}행을 읽을 수 없습니다: {e.msg}") from None
+        except ValueError as e:  # e.g. a null byte in the file
+            raise TemplateError(f"{name}을 읽을 수 없습니다: {e}") from None
+
+
+def _files_of(folder: Path) -> list[str]:
+    """The template's files as a bundle holds them: no caches, environments or version-control data."""
+    names = []
+    for path in sorted(folder.rglob("*")):
+        relative = path.relative_to(folder)
+        if path.is_file() and not any(part in SKIP_DIRS for part in relative.parts) and path.suffix != ".pyc":
+            names.append(relative.as_posix())
+    return names
+
+
 def load_manifest(folder: Path) -> TemplateManifest:
     path = folder / MANIFEST
     if not path.is_file():
         raise TemplateError(f"{folder}에 {MANIFEST}이 없습니다. `badamoa template init`으로 뼈대를 만들 수 있습니다.")
     text = path.read_text(encoding="utf-8")
     script = folder / _train_script(text)
-    return parse_manifest(text, script.read_text(encoding="utf-8") if script.is_file() else None)
+    manifest = parse_manifest(text, script.read_text(encoding="utf-8") if script.is_file() else None)
+    check_code(manifest, _files_of(folder), lambda name: (folder / name).read_bytes())
+    return manifest
 
 
 def _coerce(name: str, spec: ParamSpec, value: Any) -> Any:
@@ -295,7 +405,9 @@ def read_bundle(data: bytes) -> TemplateManifest:
                 raise TemplateError(f"압축 파일의 맨 위에 {MANIFEST}이 없습니다. 템플릿 폴더의 내용을 그대로 압축하세요.")
             text = archive.read(MANIFEST).decode("utf-8")
             script = _train_script(text)
-            return parse_manifest(text, archive.read(script).decode("utf-8") if script in names else None)
+            manifest = parse_manifest(text, archive.read(script).decode("utf-8") if script in names else None)
+            check_code(manifest, [n for n in names if not n.endswith("/")], archive.read)
+            return manifest
     except zipfile.BadZipFile as e:
         raise TemplateError("zip 파일이 아닙니다.") from e
     except UnicodeDecodeError as e:

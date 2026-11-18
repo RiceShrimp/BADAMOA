@@ -332,17 +332,19 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 print(f"Hub에 보관된 체크포인트(epoch {resume.get('epoch')})를 받아 이어 갑니다.")
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-        env = {
-            **os.environ,
-            "PYTHONUNBUFFERED": "1",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUTF8": "1",
-            "NO_COLOR": "1",  # the log is plain text
-            # Template code can ``import badamoa_sdk`` without shipping or installing it.
-            "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
-            # Ultralytics keeps its settings here instead of touching the user's own.
-            "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
-        }
+        # The node's environment without its credentials: the template's code never acts on the Hub itself.
+        env = envs.code_env(
+            {
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUTF8": "1",
+                "NO_COLOR": "1",  # the log is plain text
+                # Template code can ``import badamoa_sdk`` without shipping or installing it.
+                "PYTHONPATH": os.pathsep.join(p for p in (str(shipped.SDK), os.environ.get("PYTHONPATH", "")) if p),
+                # Ultralytics keeps its settings here instead of touching the user's own.
+                "YOLO_CONFIG_DIR": str(node_home / "cache" / "ultralytics"),
+            }
+        )
         command = command_for(template["entrypoint"], python, config_path)
         print(f"학습 시작: {template['name']} {template['version']} · 장치 {config['device']}", flush=True)
         stage("train")

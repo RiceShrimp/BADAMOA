@@ -25,6 +25,16 @@ from typing import Any
 
 LOCK_STALE_S = 3600.0
 LOCK_WAIT_S = 3600.0
+# What the node keeps to itself: code it runs without having written it (a template, a package's
+# build script) never sees these. With the token such code could act on the Hub as the node.
+SECRETS = ("BADAMOA_NODE_TOKEN",)
+
+
+def code_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for code the node runs but did not write: the node's own, minus its credentials."""
+    env = {key: value for key, value in os.environ.items() if key not in SECRETS}
+    env.update(extra or {})
+    return env
 
 # Run by ``check`` inside the environment being examined: nothing but the standard library.
 _PROBE = """
@@ -71,8 +81,15 @@ def python_of(env: Path) -> Path:
 
 
 def _run(command: list[str], log: Callable[[str], None]) -> None:
+    # A package built from source runs its own code while installing: it gets no credentials either.
     proc = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=code_env(),
     )
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -171,7 +188,9 @@ _PACKAGES = (
 def packages(python: Path) -> list[str]:
     """What is installed in an environment (``name==version``), for the run's record. Empty if it cannot be read."""
     try:
-        done = subprocess.run([str(python), "-c", _PACKAGES], capture_output=True, text=True, timeout=60, check=False)
+        done = subprocess.run(
+            [str(python), "-c", _PACKAGES], capture_output=True, text=True, timeout=60, check=False, env=code_env()
+        )
         return list(json.loads(done.stdout.strip().splitlines()[-1]))[:1000] if done.returncode == 0 else []
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
         return []
@@ -181,7 +200,9 @@ def check(path: str) -> dict[str, Any]:
     """Try an existing environment: does it start, and what is in it."""
     python = existing(path)
     try:
-        done = subprocess.run([str(python), "-c", _PROBE], capture_output=True, text=True, timeout=120, check=False)
+        done = subprocess.run(
+            [str(python), "-c", _PROBE], capture_output=True, text=True, timeout=120, check=False, env=code_env()
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         raise RuntimeError(f"환경의 Python을 실행하지 못했습니다: {e}") from e
     if done.returncode != 0:

@@ -136,6 +136,8 @@ def template_view(db: Session, row: Template, versions: int = 1, models: int = 0
         "builtin": row.builtin,
         "hidden": row.hidden,
         "data_format": manifest.data_format,
+        "data": manifest.data.model_dump(),
+        "notes": manifest.notes,  # what the checks found worth saying
         "entrypoints": sorted(manifest.entrypoints),
         "variant": manifest.variant,
         "params": [{"name": name, **spec.model_dump()} for name, spec in manifest.params.items()],

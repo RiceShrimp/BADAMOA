@@ -17,7 +17,16 @@ from badamoa.core.storage import Storage
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
 from . import catalog, node_data, registry, resources, services, transfers
-from .catalog_models import Dataset, Item, LabelRevision, LabelSpace, Release, ReleaseItem, StorageLocation
+from .catalog_models import (
+    Dataset,
+    Item,
+    LabelRevision,
+    LabelSpace,
+    Release,
+    ReleaseItem,
+    RevisionClass,
+    StorageLocation,
+)
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
@@ -72,6 +81,148 @@ def data_node(db: Session, release_id: str) -> Node:
     if node is None:
         raise ServiceError(400, "이 버전의 이미지가 있던 노드가 삭제되었습니다.")
     return node
+
+
+def placement(db: Session, release: Release, nodes: list[str] | None) -> tuple[list[Node], Node | None]:
+    """Where a run on ``release`` may go, and the node that must receive the images first (if any).
+
+    ``nodes``: the servers allowed (none: the one holding the images). Nothing is created here.
+    """
+    candidates = [data_node(db, release.id)]
+    if not nodes:
+        return candidates, None
+    allowed = transfers.allowed_nodes(db, nodes)
+    have = transfers.holders(db, release.id)
+    ready = [n for n in allowed if n.id in have]
+    if ready:
+        return ready, None
+    receiver = transfers.pick_receiver(allowed)  # none has the images: one receives them first
+    transfers.check_route(candidates[0], receiver)
+    return [receiver], receiver
+
+
+# The node writes each format from this BADAMOA on: an older node cannot hand the data to the code.
+FORMAT_SINCE = {"yolo": (0, 5, 0), "imagefolder": (0, 8, 0), "yolo-seg": (0, 11, 0)}
+
+
+def _version(text: str) -> tuple[int, ...] | None:
+    try:
+        return tuple(int(p) for p in (text or "").split(".")[:3])
+    except ValueError:
+        return None
+
+
+def data_checks(
+    db: Session, release: Release, manifest: Any, chosen: list[int], nodes: list[Node], val_fraction: float = 0.2
+) -> tuple[list[str], list[str]]:
+    """Whether a version fits what a template takes: reasons not to start, and notes worth seeing first.
+
+    From the version's own records only (no node is asked), so the dialog can show them as one picks.
+    """
+    problems: list[str] = []
+    notes: list[str] = []
+    task = catalog.release_task(db, release)
+    space = db.get(LabelSpace, release.label_space_id)
+    names = {int(c["id"]): str(c["name"]) for c in space.classes}
+    ids = list(chosen) or list(names)
+    least, most = manifest.data.min_classes(task), manifest.data.classes.max
+    if len(ids) < least:
+        more = " 학습할 클래스를 더 고르세요." if chosen else ""
+        problems.append(f"이 모델은 클래스가 {least}개 이상이어야 합니다. 지금 {len(ids)}개입니다.{more}")
+    if most and len(ids) > most:
+        problems.append(f"이 모델은 클래스를 {most}개까지 받습니다. 지금 {len(ids)}개입니다. 학습할 클래스를 고르세요.")
+    labelled = (
+        db.scalar(
+            select(func.count(func.distinct(ReleaseItem.item_id)))
+            .join(RevisionClass, RevisionClass.revision_id == ReleaseItem.revision_id)
+            .where(ReleaseItem.release_id == release.id, ReleaseItem.state == "labelled", RevisionClass.class_id.in_(ids))
+        )
+        or 0
+    )
+    need = max(1, manifest.data.min_images)
+    if labelled < need:
+        what = "고른 클래스로 " if chosen else ""
+        problems.append(
+            f"{what}라벨된 이미지가 없습니다."
+            if not labelled
+            else f"{what}학습에 쓸 라벨 있는 이미지가 {labelled:,}장입니다 ({need:,}장 이상 필요)."
+        )
+    if manifest.data.keypoints and task == "pose":
+        counts = {len(c.get("keypoints") or []) for c in space.classes if int(c["id"]) in ids}
+        if counts and counts != {manifest.data.keypoints}:
+            have = ", ".join(str(n) for n in sorted(counts))
+            problems.append(f"이 모델은 물체마다 점 {manifest.data.keypoints}개를 받습니다. 이 데이터셋은 {have}개입니다.")
+    since = FORMAT_SINCE.get(manifest.data_format)
+    for node in nodes:
+        version = _version(node.agent_version or "")
+        if since and version and version < since:
+            need_v = ".".join(str(n) for n in since)
+            problems.append(
+                f"{node.name}의 BADAMOA({node.agent_version})는 이 모델이 받는 데이터 형식을 만들 수 없습니다. "
+                f"{need_v} 이상으로 업데이트하세요."
+            )
+    splits = (release.stats or {}).get("splits") or {}
+    if not (splits.get("val") or {}).get("items"):
+        if manifest.data_format == "imagefolder" and (splits.get("test") or {}).get("items"):
+            notes.append("이 버전에는 val이 없어 test로 검증합니다.")
+        elif val_fraction > 0:
+            notes.append(f"이 버전에는 val이 없어 train의 {val_fraction:.0%}를 떼어 검증에 씁니다.")
+    if task == "classify":
+        trained = set(
+            db.scalars(
+                select(RevisionClass.class_id)
+                .join(ReleaseItem, ReleaseItem.revision_id == RevisionClass.revision_id)
+                .where(ReleaseItem.release_id == release.id, ReleaseItem.split == "train", RevisionClass.class_id.in_(ids))
+                .distinct()
+            )
+        )
+        empty = [names.get(i, str(i)) for i in ids if i not in trained]
+        if empty and (splits.get("train") or {}).get("items"):
+            shown = ", ".join(empty[:5]) + (f" 외 {len(empty) - 5}개" if len(empty) > 5 else "")
+            notes.append(f"train에 이미지가 없는 클래스가 있습니다: {shown}")
+    return problems, notes
+
+
+def check_run(
+    db: Session,
+    *,
+    release_id: str,
+    template: str = "",
+    params: dict[str, Any] | None = None,
+    classes: list[int] | None = None,
+    nodes: list[str] | None = None,
+    val_fraction: float = 0.2,
+    space: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """What starting this run would run into, without starting it: ``problems`` stop it, ``notes`` do not.
+
+    The new-run dialog asks as one picks the version, the model, the classes and the servers.
+    ``space``: the settings a search would try (left out of the check of the settings).
+    """
+    problems: list[str] = []
+    try:
+        release = catalog.get_release(db, release_id)
+        catalog.require_ready(release)
+        dataset = db.get(Dataset, release.dataset_id)
+        project = catalog.get_project(db, dataset.project_id)
+        task = catalog.dataset_task(dataset)
+        row = registry.template_for(db, project.settings, task, template)
+        manifest = registry.manifest_of(row)
+        if not task_names.same(manifest.task, task):
+            short = task_names.short
+            why = f"{row.title}은(는) {short(manifest.task)}용이고 이 데이터셋은 {short(task)}입니다."
+            return {"problems": [why], "notes": []}
+        try:
+            resolve_params(manifest, {k: v for k, v in (params or {}).items() if k not in (space or {})})
+        except TemplateError as e:
+            problems.append(str(e))
+        known = {int(c["id"]) for c in db.get(LabelSpace, release.label_space_id).classes}
+        chosen = sorted({int(c) for c in classes or []} & known)
+        candidates, _ = placement(db, release, nodes)
+    except ServiceError as e:
+        return {"problems": [*problems, e.message], "notes": []}
+    found, notes = data_checks(db, release, manifest, chosen, candidates, val_fraction)
+    return {"problems": problems + found, "notes": notes}
 
 
 def start_run(
@@ -137,17 +288,11 @@ def start_run(
     chosen = sorted({int(c) for c in classes or []})
     if not set(chosen) <= known:
         raise ServiceError(400, f"라벨 공간 {space.name}에 없는 클래스 id가 있습니다: {sorted(set(chosen) - known)}")
-    candidates, after = [data_node(db, release.id)], None
-    if nodes:
-        allowed = transfers.allowed_nodes(db, nodes)
-        have = transfers.holders(db, release.id)
-        ready = [n for n in allowed if n.id in have]
-        if ready:
-            candidates = ready
-        else:  # none has the images: one receives them first
-            receiver = transfers.pick_receiver(allowed)
-            transfers.check_route(candidates[0], receiver)
-            candidates, after = [receiver], transfers.sync_job(db, user, release.id, receiver, via).id
+    candidates, receiver = placement(db, release, nodes)
+    problems, _ = data_checks(db, release, manifest, chosen, candidates, val_fraction)
+    if problems:
+        raise ServiceError(400, " ".join(problems))
+    after = transfers.sync_job(db, user, release.id, receiver, via).id if receiver else None
     node = candidates[0]
     env = registry.environment_for_run(db, manifest, environment, node)
     if env.get("path"):  # a registered environment is a folder on one server

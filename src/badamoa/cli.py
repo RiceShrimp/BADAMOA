@@ -356,6 +356,8 @@ def template_check(folder: Annotated[Path, typer.Argument(help="템플릿 폴더
     environment = manifest.environment.default or ("자동 설치" if manifest.environment.requirements else "노드의 Python")
     typer.echo(f"  환경   : {environment}")
     typer.echo(f"  묶음   : {size / 1024:.0f} KB")
+    for note in manifest.notes:
+        typer.echo(f"  알림   : {note}")
 
 
 @template_app.command("push")
