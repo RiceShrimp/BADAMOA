@@ -72,6 +72,8 @@ uv run badamoa hub run --home .badamoa/hub
 
 When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account. Other servers find the Hub through that address, so use it rather than `localhost`.
 
+To have the Hub come back when the PC restarts, turn on "재부팅 시 자동 실행" under **Settings → Hub 실행** (설정 → Hub 실행). It starts with the same data folder, port and address, and nodes reconnect on their own once it is up. On Ubuntu it starts at boot from systemd when the Hub runs as root, else from that account's crontab. On Windows a Hub started without administrator rights comes up when that account logs on; the command shown there, run once in an administrator PowerShell, makes it start at boot without anyone logging on.
+
 > [!TIP]
 > For data to try, `uv run python scripts/fetch_coco128.py` (COCO128, about 7 MB) and `uv run python scripts/fetch_mnist160.py` (MNIST160, about 70 KB). Both unpack under `.badamoa/data/`.
 
@@ -274,11 +276,13 @@ To ship a version, raise the version in `src/badamoa/__init__.py` together with 
 
 ### Documents (in Korean)
 
+- [docs/MANUAL.md](docs/MANUAL.md) — user manual (Korean): what each screen does and in what order, admin settings, shortcuts
 - [CHANGELOG.md](CHANGELOG.md) — changes per version (the same as the in-app release notes)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — goals, design principles, structure
 - [docs/ROADMAP.md](docs/ROADMAP.md) — phases and checklists
 - [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) — in-house training code, environments and storage; MLflow · W&B comparison
 - [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — fixing labels, labeling sets, label checks, CVAT integration
 - [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) — widening tasks, data formats, models, metrics and environments
+- [docs/GENERATION_PLAN.md](docs/GENERATION_PLAN.md) — data generation and augmentation, starting with image attribute augmentation (Korean)
 - [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) — screen layouts
 - [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) · [docs/PLANS.md](docs/PLANS.md) — study of reference products, the first sketch

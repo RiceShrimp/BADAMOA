@@ -1,7 +1,9 @@
 """Register BADAMOA components to start at boot.
 
 Linux as root: a systemd unit. Windows: a Task Scheduler task that runs as SYSTEM at
-startup (no extra dependency such as pywin32 or a service wrapper needed).
+startup (no extra dependency such as pywin32 or a service wrapper needed). The task is registered from
+XML so it has no run-time limit (``schtasks /Create`` alone stops a task after 72 hours), runs on
+battery, comes back a minute after it fails, and runs at normal priority (the jobs it starts inherit it).
 
 Linux without root (a server where the account has no sudo): the node runs as that account. This
 account's crontab starts it at boot and every few minutes starts it again if it is not running; a lock
@@ -15,8 +17,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import IO
+from xml.sax.saxutils import escape
 
 _UNIT = """\
 [Unit]
@@ -50,9 +54,79 @@ def _exe() -> str:
     raise RuntimeError("badamoa 실행 파일을 찾을 수 없습니다.")
 
 
+# ---- Windows: Task Scheduler ---------------------------------------------------------------------
+
+SYSTEM = "S-1-5-18"  # the LocalSystem account
+
+
+def task_xml(command: str, arguments: str, workdir: str, *, boot: bool, user: str = SYSTEM) -> str:
+    """A task that starts ``command arguments`` at boot (``boot``) or when ``user`` logs on.
+
+    ``user``: SYSTEM, or DOMAIN\\name: at boot that account without a stored password (S4U), at log-on its
+    own session. Neither runs elevated except SYSTEM.
+    """
+    if boot:
+        trigger = "<BootTrigger><Enabled>true</Enabled></BootTrigger>"
+    else:
+        trigger = f"<LogonTrigger><Enabled>true</Enabled><UserId>{escape(user)}</UserId></LogonTrigger>"
+    if user == SYSTEM:
+        principal = f"<UserId>{SYSTEM}</UserId><RunLevel>HighestAvailable</RunLevel>"
+    else:
+        logon = "S4U" if boot else "InteractiveToken"
+        principal = f"<UserId>{escape(user)}</UserId><LogonType>{logon}</LogonType><RunLevel>LeastPrivilege</RunLevel>"
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>BADAMOA</Description></RegistrationInfo>
+  <Triggers>{trigger}</Triggers>
+  <Principals><Principal id="Author">{principal}</Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec><Command>{escape(command)}</Command><Arguments>{escape(arguments)}</Arguments><WorkingDirectory>{escape(workdir)}</WorkingDirectory></Exec>
+  </Actions>
+</Task>
+"""
+
+
+def register_task(name: str, xml: str) -> str:
+    """Register (or replace) the task. "" when done, else what Windows said."""
+    with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-16") as f:
+        f.write(xml)
+    try:
+        done = subprocess.run(["schtasks", "/Create", "/F", "/TN", name, "/XML", f.name], capture_output=True, text=True)
+    finally:
+        os.unlink(f.name)
+    return "" if done.returncode == 0 else (done.stderr or done.stdout).strip() or "schtasks가 거절했습니다"
+
+
+def query_task(name: str) -> str | None:
+    """The task's XML, or None when there is no such task (or it cannot be read)."""
+    done = subprocess.run(["schtasks", "/Query", "/TN", name, "/XML"], capture_output=True, text=True)
+    return done.stdout if done.returncode == 0 else None
+
+
+def delete_task(name: str) -> str:
+    """"" when the task is gone (or was not there), else what Windows said."""
+    if query_task(name) is None:
+        return ""
+    done = subprocess.run(["schtasks", "/Delete", "/F", "/TN", name], capture_output=True, text=True)
+    return "" if done.returncode == 0 else (done.stderr or done.stdout).strip() or "schtasks가 거절했습니다"
+
+
 def user_mode() -> bool:
-    """Linux without root: the node belongs to this account (crontab), not to the machine (systemd)."""
-    return sys.platform.startswith("linux") and os.geteuid() != 0
+    """Linux without root, or without systemd (a container, WSL): the node starts from the account's crontab."""
+    if not sys.platform.startswith("linux"):
+        return False
+    systemd = bool(shutil.which("systemctl")) and Path("/run/systemd/system").is_dir()
+    return os.geteuid() != 0 or not systemd
 
 
 # ---- one agent per node home ---------------------------------------------------------------------
@@ -199,14 +273,12 @@ def install(component: str, args: str) -> str:
         return f"systemd 서비스 {name} 등록 및 시작 완료 (journalctl -u {name} -f 로 로그 확인)"
     if sys.platform == "win32":
         task = f"BADAMOA {title}"
-        command = f'"{exe}" {args}'
-        subprocess.run(
-            ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", command],
-            check=True,
-        )
+        why = register_task(task, task_xml(exe, args, str(Path(exe).parent), boot=True))
+        if why:
+            raise RuntimeError(f'예약 작업 "{task}"을(를) 등록하지 못했습니다: {why}')
         subprocess.run(["schtasks", "/End", "/TN", task], check=False, capture_output=True)  # running already
         subprocess.run(["schtasks", "/Run", "/TN", task], check=True)
-        return f'예약 작업 "{task}" 등록 및 시작 완료 (부팅 시 자동 실행)'
+        return f'예약 작업 "{task}" 등록 및 시작 완료 (부팅 시 자동 실행, 멈추면 1분 뒤 다시 실행)'
     raise RuntimeError(f"이 OS에서는 서비스 등록을 지원하지 않습니다: {sys.platform}")
 
 

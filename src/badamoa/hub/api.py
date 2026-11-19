@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import address, admin, asks, gpus, node_storage, prometheus, resources, services
+from . import address, admin, asks, autostart, gpus, guides, node_storage, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands, node_wheel
@@ -94,6 +94,17 @@ def delete_token(token_id: str, user: User = Depends(current_user), db: Session 
 @router.get("/release-notes")
 def release_notes(_: User = Depends(current_user)) -> dict[str, Any]:
     return {"version": services.HUB_VERSION, "releases": load_release_notes()}
+
+
+@router.get("/guides")
+def guide_list(_: User = Depends(current_user)) -> list[dict[str, Any]]:
+    """The guides the app shows: the user manual and the template guide."""
+    return guides.listing()
+
+
+@router.get("/guides/{name}")
+def guide(name: str, _: User = Depends(current_user)) -> dict[str, Any]:
+    return guides.read(name)
 
 
 @router.get("/activity")
@@ -420,6 +431,35 @@ def set_hub_address(
     address.save(db, user, hub.settings, body.url)
     db.commit()
     return address.view(request, hub.settings)
+
+
+class HubAutostart(BaseModel):
+    on: bool
+
+
+@router.get("/settings/hub-autostart")
+def hub_autostart(_: User = Depends(admin_user), hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """Whether this Hub starts by itself when its machine starts, and how (boot · log-on)."""
+    return autostart.status(hub.settings.home, hub.settings.port)
+
+
+@router.put("/settings/hub-autostart")
+def set_hub_autostart(
+    body: HubAutostart, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """On: record how this Hub runs now and register the machine to start it that way. Off: take that away."""
+    settings = hub.settings
+    if body.on:
+        autostart.save_launch(settings, settings.extra.get(admin.LAUNCH_KEY))
+        why = autostart.turn_on(settings.home)
+    else:
+        why = autostart.turn_off(settings.home, settings.port)
+    if why:
+        raise services.ServiceError(400, f"자동 실행을 {'켜지' if body.on else '끄지'} 못했습니다: {why}")
+    view = autostart.status(settings.home, settings.port)
+    services.audit(db, user.id, "ui", "hub.autostart", view["name"], on=view["on"], when=view["when"])
+    db.commit()
+    return view
 
 
 # ---- jobs -------------------------------------------------------------------------

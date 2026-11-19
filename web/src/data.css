@@ -1298,3 +1298,17 @@ tr.clickable:hover td {
 .data-card.board-quiet {
   opacity: 0.75;
 }
+
+/* ---- stopping an import ---- */
+.import-progress-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.import-progress-line .import-stop {
+  flex: none;
+}
+.import-progress.canceled .bar i {
+  background: var(--muted);
+}

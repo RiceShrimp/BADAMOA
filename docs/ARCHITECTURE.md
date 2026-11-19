@@ -165,7 +165,7 @@ Teacher로 써서 데이터를 찾고·만들고·자동 라벨링해 경량 Stu
 - **Curation**: near-dup 제거, uniqueness·대표성으로 라벨링 우선순위(자체) / mistakenness·hardness(FiftyOne Brain 플러그인)
 - **Ontology**: 클래스 체계 + 클래스별 프롬프트·네거티브 프롬프트·임계값, 버전 관리, 클래스 매핑
 - **Data QA**: 깨진 이미지, bbox 오류, 극소 박스, 클래스 불균형
-- **Data generation**: Generator 플러그인 — Cosmos Transfer 계열 IAA(날씨·조명·시간대, 구조 보존 → 라벨 재사용), 희귀 클래스 합성. synthetic 태그, 테스트셋은 real-only, 효과는 A/B로 측정
+- **Data generation**: Generator 플러그인 — 이미지 속성 증강(IAA: 사람 크롭의 옷 · 색 · 신발을 이미지 편집 모델로 바꾸고 VLM으로 확인, 재식별 · 속성 학습용), 영상 증강(Cosmos Transfer: 날씨·조명·시간대, 구조 보존 → 라벨 재사용), 희귀 클래스 합성. synthetic 태그, 테스트셋은 real-only, 효과는 A/B로 측정 — [GENERATION_PLAN.md](GENERATION_PLAN.md)
 
 ### Annotate — 라벨링 · 오토라벨
 - 라벨링(바로 고치기 · 라벨링 묶음 · 에디터 · 검수)은 [LABELING_PLAN.md](LABELING_PLAN.md). 고친 라벨도 새 개정이고, 새 버전으로만 들어간다.

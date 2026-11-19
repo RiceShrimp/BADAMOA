@@ -69,6 +69,8 @@ uv run badamoa hub run --home .badamoa/hub
 
 브라우저가 이 PC의 네트워크 주소(예: `http://192.168.0.10:8470`)로 열리면 관리자 계정을 만듭니다. 다른 서버는 이 주소로 Hub를 찾아오므로 `localhost` 대신 이 주소로 접속하세요.
 
+PC를 다시 켰을 때 Hub도 저절로 켜지게 하려면 **설정 → Hub 실행**에서 "재부팅 시 자동 실행"을 켭니다. 지금과 같은 데이터 폴더 · 포트 · 주소로 실행되고, 노드는 Hub가 켜지면 알아서 다시 붙습니다. Ubuntu에서는 root로 띄운 Hub는 systemd로, 아니면 그 계정의 crontab으로 부팅 때 켜집니다. Windows에서 관리자 권한 없이 띄운 Hub는 그 계정이 로그인할 때 켜지며, 화면에 나오는 명령을 관리자 PowerShell에서 한 번 실행하면 로그인 없이 부팅 때 켜집니다.
+
 > [!TIP]
 > 시험해 볼 데이터는 `uv run python scripts/fetch_coco128.py`(COCO128, 약 7 MB)와 `uv run python scripts/fetch_mnist160.py`(MNIST160, 약 70 KB)로 받습니다. `.badamoa/data/` 아래에 풀립니다.
 
@@ -113,7 +115,7 @@ claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "A
 
 ## 둘러보기
 
-아래는 모두 실제 화면입니다. COCO128과 MNIST160으로 학습해 둔 Hub에서 찍었습니다.
+아래는 모두 실제 화면입니다. COCO128과 MNIST160으로 학습해 둔 Hub에서 찍었습니다. 화면마다 자세한 사용법은 [사용 설명서](docs/MANUAL.md)에 있습니다.
 
 ### 데이터셋
 
@@ -271,11 +273,13 @@ tests/                 단위 · API · E2E
 
 ### 문서
 
+- [docs/MANUAL.md](docs/MANUAL.md) — 사용 설명서: 화면마다 할 수 있는 것과 순서, 관리자 설정, 단축키
 - [CHANGELOG.md](CHANGELOG.md) — 버전별 변경 (앱 안의 릴리즈 노트와 같은 내용)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 목표, 설계 원칙, 구조
 - [docs/ROADMAP.md](docs/ROADMAP.md) — 단계별 계획과 체크리스트
 - [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) — 사내 학습 코드 · 환경 · 저장 위치, MLflow · W&B 대조표
 - [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — 라벨 고치기, 라벨링 묶음, 검수, CVAT 연동 계획
 - [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) — 태스크 · 데이터 형식 · 모델 · 지표 · 환경을 넓히는 계획
+- [docs/GENERATION_PLAN.md](docs/GENERATION_PLAN.md) — 데이터 생성 · 증강 계획 (이미지 속성 증강부터)
 - [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) — 화면 구성
 - [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) · [docs/PLANS.md](docs/PLANS.md) — 참고 제품 분석, 최초 구상

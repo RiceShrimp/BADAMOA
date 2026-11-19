@@ -44,6 +44,9 @@ artifacts = ["src/badamoa/hub/static/**"]
 # Release notes ship inside the package so the Hub can show them in the UI.
 [tool.hatch.build.targets.wheel.force-include]
 "CHANGELOG.md" = "badamoa/CHANGELOG.md"
+# The guides the Hub shows (hub/guides.py): the user manual and the template guide.
+"docs/MANUAL.md" = "badamoa/docs/MANUAL.md"
+"docs/TEMPLATE_GUIDE.md" = "badamoa/docs/TEMPLATE_GUIDE.md"
 
 [dependency-groups]
 dev = ["pytest>=8.3", "ruff>=0.8"]

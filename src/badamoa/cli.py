@@ -187,18 +187,39 @@ def hub_publish_wheel(wheel: Path, home: HomeOpt = None) -> None:
 
 
 @hub_app.command("install-service")
-def hub_install_service(port: int = 8470) -> None:
-    """부팅 시 Hub가 자동 실행되도록 등록합니다 (관리자 권한 필요)."""
-    from badamoa.node import service
+def hub_install_service(
+    home: HomeOpt = None,
+    port: Annotated[int, typer.Option(help="포트")] = 8470,
+    public_url: Annotated[str | None, typer.Option(help="원격 노드·에이전트가 접속할 URL")] = None,
+) -> None:
+    """이 데이터 폴더 · 포트의 Hub가 PC가 켜질 때 자동으로 실행되게 합니다 (화면의 설정 → Hub 실행과 같음).
 
-    typer.echo(service.install("hub", f"hub run --port {port}"))
+    관리자 권한(root)이면 로그인 없이 부팅 때, 아니면 Windows는 이 계정이 로그인할 때 · Linux는 이 계정의 crontab으로.
+    """
+    from badamoa.hub import autostart
+    from badamoa.hub.config import HubSettings
+
+    settings = HubSettings(home=component_home("hub", home), port=port, public_url=public_url, local_node=True)
+    autostart.save_launch(settings)
+    why = autostart.turn_on(settings.home)
+    if why:
+        typer.secho(f"등록하지 못했습니다: {why}", fg="red")
+        raise typer.Exit(1)
+    view = autostart.status(settings.home, port)
+    when = "로그인 없이 부팅 때" if view["when"] == "boot" else "이 계정이 로그인할 때"
+    typer.echo(f"{view['name']}: {when} 실행합니다. 로그: {view['log']}")
 
 
 @hub_app.command("uninstall-service")
-def hub_uninstall_service() -> None:
-    from badamoa.node import service
+def hub_uninstall_service(home: HomeOpt = None, port: Annotated[int, typer.Option(help="포트")] = 8470) -> None:
+    """Hub 자동 실행을 끕니다."""
+    from badamoa.hub import autostart
 
-    typer.echo(service.uninstall("hub"))
+    why = autostart.turn_off(component_home("hub", home), port)
+    if why:
+        typer.secho(why, fg="red")
+        raise typer.Exit(1)
+    typer.echo("자동 실행을 껐습니다.")
 
 
 # ---- node --------------------------------------------------------------------

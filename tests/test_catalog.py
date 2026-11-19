@@ -100,6 +100,44 @@ def _import(hub, project_id, path, version, **extra):
     return job["result"]["release_id"]
 
 
+def test_stopping_an_import(hub, tmp_path, settings):
+    """An import can be stopped while it waits; one that ends unfinished leaves nothing behind."""
+    from badamoa.hub import catalog
+    from badamoa.hub.catalog_models import Release
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import Job
+
+    project = hub.post("/api/projects", json={"name": "중지", "task": "detect"}).json()
+    root = make_yolo(tmp_path / "a")
+
+    # ---- waiting (sent to a server that joined but is not running): stopped at once, listed as stopped
+    join = hub.post("/api/nodes/join-tokens", json={}).json()
+    (tmp_path / "idle").mkdir()
+    idle = node_agent.join(str(hub.base_url).rstrip("/"), join["token"], tmp_path / "idle", name="idle-node")
+    body = {"node_id": idle.node_id, "path": str(root), "dataset": "street", "version": "v1"}
+    waiting = hub.post(f"/api/projects/{project['id']}/imports", json=body)
+    assert waiting.status_code == 200, waiting.text
+    assert waiting.json()["status"] == "queued"
+    assert hub.post(f"/api/jobs/{waiting.json()['id']}/cancel").json()["status"] == "canceled"
+    listed = {i["job_id"]: i for i in hub.get("/api/imports").json()}
+    assert listed[waiting.json()["id"]]["status"] == "canceled"
+
+    # ---- stopped half-way (its version still being made when the job ended): gone, and the name is free again
+    v1 = _import(hub, project["id"], root, "v1")
+    database = Database(settings.database_url)
+    with database.session() as db:
+        release = db.get(Release, v1)
+        release.status = "building"
+        db.get(Job, release.job_id).status = "canceled"
+    with database.session() as db:
+        assert catalog.drop_unfinished_imports(db, settings) == 1
+    database.engine.dispose()
+    assert hub.get(f"/api/releases/{v1}").status_code == 404
+    assert hub.get(f"/api/projects/{project['id']}/datasets").json() == []
+    again = _import(hub, project["id"], root, "v1")
+    assert hub.get(f"/api/releases/{again}").json()["stats"]["items"] == 8
+
+
 def test_import_browse_and_compare_releases(hub, tmp_path, settings):
     root = make_yolo(tmp_path / "ds")
     project = hub.post("/api/projects", json={"name": "주차장", "task": "detect"}).json()

@@ -11,13 +11,14 @@ import { Review } from "./Review";
 import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
+import { GuidesPage } from "./Guides";
 import { ReleasesPage, hasUnseenRelease } from "./ReleaseNotes";
 import { Settings } from "./Settings";
 import { Training } from "./Training";
 import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "labeling" | "review" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases";
+type Page = "home" | "datasets" | "labeling" | "review" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
 
 interface NavItem {
   label: string;
@@ -82,6 +83,7 @@ function pageFromHash(): Page {
   if (window.location.hash.startsWith("#/datasets/trash")) window.history.replaceState(null, "", "#/trash"); // its old place
   const id = window.location.hash.replace("#/", "").split("/")[0];
   if (id === "releases") return "releases"; // reached from the version in the top bar, not the sidebar
+  if (id === "guides") return "guides"; // reached from 설명서 in the top bar
   return (PAGES.find((p) => p.page === id)?.page ?? "home") as Page;
 }
 
@@ -176,7 +178,12 @@ function Shell({
     return () => document.removeEventListener("visibilitychange", back);
   }, [recheck]);
   const updated = running && version && running.version !== version ? running.version : null;
-  const current = page === "releases" ? { group: undefined, label: "릴리즈" } : PAGES.find((p) => p.page === page);
+  const current =
+    page === "releases"
+      ? { group: undefined, label: "릴리즈" }
+      : page === "guides"
+        ? { group: undefined, label: "설명서" }
+        : PAGES.find((p) => p.page === page);
   const online = nodes?.filter((n) => n.status === "online").length ?? 0;
   const isAdmin = user.role === "admin";
 
@@ -251,6 +258,10 @@ function Shell({
               <i />
               노드 {online}/{nodes?.length ?? 0} 온라인
             </a>
+            <a className="pill plain" href="#/guides/manual" title="사용 설명서 · 템플릿 가이드">
+              <Icon name="book" size={13} />
+              설명서
+            </a>
             <a
               className={`pill plain ${unseen ? "new" : ""}`}
               href="#/releases"
@@ -290,6 +301,7 @@ function Shell({
           {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}
           {page === "trash" && <TrashPage isAdmin={isAdmin} />}
           {page === "releases" && <ReleasesPage version={version} selected={sub} />}
+          {page === "guides" && <GuidesPage name={sub} />}
         </main>
       </div>
     </div>
