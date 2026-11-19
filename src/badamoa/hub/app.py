@@ -22,6 +22,7 @@ from . import (
     catalog_api,
     cleanup,
     exports_api,
+    hub_storage,
     install,
     labeling_api,
     modelops_api,
@@ -42,6 +43,14 @@ log = logging.getLogger("badamoa.hub")
 
 STATIC_DIR = Path(__file__).parent / "static"
 _SWEEP_INTERVAL_S = 15.0
+
+
+def compact_if_worth(hub: Hub) -> None:
+    """After the trash pass: give the database's empty pages back when they are a good part of it and no job runs."""
+    with hub.db.session() as db:
+        if hub_storage.busy(db) or not hub_storage.worth_compacting(db, hub.settings):
+            return
+    hub_storage.compact(hub.db, hub.settings)
 
 
 async def _sweeper(hub: Hub) -> None:
@@ -70,8 +79,15 @@ async def _sweeper(hub: Hub) -> None:
         if ticks % int(cleanup.EVERY_S // _SWEEP_INTERVAL_S) == 0:
             try:
                 await anyio.to_thread.run_sync(cleanup.scheduled, hub.db, hub.settings)
+                await anyio.to_thread.run_sync(compact_if_worth, hub)
             except Exception:
                 log.exception("storage cleanup failed")
+        if ticks % int(hub_storage.MEASURE_EVERY_S // _SWEEP_INTERVAL_S) == 1:  # soon after start, then every 10 min
+            try:
+                await anyio.to_thread.run_sync(hub_storage.measure, hub.db, hub.settings)
+                hub_storage.start_shrinking(hub.db, hub.settings)  # older, larger thumbnails: in a thread of its own
+            except Exception:
+                log.exception("storage count failed")
         if ticks % 40 == 0:  # about every 10 minutes
             try:
                 await anyio.to_thread.run_sync(prune)

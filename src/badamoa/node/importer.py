@@ -39,7 +39,10 @@ SPLIT_ALIASES = {"train": "train", "val": "val", "valid": "val", "validation": "
 CHUNK = 200
 WORKERS = min(16, os.cpu_count() or 4)  # images read at once: decoding and hashing let go of the GIL
 REPORT_EVERY_S = 5.0
-THUMB_SIDE = 320
+# The thumbnail kept on the Hub for each image (a preview in lists; opening an image reads the original):
+# 256 px WebP at quality 60 since 0.61.0, about 4 KB (320 px JPEG at 75 before, about 11 KB)
+THUMB_SIDE = 256
+THUMB_QUALITY = 60
 # Label files read at once: each is a small read, so on a network folder the round trip is most of the time.
 LABEL_READERS = 32
 PROGRESS_EVERY_S = 2.0  # how often the Hub hears how far finding images and reading labels got
@@ -511,7 +514,7 @@ def describe(entry: Entry, root: Path) -> dict[str, Any] | None:
             image.draft("RGB", (THUMB_SIDE, THUMB_SIDE))
             image.thumbnail((THUMB_SIDE, THUMB_SIDE))
             out = io.BytesIO()
-            image.convert("RGB").save(out, format="JPEG", quality=75)
+            image.convert("RGB").save(out, format="WEBP", quality=THUMB_QUALITY, method=4)
     except (OSError, UnidentifiedImageError, ValueError):
         return None
     try:
@@ -627,7 +630,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
 
         # Outlines (segmentation data) are told apart here, so "자동" on the Hub can pick Seg.
         outlines = not found.keypoints and any(len(b) >= 11 and len(b) % 2 == 1 for e in found.entries for b in e.boxes)
-        post(
+        began_import = post(
             "/begin",
             {
                 "classes": found.classes,
@@ -637,6 +640,9 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 "outlines": outlines,
             },
         )
+        if began_import.get("hub_bytes"):  # Hub 0.61+: what the thumbnails and records will take there
+            need, free = began_import["hub_bytes"] / 1024**3, (began_import.get("hub_free") or 0) / 1024**3
+            print(f"Hub에 썸네일 · 기록으로 약 {need:,.1f} GB가 쌓입니다 (Hub 남은 공간 {free:,.0f} GB).", flush=True)
         if found.keypoints:
             print(f"키포인트 {found.keypoints['count']}개 (연결선 {len(found.keypoints['skeleton'])}개)", flush=True)
         # Reading the next batch goes on while the Hub stores the last one.

@@ -26,6 +26,7 @@ from badamoa.core.storage import Storage
 from . import (  # these import this module too: each uses the other only when called
     checks,
     drafts,
+    hub_storage,
     labeling,
     qa,
     review,
@@ -578,11 +579,16 @@ def import_progress(db: Session, node: Node, job_id: str, body: ImportProgress) 
     }
 
 
-def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dict[str, Any]:
+def import_begin(
+    db: Session, node: Node, job_id: str, body: ImportBegin, settings: HubSettings | None = None
+) -> dict[str, Any]:
+    """The version an import fills, once the node has found the images. ``settings``: the Hub checks first that
+    their thumbnails and records fit on its disk (refused with how much it needs and has, before a single read)."""
     job = _import_job(db, node, job_id)
     release = db.scalar(select(Release).where(Release.job_id == job.id))
     if release is not None:
         return {"release_id": release.id}
+    room = hub_storage.check_room(db, settings, int(body.total or 0)) if settings is not None else {}
     p = job.params
     project = get_project(db, p["project_id"])
     dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == p["dataset"]))
@@ -656,7 +662,7 @@ def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dic
     )
     db.add(release)
     db.flush()
-    return {"release_id": release.id}
+    return {"release_id": release.id, **room}
 
 
 def _digest(space_id: str, state: str, boxes: list[list[float]]) -> str:
@@ -664,8 +670,13 @@ def _digest(space_id: str, state: str, boxes: list[list[float]]) -> str:
     return hashlib.sha1(payload.encode()).hexdigest()
 
 
-def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, storage: Storage) -> dict[str, Any]:
+def import_items(
+    db: Session, node: Node, job_id: str, chunk: ImportChunk, storage: Storage, settings: HubSettings | None = None
+) -> dict[str, Any]:
+    """``settings``: an import stops when the Hub's disk gets close to full."""
     job = _import_job(db, node, job_id)
+    if settings is not None:
+        hub_storage.check_running(settings)
     release = db.scalar(select(Release).where(Release.job_id == job.id))
     if release is None:
         raise ServiceError(409, "가져오기를 먼저 시작해야 합니다 (begin).")
@@ -685,10 +696,12 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     for sha, data in incoming.items():
         if sha in items:
             continue
-        thumb_key = None
+        thumb_key, thumb_bytes, thumb_v = None, 0, 0
         if data.thumb_b64:
             try:
-                thumb_key = storage.put_blob(base64.b64decode(data.thumb_b64))
+                thumb = base64.b64decode(data.thumb_b64)
+                thumb_key, thumb_bytes = storage.put_blob(thumb), len(thumb)
+                thumb_v = 1 if hub_storage.thumb_current(thumb) else 0  # a node before 0.61: shrunk here later
             except (binascii.Error, ValueError):
                 thumb_key = None
         items[sha] = Item(
@@ -703,6 +716,8 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
             location_id=batch.location_id,
             rel_path=data.rel_path,
             thumb_key=thumb_key,
+            thumb_bytes=thumb_bytes,
+            thumb_v=thumb_v,
             batch_id=batch.id,
         )
         db.add(items[sha])

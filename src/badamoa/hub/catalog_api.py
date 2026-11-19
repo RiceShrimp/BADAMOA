@@ -236,9 +236,13 @@ def import_progress(
 
 @agent_router.post("/begin")
 def import_begin(
-    job_id: str, body: ImportBegin, node: Node = Depends(current_node), db: Session = Depends(db_session)
+    job_id: str,
+    body: ImportBegin,
+    node: Node = Depends(current_node),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    result = catalog.import_begin(db, node, job_id, body)
+    result = catalog.import_begin(db, node, job_id, body, hub.settings)
     db.commit()
     return result
 
@@ -252,7 +256,7 @@ def import_items(
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     storage = catalog.storage_for(str(hub.settings.storage_dir))
-    result = catalog.import_items(db, node, job_id, body, storage)
+    result = catalog.import_items(db, node, job_id, body, storage, hub.settings)
     db.commit()
     return result
 
@@ -569,7 +573,10 @@ def thumb(key: str, exp: int, sig: str, hub: Hub = Depends(get_hub)) -> Response
     storage = catalog.storage_for(str(hub.settings.storage_dir))
     if not storage.has_blob(key):
         raise HTTPException(status_code=404, detail="not found")
-    return Response(storage.get_blob(key), media_type="image/jpeg", headers=_CACHE)
+    data = storage.get_blob(key)
+    # WebP since 0.60.0, JPEG before (and until the Hub has shrunk it)
+    kind = "image/webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else "image/jpeg"
+    return Response(data, media_type=kind, headers=_CACHE)
 
 
 @media_router.get("/item/{item_id}")

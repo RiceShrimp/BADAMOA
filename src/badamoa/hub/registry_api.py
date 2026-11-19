@@ -366,6 +366,19 @@ def storage(
     return registry.storage_usage(db, hub.settings, user)
 
 
+@router.post("/storage/compact")
+def storage_compact(
+    user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Give the database's empty pages back to the disk (VACUUM), in the background; only while no job runs."""
+    from . import hub_storage
+
+    services.audit(db, user.id, "ui", "storage.compact", "")
+    db.commit()  # the audit row is written before the compaction holds writes off
+    hub_storage.compact_in_background(hub.db, hub.settings)
+    return hub_storage.compacting() | {"compacting": True}
+
+
 class StoragePolicy(BaseModel):
     outputs_days: int | None = None  # 0: keep for ever; left out: as it is
     checkpoint_days: int | None = None

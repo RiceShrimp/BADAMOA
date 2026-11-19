@@ -235,11 +235,38 @@ interface Usage {
   path: string | null; // admins only
   bytes: number;
   files: number;
+  /** When the Hub last counted its folder (epoch seconds; it counts in the background every 10 minutes). */
+  counted_at: number | null;
   free: number;
   disk: number;
-  parts: { models: number; outputs: number; checkpoints: number; trash: number; other: number };
+  /** Always left free: an import that would need more is refused before it reads. */
+  keep_free: number;
+  /** What one more registered image takes on the Hub (thumbnail and records). */
+  per_image: number;
+  /** Images whose thumbnail is still the older, larger kind (320 px JPEG); the Hub shrinks them between imports. */
+  old_thumbs: number;
+  shrinking: boolean;
+  parts: {
+    datasets: number;
+    models: number;
+    outputs: number;
+    checkpoints: number;
+    trash: number;
+    database: number;
+    other: number;
+  };
+  database: { bytes: number; empty: number; compacting: boolean; last_compact: { before: number; after: number; at: number } | null };
   policy: Policy;
-  projects: { id: string; name: string; models: number; outputs: number; checkpoints: number; total: number }[];
+  projects: {
+    id: string;
+    name: string;
+    images: number;
+    datasets: number;
+    models: number;
+    outputs: number;
+    checkpoints: number;
+    total: number;
+  }[];
 }
 
 interface Policy {
@@ -257,16 +284,36 @@ interface CleanupReport {
 }
 
 const PART_LABEL: [keyof Usage["parts"], string, string][] = [
+  ["datasets", "데이터셋", "이미지마다 256px 썸네일 하나(WebP). 원본은 노드의 폴더에 그대로 있습니다"],
   ["models", "모델", "등록된 모델의 가중치"],
   ["outputs", "산출물", "학습 · 평가 · 내보내기 · 테스트가 남긴 파일"],
   ["checkpoints", "체크포인트", "끝나지 않은 실행을 이어 가기 위한 것"],
-  ["trash", "휴지통", "지운 학습 · 모델의 파일. 휴지통을 비우면 지워집니다"],
-  ["other", "그 밖", "썸네일, 모델 종류의 코드, 기록(DB)"],
+  ["trash", "휴지통", "지운 학습 · 모델 · 프로젝트의 파일. 휴지통을 비우면 지워집니다"],
+  ["database", "기록(DB)", "이미지 · 라벨 · 버전 · 학습의 기록"],
+  ["other", "그 밖", "모델 종류의 코드, 올린 파일 등"],
 ];
 
 function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
-  const { data: usage, refresh } = usePolling(() => api<Usage>("/storage"), 60000);
+  const [compacting, setCompacting] = useState(false);
+  const { data: usage, refresh } = usePolling(() => api<Usage>("/storage"), compacting ? 3000 : 60000, [compacting]);
+  const [compactError, setCompactError] = useState("");
+  useEffect(() => {
+    if (compacting && usage && !usage.database.compacting) setCompacting(false);
+  }, [compacting, usage]);
   if (!usage) return null;
+  const compact = async () => {
+    const db = usage.database;
+    if (!window.confirm(`DB를 압축할까요? 빈 공간 ${fileSize(db.empty)}를 디스크에 돌려줍니다. 1 GB에 1분쯤 걸리고, 그동안 기록이 잠시 멈춥니다.`))
+      return;
+    setCompactError("");
+    try {
+      await api("/storage/compact", { method: "POST" });
+      setCompacting(true);
+      await refresh();
+    } catch (err) {
+      setCompactError(err instanceof Error ? err.message : String(err));
+    }
+  };
   const used = usage.disk > 0 ? ((usage.disk - usage.free) / usage.disk) * 100 : 0;
   return (
     <section className="card">
@@ -280,7 +327,9 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
         </div>
         <div className="storage-total">
           <strong>{fileSize(usage.bytes)}</strong>
-          <span className="muted small">파일 {usage.files.toLocaleString()}개</span>
+          <span className="muted small" title="파일 수는 Hub가 10분마다 따로 셉니다">
+            파일 {usage.files.toLocaleString()}개{usage.counted_at ? ` · ${timeAgo(new Date(usage.counted_at * 1000).toISOString())} 셈` : " · 세는 중"}
+          </span>
         </div>
       </div>
       {usage.path && (
@@ -298,6 +347,36 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
           </div>
         ))}
       </div>
+      <div className="storage-notes muted small">
+        데이터셋을 등록하면 이미지 한 장에 약 {fileSize(usage.per_image)}(썸네일과 기록)가 Hub에 쌓입니다. 같은 이미지는 버전이 달라도 한 번만
+        저장합니다. 등록할 이미지가 들어갈 자리가 없으면(늘 {fileSize(usage.keep_free)}는 남겨 둠) 이미지를 읽기 전에 멈춥니다.
+      </div>
+      {usage.old_thumbs > 0 && (
+        <div className="muted small">
+          예전 크기(320px JPEG)의 썸네일 {usage.old_thumbs.toLocaleString()}장을{" "}
+          {usage.shrinking ? "256px WebP로 줄이고 있습니다" : "등록이 없을 때 256px WebP로 줄입니다"}. 원본은 다시 읽지 않습니다.
+        </div>
+      )}
+      {usage.database.empty > 0 && (
+        <div className="storage-compact">
+          <span className="small">
+            기록(DB) 안의 빈 공간 <strong>{fileSize(usage.database.empty)}</strong>
+            <span className="muted"> · 지운 기록의 자리입니다. 압축하면 디스크에 돌아옵니다 (휴지통을 비운 뒤 많이 남으면 Hub가 쉴 때 알아서 함)</span>
+          </span>
+          {isAdmin && (
+            <button className="small" onClick={() => void compact()} disabled={compacting || usage.database.compacting}>
+              {compacting || usage.database.compacting ? "압축하는 중…" : "DB 압축"}
+            </button>
+          )}
+        </div>
+      )}
+      {usage.database.last_compact && (
+        <div className="muted small">
+          마지막 압축: {fileSize(usage.database.last_compact.before)} → {fileSize(usage.database.last_compact.after)} (
+          {timeAgo(new Date(usage.database.last_compact.at * 1000).toISOString())})
+        </div>
+      )}
+      {compactError && <div className="error">{compactError}</div>}
       <div className="storage-disk">
         <div className="meter">
           <div className={used > 90 ? "meter-fill warn" : "meter-fill"} style={{ width: `${Math.min(100, used).toFixed(1)}%` }} />
@@ -316,6 +395,8 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
               <thead>
                 <tr>
                   <th>프로젝트</th>
+                  <th className="right">이미지</th>
+                  <th className="right">데이터셋</th>
                   <th className="right">모델</th>
                   <th className="right">산출물</th>
                   <th className="right">체크포인트</th>
@@ -326,7 +407,8 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
                 {usage.projects.map((p) => (
                   <tr key={p.id}>
                     <td>{p.name}</td>
-                    {(["models", "outputs", "checkpoints", "total"] as const).map((k) => (
+                    <td className="num right">{p.images > 0 ? `${p.images.toLocaleString()}장` : "–"}</td>
+                    {(["datasets", "models", "outputs", "checkpoints", "total"] as const).map((k) => (
                       <td key={k} className="num right">
                         {p[k] > 0 ? fileSize(p[k]) : "–"}
                       </td>

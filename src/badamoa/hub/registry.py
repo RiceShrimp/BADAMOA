@@ -6,9 +6,6 @@ import hashlib
 import os
 import re
 import shutil
-import threading
-import time
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -27,7 +24,7 @@ from badamoa.core.templates import (
 )
 
 from . import cleanup, services
-from .catalog_models import Project
+from .catalog_models import Item, Project
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import HubSetting, Job, Node, User
@@ -855,51 +852,29 @@ def package_blob(db: Session, digest: str) -> str:
 # ---- where everything is kept ---------------------------------------------------------
 
 
-# The storage folder counted in the background: with a dataset of 684,049 thumbnails a count took 37 s, and
-# every screen showing storage (the home screen too) waited on it.
-COUNT_EVERY_S = 600
-_counted: dict[str, Any] = {"bytes": 0, "files": 0, "at": 0.0, "thread": None}
-
-
-def _count_folder(folder: Path) -> None:
-    total = files = 0
-    stack = [str(folder)]
-    while stack:
-        try:
-            with os.scandir(stack.pop()) as listing:
-                for entry in listing:
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                        elif entry.is_file(follow_symlinks=False):
-                            total += entry.stat(follow_symlinks=False).st_size  # with the listing on Windows
-                            files += 1
-                    except OSError:
-                        continue  # removed meanwhile
-        except OSError:
-            continue
-    _counted.update(bytes=total, files=files, at=time.time())
-
-
-def stored_files(settings: HubSettings) -> tuple[int, int]:
-    """The last count of the storage folder (bytes, files); a new count starts in the background when it is
-    older than ten minutes. (0, 0) until the first one is done."""
-    running = _counted["thread"]
-    if time.time() - _counted["at"] > COUNT_EVERY_S and (running is None or not running.is_alive()):
-        _counted["thread"] = threading.Thread(
-            target=_count_folder, args=(Path(settings.storage_dir),), name="storage-count", daemon=True
-        )
-        _counted["thread"].start()
-    return _counted["bytes"], _counted["files"]
-
-
 def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, Any]:
-    """How much the Hub keeps and of what. The Hub's folder holds every record: nodes keep only caches."""
-    stored, files = stored_files(settings)
-    database = sum(p.stat().st_size for p in settings.home.glob("hub.db*") if p.is_file())
+    """How much the Hub keeps and of what. The Hub's folder holds every record: nodes keep only caches.
+
+    The folder itself is counted in the background (``hub_storage.measure``, every ten minutes): with a
+    dataset of hundreds of thousands of thumbnails a count takes too long for a screen to wait on it."""
+    from . import hub_storage
+
+    counted = hub_storage.measured()
+    database = hub_storage.database_usage(db, settings)
     # What only the trash holds: deleted runs and models, and those of deleted projects.
     gone = set(db.scalars(select(Project.id).where(Project.deleted_at.is_not(None))))
-    models = outputs = checkpoints = trash = 0
+    datasets = trash = 0
+    # Thumbnails: each stored once, whichever projects' images share it
+    for project_id, _key, size in db.execute(
+        select(Item.project_id, Item.thumb_key, func.max(Item.thumb_bytes))
+        .where(Item.thumb_key.is_not(None), Item.thumb_bytes > 0)
+        .group_by(Item.thumb_key)
+    ):
+        if project_id in gone:
+            trash += size or 0
+        else:
+            datasets += size or 0
+    models = outputs = checkpoints = 0
     binned_models: set[str] = set()
     for model_id, project_id, deleted_at, size in db.execute(
         select(ModelVersion.id, ModelVersion.project_id, ModelVersion.deleted_at, ModelVersion.bytes)
@@ -931,33 +906,49 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
         else:
             outputs += size
     disk = shutil.disk_usage(settings.home)
-    if not _counted["at"]:  # before the first count: what the records say
-        stored = models + outputs + checkpoints + trash
+    known = models + outputs + checkpoints + trash + datasets
+    # before the first count: what the records say (the files nothing records come with the count)
+    stored = counted["bytes"] if counted["at"] else known
     return {
         "policy": cleanup.get_policy(db),
         "projects": project_usage(db),
         "path": str(settings.home.resolve()) if user.role == "admin" else None,
-        "bytes": stored + database,
-        "files": files,
+        "bytes": stored + database["bytes"],
+        "files": counted["files"],
+        "counted_at": counted["at"] or None,  # when the folder was last counted (epoch seconds)
         "free": disk.free,
         "disk": disk.total,
+        "keep_free": hub_storage.keep_free(settings),  # an import that would leave less is refused
+        "per_image": hub_storage.per_image(db, settings),  # what one more registered image takes here
+        # images whose thumbnail is still the older, larger kind (made smaller in the background, between imports)
+        "old_thumbs": hub_storage.old_thumbs(db),
+        "shrinking": hub_storage.shrinking(),
         # The same bytes recorded twice are stored once, so the parts can add up to more than the whole.
         "parts": {
+            "datasets": datasets,
             "models": models,
             "outputs": outputs,
             "checkpoints": checkpoints,
             "trash": trash,
-            "other": max(0, stored - models - outputs - checkpoints - trash) + database,
+            "database": database["bytes"],
+            "other": max(0, stored - known),
         },
+        "database": database,  # its size, its empty pages (given back by compacting), compacting now
     }
 
 
 def project_usage(db: Session) -> list[dict[str, Any]]:
-    """How much each project keeps: its models, its runs' and model jobs' outputs, its checkpoints."""
+    """How much each project keeps: its datasets' thumbnails (and how many images), its models, its runs' and
+    model jobs' outputs, its checkpoints."""
     usage: dict[str, dict[str, Any]] = {
-        p.id: {"id": p.id, "name": p.name, "models": 0, "outputs": 0, "checkpoints": 0}
+        p.id: {"id": p.id, "name": p.name, "images": 0, "datasets": 0, "models": 0, "outputs": 0, "checkpoints": 0}
         for p in db.scalars(select(Project).where(Project.deleted_at.is_(None)))
     }
+    for project_id, images, thumbs in db.execute(
+        select(Item.project_id, func.count(Item.id), func.sum(func.max(Item.thumb_bytes, 0))).group_by(Item.project_id)
+    ):
+        if project_id in usage:
+            usage[project_id]["images"], usage[project_id]["datasets"] = images or 0, int(thumbs or 0)
     model_project: dict[str, str] = {}
     for model in db.scalars(select(ModelVersion).where(ModelVersion.deleted_at.is_(None))):
         model_project[model.id] = model.project_id
@@ -975,6 +966,6 @@ def project_usage(db: Session) -> list[dict[str, Any]]:
     for run in db.scalars(select(Run).where(Run.deleted_at.is_(None))):
         if run.project_id in usage:
             usage[run.project_id]["checkpoints"] += int((run.checkpoint or {}).get("bytes") or 0)
-    rows = [{**u, "total": u["models"] + u["outputs"] + u["checkpoints"]} for u in usage.values()]
+    rows = [{**u, "total": u["datasets"] + u["models"] + u["outputs"] + u["checkpoints"]} for u in usage.values()]
     return sorted(rows, key=lambda u: -u["total"])
 

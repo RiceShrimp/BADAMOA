@@ -95,6 +95,10 @@ class Item(Base):
     location_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     rel_path: Mapped[str] = mapped_column(String(1024), default="")
     thumb_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The thumbnail's size on the Hub: 0 not known yet (filled in the background), -1 the file is gone
+    thumb_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # 1: the thumbnail is of today's kind (256 px WebP); 0: an older one the Hub shrinks in the background
+    thumb_v: Mapped[int] = mapped_column(Integer, default=0)
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

@@ -1182,3 +1182,15 @@ button.overlay-picture:hover {
   align-items: baseline;
   gap: 10px;
 }
+/* ---- the storage card: what registering images costs here, and compacting the database ---- */
+.storage-notes {
+  margin: 8px 0 4px;
+}
+.storage-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin: 6px 0;
+}
