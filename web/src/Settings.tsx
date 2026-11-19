@@ -744,6 +744,13 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
           <p className="muted">
             사내 학습 코드를 폴더 하나로 묶고 선언 파일(badamoa.toml)을 더하면 됩니다. 아래 명령이 뼈대를 만들어 줍니다.
           </p>
+          <div className="howto-guide">
+            <a className="btn primary-link" href="#/guides/templates" onClick={() => setGuide(false)}>
+              <Icon name="book" size={14} /> 템플릿 가이드 열기
+            </a>
+            <span className="muted small">선언 파일 · 학습 · 평가 · 내보내기 · 오토라벨 코드, SDK 함수, 시험 실행과 허용, 자주 나는 실패 — 그 화면에서 내려받기 · 인쇄</span>
+          </div>
+          <CopyBlock label="0. 도구 설치 (이 Hub에서 받음)" text={`uv tool install --python 3.12 --index ${hubUrl}/install/simple/ badamoa`} />
           <CopyBlock label="1. 뼈대 만들기" text="badamoa template init my-model" />
           <CopyBlock label="2. train.py를 고친 뒤 이 PC에서 시험 실행 (서버가 올린 뒤 하는 것과 같음)" text="badamoa template check my-model --run" />
           <CopyBlock

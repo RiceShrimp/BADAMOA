@@ -274,11 +274,13 @@ To ship a version, raise the version in `src/badamoa/__init__.py` together with 
 
 ### Documents (in Korean)
 
+- [docs/MANUAL.md](docs/MANUAL.md) — user manual (Korean): what each screen does and in what order, admin settings, shortcuts
 - [CHANGELOG.md](CHANGELOG.md) — changes per version (the same as the in-app release notes)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — goals, design principles, structure
 - [docs/ROADMAP.md](docs/ROADMAP.md) — phases and checklists
 - [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) — in-house training code, environments and storage; MLflow · W&B comparison
 - [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — fixing labels, labeling sets, label checks, CVAT integration
 - [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) — widening tasks, data formats, models, metrics and environments
+- [docs/GENERATION_PLAN.md](docs/GENERATION_PLAN.md) — data generation and augmentation, starting with image attribute augmentation (Korean)
 - [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) — screen layouts
 - [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) · [docs/PLANS.md](docs/PLANS.md) — study of reference products, the first sketch

@@ -113,7 +113,7 @@ claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "A
 
 ## 둘러보기
 
-아래는 모두 실제 화면입니다. COCO128과 MNIST160으로 학습해 둔 Hub에서 찍었습니다.
+아래는 모두 실제 화면입니다. COCO128과 MNIST160으로 학습해 둔 Hub에서 찍었습니다. 화면마다 자세한 사용법은 [사용 설명서](docs/MANUAL.md)에 있습니다.
 
 ### 데이터셋
 
@@ -271,11 +271,13 @@ tests/                 단위 · API · E2E
 
 ### 문서
 
+- [docs/MANUAL.md](docs/MANUAL.md) — 사용 설명서: 화면마다 할 수 있는 것과 순서, 관리자 설정, 단축키
 - [CHANGELOG.md](CHANGELOG.md) — 버전별 변경 (앱 안의 릴리즈 노트와 같은 내용)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 목표, 설계 원칙, 구조
 - [docs/ROADMAP.md](docs/ROADMAP.md) — 단계별 계획과 체크리스트
 - [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) — 사내 학습 코드 · 환경 · 저장 위치, MLflow · W&B 대조표
 - [docs/LABELING_PLAN.md](docs/LABELING_PLAN.md) — 라벨 고치기, 라벨링 묶음, 검수, CVAT 연동 계획
 - [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) — 태스크 · 데이터 형식 · 모델 · 지표 · 환경을 넓히는 계획
+- [docs/GENERATION_PLAN.md](docs/GENERATION_PLAN.md) — 데이터 생성 · 증강 계획 (이미지 속성 증강부터)
 - [docs/SCREEN_SPECS.md](docs/SCREEN_SPECS.md) — 화면 구성
 - [docs/REFERENCE_STUDY.md](docs/REFERENCE_STUDY.md) · [docs/PLANS.md](docs/PLANS.md) — 참고 제품 분석, 최초 구상

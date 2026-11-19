@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import address, admin, asks, gpus, node_storage, prometheus, resources, services
+from . import address, admin, asks, gpus, guides, node_storage, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands, node_wheel
@@ -94,6 +94,17 @@ def delete_token(token_id: str, user: User = Depends(current_user), db: Session 
 @router.get("/release-notes")
 def release_notes(_: User = Depends(current_user)) -> dict[str, Any]:
     return {"version": services.HUB_VERSION, "releases": load_release_notes()}
+
+
+@router.get("/guides")
+def guide_list(_: User = Depends(current_user)) -> list[dict[str, Any]]:
+    """The guides the app shows: the user manual and the template guide."""
+    return guides.listing()
+
+
+@router.get("/guides/{name}")
+def guide(name: str, _: User = Depends(current_user)) -> dict[str, Any]:
+    return guides.read(name)
 
 
 @router.get("/activity")
