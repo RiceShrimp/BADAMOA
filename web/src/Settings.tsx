@@ -1012,11 +1012,6 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
                   </button>{" "}
                   {t.builtin && <span className="tag">기본 제공</span>}
                   {t.draft && !isAdmin && <span className="tag">내 초안</span>}
-                  {(t.tasks ?? [t.task]).map((task) => (
-                    <span key={task} className="task-tag">
-                      {taskLabel(task)}
-                    </span>
-                  ))}
                   <div className="muted small template-about">{t.description || t.name}</div>
                 </td>
                 <td className="num version-cell">
