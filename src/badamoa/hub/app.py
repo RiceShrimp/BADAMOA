@@ -47,7 +47,9 @@ _SWEEP_INTERVAL_S = 15.0
 async def _sweeper(hub: Hub) -> None:
     def sweep() -> int:
         with hub.db.session() as db:
-            return services.sweep_lost_jobs(db, hub.settings)
+            lost = services.sweep_lost_jobs(db, hub.settings)
+            catalog.drop_unfinished_imports(db, hub.settings)  # imports that ended unfinished, also from before
+            return lost
 
     def prune() -> None:
         with hub.db.session() as db:

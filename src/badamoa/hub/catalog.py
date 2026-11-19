@@ -785,7 +785,9 @@ def imports(db: Session) -> list[dict[str, Any]]:
         .order_by(Job.created_at.desc())
         .limit(20)
     ).all()
-    nodes = {n.id: n.name for n in db.scalars(select(Node).where(Node.id.in_([j.node_id for j in jobs if j.node_id])))}
+    # a waiting import has no server yet: the one it was sent to
+    targets = [j.node_id or j.target_node_id for j in jobs if j.node_id or j.target_node_id]
+    nodes = {n.id: n.name for n in db.scalars(select(Node).where(Node.id.in_(targets)))}
     out = []
     for job in jobs:
         params = job.params or {}
@@ -795,18 +797,18 @@ def imports(db: Session) -> list[dict[str, Any]]:
         release = db.scalar(select(Release).where(Release.job_id == job.id))
         stats = (release.stats if release else None) or {}
         progress = stats.get("import") or {}
-        status = {"succeeded": "done", "failed": "failed", "canceled": "failed"}.get(job.status, job.status)
+        status = {"succeeded": "done"}.get(job.status, job.status)  # queued | running | done | failed | canceled
         total = int(progress.get("total") or stats.get("items") or 0)
         done = total if status == "done" else int(progress.get("done") or 0)
         out.append(
             {
                 "job_id": job.id,
-                "status": status,  # queued | running | done | failed
+                "status": status,
                 "project": {"id": project.id, "name": project.name},
                 "dataset": params.get("dataset", ""),
                 "version": params.get("version", ""),
                 "release_id": release.id if release else None,
-                "node": nodes.get(job.node_id or "", ""),
+                "node": nodes.get(job.node_id or job.target_node_id or "", ""),
                 "done": done,
                 "total": total,
                 "skipped": int(progress.get("skipped") or (job.result or {}).get("skipped") or 0),
@@ -817,6 +819,25 @@ def imports(db: Session) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def drop_unfinished_imports(db: Session, settings: HubSettings) -> int:
+    """Versions an import began but never finished (stopped, failed, or its server went away): removed with the
+    image records only they held and those thumbnails, so the name can be used again and the dataset deleted."""
+    from . import purge
+
+    stale = db.scalars(
+        select(Release)
+        .join(Job, Job.id == Release.job_id)
+        .where(Release.status == "building", Job.status.in_(("failed", "canceled")))
+    ).all()
+    thumbs: set[str] = set()
+    for release in stale:
+        thumbs |= purge._drop_release(db, release)
+    if stale:
+        db.flush()
+        purge._remove_unused(settings, db, thumbs)
+    return len(stale)
 
 
 def compute_stats(db: Session, release: Release) -> dict[str, Any]:

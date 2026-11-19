@@ -5,7 +5,7 @@ import { Icon, timeAgo } from "./ui";
 /** A dataset import, as the Hub tracks it: it keeps going whatever screen is open. */
 export interface ImportInfo {
   job_id: string;
-  status: "queued" | "running" | "done" | "failed";
+  status: "queued" | "running" | "done" | "failed" | "canceled";
   project: { id: string; name: string };
   dataset: string;
   version: string;
@@ -85,18 +85,51 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
       ? "차례를 기다리는 중"
       : info.status === "failed"
         ? `실패${info.error ? ` — ${info.error}` : ""}`
-        : info.status === "done"
-          ? `완료 · ${info.total.toLocaleString()}장${info.skipped ? ` (읽지 못한 파일 ${info.skipped}개 건너뜀)` : ""}`
-          : info.total > 0
-            ? `${info.done.toLocaleString()} / ${info.total.toLocaleString()}장 · ${Math.floor(pct)}%${left(info) ? ` · ${left(info)}` : ""}`
-            : "폴더를 읽는 중";
+        : info.status === "canceled"
+          ? "중지함 · 남긴 것 없음"
+          : info.status === "done"
+            ? `완료 · ${info.total.toLocaleString()}장${info.skipped ? ` (읽지 못한 파일 ${info.skipped}개 건너뜀)` : ""}`
+            : info.total > 0
+              ? `${info.done.toLocaleString()} / ${info.total.toLocaleString()}장 · ${Math.floor(pct)}%${left(info) ? ` · ${left(info)}` : ""}`
+              : "폴더를 읽는 중";
   return (
     <div className={`import-progress ${info.status}${compact ? " compact" : ""}`}>
       <div className="bar">
         <i style={{ width: `${info.status === "done" ? 100 : pct}%` }} />
       </div>
-      <div className="small">{words}</div>
+      <div className="import-progress-line">
+        <span className="small">{words}</span>
+        {(info.status === "queued" || info.status === "running") && <StopImport info={info} />}
+      </div>
     </div>
+  );
+}
+
+/** Stop an import: one waiting goes at once; one under way stops on its server, and what it read so far goes. */
+export function StopImport({ info }: { info: Pick<ImportInfo, "job_id" | "status" | "dataset" | "version"> }) {
+  const [stopping, setStopping] = useState(false);
+  const stop = async (e: { preventDefault: () => void; stopPropagation: () => void }) => {
+    e.preventDefault(); // it may sit inside a card that is a link
+    e.stopPropagation();
+    const name = `${info.dataset} ${info.version}`;
+    const ask =
+      info.status === "queued"
+        ? `기다리는 ${name} 등록을 취소할까요?`
+        : `${name} 등록을 멈출까요?\n지금까지 읽은 것은 남지 않고, 같은 이름으로 다시 가져올 수 있습니다.`;
+    if (!window.confirm(ask)) return;
+    setStopping(true);
+    try {
+      await api(`/jobs/${info.job_id}/cancel`, { method: "POST" });
+      announceImport();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+      setStopping(false);
+    }
+  };
+  return (
+    <button className="link small import-stop" onClick={(e) => void stop(e)} disabled={stopping}>
+      {stopping ? "멈추는 중…" : info.status === "queued" ? "취소" : "중지"}
+    </button>
   );
 }
 
@@ -132,7 +165,9 @@ export function ImportTray() {
     ? `등록 중 ${running.length}${first && first.total ? ` · ${Math.floor((first.done / first.total) * 100)}%` : ""}`
     : failed.length
       ? `등록 실패 ${failed.length}`
-      : `등록 완료 ${shown.length}`;
+      : shown.some((i) => i.status === "done")
+        ? `등록 완료 ${shown.filter((i) => i.status === "done").length}`
+        : `등록 중지 ${shown.length}`;
   return (
     <div className="import-tray" ref={box}>
       <button className={`pill ${running.length ? "busy" : failed.length ? "bad" : "ok"}`} onClick={() => setOpen(!open)}>
@@ -157,7 +192,7 @@ export function ImportTray() {
               </div>
               <ImportProgress info={i} compact />
               <div className="row-links">
-                {i.release_id && i.status !== "failed" && (
+                {i.release_id && (i.status === "done" || i.status === "running") && (
                   <a className="small" href={`#/datasets/${i.release_id}`} onClick={() => setOpen(false)}>
                     {i.status === "done" ? "열기" : "지금까지 본 것 보기"}
                   </a>
@@ -170,8 +205,8 @@ export function ImportTray() {
               </div>
             </div>
           ))}
-          {shown.some((i) => i.status === "done" || i.status === "failed") && (
-            <button className="link small" onClick={() => forget(shown.filter((i) => i.status === "done" || i.status === "failed").map((i) => i.job_id))}>
+          {shown.some((i) => ["done", "failed", "canceled"].includes(i.status)) && (
+            <button className="link small" onClick={() => forget(shown.filter((i) => ["done", "failed", "canceled"].includes(i.status)).map((i) => i.job_id))}>
               끝난 것 지우기
             </button>
           )}

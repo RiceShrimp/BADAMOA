@@ -1135,7 +1135,10 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
                   <strong>{i.dataset}</strong>
                   <span className="tag">{i.version}</span>
                 </div>
-                <div className="muted small">{i.node}에서 등록 중 · 다른 화면에서 일해도 됩니다</div>
+                <div className="muted small">
+                  {i.node ? `${i.node}에서 ` : ""}
+                  {i.status === "queued" ? "등록 대기" : "등록 중"} · 다른 화면에서 일해도 됩니다
+                </div>
                 <ImportProgress info={i} compact />
               </div>
             </a>

@@ -23,7 +23,19 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import asks, cleanup, node_data, node_storage, originals, registry, services, sweeps, template_checks, transfers
+from . import (
+    asks,
+    catalog,
+    cleanup,
+    node_data,
+    node_storage,
+    originals,
+    registry,
+    services,
+    sweeps,
+    template_checks,
+    transfers,
+)
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -185,9 +197,15 @@ def post_logs(
 
 @router.post("/jobs/{job_id}/complete")
 def complete(
-    job_id: str, body: CompleteRequest, node: Node = Depends(current_node), db: Session = Depends(db_session)
+    job_id: str,
+    body: CompleteRequest,
+    node: Node = Depends(current_node),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     job = services.complete_job(db, node, job_id, body)
+    if job.type == "data.import" and job.status in ("failed", "canceled"):  # stopped or failed: nothing left half-made
+        catalog.drop_unfinished_imports(db, hub.settings)
     registry.on_job_finished(db, job)
     transfers.on_job_finished(db, job)
     node_data.on_job_finished(db, job)
