@@ -39,7 +39,7 @@ export function UsersPanel({ me }: { me: User }) {
   const [resetting, setResetting] = useState<Account | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
-  const change = async (user: Account, body: Partial<{ role: string; disabled: boolean }>) => {
+  const change = async (user: Account, body: Partial<{ role: string; disabled: boolean; template_upload: boolean }>) => {
     try {
       setFailed(null);
       await api(`/users/${user.id}`, { method: "PATCH", body });
@@ -75,6 +75,9 @@ export function UsersPanel({ me }: { me: User }) {
               <tr>
                 <th>아이디</th>
                 <th>역할</th>
+                <th title="멤버가 모델 종류(학습 코드)를 초안으로 올릴 수 있게 합니다. 관리자가 시험 실행하고 허용하면 모두에게 보입니다">
+                  모델 종류 올리기
+                </th>
                 <th>상태</th>
                 <th>마지막 사용</th>
                 <th className="right">API 토큰</th>
@@ -94,6 +97,21 @@ export function UsersPanel({ me }: { me: User }) {
                       <option value="member">멤버</option>
                       <option value="admin">관리자</option>
                     </select>
+                  </td>
+                  <td>
+                    {u.role === "admin" ? (
+                      <span className="muted small">관리자는 항상</span>
+                    ) : (
+                      <label className="inline-check">
+                        <input
+                          type="checkbox"
+                          checked={!!u.template_upload}
+                          onChange={(e) => void change(u, { template_upload: e.target.checked })}
+                          aria-label={`${u.username}의 모델 종류 올리기`}
+                        />
+                        초안으로
+                      </label>
+                    )}
                   </td>
                   <td>{u.disabled ? <Badge kind="disabled">중지됨</Badge> : <Badge kind="online">사용 중</Badge>}</td>
                   <td>{u.last_seen_at ? timeAgo(u.last_seen_at) : <span className="muted">아직 없음</span>}</td>

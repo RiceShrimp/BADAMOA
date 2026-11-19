@@ -156,7 +156,14 @@ def serialize_user(user: User) -> dict[str, Any]:
         "role": user.role,
         "created_at": iso(user.created_at),
         "disabled": user.disabled_at is not None,
+        "template_upload": bool(user.template_upload),
+        "can_upload_templates": can_upload_templates(user),
     }
+
+
+def can_upload_templates(user: User) -> bool:
+    """Admins, and members an admin lets upload model kinds (their uploads are drafts)."""
+    return user.role == "admin" or bool(user.template_upload)
 
 
 def require_admin(user: User) -> None:

@@ -41,6 +41,8 @@ _ADDED_COLUMNS = [
     ("nodes", "storage", "JSON DEFAULT '{}'"),
     ("label_sets", "autolabel", "JSON DEFAULT '{}'"),
     ("templates", "trial", "JSON DEFAULT '{}'"),
+    ("users", "template_upload", "BOOLEAN DEFAULT 0"),
+    ("templates", "report", "JSON DEFAULT '{}'"),
 ]
 
 

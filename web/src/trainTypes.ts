@@ -48,6 +48,11 @@ export interface Template {
   check: TemplateCheck;
   offered_version: string; // admins: the version everyone else gets when this one is not offered ("" otherwise)
   code_url?: string; // admins: the version's code as uploaded
+  reads_weights_from?: string; // earlier versions whose models this version works with, e.g. "1.*"
+  draft: boolean; // not offered to everyone (yet): a member sees it only when it is their own
+  uploaded_by: string;
+  // the uploader's own ``badamoa template check --run`` of this bundle
+  local_check: { ok?: boolean; steps?: TemplateCheck["steps"]; sdk?: string; python?: string; os?: string; gpus?: string[]; device?: string; took_s?: number; at?: string; by?: string; packages?: number };
 }
 
 /** The trial run before a template version is offered to everyone. */
@@ -56,7 +61,7 @@ export interface TemplateCheck {
   offered: boolean;
   reason?: string;
   failed?: string; // the step that failed: data · env · train · predict · eval · export
-  steps?: { step: string; ok: boolean; took_s: number; detail: string }[];
+  steps?: { step: string; ok: boolean; took_s: number; detail: string; skipped?: boolean }[];
   notes?: string[];
   node?: string;
   device?: string; // GPU or CPU: what the trial ran on
@@ -256,6 +261,8 @@ export interface ModelOp {
   created_at: string;
   release: { id: string; dataset: string; version: string } | null;
   params: Record<string, unknown>;
+  // the template version whose code ran it: a newer one than the model's own when that one lacks the code
+  code?: { name?: string; version?: string; trained_with?: string };
   result: {
     metrics?: Record<string, number>;
     classes?: ClassMetric[];

@@ -2,8 +2,10 @@
 
 Each is a job that runs an entry point (``eval`` / ``export`` / ``predict``) of the
 template version that trained the model, so the code that reads the weights is
-the code that wrote them. A template that declares no such entry point simply
-does not offer the action.
+the code that wrote them. When that version has no such entry point, a newer offered
+version of the same template that declares it reads those weights
+(``reads_weights_from``) and has it does the job (``code_for``). Otherwise the
+action is not offered.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
+from badamoa.core.templates import reads_weights
 
 from . import catalog, checks, drafts, registry, services, training
 from .catalog_models import Dataset, LabelSpace, Release
@@ -43,13 +46,48 @@ def _template_of(db: Session, model: ModelVersion) -> Template:
     return row
 
 
+def _does(row: Template, kind: str) -> bool:
+    manifest = registry.manifest_of(row)
+    return ENTRY.get(kind, kind) in manifest.entrypoints and (kind != "autolabel" or manifest.autolabel)
+
+
+def code_for(db: Session, model: ModelVersion, kind: str) -> Template | None:
+    """The template version whose code does ``kind`` (eval · export · predict · autolabel) for this model: the
+    version that trained it when that has the code, else the newest version offered to everyone that has it and
+    declares it reads this model's weights (``reads_weights_from``). None when no version can."""
+    own = _template_of(db, model)
+    if _does(own, kind):
+        return own
+    if own.builtin:
+        return None
+    from . import template_checks
+
+    newer = db.scalars(
+        select(Template)
+        .where(Template.name == own.name, Template.deleted_at.is_(None), Template.id != own.id)
+        .order_by(Template.created_at.desc(), Template.id)
+    )
+    for row in newer:
+        if template_checks.offered(row) and _does(row, kind) and reads_weights(registry.manifest_of(row), own.version):
+            return row
+    return None
+
+
 def actions(db: Session, model: ModelVersion) -> list[str]:
-    """Which of evaluate / export / test this model's template has code for."""
+    """Which of evaluate / export / test there is code for: this model's template version, or a newer one that
+    reads its weights."""
     try:
-        entrypoints = registry.manifest_of(_template_of(db, model)).entrypoints
+        return [action for action in ACTIONS if code_for(db, model, action) is not None]
     except ServiceError:
         return []
-    return [action for action in ACTIONS if action in entrypoints]
+
+
+def autolabels(db: Session, model: ModelVersion) -> bool:
+    """Whether a template version that can work with this model declares its predict code also labels images."""
+    try:
+        return code_for(db, model, "autolabel") is not None
+    except ServiceError:
+        return False
 
 
 def _training_node(db: Session, model: ModelVersion) -> Node | None:
@@ -73,11 +111,13 @@ def _start(
     gpus: int = 0,
     via: str = "api",
 ) -> ModelJob:
-    row = _template_of(db, model)
-    manifest = registry.manifest_of(row)
+    own = _template_of(db, model)
+    row = code_for(db, model, kind)
     entry = ENTRY.get(kind, kind)
-    if entry not in manifest.entrypoints:
-        raise ServiceError(400, f"{row.title}에는 {ACTIONS[entry]} 코드가 없습니다.")
+    if row is None:
+        what = "오토라벨" if kind == "autolabel" else ACTIONS[entry]
+        raise ServiceError(400, f"{own.title} {own.version}에는 {what} 코드가 없습니다 (이 가중치를 읽는 새 버전도 없음).")
+    manifest = registry.manifest_of(row)
     if node is None:
         raise ServiceError(409, "이 모델을 학습한 서버가 연결되어 있지 않아 실행할 곳이 없습니다.")
     run = db.get(Run, model.run_id) if model.run_id else None
@@ -91,7 +131,7 @@ def _start(
     _, unfit = training.fitting([node], env, gpus, role)
     if unfit:
         raise ServiceError(400, " ".join(unfit))
-    declared = manifest.params
+    declared = {**registry.manifest_of(own).params, **manifest.params}  # the settings it was trained with
     op = ModelJob(model_id=model.id, kind=kind, release_id=release_id, params=params, created_by=user.id)
     db.add(op)
     db.flush()
@@ -111,6 +151,8 @@ def _start(
                 "sha256": row.blob or "",
                 "entrypoint": manifest.entrypoints[entry],
                 "data_format": manifest.data_format,
+                # the version that trained the model, when the code is a newer one's
+                **({"trained_with": own.version} if row.id != own.id else {}),
             },
             "environment": env,
             "params": params,
@@ -126,7 +168,7 @@ def _start(
         role=role,
     )
     op.job_id = job.id
-    services.audit(db, user.id, via, f"model.{kind}", model.id, name=model.name, version=model.version)
+    services.audit(db, user.id, via, f"model.{kind}", model.id, name=model.name, version=model.version, code=row.version)
     return op
 
 
@@ -362,6 +404,12 @@ def get_op(db: Session, op_id: str) -> ModelJob:
     return op
 
 
+def _code_of(job: Job | None) -> dict[str, Any]:
+    ran = ((job.params or {}).get("template") or {}) if job is not None else {}
+    found = {k: ran[k] for k in ("name", "version", "trained_with") if ran.get(k)}
+    return found
+
+
 def op_view(db: Session, settings: HubSettings, op: ModelJob, node_names: dict[str, str] | None = None) -> dict[str, Any]:
     job = db.get(Job, op.job_id) if op.job_id else None
     data = services.job_view(db, settings, job, node_names) if job else None
@@ -380,6 +428,8 @@ def op_view(db: Session, settings: HubSettings, op: ModelJob, node_names: dict[s
         "created_at": iso(op.created_at),
         "release": {"id": release.id, "dataset": dataset.name, "version": release.version} if release and dataset else None,
         "params": {k: v for k, v in (op.params or {}).items() if k != "images"},
+        # which template version's code ran it, and whether that is a newer one than the model's own
+        "code": _code_of(job),
         "result": op.result or {},
         "files": [
             {**{k: f[k] for k in ("name", "kind", "bytes")}, "url": url}

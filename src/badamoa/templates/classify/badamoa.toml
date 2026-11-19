@@ -7,6 +7,7 @@ data_format = "imagefolder"
 license = "BSD-3-Clause"
 variant = "model"
 resume = true
+autolabel = true
 
 [environment]
 requirements = ["torch", "torchvision", "onnx", "onnxscript"]

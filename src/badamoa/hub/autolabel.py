@@ -47,6 +47,8 @@ def _problem(db: Session, model: ModelVersion, task: str, names: dict[str, int])
         return f"{task_names.short(model.task)}용 모델입니다 (이 데이터셋은 {task_names.short(task)})"
     if "predict" not in modelops.actions(db, model):
         return "이 모델 종류에는 예측 코드가 없습니다"
+    if not modelops.autolabels(db, model):
+        return "이 모델 종류는 오토라벨을 하지 않습니다"
     if not any(name in names for name in model.classes or []):
         return "모델의 클래스가 이 데이터셋의 클래스와 하나도 맞지 않습니다"
     return ""

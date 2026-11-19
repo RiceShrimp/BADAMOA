@@ -126,6 +126,7 @@ def create_user(body: NewUser, who: User = Depends(admin_user), db: Session = De
 class UserPatch(BaseModel):
     role: str | None = None
     disabled: bool | None = None
+    template_upload: bool | None = None  # a member may upload model kinds (as drafts)
     password: str | None = None  # a new password set by the admin; the person's browser sessions end
 
 

@@ -143,6 +143,7 @@ def start(db: Session, settings: HubSettings, user: User, template_id: str, via:
             "task": manifest.task,
             "data_format": manifest.data_format,
             "resume": manifest.resume,
+            "autolabel": manifest.autolabel,
             "entrypoints": manifest.entrypoints,
         },
         "environment": spec,
@@ -217,8 +218,8 @@ def allow(db: Session, user: User, template_id: str, reason: str = "", via: str 
 
 
 def require_offered(row: Template, user: User) -> None:
-    """Members train only with versions an admin offered; admins with any."""
-    if user.role != "admin" and not offered(row):
+    """Members train only with versions an admin offered, and with their own drafts; admins with any."""
+    if user.role != "admin" and not offered(row) and row.created_by != user.id:
         raise ServiceError(403, NOT_YET)
 
 

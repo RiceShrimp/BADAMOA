@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -57,13 +58,51 @@ def sync_builtin(db: Session) -> None:
             previous.deleted_at = previous.deleted_at or utcnow()
 
 
-def register_template(db: Session, user: User, data: bytes, storage: Storage, via: str = "api") -> Template:
-    """Add a template version from an uploaded bundle (the template folder as a zip)."""
-    services.require_admin(user)
+UPLOAD_NOT_ALLOWED = "모델 종류를 올릴 권한이 없습니다. 관리자에게 설정 → 사용자에서 '모델 종류 올리기'를 켜 달라고 하세요."
+NEEDS_REPORT = (
+    "먼저 badamoa template check . --run을 통과하세요. 이 PC에서 학습 · 테스트 · 평가 · 내보내기를 해 보고, "
+    "그 보고서를 badamoa template push가 함께 보냅니다."
+)
+
+
+def read_report(report: dict[str, Any] | None, data: bytes, manifest: TemplateManifest) -> dict[str, Any]:
+    """The uploader's ``check --run`` report, if it is for this very bundle and it passed (else why not)."""
+    if not report:
+        return {}
+    if report.get("bundle_sha256") != hashlib.sha256(data).hexdigest():
+        again = "코드를 바꿨다면 badamoa template check . --run을 다시 하세요."
+        raise ServiceError(400, f"시험 실행 보고서가 이 묶음의 것이 아닙니다. {again}")
+    if (report.get("name"), report.get("version")) != (manifest.name, manifest.version):
+        raise ServiceError(400, "시험 실행 보고서의 이름 · 버전이 묶음과 다릅니다.")
+    if not report.get("ok"):
+        said = f"{report.get('failed') or ''}: {report.get('reason') or ''}".strip(": ")
+        raise ServiceError(400, f"이 PC의 시험 실행이 통과하지 않았습니다 ({said}). 고친 뒤 다시 check --run 하세요.")
+    return {k: v for k, v in report.items() if k in REPORT_KEYS}
+
+
+REPORT_KEYS = (
+    "ok", "steps", "notes", "took_s", "sdk", "contract", "python", "os", "gpus", "device", "packages", "sources",
+    "bundle_sha256", "name", "version", "at",
+)  # fmt: skip
+
+
+def register_template(
+    db: Session, user: User, data: bytes, storage: Storage, via: str = "api", report: dict[str, Any] | None = None
+) -> Template:
+    """Add a template version from an uploaded bundle (the template folder as a zip).
+
+    Admins, and members an admin lets upload (``template_upload``). A member's upload is a draft only they
+    see until an admin tries and offers it, and it comes with their own ``check --run`` of the same bundle.
+    """
+    if not services.can_upload_templates(user):
+        raise ServiceError(403, UPLOAD_NOT_ALLOWED)
     try:
         manifest = read_bundle(data)
     except TemplateError as e:
         raise ServiceError(400, str(e)) from e
+    proof = read_report(report, data, manifest)
+    if user.role != "admin" and not proof:
+        raise ServiceError(400, NEEDS_REPORT)
     if manifest.name in shipped.builtin():
         raise ServiceError(409, f"{manifest.name}은 내장 템플릿의 이름입니다. 다른 name을 쓰세요.")
     blob = storage.put_blob(data)
@@ -76,8 +115,10 @@ def register_template(db: Session, user: User, data: bytes, storage: Storage, vi
         db.add(row)
     row.title, row.task, row.hidden = manifest.title, manifest.task, manifest.hidden
     row.manifest, row.deleted_at = manifest.model_dump(), None
+    if proof:
+        row.report = {**proof, "by": user.username}
     db.flush()
-    services.audit(db, user.id, via, "template.register", row.id, name=row.name, version=row.version)
+    services.audit(db, user.id, via, "template.register", row.id, name=row.name, version=row.version, report=bool(proof))
     return row
 
 
@@ -155,6 +196,7 @@ def template_view(
         "notes": manifest.notes,  # what the checks found worth saying
         "entrypoints": sorted(manifest.entrypoints),
         "variant": manifest.variant,
+        "reads_weights_from": manifest.reads_weights_from,  # earlier versions whose models this one works with
         "params": [{"name": name, **spec.model_dump()} for name, spec in manifest.params.items()],
         "environment": {
             "default": manifest.environment.default,
@@ -169,11 +211,21 @@ def template_view(
         # the trial run before it is offered; for admins, the version everyone else gets when this one is not
         "check": template_checks.view(row),
         "offered_version": offered_version,
+        "draft": not row.builtin and not template_checks.offered(row),
+        "uploaded_by": _username(db, row.created_by),
+        # the uploader's own check --run of this bundle, without the long package list
+        "local_check": {k: v for k, v in (row.report or {}).items() if k not in ("packages", "sources")}
+        | ({"packages": len(row.report["packages"])} if (row.report or {}).get("packages") else {}),
     }
 
 
+def _username(db: Session, user_id: str | None) -> str:
+    found = db.get(User, user_id) if user_id else None
+    return found.username if found is not None else ""
+
+
 def list_templates(
-    db: Session, include_hidden: bool = False, task: str = "", admin: bool = False
+    db: Session, include_hidden: bool = False, task: str = "", admin: bool = False, user_id: str = ""
 ) -> list[dict[str, Any]]:
     """Each template once, optionally only those for one task: the newest version offered to everyone, or
     for ``admin`` the newest version whatever its trial says (with the one everyone else gets)."""
@@ -193,6 +245,8 @@ def list_templates(
             usable.setdefault(row.name, row)
             if not admin:
                 newest.setdefault(row.name, row)
+        elif not admin and user_id and row.created_by == user_id:  # their own draft
+            newest.setdefault(row.name, row)
     models = dict(
         db.execute(
             select(ModelVersion.trainer, func.count())

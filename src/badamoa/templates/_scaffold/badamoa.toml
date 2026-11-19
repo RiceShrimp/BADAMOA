@@ -7,6 +7,9 @@ description = ""
 task    = "__TASK__"          # detect | segment | classify
 data_format = "yolo"          # BADAMOA가 릴리스를 이 형식으로 풀어 줍니다
 variant = "model"             # 모델 종류를 정하는 설정 이름 (모델 이름을 지을 때 씁니다). 없으면 지우세요
+# reads_weights_from = "0.*"  # 이전 버전으로 학습한 모델에도 이 버전의 평가 · 내보내기 · 테스트 코드를 쓸 수 있을 때
+# autolabel = true            # predict 코드가 오토라벨도 할 때만: action이 "autolabel"이면 run.source의 이미지마다
+#                             # 데이터셋의 라벨 모양으로 bm.log_predictions([...])를 남깁니다. 할 수 없는 태스크면 두지 마세요
 
 [environment]
 # 비워 두면 아래 requirements로 서버가 가상환경을 자동으로 만듭니다.

@@ -216,7 +216,10 @@ def check_run(
             short = task_names.short
             why = f"{row.title}은(는) {short(manifest.task)}용이고 이 데이터셋은 {short(task)}입니다."
             return {"problems": [why], "notes": []}
-        if not template_checks.offered(row):
+        own = user is not None and row.created_by == user.id
+        if not template_checks.offered(row) and own and user.role != "admin":
+            warnings.append(f"{row.title} {row.version}은(는) 내 초안입니다. 관리자가 허용하기 전에는 나만 씁니다.")
+        elif not template_checks.offered(row):
             if user is None or user.role != "admin":
                 return {"problems": [template_checks.NOT_YET], "notes": []}
             trial = template_checks.view(row)

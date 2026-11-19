@@ -39,7 +39,9 @@ MAX_BUNDLE_BYTES = 64 * 1024**2
 # What template code may rely on: the config's keys, the ``@@badamoa`` events, the SDK's calls. It goes up
 # when one of them changes in a way old code would notice; runs and trials record it.
 CONTRACT = 1
-SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".vscode", "runs", "wandb"}
+# ``.badamoa``: what ``badamoa template check --run`` writes beside the code (its report), never part of the bundle
+SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".vscode", "runs", "wandb", ".badamoa"}
+REPORT = ".badamoa/check-report.json"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")
 # registry/name:tag or …@sha256:…, as docker reads it (loosely: no spaces, no scheme)
 IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/:]*(@sha256:[0-9a-f]{64})?$")
@@ -58,6 +60,27 @@ def pinned_versions(installed: list[str], sources: dict[str, Any] | None = None)
             continue
         out.append(f"{name}=={version.split('+')[0]}")
     return out
+
+
+def _specifier(text: str) -> Any:
+    """A version range as pip writes it; a bare version (``1.*``, ``1.2``) means that one (``==1.*``)."""
+    from packaging.specifiers import SpecifierSet
+
+    parts = [p.strip() for p in text.split(",")]
+    return SpecifierSet(",".join(f"=={p}" if p[:1].isdigit() else p for p in parts))
+
+
+def reads_weights(manifest: TemplateManifest, version: str) -> bool:
+    """Whether this template version declares it works with models trained by ``version`` of it."""
+    if not manifest.reads_weights_from:
+        return False
+    from packaging.specifiers import InvalidSpecifier
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return _specifier(manifest.reads_weights_from).contains(Version(version), prereleases=True)
+    except (InvalidSpecifier, InvalidVersion):
+        return False
 
 
 def _normal(name: str) -> str:
@@ -154,6 +177,12 @@ class TemplateManifest(BaseModel):
     variant: str = ""  # the param that names the model variant, e.g. "model" → yolo11n
     # The train code can pick up where an interrupted run stopped (it reads ``resume_dir`` from its config).
     resume: bool = False
+    # The predict code also labels a labeling set's images (``action = "autolabel"``): every image's
+    # predictions in the dataset's label form through ``log_predictions``. Some tasks cannot, so it is declared.
+    autolabel: bool = False
+    # Earlier versions of this template whose models this version's code can work with (eval, export,
+    # predict), e.g. ``"1.*"`` or ``">=1.0,<2"``: a model trained with one of them gets what this one adds.
+    reads_weights_from: str = ""
     entrypoints: dict[str, str] = Field(default_factory=dict)
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     environment: EnvironmentSpec = Field(default_factory=EnvironmentSpec)
@@ -277,6 +306,18 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
     unknown = set(manifest.entrypoints) - set(ENTRYPOINTS)
     if unknown:
         raise TemplateError(f"알 수 없는 진입점: {', '.join(sorted(unknown))}. {', '.join(ENTRYPOINTS)}만 쓸 수 있습니다.")
+    manifest.reads_weights_from = manifest.reads_weights_from.strip()
+    if manifest.reads_weights_from:
+        from packaging.specifiers import InvalidSpecifier
+
+        try:
+            _specifier(manifest.reads_weights_from)
+        except InvalidSpecifier:
+            raise TemplateError(
+                f"reads_weights_from '{manifest.reads_weights_from}'은 버전 범위가 아닙니다 (예: \"1.*\", \">=1.0,<2\")."
+            ) from None
+    if manifest.autolabel and "predict" not in manifest.entrypoints:
+        raise TemplateError("autolabel = true에는 predict 진입점이 필요합니다 (오토라벨은 predict 코드로 돕니다).")
     if not manifest.entrypoints.get("train", "").strip():
         raise TemplateError("[entrypoints]에 train 명령이 필요합니다 (예: train = \"python train.py --config {config}\").")
     for kind, command in manifest.entrypoints.items():

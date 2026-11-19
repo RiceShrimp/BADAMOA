@@ -5,6 +5,9 @@ Everyone may read them (the training dialog needs the list); only admins change 
 
 from __future__ import annotations
 
+import base64
+import gzip
+import json
 from typing import Any
 
 import anyio
@@ -14,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.templates import MAX_BUNDLE_BYTES
 
-from . import catalog, cleanup, registry, services, template_checks
+from . import address, catalog, cleanup, install, registry, services, template_checks
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Job, Node, User
 from .services import ServiceError
@@ -22,6 +25,7 @@ from .train_models import Template
 
 router = APIRouter(prefix="/api")
 MAX_WHEEL_BYTES = 1024**3
+CHECK_HEADER = "X-Badamoa-Check"  # the uploader's own trial report with an upload
 agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/check")  # a server trying a template version
 packages_router = APIRouter(prefix="/api/agent/packages")  # a server installing an in-house wheel
 media_router = APIRouter(prefix="/media")  # a template version's code, by a signed link
@@ -46,8 +50,28 @@ def list_templates(
     hub: Hub = Depends(get_hub),
 ) -> list[dict[str, Any]]:
     """Each template's newest version offered to everyone; admins get the newest of all, with its trial."""
-    views = registry.list_templates(db, include_hidden=hidden, task=task, admin=user.role == "admin")
+    views = registry.list_templates(db, include_hidden=hidden, task=task, admin=user.role == "admin", user_id=user.id)
     return [_with_links(view, user, hub) for view in views]
+
+
+@router.get("/templates/kit")
+def template_kit(request: Request, user: User = Depends(current_user), hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """What someone who may upload model kinds runs on their own PC, with this Hub's address filled in."""
+    if not services.can_upload_templates(user):
+        raise HTTPException(status_code=403, detail=registry.UPLOAD_NOT_ALLOWED)
+    hub_url, _ = address.resolve(request, hub.settings)
+    host = hub_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    wheel = install.node_wheel(hub.settings)
+    return {
+        "hub_url": hub_url,
+        "install_uv": f"uv tool install --python 3.12 --index {hub_url}/install/simple/ badamoa",
+        "install_pip": f"pip install --index-url {hub_url}/install/simple/ --trusted-host {host} badamoa",
+        "wheel_url": f"{hub_url}/install/wheels/{wheel.name}" if wheel is not None else "",
+        "init": "badamoa template init my-model",
+        "check": "badamoa template check my-model --run",
+        "push": f"badamoa template push my-model --hub {hub_url} --token <토큰>",
+        "draft": user.role != "admin",
+    }
 
 
 @router.get("/templates/{template_id}")
@@ -123,8 +147,14 @@ def package_file(
 
 @router.post("/templates")
 async def upload_template(request: Request, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
-    """Register a template version. The request body is the template folder as a zip."""
+    """Register a template version. The request body is the template folder as a zip; ``X-Badamoa-Check``
+    carries the uploader's ``badamoa template check --run`` report (gzip + base64), required from members."""
     token = bearer_token(request)
+    try:
+        header = request.headers.get(CHECK_HEADER, "")
+        report = json.loads(gzip.decompress(base64.b64decode(header))) if header else None
+    except (ValueError, OSError) as e:
+        raise HTTPException(status_code=400, detail="시험 실행 보고서를 읽을 수 없습니다.") from e
     if int(request.headers.get("content-length") or 0) > MAX_BUNDLE_BYTES:
         raise HTTPException(status_code=413, detail="템플릿 파일이 너무 큽니다.")
     data = await request.body()
@@ -137,7 +167,7 @@ async def upload_template(request: Request, hub: Hub = Depends(get_hub)) -> dict
             if user is None:
                 raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
             storage = catalog.storage_for(str(hub.settings.storage_dir))
-            row = registry.register_template(db, user, data, storage)
+            row = registry.register_template(db, user, data, storage, report=report if isinstance(report, dict) else None)
             template_checks.uploaded(row)  # a new version waits for an admin to try it (the same content keeps its trial)
             return registry.template_view(db, row)
 

@@ -1460,3 +1460,30 @@ button.legend-item:hover {
 input[type="file"][hidden] {
   display: none !important;
 }
+
+/* "내 PC에서 만들어 올리기": the commands someone who may upload model kinds runs (설정 → 모델 종류) */
+.kit-steps {
+  display: grid;
+  gap: 8px;
+}
+.kit-card {
+  margin: 0 16px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.kit-card > summary {
+  cursor: pointer;
+}
+.kit-card[open] > summary {
+  margin-bottom: 10px;
+}
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.kit-steps > button {
+  justify-self: start;
+}

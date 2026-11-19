@@ -51,6 +51,7 @@ def update_user(
     role: str | None = None,
     disabled: bool | None = None,
     password: str | None = None,
+    template_upload: bool | None = None,
 ) -> User:
     """Change someone's role, stop or restart their account, or set a new password for them.
 
@@ -76,6 +77,8 @@ def update_user(
             raise ServiceError(409, "관리자가 한 명은 있어야 합니다. 다른 사람을 먼저 관리자로 만드세요.")
         user.disabled_at = utcnow() if disabled else None
         changed["disabled"] = disabled
+    if template_upload is not None and template_upload != bool(user.template_upload):
+        user.template_upload = changed["template_upload"] = template_upload
         if disabled:
             _sign_out(db, user.id)
     if password is not None:

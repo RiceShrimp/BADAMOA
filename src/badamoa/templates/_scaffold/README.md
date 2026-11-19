@@ -6,7 +6,7 @@
 2. 사용자가 고를 수 있는 값(하이퍼파라미터)을 `train.py`의 `bm.params(...)`에 선언합니다. 학습 대화상자의 입력 칸이 되고, `advanced=True`인 것은 "세부 설정"에 접혀 들어갑니다.
 3. 진행 상황은 `bm.log(...)`, `bm.progress(...)`로, 결과는 `bm.log_model(...)`, `bm.finish(...)`로 알립니다. (`badamoa_sdk.py` 맨 위에 설명이 있습니다.)
 4. 필요한 패키지를 `badamoa.toml`의 `[environment] requirements`에 적거나, Hub에 등록한 환경 이름을 `default`에 적습니다.
-5. 이 PC에서 서버와 같은 시험 실행을 해 보고(`--run`), 올립니다(`--trial`이면 올린 뒤 서버의 시험 실행까지 시작하고 결과를 기다림).
+5. 이 PC에서 서버와 같은 시험 실행을 해 보고(`--run`, 선언한 진입점을 모두 돌리고 보고서를 `.badamoa/`에 남김), 올립니다. `push`가 보고서를 함께 보내고, 관리자가 아닌 계정은 통과한 보고서 없이는 올릴 수 없습니다(`--trial`은 관리자: 올린 뒤 서버의 시험 실행까지 시작하고 기다림).
 
 ```bash
 badamoa template check . --run
@@ -15,6 +15,10 @@ badamoa template check . --run
 ```bash
 badamoa template push . --trial --hub http://<hub>:8470 --token <API 토큰>
 ```
+
+진입점은 `train`만 꼭 있어야 합니다. 테스트(predict) · 평가(eval) · 내보내기(export)는 할 수 있는 것만 적고, predict 코드가 오토라벨도 하면 `autolabel = true`를 적습니다. 새 버전에서 진입점을 더했고 그 코드가 이전 버전의 가중치도 읽는다면 `reads_weights_from = "1.*"`처럼 적습니다. 그러면 이전 버전으로 학습한 모델에도 새 버전의 코드로 그 동작이 생깁니다.
+
+멤버 계정은 관리자가 설정 → 사용자에서 "모델 종류 올리기"를 켜 줘야 올릴 수 있고, 올린 것은 초안(나만 봄)으로 시작합니다. 설정 → 모델 종류의 "내 PC에서 만들어 올리기"에 이 Hub의 주소가 채워진 명령이 있습니다.
 
 PyPI에 없는 사내 패키지는 wheel(.whl)로 만들어 Hub의 설정 → 환경 → "사내 패키지"에 올리고 requirements에 이름을 적습니다. 서버가 환경을 만들 때 Hub에서 받아 설치합니다.
 

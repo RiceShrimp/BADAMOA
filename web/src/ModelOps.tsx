@@ -7,6 +7,11 @@ import { METRIC_LABEL, type ModelDetail, type ModelOp, keyMetrics, metric } from
 import { Badge, Icon, Modal, STATUS_LABEL, timeAgo, usePolling } from "./ui";
 
 const ACTION_LABEL: Record<string, string> = { eval: "평가", export: "내보내기", predict: "테스트" };
+
+/** " · 1.1.0 코드로" when a newer template version that reads this model's weights did the job. */
+function codeNote(op: ModelOp): string {
+  return op.code?.trained_with && op.code.version ? ` · ${op.code.name ?? ""} ${op.code.version} 코드로` : "";
+}
 const SPLIT_LABEL: Record<string, string> = { val: "val", test: "test", train: "train" };
 const ACTIVE = ["queued", "running"];
 
@@ -99,7 +104,8 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                             <span className="muted">–</span>
                           )}
                         </td>
-                        <td className="muted right">{timeAgo(op.created_at)}</td>
+                        <td className="muted right">{timeAgo(op.created_at)}
+{codeNote(op)}</td>
                       </tr>
                       {shown === op.id && (
                         <tr className="op-files">
@@ -150,7 +156,8 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                 ))}
                 {op.files.length === 0 && <OpStatus op={op} />}
                 <span className="spacer" />
-                <span className="muted small">{timeAgo(op.created_at)}</span>
+                <span className="muted small">{timeAgo(op.created_at)}
+{codeNote(op)}</span>
               </div>
             ))}
           </>
@@ -196,6 +203,7 @@ function TestResult({ op, classes }: { op: ModelOp; classes: string[] }) {
         <OpStatus op={op} />
         <span className="muted small">
           이미지 {predictions.length || "–"}장 · {timeAgo(op.created_at)}
+{codeNote(op)}
         </span>
       </div>
       {pictures.length > 0 && (

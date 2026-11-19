@@ -22,7 +22,7 @@ from badamoa.node import agent as node_agent
 from badamoa.node import exporter, samples
 
 
-def _bundle(tmp_path, name="trial", version="1", extra="", fail=False):
+def _bundle(tmp_path, name="trial", version="1", extra="", fail=False, autolabel=True, labels_logged=True):
     """The dummy template as a team would upload it, under another name, shown in the dialog."""
     folder = tmp_path / f"{name}-{version}"
     shutil.copytree(shipped.builtin()["dummy"], folder, ignore=shutil.ignore_patterns("__pycache__"))
@@ -31,6 +31,11 @@ def _bundle(tmp_path, name="trial", version="1", extra="", fail=False):
     text = text.replace("hidden = true", "hidden = false")
     if fail:
         text = re.sub(r"(\[params\.fail\][^\[]*default = )false", r"\1true", text)
+    if not autolabel:
+        text = text.replace("autolabel = true\n", "")
+    if not labels_logged:  # its predict code ignores autolabel mode: nothing per image
+        ops = (folder / "ops.py").read_text(encoding="utf-8").replace("    bm.log_predictions(predicted)\n", "")
+        (folder / "ops.py").write_text(ops, encoding="utf-8")
     (folder / "badamoa.toml").write_text(text + extra, encoding="utf-8")
     return template_format.bundle(folder)
 
@@ -100,7 +105,7 @@ def test_an_admin_tries_a_new_version_and_offers_it_once_it_passed(hub, tmp_path
 
     check = _try(hub, first["id"])
     assert check["state"] == "passed" and not check["offered"], check  # a pass waits for the admin
-    assert [s["step"] for s in check["steps"]] == ["data", "env", "train", "predict", "eval", "export"]
+    assert [s["step"] for s in check["steps"]] == ["data", "env", "train", "predict", "autolabel", "eval", "export"]
     assert check["node"] == "gpu-1" and check["metrics"] and check["by"] == "admin"
     assert "trial" not in _names(hub.member)
     offered = hub.post(f"/api/templates/{first['id']}/allow", json={})
@@ -135,7 +140,7 @@ def test_check_settings_skip_and_steps_that_say_what_is_wrong(hub, tmp_path):
     view = _upload(hub, _bundle(tmp_path, name="skips", extra=extra))
     check = _try(hub, view["id"])
     assert check["state"] == "passed", check
-    assert [s["step"] for s in check["steps"]] == ["data", "env", "train", "predict", "eval"]
+    assert [s["step"] for s in check["steps"]] == ["data", "env", "train", "predict", "autolabel", "eval"]
     assert hub.post(f"/api/templates/{view['id']}/check").status_code == 200  # again, on demand
     assert hub.post(f"/api/templates/{view['id']}/check").status_code == 409  # not twice at once
     assert _settled(hub, view["id"])["check"]["state"] == "passed"
@@ -369,4 +374,167 @@ def test_a_trial_takes_an_idle_gpu_and_runs_on_the_cpu_when_none_is(client, admi
     _beat(client, node, [_gpu(0, 20000, util=90), _gpu(1, 300)], running=[job["id"]])
     queue()
     assert _claim(client, node)["gpu_indices"] == [1]  # the idle one
+    database.engine.dispose()
+
+
+def test_autolabel_is_declared_and_tried_only_when_declared(hub, tmp_path):
+    folder = tmp_path / "no-predict"
+    shutil.copytree(shipped.builtin()["dummy"], folder, ignore=shutil.ignore_patterns("__pycache__"))
+    text = (folder / "badamoa.toml").read_text(encoding="utf-8")
+    (folder / "badamoa.toml").write_text(text.replace('predict = "python ops.py --config {config}"\n', ""), encoding="utf-8")
+    with pytest.raises(template_format.TemplateError, match="predict 진입점"):
+        template_format.load_manifest(folder)
+
+    plain = _try(hub, _upload(hub, _bundle(tmp_path, name="plain", autolabel=False))["id"])
+    assert plain["state"] == "passed", plain
+    skipped = next(s for s in plain["steps"] if s["step"] == "autolabel")
+    assert skipped["skipped"] and "하지 않음" in skipped["detail"]
+
+    quiet = _try(hub, _upload(hub, _bundle(tmp_path, name="quiet", labels_logged=False))["id"])
+    assert quiet["state"] == "failed" and quiet["failed"] == "autolabel", quiet
+    assert "log_predictions" in quiet["reason"]
+
+
+# ---- members' drafts, with proof they ran on the uploader's PC (decided 2026-11-19) -----------------
+
+
+def test_members_an_admin_lets_upload_send_drafts_with_their_own_trial(hub, tmp_path):
+    from typer.testing import CliRunner
+
+    from badamoa.cli import app
+
+    member_token = hub.member.headers["Authorization"].split()[1]
+    folder = tmp_path / "mine"
+    folder.mkdir()
+    template_format.unpack(_bundle(tmp_path / "b", name="kims-model"), folder)
+    runner = CliRunner()
+
+    def push():
+        return runner.invoke(app, ["template", "push", str(folder), "--hub", str(hub.base_url), "--token", member_token])
+
+    # not allowed yet
+    denied = push()
+    assert denied.exit_code == 1 and "권한이 없습니다" in denied.output
+    assert hub.member.get("/api/templates/kit").status_code == 403
+
+    kim = next(u for u in hub.get("/api/users").json() if u["username"] == "kim")
+    allowed = hub.patch(f"/api/users/{kim['id']}", json={"template_upload": True})
+    assert allowed.status_code == 200 and allowed.json()["template_upload"] is True
+    assert hub.member.get("/api/auth/me").json()["can_upload_templates"] is True
+    kit = hub.member.get("/api/templates/kit").json()
+    port = str(hub.base_url.port)
+    assert kit["draft"] and f":{port} " in kit["push"] and "/install/simple/" in kit["install_uv"]
+    assert "127.0.0.1" not in kit["push"] and "localhost" not in kit["push"]  # an address other PCs can reach
+
+    # without having run it here: refused
+    refused = push()
+    assert refused.exit_code == 1 and "check . --run" in refused.output
+
+    ran = runner.invoke(app, ["template", "check", str(folder), "--run", "--home", str(tmp_path / "home")])
+    assert ran.exit_code == 0, ran.output
+    assert (folder / template_format.REPORT).is_file()  # beside the code, never in the bundle
+    import io
+    import zipfile
+
+    names = zipfile.ZipFile(io.BytesIO(template_format.bundle(folder))).namelist()
+    assert template_format.REPORT not in names and not any(n.startswith(".badamoa") for n in names)
+    pushed = push()
+    assert pushed.exit_code == 0, pushed.output
+
+    mine = next(t for t in hub.member.get("/api/templates").json() if t["name"] == "kims-model")
+    assert mine["draft"] and mine["uploaded_by"] == "kim" and mine["check"]["state"] == "pending"
+    assert mine["local_check"]["ok"] and mine["local_check"]["sdk"] and mine["local_check"]["python"]
+    assert mine["local_check"]["packages"] > 0 and "autolabel" in [s["step"] for s in mine["local_check"]["steps"]]
+    admin_view = next(t for t in hub.get("/api/templates").json() if t["name"] == "kims-model")
+    assert admin_view["draft"] and admin_view["local_check"]["by"] == "kim"
+    assert hub.member.post(f"/api/templates/{mine['id']}/check").status_code == 403  # the trial is the admin's
+
+    # nobody else sees a member's draft
+    hub.post("/api/users", json={"username": "park", "password": "park-pass-123", "role": "member"})
+    park = httpx.post(f"{hub.base_url}/api/auth/login", json={"username": "park", "password": "park-pass-123"}).json()
+    others = httpx.get(f"{hub.base_url}/api/templates", headers={"Authorization": f"Bearer {park['token']}"}).json()
+    assert "kims-model" not in {t["name"] for t in others}
+
+    # changed after the local run: the old report is not for this bundle
+    (folder / "train.py").write_text((folder / "train.py").read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+    toml = folder / "badamoa.toml"
+    toml.write_text(toml.read_text(encoding="utf-8").replace('version = "1"', 'version = "2"'), encoding="utf-8")
+    stale = push()
+    assert stale.exit_code == 1 and "바뀌었습니다" in stale.output
+
+
+def test_a_newer_version_that_reads_older_weights_gives_older_models_what_it_adds(client, admin, settings, tmp_path):
+    from sqlalchemy import select
+
+    from badamoa.hub import modelops
+    from badamoa.hub.catalog_models import Project
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import Job, Node, User
+    from badamoa.hub.train_models import ModelVersion, Template
+
+    def upload(name, version, entries, reads=""):
+        folder = tmp_path / f"{name}-{version}"
+        shutil.copytree(shipped.builtin()["dummy"], folder, ignore=shutil.ignore_patterns("__pycache__"))
+        text = (folder / "badamoa.toml").read_text(encoding="utf-8")
+        text = text.replace('name = "dummy"', f'name = "{name}"').replace('version = "3"', f'version = "{version}"')
+        for entry in ("eval", "export"):
+            if entry not in entries:
+                text = text.replace(f'{entry} = "python ops.py --config {{config}}"\n', "")
+        if reads:
+            text = text.replace("resume = true\n", f'resume = true\nreads_weights_from = "{reads}"\n')
+        (folder / "badamoa.toml").write_text(text, encoding="utf-8")
+        resp = client.post("/api/templates", content=template_format.bundle(folder), headers=admin)
+        assert resp.status_code == 200, resp.text
+        allowed = client.post(f"/api/templates/{resp.json()['id']}/allow", json={"reason": "시험"}, headers=admin)
+        assert allowed.status_code == 200, allowed.text
+        return resp.json()
+
+    with pytest.raises(template_format.TemplateError, match="버전 범위"):
+        bad = tmp_path / "bad"
+        shutil.copytree(shipped.builtin()["dummy"], bad, ignore=shutil.ignore_patterns("__pycache__"))
+        toml = bad / "badamoa.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                "resume = true\n", 'resume = true\nreads_weights_from = "one or two"\n'
+            ),
+            encoding="utf-8",
+        )
+        template_format.load_manifest(bad)
+
+    old = upload("team", "1.0.0", ["predict"])
+    upload("team", "1.1.0", ["predict", "eval", "export"], reads="1.*")
+    lone = upload("solo", "1.0.0", ["predict"])
+    upload("solo", "1.1.0", ["predict", "eval", "export"])  # adds them, says nothing about older weights
+
+    token = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()["token"]
+    reg = client.post("/api/agent/register", json={"join_token": token, "agent_version": "0.56.0", "info": {}}).json()
+    database = Database(settings.database_url)
+    with database.session() as db:
+        project = Project(name="p")
+        db.add(project)
+        db.flush()
+
+        def model_of(row):
+            made = ModelVersion(
+                project_id=project.id, name=f"{row['name']}-m", version=1, blob="0" * 64, trainer=row["name"]
+            )
+            made.template = {"id": row["id"], "name": row["name"], "version": row["version"]}
+            db.add(made)
+            db.flush()
+            return made
+
+        older, alone = model_of(old), model_of(lone)
+        assert modelops.actions(db, older) == ["eval", "export", "predict"]
+        assert modelops.code_for(db, older, "export").version == "1.1.0"
+        assert modelops.code_for(db, older, "predict").version == "1.0.0"  # its own code where it has it
+        assert modelops.actions(db, alone) == ["predict"]
+        assert modelops.code_for(db, alone, "export") is None
+
+        # the job runs 1.1.0's code with the model's own weights, and says so
+        boss = db.scalar(select(User).where(User.username == "admin"))
+        op = modelops._start(db, boss, older, "export", db.get(Node, reg["node_id"]), {"format": "onnx"})
+        template = db.get(Job, op.job_id).params["template"]
+        assert (template["version"], template["trained_with"]) == ("1.1.0", "1.0.0")
+        assert modelops._code_of(db.get(Job, op.job_id))["trained_with"] == "1.0.0"
+        assert db.get(Template, old["id"]).version == "1.0.0"
     database.engine.dispose()

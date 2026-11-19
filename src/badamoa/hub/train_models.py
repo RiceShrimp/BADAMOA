@@ -41,6 +41,9 @@ class Template(Base):
     # The trial run before the version is offered (``template_checks``): state, the step that failed and
     # why, what each step did, where and when.
     trial: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # The uploader's own ``badamoa template check --run`` of this very bundle (steps, SDK, Python, OS, GPU,
+    # packages): required from members, a guard against mistakes rather than proof (it can be faked).
+    report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

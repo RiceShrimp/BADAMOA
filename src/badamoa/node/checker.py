@@ -17,6 +17,7 @@ job did its work, which was to find out.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +39,7 @@ STEP_NAMES = {
     "env": "환경",
     "train": "학습",
     "predict": "테스트",
+    "autolabel": "오토라벨",
     "eval": "평가",
     "export": "내보내기",
 }
@@ -99,7 +101,7 @@ def _run(
     timer.daemon = True
     timer.start()
     outcome: dict[str, Any] | None = None
-    seen: dict[str, Any] = {"metrics": {}, "checkpoints": 0}
+    seen: dict[str, Any] = {"metrics": {}, "checkpoints": 0, "artifacts": []}
     last_progress = 0.0
     assert proc.stdout is not None
     try:
@@ -125,6 +127,8 @@ def _run(
                 seen["metrics"].update(_numbers(event.get("metrics")))
             elif kind == "checkpoint":
                 seen["checkpoints"] += 1
+            elif kind == "artifact":
+                seen["artifacts"].append(event)
         code = proc.wait()
     finally:
         timer.cancel()
@@ -303,6 +307,36 @@ def _trial(
             raise Failed("predict", f"이미지 {len(images)}장 중 {len(missing)}장에 예측이 없습니다 (예: {missing[0]}).")
         return f"이미지 {len(images)}장 모두 예측"
 
+    def autolabel() -> str:
+        """The predict code in autolabel mode, on images named by their hash as a labeling set gives them."""
+        source = work / "inputs-autolabel"
+        source.mkdir(parents=True, exist_ok=True)
+        named = {}
+        for image in sorted((work / "sample" / "val").glob("*.png")):
+            digest = hashlib.sha256(image.read_bytes()).hexdigest()
+            shutil.copyfile(image, source / f"{digest}.png")
+            named[digest] = image.name
+        config = {**after, "action": "autolabel", "out": str(work / "out-autolabel"), "source": str(source)}
+        _, seen, where = start("predict", config)
+        files = [where(str(a.get("path") or "")) for a in seen["artifacts"] if a.get("media") == "predictions"]
+        found = [f for f in files if f.is_file()]
+        if not found:
+            raise Failed(
+                "autolabel", "예측을 남기지 않았습니다. 오토라벨에서는 bm.log_predictions([...])로 이미지마다 남겨야 합니다."
+            )
+        try:
+            images = json.loads(found[-1].read_text(encoding="utf-8")).get("images") or []
+        except (OSError, ValueError) as e:
+            raise Failed("autolabel", f"남긴 예측을 읽을 수 없습니다: {e}") from e
+        given = {str(p.get("image") or "") for p in images if isinstance(p, dict) and isinstance(p.get("labels"), list)}
+        missing = [name for digest, name in named.items() if digest not in given]
+        if missing:
+            raise Failed(
+                "autolabel", f"이미지 {len(named)}장 중 {len(missing)}장에 예측 줄이 없습니다 (이미지는 sha256 이름)."
+            )
+        labels = sum(len(p["labels"]) for p in images if isinstance(p, dict) and isinstance(p.get("labels"), list))
+        return f"이미지 {len(named)}장 모두 · 라벨 {labels}개"
+
     def evaluate() -> str:
         config = {
             **after,
@@ -322,11 +356,19 @@ def _trial(
         outcome, _, _ = start("export", {**after, "action": "export", "out": str(work / "out-export")})
         return f"파일 {outcome['file']}" if outcome.get("file") else "끝남"
 
-    for name, act in (("predict", predict), ("eval", evaluate), ("export", export)):
-        if name in entrypoints and name not in skip:
-            step(name, act)
-        elif name in entrypoints:
+    for name, act in (("predict", predict), ("autolabel", autolabel), ("eval", evaluate), ("export", export)):
+        entry = "predict" if name == "autolabel" else name
+        if entry not in entrypoints:
+            continue
+        if name == "autolabel" and not template.get("autolabel"):
+            steps.append(
+                {"step": name, "ok": True, "skipped": True, "took_s": 0, "detail": "하지 않음 (autolabel을 선언하지 않음)"}
+            )
+            print("── 오토라벨: 하지 않음 (badamoa.toml에 autolabel = true가 없음) ──", flush=True)
+        elif entry in skip:
             print(f"── {STEP_NAMES[name]}: [check] skip으로 건너뜀 ──", flush=True)
+        else:
+            step(name, act)
 
 
 def run(params: dict[str, Any]) -> dict[str, Any]:

@@ -68,6 +68,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fsspec" },
     { name = "httpx" },
+    { name = "packaging" },
     { name = "pillow" },
     { name = "platformdirs" },
     { name = "psutil" },
@@ -97,6 +98,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", marker = "extra == 'hub'", specifier = ">=2.0,<3" },
     { name = "optuna", marker = "extra == 'hub'", specifier = ">=4.0,<5" },
+    { name = "packaging", specifier = ">=23" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "platformdirs", specifier = ">=4.2" },
     { name = "psutil", specifier = ">=6.0" },

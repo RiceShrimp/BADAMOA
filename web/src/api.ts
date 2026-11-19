@@ -72,6 +72,8 @@ export interface User {
   id: string;
   username: string;
   role: "admin" | "member";
+  template_upload?: boolean; // a member an admin lets upload model kinds (as drafts)
+  can_upload_templates?: boolean;
 }
 
 export interface Gpu {

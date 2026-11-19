@@ -357,6 +357,7 @@ STEP_LABEL = {
     "env": "환경",
     "train": "학습",
     "predict": "테스트",
+    "autolabel": "오토라벨",
     "eval": "평가",
     "export": "내보내기",
 }
@@ -365,7 +366,11 @@ STEP_LABEL = {
 def _print_trial(result: dict) -> None:
     """A trial's verdict, step by step, as the Hub's admin screen shows it."""
     for step in result.get("steps") or []:
-        typer.echo(f"  통과 {STEP_LABEL.get(step['step'], step['step'])} ({step['took_s']:.0f}초): {step['detail']}")
+        label = STEP_LABEL.get(step["step"], step["step"])
+        if step.get("skipped"):
+            typer.echo(f"  건너뜀 {label}: {step['detail']}")
+        else:
+            typer.echo(f"  통과 {label} ({step['took_s']:.0f}초): {step['detail']}")
     failed = result.get("failed")
     if failed:
         typer.echo(f"  실패 {STEP_LABEL.get(failed, failed)}: {result.get('reason')}")
@@ -373,6 +378,65 @@ def _print_trial(result: dict) -> None:
         typer.echo(f"  {result['reason']}")
     for note in result.get("notes") or []:
         typer.echo(f"  알림: {note}")
+
+
+def _write_report(folder: Path, manifest, result: dict) -> Path:
+    """What ``check --run`` found, for ``push`` to send with the bundle: the steps, this PC and the bundle's hash."""
+    import hashlib
+    import json
+    import platform
+    from datetime import UTC, datetime
+
+    from badamoa import __version__
+    from badamoa.core import sysinfo
+    from badamoa.core.templates import CONTRACT, REPORT, bundle
+
+    try:
+        gpus = [g.get("name") for g in sysinfo.static_info().get("gpus") or []]
+    except Exception:  # noqa: BLE001 - only a description of this PC
+        gpus = []
+    report = {
+        "ok": bool(result.get("ok")),
+        "steps": result.get("steps") or [],
+        "failed": result.get("failed") or "",
+        "reason": result.get("reason") or "",
+        "notes": result.get("notes") or [],
+        "took_s": result.get("took_s"),
+        "sdk": __version__,
+        "contract": CONTRACT,
+        "python": platform.python_version(),
+        "os": platform.platform(),
+        "gpus": gpus,
+        "device": result.get("device") or "",
+        "packages": result.get("packages") or [],
+        "sources": result.get("sources") or {},
+        "bundle_sha256": hashlib.sha256(bundle(folder)).hexdigest(),
+        "name": manifest.name,
+        "version": manifest.version,
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    path = folder / REPORT
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    return path
+
+
+def _read_report(folder: Path) -> tuple[dict | None, str]:
+    """The last ``check --run`` report if it is for the bundle as it is now and it passed; else why not."""
+    import hashlib
+    import json
+
+    from badamoa.core.templates import REPORT, bundle
+
+    try:
+        report = json.loads((folder / REPORT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, "이 폴더에서 badamoa template check . --run을 한 기록이 없습니다."
+    if report.get("bundle_sha256") != hashlib.sha256(bundle(folder)).hexdigest():
+        return None, "마지막 check --run 뒤에 코드가 바뀌었습니다. 다시 badamoa template check . --run을 하세요."
+    if not report.get("ok"):
+        return None, "마지막 check --run이 통과하지 않았습니다. 고친 뒤 다시 하세요."
+    return report, ""
 
 
 def _local_trial(folder: Path, manifest, home: Path | None) -> dict:
@@ -399,6 +463,7 @@ def _local_trial(folder: Path, manifest, home: Path | None) -> dict:
             "task": manifest.task,
             "data_format": manifest.data_format,
             "resume": manifest.resume,
+            "autolabel": manifest.autolabel,
             "entrypoints": manifest.entrypoints,
         },
         "environment": spec,
@@ -430,7 +495,9 @@ def template_check(
         raise _fail(str(e)) from e
     typer.echo(f"{manifest.title} ({manifest.name} {manifest.version})")
     typer.echo(f"  태스크 : {manifest.task} · 데이터 형식 {manifest.data_format}")
-    typer.echo(f"  진입점 : {', '.join(manifest.entrypoints)}")
+    typer.echo(f"  진입점 : {', '.join(manifest.entrypoints)}{' · 오토라벨' if manifest.autolabel else ''}")
+    if manifest.reads_weights_from:
+        typer.echo(f"  이전 버전 : {manifest.reads_weights_from}로 학습한 모델에도 이 버전의 코드를 씀")
     basic = [name for name, spec in manifest.params.items() if not spec.advanced]
     detailed = [name for name, spec in manifest.params.items() if spec.advanced]
     typer.echo(f"  설정   : {', '.join(basic) or '(없음)'}")
@@ -446,9 +513,11 @@ def template_check(
     result = _local_trial(folder.resolve(), manifest, home)
     typer.echo("시험 실행 결과:")
     _print_trial(result)
+    written = _write_report(folder.resolve(), manifest, result)
     if not result["ok"]:
         raise typer.Exit(1)
-    typer.echo(f"통과 ({result['took_s']:.0f}초). Hub에 올리면 서버에서 같은 시험 실행을 합니다.")
+    typer.echo(f"통과 ({result['took_s']:.0f}초). 보고서: {written}")
+    typer.echo("badamoa template push가 이 보고서를 함께 보냅니다. Hub에서는 관리자가 다시 시험 실행하고 허용합니다.")
 
 
 @template_app.command("push")
@@ -463,8 +532,9 @@ def template_push(
 ) -> None:
     """템플릿을 Hub에 올립니다. 코드를 바꿔 다시 올릴 때는 badamoa.toml의 version을 올리세요.
 
-    올린 버전은 "시험 전"입니다. 관리자가 시험 실행하고(--trial이면 여기서) 통과한 것을 설정 → 모델 종류에서
-    "허용"하면 모두의 학습 화면에 나옵니다."""
+    먼저 `badamoa template check . --run`을 통과하세요: 그 보고서를 함께 보내고, 관리자가 아닌 계정은 보고서
+    없이 올릴 수 없습니다(올린 것은 초안). 올린 버전은 "시험 전"입니다. 관리자가 시험 실행하고(--trial이면
+    여기서) 통과한 것을 설정 → 모델 종류에서 "허용"하면 모두의 학습 화면에 나옵니다."""
     import httpx
 
     from badamoa.core.templates import TemplateError, bundle
@@ -477,10 +547,19 @@ def template_push(
         raise _fail(str(e)) from e
     base = hub.rstrip("/")
     headers = {"Authorization": f"Bearer {token}"}
+    report, why = _read_report(folder.resolve())
+    upload = {**headers, "Content-Type": "application/zip"}
+    if report is not None:  # the proof that it ran here: required from members, kept with the version
+        import base64
+        import gzip
+        import json
+
+        upload["X-Badamoa-Check"] = base64.b64encode(gzip.compress(json.dumps(report).encode("utf-8"))).decode()
+        typer.echo(f"이 PC의 시험 실행 보고서를 함께 보냅니다 ({report.get('at', '')}).")
+    else:
+        typer.echo(f"알림: {why} (관리자가 아니면 Hub가 받지 않습니다)")
     try:
-        resp = httpx.post(
-            f"{base}/api/templates", content=data, headers={**headers, "Content-Type": "application/zip"}, timeout=120
-        )
+        resp = httpx.post(f"{base}/api/templates", content=data, headers=upload, timeout=120)
     except httpx.HTTPError as e:
         raise _fail(f"Hub에 연결하지 못했습니다 ({hub}): {e}") from e
     if resp.status_code != 200:

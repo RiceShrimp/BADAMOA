@@ -7,7 +7,15 @@ import type { Environment, EnvironmentNode, Template, TemplateCheck } from "./tr
 import { Badge, CopyBlock, Icon, Modal, timeAgo, useHubUrl, usePolling } from "./ui";
 
 const ENTRY_LABEL: Record<string, string> = { train: "학습", eval: "평가", predict: "추론", export: "내보내기" };
-const STEP_LABEL: Record<string, string> = { data: "시험 데이터", env: "환경", train: "학습", predict: "테스트", eval: "평가", export: "내보내기" };
+const STEP_LABEL: Record<string, string> = {
+  data: "시험 데이터",
+  env: "환경",
+  train: "학습",
+  predict: "테스트",
+  autolabel: "오토라벨",
+  eval: "평가",
+  export: "내보내기",
+};
 
 /** Packages that did not come from an index, as " · mylib (git 1a2b3c4)". */
 function sourceNote(c: TemplateCheck): string {
@@ -22,7 +30,9 @@ function sourceNote(c: TemplateCheck): string {
 /** A template version's trial as an admin reads it: one line, the details on hover, the log a click away. */
 function TrialLine({ t }: { t: Template }) {
   const c: TemplateCheck = t.check;
-  const steps = (c.steps ?? []).map((s) => `${STEP_LABEL[s.step] ?? s.step} ${s.took_s}초 · ${s.detail}`).join("\n");
+  const steps = (c.steps ?? [])
+    .map((s) => (s.skipped ? `${STEP_LABEL[s.step] ?? s.step}: ${s.detail}` : `${STEP_LABEL[s.step] ?? s.step} ${s.took_s}초 · ${s.detail}`))
+    .join("\n");
   const log = c.job_id ? (
     <a className="link" href={`#/jobs/${c.job_id}`}>
       로그
@@ -102,6 +112,18 @@ function TrialLine({ t }: { t: Template }) {
           패키지 {c.pinned}개 버전 고정{sourceNote(c)}
         </div>
       )}
+      {t.local_check?.ok && (
+        <div className="muted" title={(t.local_check.steps ?? []).map((s) => `${STEP_LABEL[s.step] ?? s.step}: ${s.detail}`).join("\n")}>
+          올린 사람 PC에서 통과{t.local_check.by ? ` (${t.local_check.by})` : ""}: {(t.local_check.steps ?? []).filter((s) => !s.skipped).length}단계 · Python{" "}
+          {t.local_check.python} · {(t.local_check.os ?? "").split("-")[0]}
+          {t.local_check.gpus?.length ? ` · ${t.local_check.gpus[0]}` : ""}
+          {t.local_check.device && t.local_check.device !== "cpu" ? " (GPU로)" : " (CPU로)"}
+          {t.local_check.sdk ? ` · BADAMOA ${t.local_check.sdk}` : ""}
+          {t.local_check.at ? ` · ${timeAgo(t.local_check.at)}` : ""}
+        </div>
+      )}
+      {t.uploaded_by && <div className="muted">올린 사람: {t.uploaded_by}</div>}
+      {t.reads_weights_from && <div className="muted">이전 버전({t.reads_weights_from})의 모델에도 이 버전의 코드를 씀</div>}
       {t.code_url && (
         <a className="link" href={t.code_url} download>
           이 버전의 코드 받기
@@ -150,7 +172,7 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
           </a>
         ))}
       </nav>
-      {part === "templates" && <Templates isAdmin={isAdmin} />}
+      {part === "templates" && <Templates isAdmin={isAdmin} user={user} />}
       {part === "environments" && <Environments isAdmin={isAdmin} nodes={nodes ?? []} />}
       {part === "environments" && <Packages isAdmin={isAdmin} />}
       {part === "projects" && <ProjectDefaults />}
@@ -529,8 +551,71 @@ function PrepareDialog({
   );
 }
 
-function Templates({ isAdmin }: { isAdmin: boolean }) {
-  const hubUrl = useHubUrl();
+/** What someone who may upload model kinds runs on their own PC, with this Hub's address filled in. */
+function TemplateKit() {
+  const { data: kit, error } = usePolling(() => api<TemplateKitInfo>("/templates/kit"), 600000);
+  const [token, setToken] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const makeToken = async () => {
+    setFailed(null);
+    try {
+      const made = await api<{ token: string }>("/tokens", { body: { name: "모델 종류 올리기" } });
+      setToken(made.token);
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    }
+  };
+  if (error) return <div className="error">{error}</div>;
+  if (!kit) return <p className="muted">불러오는 중…</p>;
+  return (
+    <div className="kit-steps">
+      <CopyBlock label="1. 내 PC에 BADAMOA 설치 (uv)" text={kit.install_uv} />
+      <CopyBlock label="pip를 쓴다면" text={kit.install_pip} />
+      {kit.wheel_url && (
+        <p className="muted small">
+          설치 파일을 직접 받으려면:{" "}
+          <a className="link" href={kit.wheel_url}>
+            {kit.wheel_url.split("/").pop()}
+          </a>
+        </p>
+      )}
+      <CopyBlock label="2. 뼈대 만들기 — 만들어진 학습 코드 파일을 내 코드로 고칩니다" text={kit.init} />
+      <CopyBlock label="3. 내 PC에서 시험 실행 — 학습 · 테스트 · 평가 · 내보내기를 해 보고 보고서를 남깁니다" text={kit.check} />
+      <div className="eyebrow">4. 올릴 때 쓸 API 토큰</div>
+      {token ? (
+        <>
+          <CopyBlock text={token} />
+          <p className="warn-text small">이 토큰은 지금 한 번만 보입니다. 잃어버리면 새로 만드세요 (에이전트 연결 화면에서 지울 수 있음).</p>
+        </>
+      ) : (
+        <button className="small" onClick={() => void makeToken()}>
+          토큰 만들기
+        </button>
+      )}
+      {failed && <div className="error">{failed}</div>}
+      <CopyBlock label="5. 올리기 — 3의 보고서를 함께 보냅니다" text={token ? kit.push.replace("<토큰>", token) : kit.push} />
+      <p className="muted small">
+        {kit.draft
+          ? "올린 것은 초안으로, 나만 보고 학습에 쓸 수 있습니다. 관리자가 서버에서 시험 실행하고 허용하면 모두의 학습 화면에 나옵니다. 3을 통과하지 않은 것은 Hub가 받지 않습니다."
+          : '올린 것은 "시험 전"으로 등록됩니다. 아래 목록에서 "시험 실행" 후 통과한 것을 "허용"하면 모두에게 보입니다.'}
+        {" "}PyPI에 없는 사내 패키지는 설정 → 환경의 "사내 패키지"에 wheel로 올리고 requirements에 이름을 적습니다.
+      </p>
+    </div>
+  );
+}
+
+interface TemplateKitInfo {
+  hub_url: string;
+  install_uv: string;
+  install_pip: string;
+  wheel_url: string;
+  init: string;
+  check: string;
+  push: string;
+  draft: boolean;
+}
+
+function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
   const [watching, setWatching] = useState(false);
   const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), watching ? 3000 : 20000, [watching]);
   const preparing = templates?.some((t) => t.environment.preparing.length > 0 || t.check?.state === "checking") ?? false;
@@ -644,6 +729,15 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
         )}
       </div>
       {message && <div className={message.kind === "ok" ? "notice ok" : "error"}>{message.text}</div>}
+      {!isAdmin && user.can_upload_templates && (
+        <details className="kit-card">
+          <summary>
+            <strong>내 PC에서 만들어 올리기</strong>{" "}
+            <span className="muted small">모델 종류를 올릴 수 있는 계정입니다. 올린 것은 초안으로 시작합니다.</span>
+          </summary>
+          <TemplateKit />
+        </details>
+      )}
       <div className="table-wrap">
         <table className="plain">
           <thead>
@@ -661,12 +755,13 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
               <tr key={t.id}>
                 <td>
                   <strong>{t.title}</strong> {t.builtin && <span className="tag">기본 제공</span>}
+                  {t.draft && !isAdmin && <span className="tag">내 초안</span>}
                   <div className="muted small">{t.description || t.name}</div>
                 </td>
                 <td className="num">
                   {t.version}
                   {t.versions > 1 && <span className="muted small"> 외 {t.versions - 1}개</span>}
-                  {isAdmin && !t.builtin && t.check && <TrialLine t={t} />}
+                  {(isAdmin || (t.draft && t.uploaded_by === user.username)) && !t.builtin && t.check && <TrialLine t={t} />}
                 </td>
                 <td>
                   {t.entrypoints.map((e) => (
@@ -742,23 +837,10 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
       {guide && (
         <Modal title="모델 종류 추가하기" onClose={() => setGuide(false)}>
           <p className="muted">
-            사내 학습 코드를 폴더 하나로 묶고 선언 파일(badamoa.toml)을 더하면 됩니다. 아래 명령이 뼈대를 만들어 줍니다.
+            사내 학습 코드를 폴더 하나로 묶고 선언 파일(badamoa.toml)을 더하면 됩니다. 폴더를 zip으로 묶어 이 화면의 "올리기"로
+            등록해도 같습니다. 코드를 바꿔 다시 올릴 때는 선언 파일의 version을 올립니다.
           </p>
-          <CopyBlock label="1. 뼈대 만들기" text="badamoa template init my-model" />
-          <CopyBlock label="2. train.py를 고친 뒤 이 PC에서 시험 실행 (서버가 올린 뒤 하는 것과 같음)" text="badamoa template check my-model --run" />
-          <CopyBlock
-            label="3. 올리기 (에이전트 연결 화면에서 발급한 관리자 토큰, --trial이면 서버 시험 실행까지 하고 기다림)"
-            text={`badamoa template push my-model --trial --hub ${hubUrl} --token <토큰>`}
-          />
-          <p className="muted small">
-            올린 버전은 "시험 전"으로 등록됩니다. 이 화면에서 "시험 실행"을 누르면 학습 서버 한 대가 작은 합성 데이터로 짧게 돌려
-            보고, 통과한 것을 "허용"하면 모두의 학습 화면에 나옵니다. PyPI에 없는 사내 패키지는 설정 → 환경의 "사내 패키지"에
-            wheel로 올리고 requirements에 이름을 적습니다.
-          </p>
-          <p className="muted small">
-            폴더를 zip으로 묶어 이 화면의 "올리기"로 등록해도 같습니다. 코드를 바꿔 다시 올릴 때는 선언 파일의 version을
-            올립니다.
-          </p>
+          <TemplateKit />
           <div className="modal-actions">
             <button onClick={() => setGuide(false)}>닫기</button>
           </div>

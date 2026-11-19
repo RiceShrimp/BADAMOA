@@ -7,6 +7,7 @@ data_format = "yolo"
 hidden = true
 variant = "model"
 resume = true
+autolabel = true
 
 [entrypoints]
 train = "python train.py --config {config}"
