@@ -513,19 +513,24 @@ def manifest(db: Session, node: Node, job_id: str, after: int = 0, limit: int = 
     return release_manifest(db, node, db.get(Release, run.release_id), after, limit)
 
 
-def release_manifest(db: Session, node: Node, release: Release, after: int = 0, limit: int = 2000) -> dict[str, Any]:
-    """A page of a release's items as the node needs them to lay the data out for a template."""
+def release_manifest(
+    db: Session, node: Node, release: Release, after: int = 0, limit: int = 2000, only: Any = None
+) -> dict[str, Any]:
+    """A page of a release's items as the node needs them to lay the data out for a template.
+
+    ``only``: a query of item ids to keep (a labeling set's images to 오토라벨)."""
     dataset = db.get(Dataset, release.dataset_id)
     space = db.get(LabelSpace, release.label_space_id)
     limit = max(1, min(limit, MANIFEST_MAX))
-    rows = db.execute(
+    query = (
         select(ReleaseItem, Item, LabelRevision)
         .join(Item, Item.id == ReleaseItem.item_id)
         .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id)
         .where(ReleaseItem.release_id == release.id, Item.id > after)
-        .order_by(Item.id)
-        .limit(limit)
-    ).all()
+    )
+    if only is not None:
+        query = query.where(ReleaseItem.item_id.in_(only))
+    rows = db.execute(query.order_by(Item.id).limit(limit)).all()
     locations = {
         loc.id: loc.root for loc in db.scalars(select(StorageLocation).where(StorageLocation.node_id == node.id))
     }

@@ -1,4 +1,5 @@
-"""Evaluate, export and test a trained Ultralytics YOLO model: the ``eval`` / ``export`` / ``predict`` entry points."""
+"""Evaluate, export, test and 오토라벨 with a trained Ultralytics YOLO model: the ``eval`` / ``export`` /
+``predict`` entry points (오토라벨 is predict with ``action = "autolabel"``)."""
 
 from __future__ import annotations
 
@@ -179,6 +180,31 @@ def predict(run, model) -> None:
     bm.finish(predictions=predictions)
 
 
+def autolabel(run, model) -> None:
+    """A labeling set's images (the node named each file by its hash): every image's predictions in the
+    dataset's label form, outlines and keypoints included. No pictures: there may be thousands."""
+    images = sorted(p for p in Path(run.source).iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+    conf = float(run.config.get("conf", 0.25))
+    print(f"오토라벨: {len(images):,}장을 확신도 {conf} 이상으로 예측합니다", flush=True)
+    predicted = []
+    results = model.predict(
+        [str(p) for p in images],
+        stream=True,
+        conf=conf,
+        imgsz=run.train_params.get("imgsz", 640),
+        device=run.device,
+        verbose=False,
+    )
+    for n, (image, result) in enumerate(zip(images, results, strict=True), 1):
+        predicted.append({"image": image.stem, **as_labels(result)})
+        if n % 200 == 0 or n == len(images):
+            print(f"{n:,}/{len(images):,}장", flush=True)
+    bm.log_predictions(predicted)
+    labels = sum(len(p["labels"]) for p in predicted)
+    print(f"라벨 {labels:,}개를 그렸습니다 (예측이 없는 이미지 {sum(1 for p in predicted if not p['labels']):,}장)")
+    bm.finish(images=len(predicted), labels=labels)
+
+
 def main() -> None:
     run = bm.init()
     os.chdir(run.cache)
@@ -191,6 +217,8 @@ def main() -> None:
     model = YOLO(str(run.weights))
     if action == "eval":
         evaluate(run, model)
+    elif action == "autolabel":
+        autolabel(run, model)
     else:
         predict(run, model)
 

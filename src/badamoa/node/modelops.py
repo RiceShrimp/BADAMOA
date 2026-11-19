@@ -1,9 +1,10 @@
-"""Model jobs (``model.run``): evaluate, export or test a registered model with its template's code.
+"""Model jobs (``model.run``): evaluate, export, test or 오토라벨 with a registered model's template code.
 
 The node fetches the weights (cached by hash), prepares what the action needs —
 the release in the template's data format for ``eval``, the uploaded images for
-``predict`` — runs the template's entry point in its environment, and sends the
-result and any files the code recorded back to the Hub.
+``predict``, a labeling set's images (named by their hash) for ``autolabel`` — runs the
+template's entry point in its environment, and sends the result and any files the code
+recorded back to the Hub.
 """
 
 from __future__ import annotations
@@ -91,6 +92,30 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 _fetch(client, f"{base}/blob/input", source / image["name"], {"index": n})
             config["source"] = str(source)
             config["params"] = {k: v for k, v in config["params"].items() if k != "images"}
+        elif action == "autolabel":  # the template's predict code, over a labeling set's images
+            header, items = trainer.manifest_stream(client, base)
+            roots = [root for root in header["locations"].values() if root]
+            source = work / "inputs"
+            source.mkdir(parents=True, exist_ok=True)
+            placed = missing = 0
+            for item in items:
+                image = Path(header["locations"].get(str(item.get("location_id")), "")).expanduser() / item["rel_path"]
+                try:
+                    ok = image.is_file() and image.stat().st_size == item["bytes"]
+                except OSError:
+                    ok = False
+                if not ok:  # moved, deleted or replaced since it was registered
+                    missing += 1
+                    continue
+                # named by its hash: the predictions come back keyed by it
+                links = not (in_container and os.name == "nt")
+                exporter._place(image, source / f"{item['sha256']}{image.suffix.lower()}", links)
+                placed += 1
+            if not placed:
+                raise RuntimeError("오토라벨할 이미지를 이 서버에서 찾지 못했습니다.")
+            note = f" (찾지 못한 이미지 {missing:,}장은 건너뜀)" if missing else ""
+            print(f"{header['dataset']} {header['version']}의 이미지 {placed:,}장에 오토라벨을 돌립니다{note}.", flush=True)
+            config["source"] = str(source)
 
         code = trainer.template_dir(client, base + "/blob", node_home, template)
         python, _, _ = trainer.ready_environment(node_home, spec)

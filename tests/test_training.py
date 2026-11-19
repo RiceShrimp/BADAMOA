@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import shutil
 import threading
 import time
 import zipfile
@@ -533,6 +534,58 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     missing = {"images": [{"name": "x.jpg", "blob": "0" * 64}]}
     assert hub.post(f"/api/models/{model_id}/predict", json=missing).status_code == 400
     assert [o["kind"] for o in hub.get(f"/api/models/{model_id}/ops").json()] == ["predict", "export", "eval"]
+
+
+def test_autolabel_a_labeling_set(hub, release, tmp_path):
+    """오토라벨: a registered model draws labels on a set's images nobody labelled yet; sure ones are accepted."""
+    run, job = _train(hub, release)
+    assert job["status"] == "succeeded", _logs(hub, job["id"])
+    model = hub.get(f"/api/runs/{run['id']}").json()["model"]
+    # images of the same project nobody labelled yet: a folder without label files
+    root = make_yolo(tmp_path / "raw")
+    shutil.rmtree(root / "labels")
+    (root / "data.yaml").unlink()
+    body = {"node_id": hub.node_id, "path": str(root), "dataset": "raw", "version": "v1", "classes": CLASSES}
+    imported = _wait(hub, hub.post(f"/api/projects/{release['project_id']}/imports", json=body).json()["id"])
+    assert imported["status"] == "succeeded", _logs(hub, imported["id"])
+    raw = imported["result"]["release_id"]
+    made = hub.post(
+        "/api/label-sets", json={"release_id": raw, "name": "오토라벨", "filter": {"state": "unlabelled"}, "part_size": 4}
+    ).json()
+    assert made["items"] == 8 and made["autolabel"] is None
+
+    # ---- the models that can label it
+    offered = hub.get(f"/api/label-sets/{made['id']}/autolabel/models").json()
+    assert offered["todo"] == 8
+    assert [(m["id"], m["problem"], m["matched"]) for m in offered["models"]] == [(model["id"], "", len(CLASSES))]
+    url = f"/api/label-sets/{made['id']}/autolabel"
+    assert hub.post(url, json={"model_id": model["id"], "keep": 0.3, "accept": 0.2}).status_code == 400
+    assert hub.post(url, json={"model_id": "nope"}).status_code == 404
+
+    # ---- run (the dummy model: a sure box, an unsure one, nothing, in turn): sure images accepted, to review
+    started = hub.post(url, json={"model_id": model["id"], "accept": 0.9, "gpus": 0})
+    assert started.status_code == 200, started.text
+    job_id = started.json()["autolabel"]["job_id"]
+    done = _wait(hub, job_id)
+    assert done["status"] == "succeeded", _logs(hub, job_id)
+    view = hub.get(f"/api/label-sets/{made['id']}").json()
+    assert view["autolabel"]["status"] == "succeeded" and view["autolabel"]["model"]["id"] == model["id"]
+    assert view["autolabel"]["result"] == {"images": 8, "labels": 6, "accepted": 3, "empty": 2, "skipped": 0}
+    assert view["states"] == {"todo": 5, "labelled": 3, "approved": 0, "rejected": 0}
+    opened = view["open_release_id"]
+    assert opened != raw  # accepted labels went into the dataset's work in progress
+    items = hub.get(f"/api/releases/{opened}/items", params={"label_set": made["id"], "limit": 50}).json()["items"]
+    accepted = [i for i in items if i["set"]["state"] == "labelled"]
+    assert len(accepted) == 3 and all(i["box_count"] == 1 for i in accepted)
+    detail = hub.get(f"/api/releases/{opened}/items/{accepted[0]['id']}").json()
+    assert f"model:{model['name']} v{model['version']}" in [r["source"] for r in detail["revisions"]]
+
+    # ---- the others: whoever opens one starts from what the model drew (the unsure box), or from nothing
+    todo = [i for i in items if i["set"]["state"] == "todo"]
+    starts = [hub.get(f"/api/label-sets/{made['id']}/items/{i['id']}/autolabel").json() for i in todo]
+    assert sorted(len(s["labels"]) for s in starts) == [0, 0, 1, 1, 1]
+    assert {tuple(s["scores"]) for s in starts} == {(), (0.5,)}
+    assert all(i["box_count"] == 0 for i in todo)  # not saved until a person does
 
 
 def test_continue_from_a_registered_model_and_server_load(hub, release):

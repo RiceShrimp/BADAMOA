@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from . import labeling
+from . import autolabel, labeling
 from .deps import current_user, db_session
 from .models import User
 
@@ -85,6 +85,37 @@ def review(
     result = labeling.review_item(db, user, set_id, item_id, body.approve, body.note)
     db.commit()
     return result
+
+
+@router.get("/label-sets/{set_id}/autolabel/models")
+def autolabel_models(set_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """The project's models that can label the set's images (and why the others cannot)."""
+    return autolabel.choices(db, set_id)
+
+
+class Autolabel(BaseModel):
+    model_id: str
+    keep: float = autolabel.KEEP  # predictions below are dropped
+    accept: float | None = None  # images whose predictions all reach it are saved and sent on at once
+    gpus: int | None = None  # 0: on the CPU (by default a GPU when the server has one)
+
+
+@router.post("/label-sets/{set_id}/autolabel")
+def start_autolabel(
+    set_id: str, body: Autolabel, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Run a model over the set's images not labelled yet; people start from what it drew."""
+    autolabel.start(db, user, set_id, body.model_id, keep=body.keep, accept=body.accept, gpus=body.gpus)
+    db.commit()
+    return labeling.set_view(db, user, set_id)
+
+
+@router.get("/label-sets/{set_id}/items/{item_id}/autolabel")
+def autolabel_item(
+    set_id: str, item_id: int, _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """The model's labels for one image of the set (above the lowest confidence)."""
+    return autolabel.predictions_for(db, set_id, item_id)
 
 
 @router.delete("/label-sets/{set_id}")

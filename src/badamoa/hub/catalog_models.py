@@ -230,6 +230,8 @@ class LabelSet(Base):
     instructions: Mapped[str] = mapped_column(Text, default="")
     part_size: Mapped[int] = mapped_column(Integer, default=50)
     review: Mapped[bool] = mapped_column(Boolean, default=True)  # every image is checked by a reviewer
+    # the last 오토라벨: op id, model, confidences, how many images it was asked for, what came of it
+    autolabel: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

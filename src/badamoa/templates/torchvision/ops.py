@@ -53,6 +53,34 @@ def main() -> None:
         print(f"내보낸 파일: {exported.name} ({exported.stat().st_size / 1024**2:.1f} MB)")
         bm.log_artifact(exported)
         bm.finish(file=exported.name, bytes=exported.stat().st_size)
+    elif action == "autolabel":  # a labeling set's images, named by their hash: boxes, no pictures
+        from PIL import Image
+        from torchvision.transforms.functional import pil_to_tensor
+
+        threshold = float(run.config.get("conf", 0.25))
+        paths = sorted(p for p in run.source.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+        print(f"오토라벨: {len(paths):,}장을 확신도 {threshold} 이상으로 예측합니다", flush=True)
+        predicted = []
+        for n, path in enumerate(paths, 1):
+            with Image.open(path) as opened:
+                picture = opened.convert("RGB")
+            width, height = picture.size
+            with torch.no_grad():
+                found = model([(pil_to_tensor(picture).float() / 255).to(device)])[0]
+            labels, scores = [], []
+            rows = zip(found["boxes"].tolist(), found["labels"].tolist(), found["scores"].tolist(), strict=True)
+            for (x0, y0, x1, y1), label, score in rows:
+                index = int(label) - 1
+                if score < threshold or not 0 <= index < len(run.classes):
+                    continue
+                centre = [(x0 + x1) / 2 / width, (y0 + y1) / 2 / height]
+                labels.append([index, *(round(v, 5) for v in (*centre, (x1 - x0) / width, (y1 - y0) / height))])
+                scores.append(round(float(score), 4))
+            predicted.append({"image": path.stem, "labels": labels, "scores": scores})
+            if n % 200 == 0 or n == len(paths):
+                print(f"{n:,}/{len(paths):,}장", flush=True)
+        bm.log_predictions(predicted)
+        bm.finish(images=len(predicted), labels=sum(len(p["labels"]) for p in predicted))
     else:
         from PIL import Image, ImageDraw
         from torchvision.transforms.functional import pil_to_tensor
