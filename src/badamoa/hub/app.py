@@ -26,6 +26,7 @@ from . import (
     install,
     labeling_api,
     modelops_api,
+    overview,
     registry,
     registry_api,
     resources,
@@ -68,6 +69,10 @@ async def _sweeper(hub: Hub) -> None:
         with hub.db.session() as db:
             return catalog.fill_digests(db)
 
+    def charts() -> int:
+        with hub.db.session() as db:
+            return overview.fill_charts(db)
+
     ticks = 0
     while True:
         await anyio.sleep(_SWEEP_INTERVAL_S)
@@ -76,6 +81,10 @@ async def _sweeper(hub: Hub) -> None:
             await anyio.to_thread.run_sync(fingerprint)
         except Exception:
             log.exception("version fingerprints failed")
+        try:  # finished versions' statistics, one each round, so the statistics tab opens at once
+            await anyio.to_thread.run_sync(charts)
+        except Exception:
+            log.exception("version statistics failed")
         if ticks % int(cleanup.EVERY_S // _SWEEP_INTERVAL_S) == 0:
             try:
                 await anyio.to_thread.run_sync(cleanup.scheduled, hub.db, hub.settings)
