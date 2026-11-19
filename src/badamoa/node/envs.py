@@ -8,6 +8,11 @@
   use the same one.
 - **python**: an interpreter that already exists on the node (a conda or venv
   environment the team maintains). BADAMOA only runs it.
+
+The same versions on every server: when a template version passed its trial, the Hub sends the
+versions installed then (``pinned``) and the install keeps to them (PyTorch's version only: its
+build still follows the server's driver). In-house wheels come from the Hub's package list
+(``wheels``): the node fetches them into ``cache/wheels`` and uv looks there first.
 """
 
 from __future__ import annotations
@@ -71,6 +76,27 @@ def torch_backend() -> str:
     return os.environ.get("BADAMOA_TORCH_BACKEND", "").strip() or "auto"
 
 
+def fetch_wheels(home: Path, wheels: list[dict[str, Any]], get: Callable[[str], bytes]) -> Path:
+    """The Hub's in-house wheels in this node's ``cache/wheels``, each checked against its hash."""
+    folder = home / "cache" / "wheels"
+    folder.mkdir(parents=True, exist_ok=True)
+    for wheel in wheels:
+        name = Path(str(wheel.get("filename") or "")).name
+        digest = str(wheel.get("sha256") or "")
+        target = folder / name
+        if not name.endswith(".whl") or not digest:
+            continue
+        if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+            continue
+        data = get(digest)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise RuntimeError(f"Hub에서 받은 패키지 {name}의 해시가 맞지 않습니다.")
+        partial = target.with_name(f"{name}.{os.getpid()}.part")
+        partial.write_bytes(data)
+        partial.replace(target)
+    return folder
+
+
 def env_dir(home: Path, requirements: list[str], python: str, torch: bool) -> Path:
     """The directory changes whenever anything that defines the environment does."""
     identity = [python, sorted(requirements), torch_backend() if torch else ""]
@@ -101,11 +127,19 @@ def _run(command: list[str], log: Callable[[str], None]) -> None:
 
 
 def ensure(
-    home: Path, requirements: list[str], python: str = "3.12", torch: bool = False, log: Callable[[str], None] = print
+    home: Path,
+    requirements: list[str],
+    python: str = "3.12",
+    torch: bool = False,
+    log: Callable[[str], None] = print,
+    pinned: list[str] | None = None,
+    find_links: Path | None = None,
 ) -> Path:
     """Return the Python of the automatically installed environment, building it if it is not there yet.
 
-    Code that needs nothing beyond the standard library runs with the node's own Python.
+    Code that needs nothing beyond the standard library runs with the node's own Python. ``pinned``:
+    the versions to keep to (if they cannot be installed here, the install goes on without them and
+    says so). ``find_links``: a folder of wheels uv looks in besides the index.
     """
     if not requirements:
         return Path(sys.executable)
@@ -144,8 +178,23 @@ def ensure(
         install = [uv, "pip", "install", "--color", "never", "--python", str(python_of(env))]
         if torch:
             install += ["--torch-backend", torch_backend()]
-        _run(install + requirements, log)
-        ready.write_text(json.dumps({"requirements": requirements, "python": python, "torch": torch}), encoding="utf-8")
+        if find_links is not None:
+            install += ["--find-links", str(find_links)]
+        kept = 0
+        if pinned:
+            constraints = env / "badamoa-pinned.txt"
+            constraints.write_text("\n".join(pinned) + "\n", encoding="utf-8")
+            try:
+                _run(install + ["-c", str(constraints)] + requirements, log)
+                kept = len(pinned)
+                log(f"시험 실행 때의 버전으로 설치했습니다 (고정 {kept}개).")
+            except RuntimeError as e:
+                log(f"시험 실행 때의 버전으로는 이 서버에 설치하지 못해 고정 없이 설치합니다: {str(e)[-200:]}")
+                _run(install + requirements, log)
+        else:
+            _run(install + requirements, log)
+        marker = {"requirements": requirements, "python": python, "torch": torch, "pinned": kept}
+        ready.write_text(json.dumps(marker), encoding="utf-8")
         log(f"환경 준비 완료 ({time.monotonic() - started:.0f}초)")
         return python_of(env)
     finally:
@@ -208,19 +257,75 @@ def existing(path: str) -> Path:
     return python
 
 
-def resolve(home: Path, spec: dict[str, Any], log: Callable[[str], None] = print) -> Path:
-    """The Python a run should use, from the environment snapshot the Hub sent (not for Docker: ``containers``)."""
+def resolve(
+    home: Path, spec: dict[str, Any], log: Callable[[str], None] = print, get: Callable[[str], bytes] | None = None
+) -> Path:
+    """The Python a run should use, from the environment snapshot the Hub sent (not for Docker: ``containers``).
+
+    ``get``: fetches an in-house wheel from the Hub by its hash (needed when the spec names ``wheels``).
+    """
     if spec.get("kind") == "docker":
         raise RuntimeError("Docker 환경에는 Python 경로가 없습니다 (컨테이너로 실행합니다).")
     if spec.get("kind") == "python":
         return existing(str(spec.get("path", "")))
-    return ensure(home, list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")), log)
+    requirements = list(spec.get("requirements") or [])
+    links = fetch_wheels(home, spec["wheels"], get) if spec.get("wheels") and get and requirements else None
+    return ensure(
+        home,
+        requirements,
+        spec.get("python") or "3.12",
+        bool(spec.get("torch")),
+        log,
+        pinned=list(spec.get("pinned") or []),
+        find_links=links,
+    )
 
 
 PACKAGES = (
     "import importlib.metadata as m, json;"
     "print(json.dumps(sorted({f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions() if d.metadata['Name']})))"
 )
+# Where each package came from, as it wrote down itself when it was installed from somewhere other
+# than an index (PEP 610 ``direct_url.json``): a Git commit, a URL, a folder on the server.
+SOURCES = """
+import importlib.metadata as m, json
+found = {}
+for d in m.distributions():
+    name = d.metadata["Name"]
+    try:
+        url = json.loads(d.read_text("direct_url.json") or "null")
+    except Exception:
+        url = None
+    if name and isinstance(url, dict):
+        found[name] = url
+print(json.dumps(found))
+"""
+
+
+def describe(direct: dict[str, Any]) -> dict[str, Any]:
+    """One package's ``direct_url.json`` as a source: git (with the commit), local (a folder or file on the
+    server), editable, or url."""
+    url = str(direct.get("url") or "")
+    if direct.get("vcs_info"):
+        info = direct["vcs_info"]
+        return {"kind": str(info.get("vcs") or "git"), "url": url, "commit": str(info.get("commit_id") or "")}
+    if (direct.get("dir_info") or {}).get("editable"):
+        return {"kind": "editable", "url": url}
+    if url.startswith("file:"):
+        return {"kind": "local", "url": url}
+    return {"kind": "url", "url": url}
+
+
+def sources(python: Path) -> dict[str, dict[str, Any]]:
+    """The packages of an environment that did not come from an index, and where they came from."""
+    try:
+        done = subprocess.run(
+            [str(python), "-c", SOURCES], capture_output=True, text=True, timeout=60, check=False, env=code_env()
+        )
+        found = json.loads(done.stdout.strip().splitlines()[-1]) if done.returncode == 0 else {}
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return {}
+    return {name: describe(url) for name, url in found.items() if isinstance(url, dict)}
 
 
 def packages(python: Path) -> list[str]:

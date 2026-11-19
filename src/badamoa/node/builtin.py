@@ -141,7 +141,16 @@ def env_prepare(params: dict[str, Any]) -> dict[str, Any]:
         took = time.monotonic() - started
         print(f"{params.get('template', '')} Docker 이미지 준비됨: {spec.get('image')} ({image_id[:19]}, {took:.0f}초)")
         return {"image": spec.get("image"), "image_id": image_id}
-    python = envs.resolve(Path(home).resolve(), params.get("environment") or {})
+    get = None
+    if spec.get("wheels") and os.environ.get("BADAMOA_HUB_URL"):  # in-house wheels come from the Hub
+        import httpx
+
+        from badamoa.node import trainer
+
+        hub, token = os.environ["BADAMOA_HUB_URL"], os.environ.get("BADAMOA_NODE_TOKEN", "")
+        client = httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        get = trainer.package_getter(client)
+    python = envs.resolve(Path(home).resolve(), spec, print, get)
     installed = envs.packages(python)
     took = time.monotonic() - started
     print(f"{params.get('template', '')} 환경 준비됨: {python} (패키지 {len(installed)}개, {took:.0f}초)")

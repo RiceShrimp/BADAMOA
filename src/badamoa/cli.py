@@ -335,9 +335,75 @@ def template_init(
     typer.echo(f"  3. badamoa template push {folder} --hub http://<hub>:8470 --token <API 토큰>")
 
 
+STEP_LABEL = {
+    "data": "시험 데이터",
+    "env": "환경",
+    "train": "학습",
+    "predict": "테스트",
+    "eval": "평가",
+    "export": "내보내기",
+}
+
+
+def _print_trial(result: dict) -> None:
+    """A trial's verdict, step by step, as the Hub's admin screen shows it."""
+    for step in result.get("steps") or []:
+        typer.echo(f"  통과 {STEP_LABEL.get(step['step'], step['step'])} ({step['took_s']:.0f}초): {step['detail']}")
+    failed = result.get("failed")
+    if failed:
+        typer.echo(f"  실패 {STEP_LABEL.get(failed, failed)}: {result.get('reason')}")
+    elif result.get("reason"):
+        typer.echo(f"  {result['reason']}")
+    for note in result.get("notes") or []:
+        typer.echo(f"  알림: {note}")
+
+
+def _local_trial(folder: Path, manifest, home: Path | None) -> dict:
+    """The Hub's trial run, here: the same sample, environment, steps and pass rules, nothing sent anywhere."""
+    import time
+
+    from badamoa.core.templates import check_params
+    from badamoa.node import checker
+
+    env = manifest.environment
+    if env.image and not env.requirements:
+        spec = {"kind": "docker", "name": "Docker 이미지", "image": env.image}
+    else:
+        spec = {"kind": "auto", "name": "자동 설치", "requirements": env.requirements, "python": env.python}
+        spec["torch"] = env.torch
+    if env.default:
+        typer.echo(f"  Hub에 등록된 환경 '{env.default}'은 이 PC에서 알 수 없어 requirements로 설치합니다.")
+    params = {
+        "template": {
+            "name": manifest.name,
+            "version": manifest.version,
+            "builtin": False,
+            "sha256": "",
+            "task": manifest.task,
+            "data_format": manifest.data_format,
+            "resume": manifest.resume,
+            "entrypoints": manifest.entrypoints,
+        },
+        "environment": spec,
+        "params": check_params(manifest),
+        "check": manifest.check.model_dump(exclude={"params"}),
+        "data": manifest.data.model_dump(),
+        "code": str(folder),
+    }
+    where = (home or Path.home() / ".badamoa" / "template-trial").expanduser().resolve()
+    typer.echo(f"이 PC에서 시험 실행합니다 (환경 · 캐시: {where})")
+    return checker.attempt(params, where, f"local-{int(time.time())}")
+
+
 @template_app.command("check")
-def template_check(folder: Annotated[Path, typer.Argument(help="템플릿 폴더")] = Path(".")) -> None:
-    """선언 파일(badamoa.toml)이 올바른지 확인합니다."""
+def template_check(
+    folder: Annotated[Path, typer.Argument(help="템플릿 폴더")] = Path("."),
+    run: Annotated[
+        bool, typer.Option("--run", help="올린 뒤 서버가 하는 시험 실행(합성 데이터로 학습 → 테스트 · 평가)을 이 PC에서")
+    ] = False,
+    home: Annotated[Path | None, typer.Option(help="--run의 환경 · 캐시를 둘 폴더 (기본 ~/.badamoa/template-trial)")] = None,
+) -> None:
+    """선언 파일(badamoa.toml)이 올바른지 확인합니다. --run이면 서버처럼 짧게 돌려 봅니다."""
     from badamoa.core.templates import TemplateError, bundle, load_manifest
 
     try:
@@ -358,6 +424,14 @@ def template_check(folder: Annotated[Path, typer.Argument(help="템플릿 폴더
     typer.echo(f"  묶음   : {size / 1024:.0f} KB")
     for note in manifest.notes:
         typer.echo(f"  알림   : {note}")
+    if not run:
+        return
+    result = _local_trial(folder.resolve(), manifest, home)
+    typer.echo("시험 실행 결과:")
+    _print_trial(result)
+    if not result["ok"]:
+        raise typer.Exit(1)
+    typer.echo(f"통과 ({result['took_s']:.0f}초). Hub에 올리면 서버에서 같은 시험 실행을 합니다.")
 
 
 @template_app.command("push")
@@ -365,8 +439,15 @@ def template_push(
     folder: Annotated[Path, typer.Argument(help="템플릿 폴더")] = Path("."),
     hub: Annotated[str, typer.Option(envvar="BADAMOA_HUB_URL", help="Hub 주소")] = "http://localhost:8470",
     token: Annotated[str, typer.Option(envvar="BADAMOA_TOKEN", help="관리자의 API 토큰 (웹 UI → 에이전트 연결)")] = "",
+    trial: Annotated[
+        bool, typer.Option("--trial", help="올린 뒤 학습 서버에서 시험 실행을 시작하고 끝날 때까지 기다립니다")
+    ] = False,
+    wait_min: Annotated[int, typer.Option(help="--trial로 기다릴 최대 시간(분)")] = 60,
 ) -> None:
-    """템플릿을 Hub에 올립니다. 코드를 바꿔 다시 올릴 때는 badamoa.toml의 version을 올리세요."""
+    """템플릿을 Hub에 올립니다. 코드를 바꿔 다시 올릴 때는 badamoa.toml의 version을 올리세요.
+
+    올린 버전은 "시험 전"입니다. 관리자가 시험 실행하고(--trial이면 여기서) 통과한 것을 설정 → 모델 종류에서
+    "허용"하면 모두의 학습 화면에 나옵니다."""
     import httpx
 
     from badamoa.core.templates import TemplateError, bundle
@@ -377,20 +458,51 @@ def template_push(
         data = bundle(folder)
     except TemplateError as e:
         raise _fail(str(e)) from e
+    base = hub.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}"}
     try:
         resp = httpx.post(
-            f"{hub.rstrip('/')}/api/templates",
-            content=data,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/zip"},
-            timeout=120,
+            f"{base}/api/templates", content=data, headers={**headers, "Content-Type": "application/zip"}, timeout=120
         )
     except httpx.HTTPError as e:
         raise _fail(f"Hub에 연결하지 못했습니다 ({hub}): {e}") from e
     if resp.status_code != 200:
-        try:
-            detail = resp.json().get("detail", resp.text)
-        except ValueError:
-            detail = resp.text
-        raise _fail(f"등록 실패 ({resp.status_code}): {detail}")
+        raise _fail(f"등록 실패 ({resp.status_code}): {_detail(resp)}")
     registered = resp.json()
     typer.echo(f"등록됨: {registered['title']} ({registered['name']} {registered['version']})")
+    check = registered.get("check") or {}
+    if not trial:
+        state = check.get("state")
+        if state in ("pending", "unchecked"):
+            typer.echo('시험 전입니다. 설정 → 모델 종류에서 "시험 실행" 후 통과하면 "허용"하세요 (--trial로 여기서 시작).')
+        else:
+            typer.echo(f"같은 내용이 이미 있어 앞 상태를 그대로 씁니다: {state}")
+        return
+    started = httpx.post(f"{base}/api/templates/{registered['id']}/check", headers=headers, timeout=60)
+    if started.status_code != 200:
+        raise _fail(f"시험 실행을 시작하지 못했습니다: {_detail(started)}")
+    check = started.json().get("check") or {}
+    import time
+
+    typer.echo(f"{check.get('node') or '학습 서버'}에서 시험 실행 중… (환경을 처음 만들면 몇 분 걸립니다)")
+    deadline = time.monotonic() + wait_min * 60
+    while check.get("state") == "checking" and time.monotonic() < deadline:
+        time.sleep(3)
+        try:
+            view = httpx.get(f"{base}/api/templates/{registered['id']}", headers=headers, timeout=30)
+            check = (view.json().get("check") or check) if view.status_code == 200 else check
+        except (httpx.HTTPError, ValueError):
+            continue
+    if check.get("state") == "checking":
+        raise _fail(f"{wait_min}분 안에 끝나지 않았습니다. 설정 → 모델 종류에서 결과를 보세요.")
+    _print_trial(check)
+    if check.get("state") != "passed":
+        raise _fail("시험 실행을 통과하지 못했습니다 (설정 → 모델 종류에서 로그를 보세요).")
+    typer.echo('통과: 설정 → 모델 종류에서 "허용"하면 모두의 학습 화면에 나옵니다.')
+
+
+def _detail(resp) -> str:
+    try:
+        return str(resp.json().get("detail", resp.text))
+    except ValueError:
+        return resp.text

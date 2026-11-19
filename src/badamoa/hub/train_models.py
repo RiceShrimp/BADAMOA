@@ -46,6 +46,21 @@ class Template(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class Package(Base):
+    """An in-house wheel the servers install from the Hub (EXTENSION_PLAN 7.3): uv finds it like one on an index."""
+
+    __tablename__ = "packages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), index=True)  # normalized distribution name
+    version: Mapped[str] = mapped_column(String(64))
+    filename: Mapped[str] = mapped_column(String(255), unique=True)
+    blob: Mapped[str] = mapped_column(String(64))  # sha256 of the file in Hub storage
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Environment(Base):
     """A named environment an admin prepared on the servers, e.g. an existing conda environment.
 

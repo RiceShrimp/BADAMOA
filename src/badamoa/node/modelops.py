@@ -118,7 +118,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             config["source"] = str(source)
 
         code = trainer.template_dir(client, base + "/blob", node_home, template)
-        python, _, _ = trainer.ready_environment(node_home, spec)
+        python, _, _ = trainer.ready_environment(node_home, spec, client=client)
         mounts = [(Path(root), True) for root in roots] if os.name != "nt" else []
         command, env, where = trainer.launch(  # without the node's credentials, as for training
             job_id=job_id,

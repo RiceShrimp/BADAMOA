@@ -9,6 +9,16 @@ import { Badge, CopyBlock, Icon, Modal, timeAgo, useHubUrl, usePolling } from ".
 const ENTRY_LABEL: Record<string, string> = { train: "학습", eval: "평가", predict: "추론", export: "내보내기" };
 const STEP_LABEL: Record<string, string> = { data: "시험 데이터", env: "환경", train: "학습", predict: "테스트", eval: "평가", export: "내보내기" };
 
+/** Packages that did not come from an index, as " · mylib (git 1a2b3c4)". */
+function sourceNote(c: TemplateCheck): string {
+  const odd = Object.entries(c.sources ?? {});
+  if (!odd.length) return "";
+  return ` · ${odd
+    .slice(0, 3)
+    .map(([name, s]) => `${name} (${s.kind}${s.commit ? ` ${s.commit.slice(0, 7)}` : ""})`)
+    .join(", ")}${odd.length > 3 ? ` 외 ${odd.length - 3}개` : ""}`;
+}
+
 /** A template version's trial as an admin reads it: one line, the details on hover, the log a click away. */
 function TrialLine({ t }: { t: Template }) {
   const c: TemplateCheck = t.check;
@@ -22,14 +32,35 @@ function TrialLine({ t }: { t: Template }) {
   if (c.state === "checking") {
     line = (
       <>
-        <Badge kind="running">시험 실행 중</Badge> {c.node && <span className="muted">{c.node}</span>} {log}
+        <Badge kind="running">시험 실행 중</Badge>{" "}
+        {c.node && (
+          <span className="muted">
+            {c.node}
+            {c.device ? ` · ${c.device}` : ""}
+          </span>
+        )}{" "}
+        {log}
       </>
+    );
+  } else if (c.state === "passed") {
+    line = (
+      <span title={steps}>
+        <Badge kind="queued">통과 · 허용 대기</Badge>{" "}
+        <span className="muted">
+          {c.node ?? ""}
+          {c.device ? ` · ${c.device}` : ""}
+          {c.checked_at ? ` · ${timeAgo(c.checked_at)}` : ""}
+        </span>{" "}
+        {log}
+      </span>
     );
   } else if (c.state === "ok") {
     line = (
       <span className="muted" title={steps}>
-        {c.via === "run" ? "학습이 성공해 쓸 수 있음" : `시험 실행 통과${c.node ? ` · ${c.node}` : ""}`}
-        {c.checked_at ? ` · ${timeAgo(c.checked_at)}` : ""} {log}
+        {c.via === "run"
+          ? "시험 실행 전에 등록 · 학습이 성공한 버전"
+          : `허용됨${c.approved_by ? ` (${c.approved_by}${c.approved_at ? `, ${timeAgo(c.approved_at)}` : ""})` : ""} · 시험 실행 통과${c.node ? ` · ${c.node}` : ""}`}{" "}
+        {log}
       </span>
     );
   } else if (c.state === "failed") {
@@ -38,16 +69,21 @@ function TrialLine({ t }: { t: Template }) {
         실패 — {STEP_LABEL[c.failed ?? ""] ?? "시험 실행"}: {c.reason} {log}
       </span>
     );
-  } else if (c.state === "unchecked") {
-    line = <span className="warn-text">확인 못 함: {c.reason}</span>;
+  } else if (c.state === "pending") {
+    line = (
+      <span className="warn-text">
+        시험 전 — "시험 실행"으로 학습 서버에서 짧게 돌려 본 뒤 허용합니다{c.reason ? ` (지난 시도: ${c.reason})` : ""}
+      </span>
+    );
   } else if (c.state === "allowed") {
     line = (
       <span className="muted" title={c.reason ? `시험 실행: ${c.reason}` : undefined}>
-        허용 — {c.why} ({c.by}{c.at ? `, ${timeAgo(c.at)}` : ""})
+        통과 없이 허용 — {c.why} ({c.approved_by ?? c.by}
+        {c.approved_at ? `, ${timeAgo(c.approved_at)}` : ""})
       </span>
     );
   } else {
-    line = <span className="muted">시험 실행 전에 등록됨 · 쓸 수 있는 서버가 생기면 확인{c.reason ? ` (${c.reason})` : ""}</span>;
+    line = <span className="muted">시험 실행 전에 등록됨 · 지금처럼 모두 쓸 수 있음{c.reason ? ` (지난 시도: ${c.reason})` : ""}</span>;
   }
   return (
     <div className="small trial-line">
@@ -57,8 +93,19 @@ function TrialLine({ t }: { t: Template }) {
           알림: {n}
         </div>
       ))}
+      {c.legacy && c.state !== "legacy" && <div className="muted">시험 실행 전에 등록된 버전이라 결과와 상관없이 모두 쓸 수 있습니다</div>}
       {!c.offered && (
         <div className="muted">{t.offered_version ? `다른 사람에게는 ${t.offered_version} 버전이 보입니다` : "다른 사람에게는 보이지 않습니다"}</div>
+      )}
+      {(c.pinned ?? 0) > 0 && (
+        <div className="muted" title="다른 서버도 이 버전들로 설치합니다 (PyTorch는 버전만, 빌드는 서버 드라이버에 맞춤)">
+          패키지 {c.pinned}개 버전 고정{sourceNote(c)}
+        </div>
+      )}
+      {t.code_url && (
+        <a className="link" href={t.code_url} download>
+          이 버전의 코드 받기
+        </a>
       )}
     </div>
   );
@@ -105,6 +152,7 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
       </nav>
       {part === "templates" && <Templates isAdmin={isAdmin} />}
       {part === "environments" && <Environments isAdmin={isAdmin} nodes={nodes ?? []} />}
+      {part === "environments" && <Packages isAdmin={isAdmin} />}
       {part === "projects" && <ProjectDefaults />}
       {part === "gpu" && <GpuBusyPanel isAdmin={isAdmin} />}
       {part === "storage" && <StorageUsage isAdmin={isAdmin} />}
@@ -499,13 +547,10 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
     try {
       const added = await apiUpload<Template>("/templates", file);
       const next =
-        added.check?.state === "checking"
-          ? " 서버에서 짧게 시험 실행하고, 통과하면 모두에게 보입니다."
-          : added.check?.state === "unchecked"
-            ? ` 시험 실행할 서버가 없어 아직 다른 사람에게는 보이지 않습니다 (${added.check.reason}).`
-            : "";
+        added.check?.state === "pending"
+          ? ' 아직 다른 사람에게는 보이지 않습니다. "시험 실행"으로 돌려 보고 통과하면 "허용"을 누르세요.'
+          : "";
       setMessage({ kind: "ok", text: `${added.title} ${added.version} 버전을 등록했습니다.${next}` });
-      setWatching(true);
       await refresh();
     } catch (e) {
       setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
@@ -543,7 +588,7 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
     setMessage(null);
     try {
       await api(`/templates/${t.id}/check`, { method: "POST" });
-      setMessage({ kind: "ok", text: `${t.title} ${t.version}을(를) 다시 시험 실행합니다.` });
+      setMessage({ kind: "ok", text: `${t.title} ${t.version}을(를) 학습 서버에서 시험 실행합니다. 통과하면 "허용"을 누르세요.` });
       setWatching(true);
       await refresh();
     } catch (e) {
@@ -551,14 +596,20 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
     }
   };
   const allow = async (t: Template) => {
-    const reason = window.prompt(
-      `${t.title} ${t.version}을(를) 시험 실행 통과 없이 모두가 쓰게 할까요? 이유를 적어 주세요 (기록에 남습니다).`,
-    );
-    if (!reason?.trim()) return;
+    let reason = "";
+    if (t.check.state === "passed") {
+      if (!window.confirm(`시험 실행을 통과한 ${t.title} ${t.version}을(를) 모두의 학습 화면에 내보낼까요?`)) return;
+    } else {
+      reason =
+        window.prompt(
+          `${t.title} ${t.version}은(는) 시험 실행을 통과하지 않았습니다. 그래도 모두가 쓰게 할까요? 이유를 적어 주세요 (기록에 남습니다).`,
+        ) ?? "";
+      if (!reason.trim()) return;
+    }
     setMessage(null);
     try {
       await api(`/templates/${t.id}/allow`, { body: { reason } });
-      setMessage({ kind: "ok", text: `${t.title} ${t.version}을(를) 허용했습니다.` });
+      setMessage({ kind: "ok", text: `${t.title} ${t.version}을(를) 허용했습니다. 이제 모두의 학습 화면에 나옵니다.` });
       await refresh();
     } catch (e) {
       setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
@@ -650,13 +701,22 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
                       </button>
                     )}{" "}
                     {!t.builtin && t.check && t.check.state !== "checking" && (
-                      <button className="mini" onClick={() => void trial(t)} title="서버에서 짧게 다시 시험 실행합니다">
-                        다시 확인
+                      <button
+                        className={t.check.state === "pending" ? "mini primary" : "mini"}
+                        onClick={() => void trial(t)}
+                        title="학습 서버 한 대에서 작은 합성 데이터로 학습 → 테스트 · 평가 · 내보내기를 짧게 돌려 봅니다"
+                      >
+                        시험 실행
                       </button>
                     )}{" "}
-                    {!t.builtin && (t.check?.state === "failed" || t.check?.state === "unchecked") && (
-                      <button className="mini" onClick={() => void allow(t)} title="시험 실행 통과 없이 모두가 쓰게 합니다">
+                    {!t.builtin && t.check?.state === "passed" && (
+                      <button className="mini primary" onClick={() => void allow(t)} title="통과한 이 버전을 모두의 학습 화면에 내보냅니다">
                         허용
+                      </button>
+                    )}{" "}
+                    {!t.builtin && (t.check?.state === "failed" || t.check?.state === "pending") && (
+                      <button className="mini" onClick={() => void allow(t)} title="시험 실행 통과 없이, 이유를 적고 모두가 쓰게 합니다">
+                        통과 없이 허용
                       </button>
                     )}{" "}
                     {!t.builtin && (
@@ -685,11 +745,16 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
             사내 학습 코드를 폴더 하나로 묶고 선언 파일(badamoa.toml)을 더하면 됩니다. 아래 명령이 뼈대를 만들어 줍니다.
           </p>
           <CopyBlock label="1. 뼈대 만들기" text="badamoa template init my-model" />
-          <CopyBlock label="2. train.py를 고친 뒤 확인" text="badamoa template check my-model" />
+          <CopyBlock label="2. train.py를 고친 뒤 이 PC에서 시험 실행 (서버가 올린 뒤 하는 것과 같음)" text="badamoa template check my-model --run" />
           <CopyBlock
-            label="3. 올리기 (에이전트 연결 화면에서 발급한 관리자 토큰)"
-            text={`badamoa template push my-model --hub ${hubUrl} --token <토큰>`}
+            label="3. 올리기 (에이전트 연결 화면에서 발급한 관리자 토큰, --trial이면 서버 시험 실행까지 하고 기다림)"
+            text={`badamoa template push my-model --trial --hub ${hubUrl} --token <토큰>`}
           />
+          <p className="muted small">
+            올린 버전은 "시험 전"으로 등록됩니다. 이 화면에서 "시험 실행"을 누르면 학습 서버 한 대가 작은 합성 데이터로 짧게 돌려
+            보고, 통과한 것을 "허용"하면 모두의 학습 화면에 나옵니다. PyPI에 없는 사내 패키지는 설정 → 환경의 "사내 패키지"에
+            wheel로 올리고 requirements에 이름을 적습니다.
+          </p>
           <p className="muted small">
             폴더를 zip으로 묶어 이 화면의 "올리기"로 등록해도 같습니다. 코드를 바꿔 다시 올릴 때는 선언 파일의 version을
             올립니다.
@@ -698,6 +763,112 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
             <button onClick={() => setGuide(false)}>닫기</button>
           </div>
         </Modal>
+      )}
+    </section>
+  );
+}
+
+// ---- in-house packages -----------------------------------------------------------------
+
+interface HubPackage {
+  id: string;
+  name: string;
+  version: string;
+  filename: string;
+  sha256: string;
+  bytes: number;
+  created_at: string;
+}
+
+/** Wheels built in-house: servers find them on the Hub while building a model kind's environment. */
+function Packages({ isAdmin }: { isAdmin: boolean }) {
+  const { data: packages, refresh } = usePolling(() => api<HubPackage[]>("/packages"), 30000);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const upload = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      for (const file of Array.from(files)) {
+        await apiUpload<HubPackage>(`/packages?filename=${encodeURIComponent(file.name)}`, file, "application/octet-stream");
+      }
+      setMessage({ kind: "ok", text: `${files.length}개를 올렸습니다. 이제 서버가 환경을 만들 때 여기서도 찾습니다.` });
+      await refresh();
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+      if (picker.current) picker.current.value = "";
+    }
+  };
+  const remove = async (p: HubPackage) => {
+    if (!window.confirm(`${p.filename}을(를) 목록에서 뺄까요? 이미 만든 환경에 설치된 것은 그대로입니다.`)) return;
+    await api(`/packages/${p.id}`, { method: "DELETE" });
+    await refresh();
+  };
+  return (
+    <section className="card">
+      <div className="card-head">
+        <div>
+          <h3>사내 패키지</h3>
+          <div className="muted small">
+            PyPI에 없는 사내 wheel(.whl). 모델 종류의 requirements에 이름을 적으면 서버가 환경을 만들 때 여기서 받아 설치합니다.
+          </div>
+        </div>
+        {isAdmin && (
+          <div className="head-actions">
+            <button onClick={() => picker.current?.click()} disabled={busy}>
+              <Icon name="plus" />
+              {busy ? "올리는 중…" : "올리기 (.whl)"}
+            </button>
+            <input ref={picker} type="file" accept=".whl" multiple hidden onChange={(e) => void upload(e.target.files)} />
+          </div>
+        )}
+      </div>
+      {message && <div className={message.kind === "ok" ? "notice ok" : "error"}>{message.text}</div>}
+      {packages && packages.length === 0 ? (
+        <p className="muted small" style={{ padding: "0 16px 12px" }}>
+          올린 패키지가 없습니다.
+        </p>
+      ) : (
+        <div className="table-wrap">
+          <table className="plain">
+            <thead>
+              <tr>
+                <th>패키지</th>
+                <th>버전</th>
+                <th>파일</th>
+                <th className="right">크기</th>
+                <th>올린 때</th>
+                {isAdmin && <th aria-label="동작" />}
+              </tr>
+            </thead>
+            <tbody>
+              {packages?.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    <strong>{p.name}</strong>
+                  </td>
+                  <td className="num">{p.version}</td>
+                  <td className="mono small" title={`sha256 ${p.sha256}`}>
+                    {p.filename}
+                  </td>
+                  <td className="num right">{fileSize(p.bytes)}</td>
+                  <td className="muted">{timeAgo(p.created_at)}</td>
+                  {isAdmin && (
+                    <td className="right">
+                      <button className="mini" onClick={() => void remove(p)}>
+                        지우기
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

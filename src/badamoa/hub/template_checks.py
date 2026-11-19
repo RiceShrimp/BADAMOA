@@ -1,32 +1,35 @@
-"""Trial runs of model template versions before anyone is offered them (EXTENSION_PLAN 8).
+"""Trial runs of model template versions, started and approved by an admin (EXTENSION_PLAN 8).
 
-Every uploaded version gets a short run on one server that trains (``template.check``): a small
-dataset the node draws itself, the version's own environment, train and then predict · eval ·
-export as declared. Its state, kept with the version (``Template.trial``):
+An uploaded version waits (``pending``) until an admin starts its trial (``template.check``): one
+server that trains runs it briefly on a small dataset the node draws itself, in the version's own
+environment — train, then predict · eval · export as declared. A pass does not publish it: the
+admin approves it (decided 2026-11-19: nothing runs or goes out on its own). Its state, kept with
+the version (``Template.trial``):
 
-    checking   the trial is queued or running            not offered
-    ok         it passed                                 offered
-    failed     a step failed (which, and why)            not offered
-    unchecked  no server could run it                    not offered
-    allowed    an admin let it through, with a reason    offered
-    legacy     registered before trials existed          offered until its trial says otherwise
+    pending    uploaded, not tried yet                          not offered
+    checking   its trial is queued or running                   not offered
+    passed     the trial passed; waiting for an admin's "허용"   not offered
+    ok         approved after passing                           offered
+    failed     a step failed (which, and why)                   not offered
+    allowed    let through without a pass, with a reason        offered
+    legacy     registered before trials existed                 offered, whatever a trial says
 
-Built-in templates are tried before BADAMOA ships and are always ``ok``. Screens offer each
-template's newest version that may be offered, so a new version that is still being tried, or
-that failed, does not take away the one people were using. Admins see every version, with a
-warning on those not offered, and may still start them.
+(``unchecked`` from 0.53.0 reads as ``pending``.) Built-in templates are tried before BADAMOA ships
+and are always ``ok``. Screens offer each template's newest version that may be offered, so a new
+version waiting, being tried or failed does not take away the one people were using. Admins see
+every version, with a warning on those not offered, and may still start them.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from badamoa.core.templates import check_params
 
-from . import registry, services
+from . import registry, resources, services
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
@@ -35,7 +38,8 @@ from .train_models import Template
 
 CHECK_SINCE = (0, 53, 0)  # nodes that know the ``template.check`` job
 OFFERED = ("ok", "allowed", "legacy")
-NOT_YET = "이 모델 종류는 아직 확인되지 않았습니다. 관리자에게 문의하세요."
+NOT_YET = "이 모델 종류는 아직 관리자가 허용하지 않았습니다. 관리자에게 문의하세요."
+SAID = {"pending": "시험 전", "checking": "시험 실행 중", "passed": "통과 · 허용 대기", "failed": "시험 실행 실패"}
 
 
 def _version(node: Node) -> tuple[int, ...]:
@@ -43,24 +47,29 @@ def _version(node: Node) -> tuple[int, ...]:
 
 
 def state(row: Template) -> str:
-    return "ok" if row.builtin else str((row.trial or {}).get("state") or "legacy")
+    if row.builtin:
+        return "ok"
+    found = str((row.trial or {}).get("state") or "legacy")
+    return "pending" if found == "unchecked" else found
 
 
 def offered(row: Template) -> bool:
-    """Whether everyone may train with this version (admins may use any)."""
-    check = row.trial or {}
-    return state(row) in OFFERED or (state(row) == "checking" and bool(check.get("legacy")))
+    """Whether everyone may train with this version (admins may use any). A version from before trials
+    stays offered while an admin tries it, and after."""
+    return state(row) in OFFERED or bool((row.trial or {}).get("legacy"))
 
 
 def view(row: Template) -> dict[str, Any]:
-    """The version's check as screens show it (the installed package list stays out: it is long)."""
-    check = dict(row.trial or {})
-    packages = check.pop("installed", None)
+    """The version's trial as screens show it (the installed package list stays out: it is long)."""
+    trial = dict(row.trial or {})
+    packages = trial.pop("installed", None)
     return {
-        **check,
+        **trial,
         "state": state(row),
         "offered": offered(row),
-        "packages": len(packages) if isinstance(packages, list) else check.get("packages"),
+        "packages": len(packages) if isinstance(packages, list) else trial.get("packages"),
+        # what the other servers install with: the versions the passed trial installed
+        "pinned": len(registry.pinned_for(row)),
     }
 
 
@@ -68,13 +77,21 @@ def _settle(row: Template, **fields: Any) -> None:
     row.trial = {k: v for k, v in fields.items() if v not in (None, "", [], {})}
 
 
-# ---- starting a trial ---------------------------------------------------------------------------
+def uploaded(row: Template) -> None:
+    """A new version: it waits for an admin to try it."""
+    if not row.builtin and not row.trial:
+        _settle(row, state="pending")
 
 
-def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tuple[list[tuple[Node, dict]], str]:
-    """Servers that can try the template, the one already holding its environment first; or why none can."""
-    found: list[tuple[int, str, Node, dict[str, Any]]] = []
-    why = "켜져 있는 학습 서버가 없습니다 (노드 설정에서 '학습·오토라벨' 역할)."
+# ---- starting a trial (an admin) -----------------------------------------------------------------
+
+
+def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tuple[list[tuple[Node, dict, bool]], str]:
+    """Servers that can try the template, with whether one of their GPUs is free now: those with a free GPU
+    first, then the one already holding its environment; or why none can."""
+    found: list[tuple[int, int, str, Node, dict[str, Any], bool]] = []
+    assigned = resources.assignments(db)
+    why = "켜져 있는 학습 서버가 없습니다 (노드 설정에서 '학습용' 역할)."
     for node in db.scalars(select(Node).order_by(Node.name)):
         if not registry.trains(node):
             continue
@@ -96,25 +113,26 @@ def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tu
             why = "이 모델 종류는 시험 실행에 GPU가 필요합니다 ([check] gpu). GPU가 있는 학습 서버가 없습니다."
             continue
         ready = any(registry._same_env(e, spec) for e in (node.info or {}).get("envs") or [])
-        found.append((0 if ready else 1, node.name, node, spec))
-    found.sort(key=lambda f: (f[0], f[1]))
-    return [(node, spec) for _, _, node, spec in found], why
+        free = bool(resources.free_gpus(node, settings, assigned.get(node.id)))
+        found.append((0 if free else 1, 0 if ready else 1, node.name, node, spec, free))
+    found.sort(key=lambda f: (f[0], f[1], f[2]))
+    return [(node, spec, free) for _, _, _, node, spec, free in found], why
 
 
-def start(
-    db: Session, settings: HubSettings, row: Template, user_id: str | None, via: str = "api", legacy: bool = False
-) -> Job | None:
-    """Queue the version's trial on a server that can run it. None when no server can (the reason is kept);
-    a version from before trials keeps being offered meanwhile (``legacy``)."""
+def start(db: Session, settings: HubSettings, user: User, template_id: str, via: str = "api") -> Job:
+    """An admin starts the version's trial on a server that can run it (refused, with why, when none can)."""
+    services.require_admin(user)
+    row = registry.get_template(db, template_id)
     if row.builtin:
-        return None
+        raise ServiceError(400, "기본 제공 모델 종류는 BADAMOA를 낼 때 확인했습니다.")
+    before = state(row)
+    if before == "checking":
+        raise ServiceError(409, f"{row.title} {row.version}은(는) 이미 시험 실행 중입니다.")
     manifest = registry.manifest_of(row)
     servers, why = _servers(db, settings, manifest, manifest.check.gpu)
     if not servers:
-        if not legacy:
-            _settle(row, state="unchecked", reason=why, checked_at=iso(utcnow()))
-        return None
-    node, spec = servers[0]
+        raise ServiceError(409, why)
+    node, spec, free = servers[0]
     params = {
         "template_id": row.id,
         "template": {
@@ -132,61 +150,74 @@ def start(
         "check": manifest.check.model_dump(exclude={"params"}),
         "data": manifest.data.model_dump(),
     }
-    gpus = 1 if manifest.check.gpu else 0
+    # one GPU when the server has an idle one as the job starts (quicker, and what trainings use), else the
+    # CPU; ``[check] gpu = true``: code that needs a GPU waits for one
+    requirements: dict[str, Any] = {}
+    if manifest.check.gpu or free:
+        requirements = {"roles": ["compute"], "gpus": 1, "min_vram_mb": 0}
+        if not manifest.check.gpu:
+            requirements["gpu_if_free"] = True
     job = Job(
         type="template.check",
         params=params,
         target_node_id=node.id,
-        requirements={"roles": ["compute"], "gpus": gpus, "min_vram_mb": 0} if gpus else {},
-        created_by=user_id,
+        requirements=requirements,
+        created_by=user.id,
         created_via=via,
     )
     db.add(job)
     db.flush()
-    _settle(row, state="checking", job_id=job.id, node=node.name, legacy=legacy or None, started_at=iso(utcnow()))
-    services.audit(db, user_id, via, "template.check", row.id, name=row.name, version=row.version, node=node.name)
+    legacy = before == "legacy" or bool((row.trial or {}).get("legacy"))
+    _settle(
+        row,
+        state="checking",
+        job_id=job.id,
+        node=node.name,
+        before=before,
+        legacy=legacy or None,
+        started_at=iso(utcnow()),
+        by=user.username,
+    )
+    services.audit(db, user.id, via, "template.check", row.id, name=row.name, version=row.version, node=node.name)
     return job
 
 
-def recheck(db: Session, settings: HubSettings, user: User, template_id: str, via: str = "api") -> Job:
+def allow(db: Session, user: User, template_id: str, reason: str = "", via: str = "api") -> Template:
+    """An admin offers the version to everyone: one that passed its trial as it is, any other only with
+    a reason, which is kept with it and in the audit log."""
     services.require_admin(user)
     row = registry.get_template(db, template_id)
-    if row.builtin:
-        raise ServiceError(400, "기본 제공 모델 종류는 BADAMOA를 낼 때 확인했습니다.")
-    if state(row) == "checking":
-        raise ServiceError(409, f"{row.title} {row.version}은(는) 이미 시험 실행 중입니다.")
-    job = start(db, settings, row, user.id, via)
-    if job is None:
-        raise ServiceError(409, (row.trial or {}).get("reason") or "시험 실행할 서버가 없습니다.")
-    return job
-
-
-def allow(db: Session, user: User, template_id: str, reason: str, via: str = "api") -> Template:
-    """Offer a version without a passed trial: an admin's decision, with the reason on record."""
-    services.require_admin(user)
-    row = registry.get_template(db, template_id)
-    reason = reason.strip()
-    if not reason:
-        raise ServiceError(400, "허용하는 이유를 적어 주세요. 기록에 남습니다.")
     if row.builtin:
         raise ServiceError(400, "기본 제공 모델 종류는 이미 쓸 수 있습니다.")
     before = dict(row.trial or {})
+    reason = reason.strip()
+    now = iso(utcnow())
+    if state(row) == "passed":
+        kept = {k: v for k, v in before.items() if k not in ("state", "legacy")}
+        _settle(row, **kept, state="ok", approved_by=user.username, approved_at=now)
+        services.audit(db, user.id, via, "template.allow", row.id, name=row.name, version=row.version, passed=True)
+        return row
+    if state(row) == "checking":
+        raise ServiceError(409, "시험 실행이 끝난 뒤에 허용하세요.")
+    if not reason:
+        raise ServiceError(400, "시험 실행을 통과하지 않은 버전입니다. 허용하는 이유를 적어 주세요. 기록에 남습니다.")
     _settle(
         row,
         state="allowed",
         why=reason[:500],
-        by=user.username,
-        at=iso(utcnow()),
-        was=before.get("state"),
+        approved_by=user.username,
+        approved_at=now,
+        was=state(row),
         reason=before.get("reason"),
         failed=before.get("failed"),
+        job_id=before.get("job_id"),
     )
     services.audit(db, user.id, via, "template.allow", row.id, name=row.name, version=row.version, why=reason[:500])
     return row
 
 
 def require_offered(row: Template, user: User) -> None:
-    """Members train only with versions that passed (or were let through); admins with any."""
+    """Members train only with versions an admin offered; admins with any."""
     if user.role != "admin" and not offered(row):
         raise ServiceError(403, NOT_YET)
 
@@ -201,25 +232,28 @@ def _passed_training(db: Session, row: Template) -> str:
 
 
 def on_job_finished(db: Session, job: Job) -> None:
-    """Keep a trial's verdict with its version; a version a real training ran with is taken as passed."""
-    if job.type == "train.run" and job.status == "succeeded":
-        row = db.get(Template, ((job.params or {}).get("template") or {}).get("id", ""))
-        if row is not None and state(row) in ("unchecked", "allowed", "legacy"):
-            _settle(row, state="ok", via="run", job_id=job.id, checked_at=iso(utcnow()))
-        return
+    """Keep a trial's verdict with its version. A pass waits for an admin to offer it."""
     if job.type != "template.check":
         return
     row = db.get(Template, (job.params or {}).get("template_id", ""))
-    if row is None or (row.trial or {}).get("job_id") != job.id:
+    trial = dict(row.trial or {}) if row is not None else {}
+    if row is None or trial.get("job_id") != job.id:
         return  # another trial took its place
     node = db.get(Node, job.node_id) if job.node_id else None
-    common = {"job_id": job.id, "node": node.name if node else "", "checked_at": iso(utcnow())}
     result = job.result or {}
+    common = {
+        "job_id": job.id,
+        "node": node.name if node else "",
+        "device": ("CPU" if str(result.get("device")) == "cpu" else "GPU") if result.get("device") else "",
+        "checked_at": iso(utcnow()),
+        "by": trial.get("by"),
+        "legacy": trial.get("legacy"),
+    }
     if job.status == "succeeded":
         _settle(
             row,
             **common,
-            state="ok" if result.get("ok") else "failed",
+            state="passed" if result.get("ok") else "failed",
             failed=result.get("failed"),
             reason=result.get("reason"),
             steps=result.get("steps"),
@@ -228,22 +262,21 @@ def on_job_finished(db: Session, job: Job) -> None:
             environment=result.get("environment"),
             metrics=result.get("metrics"),
             installed=result.get("packages"),
+            sources=result.get("sources"),
+            contract=result.get("contract"),
         )
     else:  # stopped, or the job itself broke (a server that went away): no verdict on the code
         stopped = job.status in ("canceled", "cancelled")
         why = "시험 실행을 멈췄습니다." if stopped else (job.error or "시험 실행 작업이 끝나지 못했습니다.")
-        if (row.trial or {}).get("legacy"):  # keeps being offered as before; an admin may try again
-            _settle(row, **common, state="legacy", tried=iso(utcnow()), reason=why)
-        else:
-            _settle(row, **common, state="unchecked" if stopped else "failed", reason=why)
+        _settle(row, **common, state=trial.get("before") or "pending", reason=why)
 
 
 # ---- versions from before trials ---------------------------------------------------------------
 
 
 def mark_legacy(db: Session) -> None:
-    """When the Hub starts: a version registered before trials existed is ``ok`` if a training with it
-    succeeded, else ``legacy`` (offered, and tried as soon as a server can)."""
+    """When the Hub starts: a version registered before trials existed stays offered — ``ok`` if a training
+    with it succeeded, else ``legacy``. An admin may try it by hand."""
     for row in db.scalars(select(Template).where(Template.builtin.is_(False), Template.deleted_at.is_(None))):
         if row.trial:
             continue
@@ -252,24 +285,3 @@ def mark_legacy(db: Session) -> None:
             _settle(row, state="ok", via="run", job_id=done)
         else:
             _settle(row, state="legacy")
-
-
-def queue_legacy(db: Session, settings: HubSettings, node: Node) -> None:
-    """A server that can try templates just reported in: queue the trials of versions from before trials
-    (each template's newest), at most once each."""
-    if not registry.trains(node) or _version(node) < CHECK_SINCE:
-        return
-    rows = db.scalars(
-        select(Template)
-        .where(Template.deleted_at.is_(None), func.json_extract(Template.trial, "$.state") == "legacy")
-        .order_by(Template.created_at.desc())
-    ).all()
-    newest: dict[str, Template] = {}
-    for row in rows:
-        newest.setdefault(row.name, row)
-    for row in newest.values():
-        if (row.trial or {}).get("tried"):
-            continue
-        job = start(db, settings, row, None, "system", legacy=True)
-        if job is None:
-            row.trial = {**(row.trial or {}), "tried": iso(utcnow())}  # nobody can yet: not on every heartbeat

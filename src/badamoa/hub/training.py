@@ -220,9 +220,9 @@ def check_run(
             if user is None or user.role != "admin":
                 return {"problems": [template_checks.NOT_YET], "notes": []}
             trial = template_checks.view(row)
-            said = f" ({trial['reason']})" if trial.get("reason") else ""
-            not_yet = f"{row.title} {row.version}은(는) 시험 실행을 통과하지 않았습니다{said}."
-            warnings.append(f"{not_yet} 관리자만 쓸 수 있습니다.")
+            said = template_checks.SAID.get(trial["state"], trial["state"])
+            said += f": {trial['reason']}" if trial.get("reason") else ""
+            warnings.append(f"{row.title} {row.version}은(는) 아직 허용되지 않았습니다 ({said}). 관리자만 쓸 수 있습니다.")
         try:
             resolve_params(manifest, {k: v for k, v in (params or {}).items() if k not in (space or {})})
         except TemplateError as e:
@@ -230,7 +230,7 @@ def check_run(
         known = {int(c["id"]) for c in db.get(LabelSpace, release.label_space_id).classes}
         chosen = sorted({int(c) for c in classes or []} & known)
         candidates, _ = placement(db, release, nodes)
-        env = registry.environment_for_run(db, manifest, environment, candidates[0])
+        env = registry.environment_for_run(db, manifest, environment, candidates[0], row)
     except ServiceError as e:
         return {"problems": [*problems, e.message], "notes": []}
     found, notes = data_checks(db, release, manifest, chosen, candidates, val_fraction)
@@ -328,7 +328,7 @@ def start_run(
         raise ServiceError(400, f"라벨 공간 {space.name}에 없는 클래스 id가 있습니다: {sorted(set(chosen) - known)}")
     candidates, receiver = placement(db, release, nodes)
     problems, _ = data_checks(db, release, manifest, chosen, candidates, val_fraction)
-    env = registry.environment_for_run(db, manifest, environment, candidates[0])
+    env = registry.environment_for_run(db, manifest, environment, candidates[0], row)
     candidates, unfit = fitting(candidates, env, gpus)
     problems += unfit
     if problems:
@@ -839,6 +839,16 @@ def _sync_view(db: Session, job: Job, node_names: dict[str, str] | None) -> dict
     }
 
 
+def _environment_view(env: dict[str, Any]) -> dict[str, Any]:
+    """A run's environment as screens show it: no server paths, the long lists as counts."""
+    out = {k: v for k, v in env.items() if k not in ("path", "pinned", "wheels")}
+    if env.get("pinned"):
+        out["pinned"] = len(env["pinned"])
+    if env.get("wheels"):
+        out["wheels"] = len(env["wheels"])
+    return out
+
+
 def run_view(
     db: Session,
     settings: HubSettings,
@@ -861,7 +871,7 @@ def run_view(
         "task": catalog.dataset_task(dataset),
         "template": {k: template.get(k, "") for k in ("id", "name", "title", "version", "variant")},
         "trainer_title": template.get("title") or run.trainer,
-        "environment": {k: v for k, v in (run.environment or {"kind": "auto", "name": "자동 설치"}).items() if k != "path"},
+        "environment": _environment_view(run.environment or {"kind": "auto", "name": "자동 설치"}),
         "status": status,
         # What a running job is doing right now: data → env → train → upload.
         "stage": (run.stage or "data") if status == "running" else "",
@@ -1173,7 +1183,7 @@ def model_view(
         view["config"] = run.config if run else {}
         view["info"] = run.info if run else {}
         view["export"] = run.export if run else {}
-        view["environment"] = {k: v for k, v in ((run.environment if run else None) or {}).items() if k != "path"}
+        view["environment"] = _environment_view((run.environment if run else None) or {})
         view["download_url"] = catalog.media_url(settings, "model", model.id)
     return view
 

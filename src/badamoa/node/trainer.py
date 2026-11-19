@@ -30,6 +30,7 @@ from typing import Any
 
 import httpx
 
+from badamoa import __version__
 from badamoa import templates as shipped
 from badamoa.core import templates as template_format
 
@@ -221,20 +222,35 @@ def container_args(entrypoint: str, config_inside: str) -> list[str]:
     return [part.replace("{config}", config_inside) for part in parts]
 
 
+def package_getter(client: httpx.Client) -> Callable[[str], bytes]:
+    """Fetches an in-house wheel from the Hub's package list by its hash."""
+
+    def get(digest: str) -> bytes:
+        resp = send(client.get, f"/api/agent/packages/{digest}", timeout=1800)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Hub의 사내 패키지를 받지 못했습니다 ({resp.status_code}): {resp.text[:200]}")
+        return resp.content
+
+    return get
+
+
 def ready_environment(
-    home: Path, spec: dict[str, Any], log: Callable[[str], None] = print
+    home: Path, spec: dict[str, Any], log: Callable[[str], None] = print, client: httpx.Client | None = None
 ) -> tuple[Path | None, list[str], dict[str, Any]]:
     """Have a run's environment ready on this node.
 
     Returns the Python to start (None for a Docker image, which runs as a container), what is installed
-    in it, and facts for the run's record (the image and its id).
+    in it, and facts for the run's record: the image and its id, or where the packages that did not come
+    from an index came from (``sources``). ``client`` fetches the Hub's in-house wheels when the spec names any.
     """
     if spec.get("kind") == "docker":
         image = str(spec.get("image") or "")
         image_id = containers.ensure(home, image, log)
         return None, containers.packages(image, envs.PACKAGES), {"image": image, "image_id": image_id}
-    python = envs.resolve(home, spec, log)
-    return python, envs.packages(python), {}
+    python = envs.resolve(home, spec, log, package_getter(client) if client is not None else None)
+    # the node's own Python (code that needs only the standard library) is BADAMOA's, not the template's
+    found = envs.sources(python) if python != Path(sys.executable) else {}
+    return python, envs.packages(python), ({"sources": found} if found else {})
 
 
 def launch(
@@ -382,9 +398,10 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         # 2–3. code and environment
         stage("env")
         code = template_dir(client, base, node_home, template)
-        python, installed, facts = ready_environment(node_home, spec)
-        if installed or facts:
-            post("/report", {"event": "info", "data": {**({"packages": installed} if installed else {}), **facts}})
+        python, installed, facts = ready_environment(node_home, spec, client=client)
+        # what ran: the packages and where the odd ones came from, the SDK and the promise it keeps
+        record = {**({"packages": installed} if installed else {}), **facts, "sdk": __version__}
+        post("/report", {"event": "info", "data": {**record, "contract": template_format.CONTRACT}})
 
         # 4. train
         cache = node_home / "cache" / "template-data" / template["name"]

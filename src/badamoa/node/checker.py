@@ -29,6 +29,8 @@ from typing import Any
 
 import httpx
 
+from badamoa.core.templates import CONTRACT
+
 from . import containers, exporter, samples, trainer
 
 STEP_NAMES = {
@@ -136,7 +138,7 @@ def _run(
 
 
 def _trial(
-    client: httpx.Client,
+    client: httpx.Client | None,
     base: str,
     params: dict[str, Any],
     node_home: Path,
@@ -190,15 +192,27 @@ def _trial(
     found: dict[str, Any] = {}
 
     def make_env() -> str:
-        found["code"] = trainer.template_dir(client, base, node_home, template)
-        python, installed, extra = trainer.ready_environment(node_home, spec)
+        if params.get("code"):  # a folder on this machine (``badamoa template check --run``)
+            found["code"] = Path(params["code"])
+        else:
+            assert client is not None
+            found["code"] = trainer.template_dir(client, base, node_home, template)
+        python, installed, extra = trainer.ready_environment(node_home, spec, client=client)
         found["python"] = python
         facts.update(extra)
         facts["packages"] = installed
+        cached = (node_home / "cache").resolve().as_posix().lower()
+        built = spec.get("kind") == "auto"  # a registered Python belongs to its server anyway
+        for name, source in (extra.get("sources") or {}).items() if built else []:
+            if source.get("kind") in ("local", "editable") and cached not in str(source.get("url") or "").lower():
+                notes.append(
+                    f"이 환경은 다른 서버에서 똑같이 만들 수 없습니다: {name} (이 서버의 폴더에서 설치). "
+                    "wheel로 만들어 Hub의 사내 패키지에 올리세요."
+                )
         if in_container:
             where = f"Docker {spec.get('image')}"
         else:
-            where = "자동 설치" if spec.get("kind") == "auto" else "서버의 Python"
+            where = "서버의 Python" if spec.get("kind") == "python" or not spec.get("requirements") else "자동 설치"
         return f"{where} · 패키지 {len(installed)}개"
 
     step("env", make_env)
@@ -210,7 +224,10 @@ def _trial(
     cache = node_home / "cache" / "template-data" / str(template["name"])
     cache.mkdir(parents=True, exist_ok=True)
     (node_home / "cache" / "ultralytics").mkdir(parents=True, exist_ok=True)
-    device = trainer._device() if check.get("gpu") else "cpu"
+    # the GPU the Hub gave this trial, if it gave one; on a developer's PC (no Hub) only when the code needs one
+    given = [g for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g.strip()]
+    on_gpu = bool(given) or (client is None and bool(check.get("gpu")))
+    device = trainer._device() if given else ("0" if on_gpu else "cpu")
     settings = params.get("params") or {}
     common = {"cache": str(cache), "device": device, "classes": summary["classes"], "check": True}
 
@@ -227,7 +244,7 @@ def _trial(
             work=work,
             mounts=[(node_home / "cache" / "models", True)],
         )
-        if not check.get("gpu") and not in_container:
+        if not on_gpu and not in_container:
             env = {**env, "CUDA_VISIBLE_DEVICES": ""}  # a trial on the CPU leaves the GPUs to the trainings
         outcome, seen = _run(name, command, env, code, deadline, job_id, in_container)
         return outcome, seen, where
@@ -260,6 +277,7 @@ def _trial(
         facts["metrics"] = metrics
         return f"지표 {len(metrics)}개 · 가중치 {weights.name} ({kept.stat().st_size / 1024**2:.1f} MB)"
 
+    facts["device"] = device
     step("train", train)
     after = {
         **common,
@@ -317,7 +335,15 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     )
     if not (hub and token and job_id and home):
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
-    node_home = Path(home).resolve()
+    with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
+        return attempt(params, Path(home).resolve(), job_id, client, f"/api/agent/jobs/{job_id}/check")
+
+
+def attempt(
+    params: dict[str, Any], node_home: Path, job_id: str, client: httpx.Client | None = None, base: str = ""
+) -> dict[str, Any]:
+    """The whole trial and its verdict. Without a ``client`` it runs on this machine alone: the code comes
+    from ``params["code"]`` and nothing goes to a Hub (``badamoa template check --run``)."""
     work = node_home / "runs" / job_id
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -328,14 +354,13 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     facts: dict[str, Any] = {}
     started = time.monotonic()
     failed: Failed | None = None
-    with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
-        try:
-            _trial(client, f"/api/agent/jobs/{job_id}/check", params, node_home, work, job_id, steps, notes, facts)
-        except Failed as e:
-            failed = e
-        finally:
-            if (params.get("environment") or {}).get("kind") == "docker":
-                containers.kill(job_id)
+    try:
+        _trial(client, base, params, node_home, work, job_id, steps, notes, facts)
+    except Failed as e:
+        failed = e
+    finally:
+        if (params.get("environment") or {}).get("kind") == "docker":
+            containers.kill(job_id)
     shutil.rmtree(work, ignore_errors=True)
     result: dict[str, Any] = {
         "ok": failed is None,
@@ -345,7 +370,10 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         "notes": notes,
         "took_s": round(time.monotonic() - started, 1),
         "environment": {k: facts[k] for k in ("image", "image_id") if facts.get(k)},
+        "device": facts.get("device") or "",
         "packages": facts.get("packages") or [],
+        "sources": facts.get("sources") or {},
+        "contract": CONTRACT,
         "metrics": facts.get("metrics") or {},
     }
     if failed:

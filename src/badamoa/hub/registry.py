@@ -13,7 +13,14 @@ from sqlalchemy.orm import Session
 from badamoa import templates as shipped
 from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
-from badamoa.core.templates import IMAGE_RE, TemplateError, TemplateManifest, load_manifest, read_bundle
+from badamoa.core.templates import (
+    IMAGE_RE,
+    TemplateError,
+    TemplateManifest,
+    load_manifest,
+    pinned_versions,
+    read_bundle,
+)
 
 from . import cleanup, services
 from .catalog_models import Project
@@ -21,7 +28,7 @@ from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
-from .train_models import Environment, ModelJob, ModelVersion, Run, RunFile, Template
+from .train_models import Environment, ModelJob, ModelVersion, Package, Run, RunFile, Template
 
 DEFAULT_TEMPLATE = "yolo"
 # What a project trains with when nobody chose: the built-in template for its task.
@@ -461,7 +468,7 @@ def prepare_environment(
     if not nodes:
         need = "학습 역할이 있고 Docker가 있는" if spec["kind"] == "docker" else "학습 역할이 있는"
         raise ServiceError(400, f"환경을 준비할 서버가 없습니다. {need} 서버가 있어야 합니다.")
-    params = {"template": row.name, "version": row.version, "environment": spec}
+    params = {"template": row.name, "version": row.version, "environment": with_packages(db, spec, row)}
     jobs = [services.create_job(db, user, "env.prepare", params, n.id, via=via, gpus=0) for n in nodes]
     services.audit(db, user.id, via, "environment.prepare", row.id, template=row.name, nodes=[n.name for n in nodes])
     return jobs
@@ -553,13 +560,45 @@ def on_job_finished(db: Session, job: Job) -> None:
 DECLARED_IMAGE = "docker"  # a run's ``environment``: the image the template declares next to its requirements
 
 
-def environment_for_run(db: Session, manifest: TemplateManifest, wanted: str, node: Node) -> dict[str, Any]:
+def environment_for_run(
+    db: Session, manifest: TemplateManifest, wanted: str, node: Node, row: Template | None = None
+) -> dict[str, Any]:
     """The environment a run will use on ``node``, as a snapshot the node can act on.
 
     ``wanted`` is an environment id or name; empty means the template's default, and
     when the template names none, the one it installs itself (``_auto_spec``).
     ``docker``: the image the template declares, when it declares requirements as well.
+    An environment installed from requirements also gets the Hub's in-house wheels, and with ``row``
+    the versions its trial installed (``with_packages``).
     """
+    return with_packages(db, _environment_spec(db, manifest, wanted, node), row)
+
+
+def pinned_for(row: Template | None) -> list[str]:
+    """The versions a template version's passed trial installed, to install the same on other servers."""
+    trial = (row.trial or {}) if row is not None else {}
+    if trial.get("state") not in ("ok", "passed", "allowed") or not trial.get("installed"):
+        return []
+    if not manifest_of(row).environment.requirements:  # nothing installed for it: the server's own Python
+        return []
+    return pinned_versions(list(trial["installed"]), trial.get("sources") or {})
+
+
+def with_packages(db: Session, spec: dict[str, Any], row: Template | None = None) -> dict[str, Any]:
+    """An environment installed from requirements: the in-house wheels to look in, and the versions to keep to."""
+    if spec.get("kind") != "auto" or not spec.get("requirements"):
+        return spec
+    out = dict(spec)
+    wheels = list_packages(db)
+    if wheels:
+        out["wheels"] = [{"filename": w["filename"], "sha256": w["sha256"]} for w in wheels]
+    pinned = pinned_for(row)
+    if pinned:
+        out["pinned"] = pinned
+    return out
+
+
+def _environment_spec(db: Session, manifest: TemplateManifest, wanted: str, node: Node) -> dict[str, Any]:
     auto = _auto_spec(manifest)
     if wanted in ("auto", AUTO["name"]):
         return auto
@@ -579,6 +618,68 @@ def environment_for_run(db: Session, manifest: TemplateManifest, wanted: str, no
         where = f"'{env.name}' 환경이 {node.name} 서버에"
         raise ServiceError(400, f"{where} 준비되어 있지 않습니다. 관리자에게 설정 → 환경에서 등록을 요청하세요.")
     return {"kind": env.kind, "id": env.id, "name": env.name, "path": entry["path"]}
+
+
+# ---- in-house packages (wheels the servers install from the Hub) ------------------------------------
+
+
+def list_packages(db: Session) -> list[dict[str, Any]]:
+    rows = db.scalars(select(Package).order_by(Package.name, Package.created_at.desc())).all()
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "version": p.version,
+            "filename": p.filename,
+            "sha256": p.blob,
+            "bytes": p.bytes,
+            "created_at": iso(p.created_at),
+        }
+        for p in rows
+    ]
+
+
+def add_package(db: Session, user: User, filename: str, data: bytes, storage: Storage, via: str = "api") -> Package:
+    """Keep a wheel on the Hub. The file name says what it is (``mylib-1.2.0-py3-none-any.whl``)."""
+    services.require_admin(user)
+    name = os.path.basename(filename.strip())
+    # {name}-{version}[-{build}]-{python}-{abi}-{platform}.whl (PEP 427)
+    parts = name[:-4].split("-") if name.endswith(".whl") else []
+    if len(parts) not in (5, 6) or not re.match(r"^\d[\w.+!]*$", parts[1]) or not parts[0]:
+        raise ServiceError(400, f"wheel 파일 이름이 아닙니다 ({name}): 예) mylib-1.2.0-py3-none-any.whl")
+    dist, version = parts[0], parts[1]
+    if not data[:4] == b"PK\x03\x04":
+        raise ServiceError(400, f"{name}은(는) wheel(zip) 파일이 아닙니다.")
+    blob = storage.put_blob(data)
+    row = db.scalar(select(Package).where(Package.filename == name))
+    if row is not None and row.blob != blob:
+        raise ServiceError(409, f"{name}은 이미 다른 내용으로 올라와 있습니다. 버전을 올려 새로 만드세요.")
+    if row is None:
+        normal = re.sub(r"[-_.]+", "-", dist).lower()
+        row = Package(name=normal, version=version, filename=name, blob=blob, bytes=len(data))
+        row.created_by = user.id
+        db.add(row)
+        db.flush()
+    services.audit(db, user.id, via, "package.add", row.id, filename=name)
+    return row
+
+
+def delete_package(db: Session, user: User, package_id: str, via: str = "api") -> None:
+    """Off the list: servers stop finding it. Environments already built with it keep it."""
+    services.require_admin(user)
+    row = db.get(Package, package_id)
+    if row is None:
+        raise ServiceError(404, "그 패키지가 없습니다.")
+    services.audit(db, user.id, via, "package.delete", row.id, filename=row.filename)
+    db.delete(row)
+
+
+def package_blob(db: Session, digest: str) -> str:
+    """A listed wheel's storage key, for a server installing it."""
+    row = db.scalar(select(Package).where(Package.blob == digest))
+    if row is None:
+        raise ServiceError(404, "Hub의 사내 패키지 목록에 없는 파일입니다.")
+    return row.blob
 
 
 # ---- where everything is kept ---------------------------------------------------------

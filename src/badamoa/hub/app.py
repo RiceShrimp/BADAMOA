@@ -147,6 +147,8 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(training_api.media_router)
     app.include_router(registry_api.router)
     app.include_router(registry_api.agent_router)
+    app.include_router(registry_api.packages_router)
+    app.include_router(registry_api.media_router)
     app.include_router(modelops_api.router)
     app.include_router(modelops_api.agent_router)
     app.include_router(modelops_api.media_router)

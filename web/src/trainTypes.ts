@@ -47,27 +47,33 @@ export interface Template {
   created_at: string;
   check: TemplateCheck;
   offered_version: string; // admins: the version everyone else gets when this one is not offered ("" otherwise)
+  code_url?: string; // admins: the version's code as uploaded
 }
 
 /** The trial run before a template version is offered to everyone. */
 export interface TemplateCheck {
-  state: "checking" | "ok" | "failed" | "unchecked" | "allowed" | "legacy";
+  state: "pending" | "checking" | "passed" | "ok" | "failed" | "allowed" | "legacy";
   offered: boolean;
   reason?: string;
   failed?: string; // the step that failed: data · env · train · predict · eval · export
   steps?: { step: string; ok: boolean; took_s: number; detail: string }[];
   notes?: string[];
   node?: string;
+  device?: string; // GPU or CPU: what the trial ran on
   job_id?: string;
   checked_at?: string;
   started_at?: string;
   took_s?: number;
   packages?: number;
+  pinned?: number; // packages other servers install at the versions the trial installed
+  sources?: Record<string, { kind: string; url: string; commit?: string }>; // packages not from an index
+  contract?: number;
   legacy?: boolean;
   via?: string; // "run": a real training with it succeeded
-  by?: string; // allowed: who, why and when
-  why?: string;
-  at?: string;
+  by?: string; // who started the trial
+  approved_by?: string; // who offered it to everyone, and when
+  approved_at?: string;
+  why?: string; // allowed without a pass: the reason
 }
 
 export interface EnvironmentNode {

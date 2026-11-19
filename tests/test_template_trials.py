@@ -81,22 +81,37 @@ def _names(client):
     return {t["name"]: t["version"] for t in client.get("/api/templates").json()}
 
 
-def test_a_new_version_is_tried_before_members_see_it(hub, tmp_path):
-    first = _upload(hub, _bundle(tmp_path, version="1"))
-    assert first["check"]["state"] == "checking"
-    assert "trial" not in _names(hub.member)  # not offered while it is being tried
-    assert _names(hub)["trial"] == "1"  # admins see it, with its state
+def _try(hub, template_id):
+    """An admin presses "시험 실행" and waits for the verdict."""
+    started = hub.post(f"/api/templates/{template_id}/check")
+    assert started.status_code == 200, started.text
+    assert started.json()["check"]["state"] == "checking"
+    return _settled(hub, template_id)["check"]
 
-    done = _settled(hub, first["id"])
-    check = done["check"]
-    assert check["state"] == "ok" and check["offered"], check
+
+def test_an_admin_tries_a_new_version_and_offers_it_once_it_passed(hub, tmp_path):
+    first = _upload(hub, _bundle(tmp_path, version="1"))
+    assert first["check"]["state"] == "pending"  # nothing starts on its own
+    time.sleep(1.5)
+    assert hub.get(f"/api/templates/{first['id']}").json()["check"]["state"] == "pending"
+    assert "trial" not in _names(hub.member)
+    assert _names(hub)["trial"] == "1"  # admins see it, with its state
+    assert hub.member.post(f"/api/templates/{first['id']}/check").status_code == 403
+
+    check = _try(hub, first["id"])
+    assert check["state"] == "passed" and not check["offered"], check  # a pass waits for the admin
     assert [s["step"] for s in check["steps"]] == ["data", "env", "train", "predict", "eval", "export"]
-    assert check["node"] == "gpu-1" and check["metrics"]
+    assert check["node"] == "gpu-1" and check["metrics"] and check["by"] == "admin"
+    assert "trial" not in _names(hub.member)
+    offered = hub.post(f"/api/templates/{first['id']}/allow", json={})
+    assert offered.status_code == 200, offered.text
+    assert offered.json()["check"]["state"] == "ok" and offered.json()["check"]["approved_by"] == "admin"
+    assert offered.json()["check"]["steps"]  # the trial's record stays with it
     assert _names(hub.member)["trial"] == "1"
 
-    # a newer version that fails: members keep the one that passed, admins see why
+    # a newer version that fails: members keep the one offered, admins see why
     second = _upload(hub, _bundle(tmp_path, version="2", fail=True))
-    failed = _settled(hub, second["id"])["check"]
+    failed = _try(hub, second["id"])
     assert failed["state"] == "failed" and failed["failed"] == "train" and "종료 코드" in failed["reason"]
     assert _names(hub.member)["trial"] == "1"
     admin_view = next(t for t in hub.get("/api/templates").json() if t["name"] == "trial")
@@ -104,26 +119,26 @@ def test_a_new_version_is_tried_before_members_see_it(hub, tmp_path):
     logs = hub.get(f"/api/jobs/{failed['job_id']}/logs").json()
     assert any("의도적 실패" in line["text"] for line in logs)
 
-    # members cannot start it by its id; an admin lets it through with a reason
+    # without a pass, only with a reason (the admin's escape hatch); members cannot
     assert hub.member.post(f"/api/templates/{second['id']}/allow", json={"reason": "x"}).status_code == 403
     assert hub.post(f"/api/templates/{second['id']}/allow", json={"reason": " "}).status_code == 400
     allowed = hub.post(f"/api/templates/{second['id']}/allow", json={"reason": "사내 서버에서 따로 확인함"})
     assert allowed.status_code == 200, allowed.text
-    assert allowed.json()["check"]["state"] == "allowed" and allowed.json()["check"]["by"] == "admin"
+    assert allowed.json()["check"]["state"] == "allowed" and allowed.json()["check"]["approved_by"] == "admin"
+    assert allowed.json()["check"]["was"] == "failed"
     assert _names(hub.member)["trial"] == "2"
 
 
 def test_check_settings_skip_and_steps_that_say_what_is_wrong(hub, tmp_path):
     # export left out on purpose; the trial uses its own short settings
     extra = '\n[check]\nskip = ["export"]\nparams = { sleep = 0.0 }\ntimeout_min = 5\n'
-    view = _settled(hub, _upload(hub, _bundle(tmp_path, name="skips", extra=extra))["id"])
-    assert view["check"]["state"] == "ok", view["check"]
-    assert [s["step"] for s in view["check"]["steps"]] == ["data", "env", "train", "predict", "eval"]
-
-    # trying again on demand: a new job, the same verdict
-    again = hub.post(f"/api/templates/{view['id']}/check")
-    assert again.status_code == 200 and again.json()["check"]["state"] == "checking"
-    assert _settled(hub, view["id"])["check"]["state"] == "ok"
+    view = _upload(hub, _bundle(tmp_path, name="skips", extra=extra))
+    check = _try(hub, view["id"])
+    assert check["state"] == "passed", check
+    assert [s["step"] for s in check["steps"]] == ["data", "env", "train", "predict", "eval"]
+    assert hub.post(f"/api/templates/{view['id']}/check").status_code == 200  # again, on demand
+    assert hub.post(f"/api/templates/{view['id']}/check").status_code == 409  # not twice at once
+    assert _settled(hub, view["id"])["check"]["state"] == "passed"
 
 
 def test_check_declarations_are_checked_on_upload(tmp_path):
@@ -159,7 +174,7 @@ def test_the_sample_a_node_draws_writes_in_each_format(tmp_path, data_format, ki
         assert len(label.split()) == 9
 
 
-def test_versions_from_before_trials_stay_offered_until_tried(client, admin, settings, tmp_path):
+def test_versions_from_before_trials_stay_offered_and_admins_try_them_by_hand(client, admin, settings, tmp_path):
     from badamoa.hub import template_checks
     from badamoa.hub.db import Database
     from badamoa.hub.models import Job
@@ -170,13 +185,15 @@ def test_versions_from_before_trials_stay_offered_until_tried(client, admin, set
     token = client.post("/api/auth/login", json={"username": "lee", "password": "lee-pass-123"}).json()["token"]
     lee = {"Authorization": f"Bearer {token}"}
 
-    # no server can try it yet: not offered, and the admin sees why
     up = client.post("/api/templates", content=_bundle(tmp_path, name="old"), headers=admin)
     assert up.status_code == 200, up.text
-    assert up.json()["check"]["state"] == "unchecked" and "학습 서버" in up.json()["check"]["reason"]
+    assert up.json()["check"]["state"] == "pending"
     assert "old" not in {t["name"] for t in client.get("/api/templates", headers=lee).json()}
+    # no server can try it: the admin is told why, nothing changes
+    nobody = client.post(f"/api/templates/{up.json()['id']}/check", headers=admin)
+    assert nobody.status_code == 409 and "학습 서버" in nobody.json()["detail"]
 
-    # as if registered before trials existed: offered, until a server can try it
+    # as if registered before trials existed: offered as before
     database = Database(settings.database_url)
     with database.session() as db:
         db.get(Template, up.json()["id"]).trial = {}
@@ -184,39 +201,172 @@ def test_versions_from_before_trials_stay_offered_until_tried(client, admin, set
         template_checks.mark_legacy(db)
     assert "old" in {t["name"] for t in client.get("/api/templates", headers=lee).json()}
 
-    # a server too old to try it says nothing; one that can gets the trial, and it stays offered meanwhile
-    def join(version):
-        body = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()
-        info = {"agent_version": version, "info": {}, "join_token": body["token"]}
-        reg = client.post("/api/agent/register", json=info).json()
-        node = {"Authorization": f"Bearer {reg['node_token']}"}
-        beat = {"agent_version": version, "metrics": {}, "running_job_ids": []}
-        assert client.post("/api/agent/heartbeat", json=beat, headers=node).status_code == 200
-        return reg["node_id"]
-
-    join("0.51.0")
+    # a server that can try it reports in: still nothing starts on its own
+    body = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()
+    version = ".".join(str(n) for n in template_checks.CHECK_SINCE)
+    reg = client.post("/api/agent/register", json={"agent_version": version, "info": {}, "join_token": body["token"]}).json()
+    node = {"Authorization": f"Bearer {reg['node_token']}"}
+    beat = {"agent_version": version, "metrics": {}, "running_job_ids": []}
+    assert client.post("/api/agent/heartbeat", json=beat, headers=node).status_code == 200
     assert client.get(f"/api/templates/{up.json()['id']}", headers=admin).json()["check"]["state"] == "legacy"
-    new = join(".".join(str(n) for n in template_checks.CHECK_SINCE))
-    check = client.get(f"/api/templates/{up.json()['id']}", headers=admin).json()["check"]
+
+    # an admin tries it by hand; it stays offered while it runs
+    started = client.post(f"/api/templates/{up.json()['id']}/check", headers=admin)
+    assert started.status_code == 200, started.text
+    check = started.json()["check"]
     assert check["state"] == "checking" and check["legacy"] and check["offered"]
     assert "old" in {t["name"] for t in client.get("/api/templates", headers=lee).json()}
 
-    # the server went away mid-trial: no verdict on the code, still offered
+    # the server went away mid-trial: no verdict on the code, back to how it was
     with database.session() as db:
         job = db.get(Job, check["job_id"])
-        assert job.target_node_id == new and job.type == "template.check"
-        job.status, job.node_id, job.error = "failed", new, "노드가 더 이상 이 작업을 실행하고 있지 않습니다"
+        assert job.target_node_id == reg["node_id"] and job.type == "template.check"
+        job.status, job.node_id, job.error = "failed", reg["node_id"], "노드가 더 이상 이 작업을 실행하고 있지 않습니다"
         template_checks.on_job_finished(db, job)
     check = client.get(f"/api/templates/{up.json()['id']}", headers=admin).json()["check"]
-    assert check["state"] == "legacy" and check["tried"] and "노드" in check["reason"]
+    assert check["state"] == "legacy" and "노드" in check["reason"] and check["offered"]
 
-    # a real training that succeeded with a version nobody could try counts as passing
+    # a real training no longer changes a version's state by itself
     with database.session() as db:
         row = db.get(Template, up.json()["id"])
-        row.trial = {"state": "unchecked", "reason": "x"}
+        row.trial = {"state": "pending"}
         run = Job(type="train.run", status="succeeded", params={"template": {"id": row.id}})
         db.add(run)
         db.flush()
         template_checks.on_job_finished(db, run)
-        assert row.trial["state"] == "ok" and row.trial["via"] == "run"
+        assert row.trial == {"state": "pending"}
+    database.engine.dispose()
+
+
+# ---- the same packages on every server (EXTENSION_PLAN 7.2 · 7.3) --------------------------------
+
+
+def test_pins_keep_versions_not_builds_and_leave_out_what_has_its_own_source():
+    installed = ["torch==2.5.1+cu121", "numpy==2.1.0", "nvidia-cudnn-cu12==9.1.0.70", "My_Lib==0.3.0", "plain"]
+    sources = {"my-lib": {"kind": "git", "url": "https://git.local/my-lib", "commit": "abc"}}
+    assert template_format.pinned_versions(installed, sources) == ["torch==2.5.1", "numpy==2.1.0"]
+
+
+def test_where_packages_came_from_and_wheels_checked_against_their_hash(tmp_path):
+    import hashlib
+
+    from badamoa.node import envs
+
+    git = {"url": "https://git.local/lib.git", "vcs_info": {"vcs": "git", "commit_id": "1a2b3c"}}
+    assert envs.describe(git) == {"kind": "git", "url": "https://git.local/lib.git", "commit": "1a2b3c"}
+    assert envs.describe({"url": "file:///srv/lib", "dir_info": {"editable": True}})["kind"] == "editable"
+    assert envs.describe({"url": "file:///srv/lib-1.0.whl", "archive_info": {}})["kind"] == "local"
+    assert envs.describe({"url": "https://x/lib-1.0.whl", "archive_info": {}})["kind"] == "url"
+
+    data = b"PK\x03\x04 a wheel"
+    digest = hashlib.sha256(data).hexdigest()
+    asked: list[str] = []
+
+    def get(sha):
+        asked.append(sha)
+        return data
+
+    wheels = [{"filename": "mylib-1.0-py3-none-any.whl", "sha256": digest}]
+    folder = envs.fetch_wheels(tmp_path, wheels, get)
+    assert (folder / "mylib-1.0-py3-none-any.whl").read_bytes() == data
+    envs.fetch_wheels(tmp_path, wheels, get)  # already here with the right hash: not fetched again
+    assert asked == [digest]
+    with pytest.raises(RuntimeError, match="해시"):
+        envs.fetch_wheels(tmp_path / "other", [{"filename": "b-1.0-py3-none-any.whl", "sha256": "0" * 64}], get)
+
+
+def test_in_house_wheels_and_pinned_versions_reach_the_environment(client, admin, settings, tmp_path):
+    from badamoa.hub import registry
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import Node
+    from badamoa.hub.train_models import Template
+
+    wheel = b"PK\x03\x04" + b"0" * 64
+    up = client.post(
+        "/api/packages",
+        params={"filename": "My_Lib-1.2.0-py3-none-any.whl"},
+        content=wheel,
+        headers={**admin, "Content-Type": "application/octet-stream"},
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["name"] == "my-lib" and up.json()["version"] == "1.2.0"
+    bad = client.post("/api/packages", params={"filename": "notes.txt"}, content=wheel, headers=admin)
+    assert bad.status_code == 400 and "wheel" in bad.json()["detail"]
+    assert [p["filename"] for p in client.get("/api/packages", headers=admin).json()] == ["My_Lib-1.2.0-py3-none-any.whl"]
+
+    # a server fetches it by its hash (and nothing else)
+    token = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()["token"]
+    reg = client.post("/api/agent/register", json={"join_token": token, "agent_version": "0.53.0", "info": {}}).json()
+    node = {"Authorization": f"Bearer {reg['node_token']}"}
+    got = client.get(f"/api/agent/packages/{up.json()['sha256']}", headers=node)
+    assert got.status_code == 200 and got.content == wheel
+    assert client.get(f"/api/agent/packages/{'0' * 64}", headers=node).status_code == 404
+
+    # a template that installs packages: the wheels to look in, and once its trial passed, the versions it installed
+    extra = '\n[environment]\nrequirements = ["my-lib", "numpy"]\n'
+    folder = tmp_path / "needs-env"
+    shutil.copytree(shipped.builtin()["dummy"], folder, ignore=shutil.ignore_patterns("__pycache__"))
+    text = (folder / "badamoa.toml").read_text(encoding="utf-8").replace('name = "dummy"', 'name = "needs"')
+    (folder / "badamoa.toml").write_text(text.replace("hidden = true", "hidden = false") + extra, encoding="utf-8")
+    data = template_format.bundle(folder)
+    view = client.post("/api/templates", content=data, headers=admin).json()
+    database = Database(settings.database_url)
+    with database.session() as db:
+        row = db.get(Template, view["id"])
+        manifest = registry.manifest_of(row)
+        server = db.get(Node, reg["node_id"])
+        spec = registry.environment_for_run(db, manifest, "", server, row)
+        assert spec["requirements"] == ["my-lib", "numpy"] and "pinned" not in spec  # no passed trial yet
+        assert spec["wheels"] == [{"filename": "My_Lib-1.2.0-py3-none-any.whl", "sha256": up.json()["sha256"]}]
+        row.trial = {"state": "ok", "installed": ["my-lib==1.2.0", "numpy==2.1.0+cpu"], "sources": {}}
+        assert registry.environment_for_run(db, manifest, "", server, row)["pinned"] == ["my-lib==1.2.0", "numpy==2.1.0"]
+    assert client.get(f"/api/templates/{view['id']}", headers=admin).json()["check"]["pinned"] == 2
+    assert view["check"]["state"] == "pending"
+
+    # admins get the version's code as uploaded, by a signed link
+    code = client.get(f"/api/templates/{view['id']}", headers=admin).json()["code_url"]
+    assert client.get(code).content == data
+    assert client.get(code.replace("sig=", "sig=0")).status_code == 403
+    assert client.delete(f"/api/packages/{up.json()['id']}", headers=admin).status_code == 200
+    assert client.get("/api/packages", headers=admin).json() == []
+    database.engine.dispose()
+
+
+def test_the_trial_runs_on_a_developer_pc_too(tmp_path):
+    from typer.testing import CliRunner
+
+    from badamoa.cli import app
+
+    runner = CliRunner()
+    for name, fail, code in (("mine", False, 0), ("broken", True, 1)):
+        folder = tmp_path / name
+        folder.mkdir()
+        template_format.unpack(_bundle(tmp_path / "b", name=name, fail=fail), folder)
+        done = runner.invoke(app, ["template", "check", str(folder), "--run", "--home", str(tmp_path / "home")])
+        assert done.exit_code == code, done.output
+        assert ("실패 학습" in done.output) is fail and ("통과 학습" in done.output) is not fail
+        assert "통과 시험 데이터" in done.output
+
+
+def test_a_trial_takes_an_idle_gpu_and_runs_on_the_cpu_when_none_is(client, admin, settings):
+    from test_resources import _beat, _claim, _gpu, _join
+
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import Job
+
+    node_id, node = _join(client, admin)
+    database = Database(settings.database_url)
+    wants = {"roles": ["compute"], "gpus": 1, "min_vram_mb": 0, "gpu_if_free": True}
+
+    def queue():
+        with database.session() as db:
+            db.add(Job(type="template.check", params={}, target_node_id=node_id, requirements=wants))
+
+    _beat(client, node, [_gpu(0, 20000, util=90), _gpu(1, 20000, util=90)])  # both in use by someone
+    queue()
+    job = _claim(client, node)
+    assert job["type"] == "template.check" and job["gpu_indices"] == []  # not waiting: the CPU
+    _beat(client, node, [_gpu(0, 20000, util=90), _gpu(1, 300)], running=[job["id"]])
+    queue()
+    assert _claim(client, node)["gpu_indices"] == [1]  # the idle one
     database.engine.dispose()

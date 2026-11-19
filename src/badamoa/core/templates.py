@@ -36,10 +36,32 @@ RESERVED = {
     "resumed_from", "nodes", "data_after",
 }  # fmt: skip
 MAX_BUNDLE_BYTES = 64 * 1024**2
+# What template code may rely on: the config's keys, the ``@@badamoa`` events, the SDK's calls. It goes up
+# when one of them changes in a way old code would notice; runs and trials record it.
+CONTRACT = 1
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".idea", ".vscode", "runs", "wandb"}
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")
 # registry/name:tag or …@sha256:…, as docker reads it (loosely: no spaces, no scheme)
 IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/:]*(@sha256:[0-9a-f]{64})?$")
+
+
+def pinned_versions(installed: list[str], sources: dict[str, Any] | None = None) -> list[str]:
+    """What a trial installed, as constraints another server can install with: ``name==version`` without a
+    build label (``torch==2.5.1``, not ``+cu121``: the build follows each server's driver), leaving out
+    packages that came from somewhere else than an index (their requirement names them by URL) and CUDA's
+    own runtime wheels."""
+    skip = {_normal(name) for name in (sources or {})}
+    out = []
+    for line in installed:
+        name, _, version = str(line).partition("==")
+        if not version or _normal(name) in skip or _normal(name).startswith("nvidia-"):
+            continue
+        out.append(f"{name}=={version.split('+')[0]}")
+    return out
+
+
+def _normal(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
 
 
 class TemplateError(ValueError):

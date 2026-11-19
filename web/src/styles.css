@@ -1455,3 +1455,8 @@ button.legend-item:hover {
   text-align: left;
   white-space: normal;
 }
+
+/* a file picker opened by its own button: the input stays out of sight (the global input styles would show it) */
+input[type="file"][hidden] {
+  display: none !important;
+}

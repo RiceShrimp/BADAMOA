@@ -473,7 +473,9 @@ def try_claim(db: Session, node: Node, settings: HubSettings) -> Job | None:
         if req.get("gpus"):
             free = resources.free_gpus(node, settings, assigned, req.get("min_vram_mb", 0))
             if len(free) < req["gpus"]:
-                continue  # not enough idle GPUs here right now
+                if not req.get("gpu_if_free"):
+                    continue  # not enough idle GPUs here right now
+                free = []  # it takes a GPU only if one is idle (a template's trial): the CPU now
             gpu_indices = free[: req["gpus"]]
         res = db.execute(
             update(Job)

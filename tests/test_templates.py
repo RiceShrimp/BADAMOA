@@ -420,7 +420,8 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     login = httpx.post(f"{hub.url}/api/auth/login", json={"username": "member", "password": "member-test-pw"}).json()
     member = {"Authorization": f"Bearer {login['token']}"}
     assert httpx.post(f"{hub.url}/api/templates", content=fmt.bundle(folder), headers=member).status_code == 403
-    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 5  # but everyone can pick one
+    # everyone picks among the offered ones: a pushed version waits for an admin's trial and 허용 first
+    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 4
     assert hub.delete(f"/api/templates/{listed['yolo']['id']}").status_code == 400
     assert hub.delete(f"/api/templates/{latest['id']}").status_code == 200
     assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "yolo-seg", "classify", "torchvision"]

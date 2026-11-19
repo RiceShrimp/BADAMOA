@@ -86,7 +86,7 @@ def _start(
     same = wanted.get("id") or {"auto": "auto", "docker": registry.DECLARED_IMAGE}.get(wanted.get("kind", ""), "")
     if same == registry.DECLARED_IMAGE and not manifest.environment.image:
         same = ""
-    env = registry.environment_for_run(db, manifest, same, node)
+    env = registry.environment_for_run(db, manifest, same, node, row)
     _, unfit = training.fitting([node], env, gpus)
     if unfit:
         raise ServiceError(400, " ".join(unfit))

@@ -42,17 +42,12 @@ def register(body: RegisterRequest, db: Session = Depends(db_session)) -> Regist
 
 @router.post("/heartbeat", response_model=HeartbeatResponse)
 def heartbeat(
-    body: HeartbeatRequest,
-    request: Request,
-    node: Node = Depends(current_node),
-    db: Session = Depends(db_session),
-    hub: Hub = Depends(get_hub),
+    body: HeartbeatRequest, request: Request, node: Node = Depends(current_node), db: Session = Depends(db_session)
 ) -> HeartbeatResponse:
     seen = request.client.host if request.client else ""
     cancel_ids = services.heartbeat(db, node, body, seen_from=seen)
     if body.storage:
         node_storage.save(node, body.storage)
-    template_checks.queue_legacy(db, hub.settings, node)  # versions from before trials, once a server can try them
     db.commit()
     days = cleanup.get_policy(db)["workdir_days"]
     return HeartbeatResponse(

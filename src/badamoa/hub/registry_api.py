@@ -21,7 +21,17 @@ from .services import ServiceError
 from .train_models import Template
 
 router = APIRouter(prefix="/api")
+MAX_WHEEL_BYTES = 1024**3
 agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/check")  # a server trying a template version
+packages_router = APIRouter(prefix="/api/agent/packages")  # a server installing an in-house wheel
+media_router = APIRouter(prefix="/media")  # a template version's code, by a signed link
+
+
+def _with_links(view: dict[str, Any], user: User, hub: Hub) -> dict[str, Any]:
+    """Admins get a link to the version's code as it was uploaded."""
+    if user.role == "admin" and not view.get("builtin"):
+        view["code_url"] = catalog.media_url(hub.settings, "template", view["id"])
+    return view
 
 
 # ---- templates -----------------------------------------------------------------------
@@ -29,15 +39,86 @@ agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/check")  # a server tr
 
 @router.get("/templates")
 def list_templates(
-    hidden: bool = False, task: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)
+    hidden: bool = False,
+    task: str = "",
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> list[dict[str, Any]]:
     """Each template's newest version offered to everyone; admins get the newest of all, with its trial."""
-    return registry.list_templates(db, include_hidden=hidden, task=task, admin=user.role == "admin")
+    views = registry.list_templates(db, include_hidden=hidden, task=task, admin=user.role == "admin")
+    return [_with_links(view, user, hub) for view in views]
 
 
 @router.get("/templates/{template_id}")
-def get_template(template_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
-    return registry.template_view(db, registry.get_template(db, template_id))
+def get_template(
+    template_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    return _with_links(registry.template_view(db, registry.get_template(db, template_id)), user, hub)
+
+
+@media_router.get("/template/{template_id}")
+def template_code(
+    template_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Session = Depends(db_session)
+) -> Response:
+    """The version's code as it was uploaded (the link comes from the template's view, for admins)."""
+    if not catalog.verify_media(hub.settings, "template", template_id, exp, sig):
+        raise HTTPException(status_code=403, detail="링크가 만료되었거나 올바르지 않습니다.")
+    row = db.get(Template, template_id)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if row is None or not row.blob or not storage.has_blob(row.blob):
+        raise HTTPException(status_code=404, detail="템플릿 묶음이 저장소에 없습니다.")
+    name = f"{row.name}-{row.version}.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+    return Response(storage.get_blob(row.blob), media_type="application/zip", headers=headers)
+
+
+# ---- in-house packages -----------------------------------------------------------------------
+
+
+@router.get("/packages")
+def list_packages(_: User = Depends(current_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
+    """The wheels the servers install from the Hub, besides the package index."""
+    return registry.list_packages(db)
+
+
+@router.post("/packages")
+async def upload_package(request: Request, filename: str, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """Add a wheel (the request body is the .whl file; ``filename`` its name, which says what it is)."""
+    token = bearer_token(request)
+    data = await request.body()
+    if len(data) > MAX_WHEEL_BYTES:
+        raise HTTPException(status_code=413, detail="패키지 파일이 너무 큽니다 (1 GB까지).")
+
+    def work() -> dict[str, Any]:
+        with hub.db.session() as db:
+            user = services.authenticate(db, token)
+            if user is None:
+                raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+            storage = catalog.storage_for(str(hub.settings.storage_dir))
+            row = registry.add_package(db, user, filename, data, storage, via="ui")
+            return next(p for p in registry.list_packages(db) if p["id"] == row.id)
+
+    return await anyio.to_thread.run_sync(work)
+
+
+@router.delete("/packages/{package_id}")
+def delete_package(package_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
+    registry.delete_package(db, user, package_id, via="ui")
+    db.commit()
+    return {"ok": True}
+
+
+@packages_router.get("/{digest}")
+def package_file(
+    digest: str, _: Node = Depends(current_node), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> Response:
+    """A listed wheel, for a server building an environment that may need it."""
+    blob = registry.package_blob(db, digest)
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if not storage.has_blob(blob):
+        raise HTTPException(status_code=404, detail="패키지 파일이 저장소에 없습니다.")
+    return Response(storage.get_blob(blob), media_type="application/octet-stream")
 
 
 @router.post("/templates")
@@ -57,8 +138,7 @@ async def upload_template(request: Request, hub: Hub = Depends(get_hub)) -> dict
                 raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
             storage = catalog.storage_for(str(hub.settings.storage_dir))
             row = registry.register_template(db, user, data, storage)
-            if not row.trial:  # a new version (the same content again keeps its trial)
-                template_checks.start(db, hub.settings, row, user.id, "ui")
+            template_checks.uploaded(row)  # a new version waits for an admin to try it (the same content keeps its trial)
             return registry.template_view(db, row)
 
     return await anyio.to_thread.run_sync(work)
@@ -75,21 +155,21 @@ def delete_template(template_id: str, user: User = Depends(admin_user), db: Sess
 def check_template(
     template_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
 ) -> dict[str, Any]:
-    """Try the version again on a server (after a fix on the server's side, or a failed trial)."""
-    template_checks.recheck(db, hub.settings, user, template_id, via="ui")
+    """Start the version's trial on a server that trains (an admin; nothing starts one on its own)."""
+    template_checks.start(db, hub.settings, user, template_id, via="ui")
     db.commit()
     return registry.template_view(db, registry.get_template(db, template_id))
 
 
 class AllowBody(BaseModel):
-    reason: str
+    reason: str = ""  # needed unless the version passed its trial
 
 
 @router.post("/templates/{template_id}/allow")
 def allow_template(
     template_id: str, body: AllowBody, user: User = Depends(admin_user), db: Session = Depends(db_session)
 ) -> dict[str, Any]:
-    """Offer the version without a passed trial; the reason is kept with it and in the audit log."""
+    """Offer the version to everyone: one that passed as it is, any other with a reason (kept, and audited)."""
     row = template_checks.allow(db, user, template_id, body.reason, via="ui")
     db.commit()
     return registry.template_view(db, row)
