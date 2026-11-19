@@ -72,6 +72,7 @@ def test_datasets_take_their_own_share_of_the_hub(hub, tmp_path, settings):
     # Images registered before sizes were kept get theirs filled in by that same pass.
     with database.session() as db:
         db.execute(update(Item).values(thumb_bytes=0))
+    hub_storage.mark_changed()  # written behind the Hub's back: the kept count does not know
     assert hub.get("/api/storage").json()["parts"]["datasets"] == 0
     assert hub_storage.fill_thumb_sizes(database, settings) == 8
     assert hub.get("/api/storage").json()["parts"]["datasets"] == usage["parts"]["datasets"]

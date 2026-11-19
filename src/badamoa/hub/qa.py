@@ -15,24 +15,24 @@ labels change (the work in progress, as people fix things).
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, insert, select
+from sqlalchemy import and_, case, delete, func, insert, select, text
 from sqlalchemy.orm import Session
 
 from . import catalog, checks
 from .catalog_models import (
     Dataset,
-    Item,
     ItemPrediction,
-    LabelRevision,
     LabelSpace,
     QaDismissal,
     QaResult,
     QaRun,
     Release,
     ReleaseItem,
+    RevisionClass,
 )
 from .db import iso, utcnow
 from .models import User
@@ -73,11 +73,38 @@ def _iou(a: list[float], b: list[float]) -> float:
     return w * h / (aw * ah + bw * bh - w * h)
 
 
+def _overlapping(geometric: list[tuple[int, list[float]]]) -> list[tuple[int, int]]:
+    """Pairs of boxes (their label indices, in label order) that overlap by ``OVERLAP`` (IoU) or more.
+
+    The boxes are swept along x: once a box starts right of another's right edge, no later one can overlap it. And
+    an IoU of 0.85 needs areas within 15% of each other (the IoU is at most the smaller area over the larger), so
+    most pairs are passed over before any IoU. Comparing every pair took 34 s for 684,049 images."""
+    if len(geometric) < 2:
+        return []
+    spans = sorted(
+        (b[1] - b[3] / 2, b[1] + b[3] / 2, b[2] - b[4] / 2, b[2] + b[4] / 2, b[3] * b[4], i) for i, b in geometric
+    )
+    found = []
+    for n, (x0, x1, y0, y1, area, i) in enumerate(spans):
+        for u0, u1, v0, v1, other, j in spans[n + 1 :]:
+            if u0 >= x1:
+                break
+            small, big = (area, other) if area <= other else (other, area)
+            if big <= 0 or small < OVERLAP * big:
+                continue
+            w = min(x1, u1) - max(x0, u0)
+            h = min(y1, v1) - max(y0, v0)
+            if w <= 0 or h <= 0:
+                continue
+            inter = w * h
+            if inter / (area + other - inter) >= OVERLAP:
+                found.append((i, j) if i < j else (j, i))
+    return sorted(found)
+
+
 def _fingerprint(db: Session, release: Release) -> str:
     count, total = db.execute(
-        select(func.count(), func.coalesce(func.sum(ReleaseItem.revision_id), 0)).where(
-            ReleaseItem.release_id == release.id
-        )
+        select(func.count(), func.coalesce(func.sum(ReleaseItem.revision_id), 0)).where(ReleaseItem.release_id == release.id)
     ).one()
     return hashlib.sha1(f"{count}:{total}:{release.label_space_id}:{RULES}".encode()).hexdigest()
 
@@ -108,14 +135,12 @@ def _flags(
         if huge:
             out["huge"] = (huge, named(huge))
         same, other, pairs = set(), set(), {}
-        for n, (i, a) in enumerate(geometric):
-            for j, b in geometric[n + 1 :]:
-                if _iou(a, b) >= OVERLAP:
-                    if int(a[0]) == int(b[0]):
-                        same.update((i, j))
-                    else:
-                        other.update((i, j))
-                        pairs[" ↔ ".join(sorted((name(i), name(j))))] = True
+        for i, j in _overlapping(geometric):
+            if int(boxes[i][0]) == int(boxes[j][0]):
+                same.update((i, j))
+            else:
+                other.update((i, j))
+                pairs[" ↔ ".join(sorted((name(i), name(j))))] = True
         if same:
             out["duplicate"] = (sorted(same), f"{named(sorted(same))} 겹침")
         if other:
@@ -135,36 +160,50 @@ def run(db: Session, release: Release) -> QaRun:
     task = catalog.release_task(db, release)
     space = db.get(LabelSpace, release.label_space_id)
     names = {int(c["id"]): c["name"] for c in (space.classes if space else [])}
-    per_class = Counter()
-    for (boxes,) in db.execute(
-        select(LabelRevision.boxes)
-        .join(ReleaseItem, ReleaseItem.revision_id == LabelRevision.id)
-        .where(ReleaseItem.release_id == release.id, ReleaseItem.box_count > 0)
-    ):
-        per_class.update(int(b[0]) for b in boxes or [] if b)
-    rare = {cid for cid, n in per_class.items() if n <= RARE}
+    # how often each class occurs: the per-class counts every label record keeps (no label read for it)
+    per_class = dict(
+        db.execute(
+            select(RevisionClass.class_id, func.sum(RevisionClass.count))
+            .join(ReleaseItem, ReleaseItem.revision_id == RevisionClass.revision_id)
+            .where(ReleaseItem.release_id == release.id)
+            .group_by(RevisionClass.class_id)
+        ).all()
+    )
+    rare = {int(cid) for cid, n in per_class.items() if (n or 0) <= RARE}
     if len(per_class) < 3:  # a dataset of one or two classes has no "rare" one
         rare = set()
 
     db.execute(delete(QaResult).where(QaResult.release_id == release.id))
     counts = Counter()
+    # images nobody labelled: no labels to read
+    waiting = db.scalars(
+        select(ReleaseItem.item_id).where(ReleaseItem.release_id == release.id, ReleaseItem.state == "unlabelled")
+    ).all()
+    for start in range(0, len(waiting), CHUNK):
+        part = waiting[start : start + CHUNK]
+        db.execute(
+            insert(QaResult),
+            [{"release_id": release.id, "check": "unlabelled", "item_id": i, "boxes": [], "note": ""} for i in part],
+        )
+        counts["unlabelled"] += len(part)
+    # the images with labels, in order of their number, each label record read once as text and parsed here
+    # (faster than SQLAlchemy turning each into a Python value); images without labels fail no check
     last = 0
     while True:
         rows = db.execute(
-            select(ReleaseItem.item_id, ReleaseItem.state, LabelRevision.boxes, Item.width, Item.height)
-            .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id)
-            .join(Item, Item.id == ReleaseItem.item_id)
-            .where(ReleaseItem.release_id == release.id, ReleaseItem.item_id > last)
-            .order_by(ReleaseItem.item_id)
-            .limit(CHUNK)
+            text(
+                "SELECT ri.item_id, lr.boxes, i.width, i.height FROM release_items ri "
+                "JOIN label_revisions lr ON lr.id = ri.revision_id JOIN items i ON i.id = ri.item_id "
+                "WHERE ri.release_id = :release AND ri.box_count > 0 AND ri.state != 'unlabelled' AND ri.item_id > :last "
+                "ORDER BY ri.item_id LIMIT :chunk"
+            ),
+            {"release": release.id, "last": last, "chunk": CHUNK * 5},
         ).all()
         if not rows:
             break
         found = []
-        for item_id, state, boxes, width, height in rows:
-            if state == "unlabelled":
-                found.append({"release_id": release.id, "check": "unlabelled", "item_id": item_id, "boxes": [], "note": ""})
-                continue
+        for item_id, raw, width, height in rows:
+            boxes = json.loads(raw) if isinstance(raw, str) else raw
             for check, (indices, note) in _flags(boxes or [], width or 1, height or 1, rare, task, names).items():
                 row = {"release_id": release.id, "check": check, "item_id": item_id, "boxes": indices, "note": note[:255]}
                 found.append(row)
@@ -211,9 +250,7 @@ def summary(db: Session, release: Release) -> dict[str, Any]:
     for check in checks.release_checks(db, release):
         mine = (ItemPrediction.op_id == check["id"], ReleaseItem.release_id == release.id)
         base = (
-            select(func.count())
-            .select_from(ItemPrediction)
-            .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
+            select(func.count()).select_from(ItemPrediction).join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
         )
         found = {}
         for kind in checks.MISTAKES:  # extra: objects no label has; missed: labels it did not find
@@ -307,3 +344,22 @@ def let_be(db: Session, user: User, release: Release, item_id: int, check: str, 
     db.flush()
     judged = {"note": found.note, "by": user.username, "at": iso(found.created_at)}
     return {"item_id": item_id, "check": check, "let_be": judged}
+
+
+def fill_runs(db: Session, limit: int = 1) -> int:
+    """Label checks of finished versions run ahead (the Hub's background loop, one at a time): the 검수 tab of even
+    a large version then opens at once. A finished version never changes; one checked under older rules is checked
+    again when it is opened."""
+    from .catalog_models import Release as Version
+
+    waiting = db.scalars(
+        select(Version)
+        .where(Version.status == "ready", Version.deleted_at.is_(None))
+        .where(~select(QaRun.release_id).where(QaRun.release_id == Version.id).exists())
+        .order_by(Version.created_at.desc())
+        .limit(limit)
+    ).all()
+    for release in waiting:
+        run(db, release)
+        db.commit()
+    return len(waiting)

@@ -338,8 +338,10 @@ def set_project_deleted(db: Session, user: User, project_id: str, deleted: bool)
         if busy:
             raise ServiceError(409, f"이 프로젝트에서 {', '.join(busy)}가 진행 중입니다. 끝나거나 멈춘 뒤에 지우세요.")
         project.deleted_at = utcnow()
+        hub_storage.mark_changed()
     elif not deleted:
         project.deleted_at = None
+        hub_storage.mark_changed()
     services.audit(
         db, user.id, "api", "project.delete" if deleted else "project.restore", project.id, name=project.name
     )
@@ -918,6 +920,7 @@ def compute_stats(db: Session, release: Release) -> dict[str, Any]:
 
 
 def import_finish(db: Session, node: Node, job_id: str) -> dict[str, Any]:
+    hub_storage.mark_changed()  # the storage screen counts the new images
     job = _import_job(db, node, job_id)
     release = db.scalar(select(Release).where(Release.job_id == job.id))
     if release is None:

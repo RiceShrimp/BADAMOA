@@ -148,6 +148,9 @@ def empty_trash(
     retention policy). What something still points at, and what has work under way, stays.
     A template is named by the id of any of its versions.
     """
+    from . import hub_storage
+
+    hub_storage.mark_changed()  # the storage screen counts again
     if user is not None:
         services.require_admin(user)
     wanted = {"projects": projects, "releases": releases, "runs": runs, "models": models, "templates": templates}

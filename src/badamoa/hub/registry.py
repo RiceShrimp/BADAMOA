@@ -861,19 +861,15 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
 
     counted = hub_storage.measured()
     database = hub_storage.database_usage(db, settings)
+    images = hub_storage.image_usage(db, settings)  # counted in the background: it reads every image record
     # What only the trash holds: deleted runs and models, and those of deleted projects.
     gone = set(db.scalars(select(Project.id).where(Project.deleted_at.is_not(None))))
     datasets = trash = 0
-    # Thumbnails: each stored once, whichever projects' images share it
-    for project_id, _key, size in db.execute(
-        select(Item.project_id, Item.thumb_key, func.max(Item.thumb_bytes))
-        .where(Item.thumb_key.is_not(None), Item.thumb_bytes > 0)
-        .group_by(Item.thumb_key)
-    ):
+    for project_id, usage in images["by_project"].items():  # each image's thumbnail
         if project_id in gone:
-            trash += size or 0
+            trash += usage["thumbs"]
         else:
-            datasets += size or 0
+            datasets += usage["thumbs"]
     models = outputs = checkpoints = 0
     binned_models: set[str] = set()
     for model_id, project_id, deleted_at, size in db.execute(
@@ -911,7 +907,7 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
     stored = counted["bytes"] if counted["at"] else known
     return {
         "policy": cleanup.get_policy(db),
-        "projects": project_usage(db),
+        "projects": project_usage(db, images["by_project"]),
         "path": str(settings.home.resolve()) if user.role == "admin" else None,
         "bytes": stored + database["bytes"],
         "files": counted["files"],
@@ -919,9 +915,9 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
         "free": disk.free,
         "disk": disk.total,
         "keep_free": hub_storage.keep_free(settings),  # an import that would leave less is refused
-        "per_image": hub_storage.per_image(db, settings),  # what one more registered image takes here
+        "per_image": images["per_image"],  # what one more registered image takes here
         # images whose thumbnail is still the older, larger kind (made smaller in the background, between imports)
-        "old_thumbs": hub_storage.old_thumbs(db),
+        "old_thumbs": images["old_thumbs"],
         "shrinking": hub_storage.shrinking(),
         # The same bytes recorded twice are stored once, so the parts can add up to more than the whole.
         "parts": {
@@ -937,18 +933,25 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
     }
 
 
-def project_usage(db: Session) -> list[dict[str, Any]]:
+def project_usage(db: Session, images: dict[str, dict[str, int]] | None = None) -> list[dict[str, Any]]:
     """How much each project keeps: its datasets' thumbnails (and how many images), its models, its runs' and
     model jobs' outputs, its checkpoints."""
     usage: dict[str, dict[str, Any]] = {
         p.id: {"id": p.id, "name": p.name, "images": 0, "datasets": 0, "models": 0, "outputs": 0, "checkpoints": 0}
         for p in db.scalars(select(Project).where(Project.deleted_at.is_(None)))
     }
-    for project_id, images, thumbs in db.execute(
-        select(Item.project_id, func.count(Item.id), func.sum(func.max(Item.thumb_bytes, 0))).group_by(Item.project_id)
-    ):
+    if images is None:  # what the images take per project: hub_storage counts it in the background
+        images = {
+            project_id: {"images": count or 0, "thumbs": int(thumbs or 0)}
+            for project_id, count, thumbs in db.execute(
+                select(Item.project_id, func.count(Item.id), func.sum(func.max(Item.thumb_bytes, 0))).group_by(
+                    Item.project_id
+                )
+            )
+        }
+    for project_id, counted in images.items():
         if project_id in usage:
-            usage[project_id]["images"], usage[project_id]["datasets"] = images or 0, int(thumbs or 0)
+            usage[project_id]["images"], usage[project_id]["datasets"] = counted["images"], counted["thumbs"]
     model_project: dict[str, str] = {}
     for model in db.scalars(select(ModelVersion).where(ModelVersion.deleted_at.is_(None))):
         model_project[model.id] = model.project_id
@@ -968,4 +971,3 @@ def project_usage(db: Session) -> list[dict[str, Any]]:
             usage[run.project_id]["checkpoints"] += int((run.checkpoint or {}).get("bytes") or 0)
     rows = [{**u, "total": u["datasets"] + u["models"] + u["outputs"] + u["checkpoints"]} for u in usage.values()]
     return sorted(rows, key=lambda u: -u["total"])
-

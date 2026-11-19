@@ -130,6 +130,8 @@ def fill_thumb_sizes(database: Any, settings: HubSettings, limit: int = 200_000)
                 ids = [i for i, s in sizes.items() if s == size]
                 db.execute(update(Item).where(Item.id.in_(ids)).values(thumb_bytes=size))
             done += len(rows)
+    if done:
+        mark_changed()
     return done
 
 
@@ -206,6 +208,7 @@ def shrink_thumbs(database: Any, settings: HubSettings, limit: int | None = None
             for ids, values in changes:
                 db.execute(update(Item).where(Item.id.in_(ids)).values(**values))
         _shrinking["done"] += len(rows)
+        mark_changed()
         time.sleep(0.05)  # let the requests in between batches
     return made
 
@@ -237,6 +240,58 @@ def start_shrinking(database: Any, settings: HubSettings) -> bool:
 def shrinking() -> bool:
     running = _shrinking["thread"]
     return running is not None and running.is_alive()
+
+
+# ---- what the images take, per project (kept up in the background) ------------------------------------
+
+IMAGES_EVERY_S = 600
+# per Hub (its data folder): what the images take, and whether something changed since it was counted
+_images: dict[str, dict[str, Any]] = {}
+
+
+def mark_changed() -> None:
+    """Images came or went (an import finished, the trash was emptied, a project deleted or brought back, thumbnails
+    shrunk): the next look counts them again."""
+    for kept in _images.values():
+        kept["stale"] = True
+
+
+def _kept(settings: HubSettings) -> dict[str, Any]:
+    return _images.setdefault(
+        str(Path(settings.home).resolve()), {"by_project": {}, "old_thumbs": 0, "per_image": 0, "at": 0.0, "stale": True}
+    )
+
+
+def images_due(settings: HubSettings) -> bool:
+    kept = _kept(settings)
+    return bool(kept["stale"]) or time.time() - float(kept["at"]) > IMAGES_EVERY_S
+
+
+def count_images(db: Session, settings: HubSettings) -> dict[str, Any]:
+    """Per project the images and their thumbnails' bytes, the older thumbnails still to shrink, and what one more
+    image takes: each reads every image record (4 s for 690,000 together), so they are counted once and kept."""
+    kept = _kept(settings)
+    kept["stale"] = False  # what changes while counting is counted next time
+    by_project = {
+        project_id: {"images": images or 0, "thumbs": int(thumbs or 0)}
+        for project_id, images, thumbs in db.execute(
+            select(Item.project_id, func.count(Item.id), func.sum(func.max(Item.thumb_bytes, 0))).group_by(Item.project_id)
+        )
+    }
+    kept.update(by_project=by_project, old_thumbs=old_thumbs(db), per_image=per_image(db, settings), at=time.time())
+    return dict(kept)
+
+
+def refresh_images(database: Any, settings: HubSettings) -> None:
+    """The Hub's background loop: after a change, or every ten minutes, so a screen seldom counts itself."""
+    with database.session() as db:
+        count_images(db, settings)
+
+
+def image_usage(db: Session, settings: HubSettings) -> dict[str, Any]:
+    """What the images take: the kept count, or counted now when there is none or something changed since."""
+    kept = _kept(settings)
+    return count_images(db, settings) if kept["stale"] or not kept["at"] else dict(kept)
 
 
 # ---- an import's room -----------------------------------------------------------------------------

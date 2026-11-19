@@ -27,6 +27,7 @@ from . import (
     labeling_api,
     modelops_api,
     overview,
+    qa,
     registry,
     registry_api,
     resources,
@@ -73,6 +74,10 @@ async def _sweeper(hub: Hub) -> None:
         with hub.db.session() as db:
             return overview.fill_charts(db)
 
+    def label_checks() -> int:
+        with hub.db.session() as db:
+            return qa.fill_runs(db)
+
     ticks = 0
     while True:
         await anyio.sleep(_SWEEP_INTERVAL_S)
@@ -85,6 +90,15 @@ async def _sweeper(hub: Hub) -> None:
             await anyio.to_thread.run_sync(charts)
         except Exception:
             log.exception("version statistics failed")
+        if hub_storage.images_due(hub.settings):  # what the images take: after a change, or every ten minutes
+            try:
+                await anyio.to_thread.run_sync(hub_storage.refresh_images, hub.db, hub.settings)
+            except Exception:
+                log.exception("image storage count failed")
+        try:  # and their label checks (검수), likewise
+            await anyio.to_thread.run_sync(label_checks)
+        except Exception:
+            log.exception("version label checks failed")
         if ticks % int(cleanup.EVERY_S // _SWEEP_INTERVAL_S) == 0:
             try:
                 await anyio.to_thread.run_sync(cleanup.scheduled, hub.db, hub.settings)

@@ -573,40 +573,40 @@ def release_manifest(
     dataset = db.get(Dataset, release.dataset_id)
     space = db.get(LabelSpace, release.label_space_id)
     limit = max(1, min(limit, MANIFEST_MAX))
+    # the columns the node needs, not whole records: building three objects a row took 0.37 s a page of 2,000
+    # (684,049 images: two minutes before a training could start), the columns 0.02 s
     query = (
-        select(ReleaseItem, Item, LabelRevision)
+        select(
+            ReleaseItem.item_id,
+            Item.sha256,
+            Item.rel_path,
+            Item.bytes,
+            Item.width,
+            Item.height,
+            Item.location_id,
+            ReleaseItem.split,
+            LabelRevision.state,
+            LabelRevision.boxes,
+            LabelRevision.labelled_class_ids,
+        )
         .join(Item, Item.id == ReleaseItem.item_id)
         .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id)
-        .where(ReleaseItem.release_id == release.id, Item.id > after)
+        .where(ReleaseItem.release_id == release.id, ReleaseItem.item_id > after)
     )
     if only is not None:
         query = query.where(ReleaseItem.item_id.in_(only))
-    rows = db.execute(query.order_by(Item.id).limit(limit)).all()
+    rows = db.execute(query.order_by(ReleaseItem.item_id).limit(limit)).all()
     locations = {
         loc.id: loc.root for loc in db.scalars(select(StorageLocation).where(StorageLocation.node_id == node.id))
     }
+    keys = ("id", "sha256", "rel_path", "bytes", "width", "height", "location_id", "split", "state", "boxes")
     return {
         "dataset": dataset.name,
         "version": release.version,
         "classes": space.classes,
         "locations": locations,
-        "items": [
-            {
-                "id": item.id,
-                "sha256": item.sha256,
-                "rel_path": item.rel_path,
-                "bytes": item.bytes,
-                "width": item.width,
-                "height": item.height,
-                "location_id": item.location_id,
-                "split": member.split,
-                "state": revision.state,
-                "boxes": revision.boxes,
-                "labelled_class_ids": revision.labelled_class_ids,
-            }
-            for member, item, revision in rows
-        ],
-        "next": rows[-1][1].id if len(rows) == limit else None,
+        "items": [dict(zip(keys, row[:10], strict=True), labelled_class_ids=row[10]) for row in rows],
+        "next": rows[-1][0] if len(rows) == limit else None,
     }
 
 
