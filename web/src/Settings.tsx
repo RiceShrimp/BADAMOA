@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
-import { GpuBusyPanel, MyAccount, UsersPanel } from "./AdminSettings";
+import { GpuBusyPanel, HubAutostartPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
 import { type Project, announceTrash } from "./catalogTypes";
@@ -119,6 +119,7 @@ const SECTIONS: { id: string; label: string; admin?: boolean }[] = [
   { id: "gpu", label: "GPU 배정" },
   { id: "storage", label: "저장 공간" },
   { id: "users", label: "사용자", admin: true },
+  { id: "hub", label: "Hub 실행", admin: true },
   { id: "account", label: "내 계정" },
   { id: "monitoring", label: "외부 모니터링" },
 ];
@@ -157,6 +158,7 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
       {part === "gpu" && <GpuBusyPanel isAdmin={isAdmin} />}
       {part === "storage" && <StorageUsage isAdmin={isAdmin} />}
       {part === "users" && <UsersPanel me={user} />}
+      {part === "hub" && <HubAutostartPanel />}
       {part === "account" && <MyAccount me={user} />}
       {part === "monitoring" && <ExternalMonitoring />}
     </>

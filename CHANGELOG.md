@@ -5,6 +5,22 @@ BADAMOA의 버전별 변경 내용입니다. 사용자에게 보이는 변화를
 
 형식: `## [버전] - 날짜` 아래에 `### 추가 / 변경 / 수정 / 제거 / 알려진 문제` 를 두고 항목을 `- ` 로 적습니다.
 
+## [0.56.0] - 2026-11-19
+
+**Hub를 PC가 다시 켜질 때 자동으로 실행할지 설정 화면에서 정합니다.** 노드는 Hub가 켜지면 알아서 다시 붙습니다.
+
+### 추가
+- 설정 → Hub 실행(관리자): "재부팅 시 자동 실행" 켜기 · 끄기. 지금 Hub가 도는 그대로(데이터 폴더 · 포트 · 주소 · GPU 기준 · `BADAMOA_*` 설정 · uv 위치)를 Hub 데이터 폴더의 `autostart.json`에 적고, 그대로 실행되게 등록함. 콘솔 창 없이 돌고 출력은 데이터 폴더의 `hub.log`. 켜고 끈 것은 활동 기록에 남음
+- Windows: 관리자 권한으로 띄운 Hub는 로그인 없이 부팅 때(같은 계정, 암호 저장 없음), 아니면 그 계정이 로그인할 때 켜짐. 뒤의 경우 화면에 나오는 명령(`python -m badamoa.hub.autostart on --home …`)을 관리자 PowerShell에서 한 번 실행하면 부팅 때로 바뀜. 예약 작업 이름은 "BADAMOA Hub <포트>"
+- Ubuntu(Linux): root면 systemd 유닛 `badamoa-hub-<포트>`, sudo가 없거나 systemd가 없으면(컨테이너 · WSL) 그 계정의 crontab(`@reboot`)
+- sudo로 설치하는 노드도 systemd가 없는 Linux에서는 crontab으로 등록(전에는 설치가 멈췄음)
+- `badamoa hub install-service` · `uninstall-service`가 같은 등록을 씀(`--home` · `--port` · `--public-url`). 나중의 설치 파일(.deb · EXE)도 이것으로 등록함
+- API: `GET · PUT /api/settings/hub-autostart`
+
+### 수정
+- Windows 예약 작업(노드 · Hub)을 XML로 등록: 실행 시간 제한 없음, 배터리여도 시작 · 계속, 멈추면 1분 뒤 다시 실행, 보통 우선순위(작업이 물려받음). `schtasks`만으로 등록하던 노드 작업은 이 설정 없이 등록됐음
+- 이미 붙은 Windows 노드는 노드 추가의 Windows 명령을 그 PC에서 한 번 더 실행하면 바뀐 작업 설정이 적용됨(등록은 그대로)
+
 ## [0.55.1] - 2026-11-19
 
 ### 추가

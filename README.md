@@ -69,6 +69,8 @@ uv run badamoa hub run --home .badamoa/hub
 
 브라우저가 이 PC의 네트워크 주소(예: `http://192.168.0.10:8470`)로 열리면 관리자 계정을 만듭니다. 다른 서버는 이 주소로 Hub를 찾아오므로 `localhost` 대신 이 주소로 접속하세요.
 
+PC를 다시 켰을 때 Hub도 저절로 켜지게 하려면 **설정 → Hub 실행**에서 "재부팅 시 자동 실행"을 켭니다. 지금과 같은 데이터 폴더 · 포트 · 주소로 실행되고, 노드는 Hub가 켜지면 알아서 다시 붙습니다. Ubuntu에서는 root로 띄운 Hub는 systemd로, 아니면 그 계정의 crontab으로 부팅 때 켜집니다. Windows에서 관리자 권한 없이 띄운 Hub는 그 계정이 로그인할 때 켜지며, 화면에 나오는 명령을 관리자 PowerShell에서 한 번 실행하면 로그인 없이 부팅 때 켜집니다.
+
 > [!TIP]
 > 시험해 볼 데이터는 `uv run python scripts/fetch_coco128.py`(COCO128, 약 7 MB)와 `uv run python scripts/fetch_mnist160.py`(MNIST160, 약 70 KB)로 받습니다. `.badamoa/data/` 아래에 풀립니다.
 

@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { type User, api } from "./api";
-import { Badge, Icon, Modal, timeAgo, usePolling } from "./ui";
+import { Badge, CopyBlock, Icon, Modal, timeAgo, usePolling } from "./ui";
 
 // ---- people's accounts (admin) --------------------------------------------------------------
 
@@ -462,6 +462,82 @@ export function GpuBusyPanel({ isAdmin }: { isAdmin: boolean }) {
       <p className="muted small">
         GPU 하나를 사람에게만 남겨 두려면 <a href="#/nodes">노드</a> 화면의 GPU 자리표에서 "사람 전용"으로 지정하세요.
       </p>
+    </section>
+  );
+}
+
+interface HubAutostart {
+  supported: boolean;
+  on: boolean;
+  when: "" | "boot" | "logon";
+  can_boot: boolean;
+  admin_command: string;
+  name: string;
+  log: string;
+  launch: string | null;
+}
+
+/** Whether the Hub comes back by itself when its PC restarts (admins). */
+export function HubAutostartPanel() {
+  const { data, refresh } = usePolling(() => api<HubAutostart>("/settings/hub-autostart"), 30000);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!data) return <section className="card muted">불러오는 중…</section>;
+
+  const turn = async (on: boolean) => {
+    setBusy(true);
+    try {
+      setError(null);
+      await api<HubAutostart>("/settings/hub-autostart", { method: "PUT", body: { on } });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const state = !data.on
+    ? "꺼짐 — 이 컴퓨터를 다시 켜면 Hub를 직접 실행해야 합니다"
+    : data.when === "boot"
+      ? "켜짐 — 이 컴퓨터가 켜지면 로그인하지 않아도 실행됩니다"
+      : "켜짐 — Hub를 실행한 계정이 이 컴퓨터에 로그인하면 실행됩니다";
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <div>
+          <h3>재부팅 시 자동 실행</h3>
+          <div className="muted small">
+            Hub가 도는 컴퓨터(Windows · Ubuntu)가 다시 켜지면 Hub를 지금과 같은 설정(데이터 폴더 · 포트 · 주소)으로 실행합니다. 노드는 Hub가
+            켜지면 알아서 다시 붙습니다.
+          </div>
+        </div>
+        {data.supported && (
+          <button className={data.on ? "" : "primary"} onClick={() => void turn(!data.on)} disabled={busy}>
+            {data.on ? "끄기" : "켜기"}
+          </button>
+        )}
+      </div>
+      <p className="small">
+        <strong style={data.on ? { color: "var(--ok)" } : undefined}>{state}</strong>
+      </p>
+      {!data.supported && <p className="muted small">이 OS에서는 자동 실행을 등록하지 못합니다.</p>}
+      {data.on && data.admin_command && (
+        <>
+          <p className="small">
+            로그인하지 않아도 부팅 때 실행되게 하려면, 이 컴퓨터의 <strong>관리자 PowerShell</strong>에서 한 번 실행하세요 (지금 Hub는 관리자
+            권한 없이 돌고 있습니다).
+          </p>
+          <CopyBlock text={data.admin_command} />
+        </>
+      )}
+      {error && <div className="error">{error}</div>}
+      {data.on && (
+        <div className="muted small">
+          {data.name} · 로그 {data.log}
+          {data.launch && <div title="자동 실행이 쓰는 명령">{data.launch}</div>}
+        </div>
+      )}
     </section>
   );
 }
