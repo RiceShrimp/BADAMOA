@@ -175,32 +175,36 @@ def shrink_thumbs(database: Any, settings: HubSettings, limit: int | None = None
     storage = storage_for(str(settings.storage_dir))
     made = 0
     while limit is None or made < limit:
-        with database.session() as db:
+        with database.session() as db:  # a read: writers are not held off by it
             if importing(db):
                 break
             # by image number: the thumbnail's name has no index, and matching on it read every image each time
-            # (690,000 images: a few a second instead of a few hundred)
             rows = db.execute(
                 select(Item.id, Item.thumb_key).where(Item.thumb_v == 0, Item.thumb_key.is_not(None)).limit(SHRINK_BATCH)
             ).all()
-            if not rows:
-                break
-            by_key: dict[str, list[int]] = {}
-            for item_id, key in rows:
-                by_key.setdefault(key, []).append(item_id)
-            for key, ids in by_key.items():
-                try:
-                    data = storage.get_blob(key)
-                    small = None if thumb_current(data) else shrink(data)
-                except Exception:  # noqa: BLE001 - gone or unreadable: left as it is, not tried again
-                    small = None
-                if small is None:
-                    db.execute(update(Item).where(Item.id.in_(ids)).values(thumb_v=1))
-                    continue
-                # the same old thumbnail makes the same new one: images sharing it in a later batch get this file too
-                new = storage.put_blob(small)
-                db.execute(update(Item).where(Item.id.in_(ids)).values(thumb_key=new, thumb_bytes=len(small), thumb_v=1))
-                made += 1
+        if not rows:
+            break
+        by_key: dict[str, list[int]] = {}
+        for item_id, key in rows:
+            by_key.setdefault(key, []).append(item_id)
+        # the images are made outside any transaction; only writing the results holds the database, briefly
+        # (making them inside one held every other write off for the whole batch: "database is locked")
+        changes: list[tuple[list[int], dict[str, Any]]] = []
+        for key, ids in by_key.items():
+            try:
+                data = storage.get_blob(key)
+                small = None if thumb_current(data) else shrink(data)
+            except Exception:  # noqa: BLE001 - gone or unreadable: left as it is, not tried again
+                small = None
+            if small is None:
+                changes.append((ids, {"thumb_v": 1}))
+                continue
+            # the same old thumbnail makes the same new one: images sharing it in a later batch get this file too
+            changes.append((ids, {"thumb_key": storage.put_blob(small), "thumb_bytes": len(small), "thumb_v": 1}))
+            made += 1
+        with database.session() as db:
+            for ids, values in changes:
+                db.execute(update(Item).where(Item.id.in_(ids)).values(**values))
         _shrinking["done"] += len(rows)
         time.sleep(0.05)  # let the requests in between batches
     return made
