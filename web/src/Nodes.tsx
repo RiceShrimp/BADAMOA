@@ -273,6 +273,7 @@ function ServerRow({
           {node.gpus.length > 0 ? `${node.gpu_name ?? "GPU"} × ${node.gpus.length}` : "GPU 없음"}
           {node.is_local ? " · Hub" : ""}
         </div>
+        <RoleChips roles={node.roles} />
         {sys.length > 0 && <SysBars bars={sys} />}
         {!online && (
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
@@ -531,6 +532,27 @@ function CachePlace({ node, value, onChange }: { node: BoardNode; value: string;
 
 function fileSizeGb(bytes: number): string {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+/** What the server is for, as chips in the order of the role list (what a job can be sent to it for). */
+function RoleChips({ roles }: { roles: string[] }) {
+  const known = ROLES.filter((r) => roles.includes(r.id));
+  const other = roles.filter((r) => !ROLES.some((k) => k.id === r));
+  if (known.length + other.length === 0) return <div className="small warn-text">역할 없음 — 작업을 받지 않습니다</div>;
+  return (
+    <div className="role-chips" aria-label="역할">
+      {known.map((r) => (
+        <span key={r.id} className={`role-chip role-${r.id}`}>
+          {r.label}
+        </span>
+      ))}
+      {other.map((r) => (
+        <span key={r} className="role-chip">
+          {r}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function RolePicker({ roles, onChange }: { roles: string[]; onChange: (roles: string[]) => void }) {

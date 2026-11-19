@@ -601,3 +601,24 @@ details.node-more > summary {
   background: var(--bad);
 }
 
+
+/* ---- what each server is for, on the board ---- */
+.role-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0 2px;
+}
+.role-chip {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.role-chip.role-compute {
+  border-color: var(--accent);
+  color: var(--accent);
+}
