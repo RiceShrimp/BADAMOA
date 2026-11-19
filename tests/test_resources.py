@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import struct
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -189,6 +191,46 @@ def test_sampler_reports_this_machine():
     assert snap["users"] and all({"user", "cpu_cores", "memory_mb", "active"} <= set(u) for u in snap["users"])
     flat = resources.flatten(snap)
     assert "cpu" in flat and "mem" in flat and any(k.startswith("disk_pct:") for k in flat)
+
+
+def test_windows_disk_busy_is_task_manager_active_time(monkeypatch):
+    """Windows disks have no busy_time: 디스크 I/O 사용률 is 100 − % idle time between two idle-counter readings."""
+    readings = iter(
+        [
+            (1_000, 10_000),
+            (4_000, 20_000),  # idle 3 000 of 10 000 → 70 % active
+            (4_000, 30_000),  # never idle → 100
+            (16_000, 40_000),  # more idle than time passed → clamped to 0
+            (100, 50_000),  # counter went back (restarted) → nothing
+            None,  # the disk did not answer → nothing
+            (200, 60_000),  # first reading after a miss → nothing yet
+            (1_200, 70_000),
+        ]
+    )
+    asked = []
+    monkeypatch.setattr(sysinfo, "_windows_disk_times", lambda name: asked.append(name) or next(readings))
+    windows = {"PhysicalDrive0": SimpleNamespace(read_bytes=0, write_bytes=0)}
+    monkeypatch.setattr(sysinfo.psutil, "disk_io_counters", lambda perdisk: windows)
+    sampler = sysinfo.MetricsSampler()
+    busy = [sampler._physical_disks(1.0)[0]["busy_pct"] for _ in range(8)]
+    assert busy == [None, 70.0, 100.0, 0.0, None, None, None, 90.0]
+
+    # Linux keeps using busy_time and never asks the Windows counter.
+    asked.clear()
+    linux = {"sda": SimpleNamespace(read_bytes=0, write_bytes=0, busy_time=0)}
+    monkeypatch.setattr(sysinfo.psutil, "disk_io_counters", lambda perdisk: linux)
+    sampler = sysinfo.MetricsSampler()
+    sampler._physical_disks(None)
+    linux["sda"] = SimpleNamespace(read_bytes=0, write_bytes=0, busy_time=250)
+    assert sampler._physical_disks(1.0)[0]["busy_pct"] == 25.0 and asked == []
+
+
+def test_disk_performance_buffer_gives_idle_and_query_time():
+    pack = struct.Struct("<5q4Iq").pack
+    assert sysinfo._parse_disk_performance(pack(1, 2, 3, 4, 500, 1, 1, 0, 0, 900) + bytes(24)) == (500, 900)
+    assert sysinfo._parse_disk_performance(pack(1, 2, 3, 4, 0, 1, 1, 0, 0, 900)) is None  # keeps no idle time
+    assert sysinfo._parse_disk_performance(b"\0" * 40) is None  # short answer
+    assert sysinfo._windows_disk_times("sda") is None and sysinfo._busy_from_idle(None, (1, 2)) is None
 
 
 def test_agent_runs_gpu_job_on_reserved_gpu(live_hub, settings, tmp_path, monkeypatch):

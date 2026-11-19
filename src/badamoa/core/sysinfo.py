@@ -8,11 +8,13 @@ cannot provide is ``None`` rather than an error.
 
 from __future__ import annotations
 
+import functools
 import os
 import platform
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -204,6 +206,81 @@ def _disk_kind(name: str) -> tuple[str | None, str | None]:
     return model, "NVMe" if name.startswith("nvme") else ("HDD" if rotational else "SSD")
 
 
+# IOCTL_DISK_PERFORMANCE = CTL_CODE(IOCTL_DISK_BASE, 0x0008, METHOD_BUFFERED, FILE_ANY_ACCESS)
+_IOCTL_DISK_PERFORMANCE = 0x00070020
+# DISK_PERFORMANCE up to QueryTime: BytesRead, BytesWritten, ReadTime, WriteTime, IdleTime (LARGE_INTEGER),
+# ReadCount, WriteCount, QueueDepth, SplitCount (DWORD), QueryTime (LARGE_INTEGER).
+_DISK_PERFORMANCE = struct.Struct("<5q4Iq")
+
+
+def _parse_disk_performance(raw: bytes) -> tuple[int, int] | None:
+    """(IdleTime, QueryTime) from a DISK_PERFORMANCE buffer; None when short or the disk keeps no idle time."""
+    if len(raw) < _DISK_PERFORMANCE.size:
+        return None
+    fields = _DISK_PERFORMANCE.unpack_from(raw)
+    idle, query = fields[4], fields[9]
+    return (idle, query) if idle > 0 and query > 0 else None
+
+
+@functools.cache
+def _kernel32() -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        wintypes.HANDLE,
+    ]  # fmt: skip
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.DeviceIoControl.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]  # fmt: skip
+    k.DeviceIoControl.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.restype = wintypes.BOOL
+    return k
+
+
+def _windows_disk_times(name: str) -> tuple[int, int] | None:
+    """(IdleTime, QueryTime) of a Windows ``PhysicalDriveN``, the counters Task Manager's "active time" is made of.
+
+    Opens ``\\\\.\\PhysicalDriveN`` with no access rights, as psutil does (no admin needed), and asks for
+    IOCTL_DISK_PERFORMANCE. None off Windows or when the disk does not answer.
+    """
+    match = re.fullmatch(r"physicaldrive(\d+)", name.lower())
+    if sys.platform != "win32" or not match:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = _kernel32()
+        handle = k.CreateFileW(rf"\\.\PhysicalDrive{match.group(1)}", 0, 0x1 | 0x2, None, 3, 0, None)
+        if handle is None or handle == ctypes.c_void_p(-1).value:  # INVALID_HANDLE_VALUE
+            return None
+        try:
+            buf = ctypes.create_string_buffer(256)  # larger than DISK_PERFORMANCE, as some drivers want
+            returned = wintypes.DWORD()
+            ok = k.DeviceIoControl(handle, _IOCTL_DISK_PERFORMANCE, None, 0, buf, len(buf), ctypes.byref(returned), None)
+        finally:
+            k.CloseHandle(handle)
+        return _parse_disk_performance(buf.raw[: returned.value]) if ok else None
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def _busy_from_idle(previous: tuple[int, int] | None, current: tuple[int, int] | None) -> float | None:
+    """Percent of the time between two (IdleTime, QueryTime) readings the disk was not idle: 100 − % idle time."""
+    if previous is None or current is None:
+        return None
+    idle, span = current[0] - previous[0], current[1] - previous[1]
+    if span <= 0 or idle < 0:
+        return None  # counters restarted
+    return round(max(0.0, 100.0 * (1 - idle / span)), 1)
+
+
 class MetricsSampler:
     """Collects one metrics snapshot per call; keeps state to turn counters into rates."""
 
@@ -211,6 +288,7 @@ class MetricsSampler:
         self.disk_path = disk_path or ("C:\\" if sys.platform == "win32" else "/")
         self._last_time: float | None = None
         self._last_io: dict[str, Any] = {}
+        self._last_idle: dict[str, tuple[int, int] | None] = {}
         self._last_energy: int | None = None
         psutil.cpu_percent(interval=None)  # prime the counter
 
@@ -321,6 +399,10 @@ class MetricsSampler:
                 write = round((io.write_bytes - previous.write_bytes) / elapsed / 1024**2, 2)
                 if hasattr(io, "busy_time"):
                     busy = round(min(100.0, (io.busy_time - previous.busy_time) / (elapsed * 1000) * 100), 1)
+            if not hasattr(io, "busy_time"):  # Windows: Task Manager's "active time" from the disk's idle counter
+                times = _windows_disk_times(name)
+                busy = _busy_from_idle(self._last_idle.get(name), times)
+                self._last_idle[name] = times
             model, kind = _disk_kind(name)
             result.append(
                 {"name": name, "model": model, "kind": kind, "read_mbps": read, "write_mbps": write, "busy_pct": busy}
