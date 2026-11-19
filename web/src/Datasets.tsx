@@ -38,6 +38,8 @@ import {
   announceTrash,
   bytesLabel,
   taskLabel,
+  type PredictionRun,
+  runName,
 } from "./catalogTypes";
 import { Badge, Icon, Modal, Stat, timeAgo, usePolling } from "./ui";
 
@@ -138,6 +140,23 @@ const VIEWS = [
 ];
 const VIEW_KEY = "badamoa.gridView";
 
+/** A per-browser choice (the run over the grid …): "" when nothing is kept or storage is off. */
+function kept(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function keep(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* not kept */
+  }
+}
+
 function rememberedView(): string {
   try {
     return localStorage.getItem(VIEW_KEY) ?? "medium";
@@ -170,6 +189,14 @@ function ReleaseView({
   }, [query]);
   const [view, setViewState] = useState(rememberedView);
   const [showBoxes, setShowBoxes] = useState(true);
+  // A model run's predictions over the thumbnails (evaluation or 오토라벨): picked in the toolbar, kept per version.
+  const [gridRun, setGridRun] = useState<string>(() => kept(`badamoa.gridPredictions.${releaseId}`));
+  const { data: predictionRuns } = usePolling(() => api<PredictionRun[]>(`/releases/${releaseId}/prediction-runs`), 60000, [releaseId]);
+  const pickGridRun = (opId: string) => {
+    setGridRun(opId);
+    keep(`badamoa.gridPredictions.${releaseId}`, opId);
+  };
+  const gridScore = Number(kept("badamoa.predictionScore") || 0.25);
   const setView = (v: string) => {
     setViewState(v);
     try {
@@ -231,9 +258,13 @@ function ReleaseView({
   }, [split, state, classId, site, camera, q]);
 
   const { data: items, refresh: refreshItems } = usePolling(
-    () => api<ItemPage>(`/releases/${releaseId}/items?${filterQuery}&offset=${page * pageSize}&limit=${pageSize}`),
+    () =>
+      api<ItemPage>(
+        `/releases/${releaseId}/items?${filterQuery}&offset=${page * pageSize}&limit=${pageSize}` +
+          (gridRun && predictionRuns?.some((r) => r.op_id === gridRun) ? `&pred=${encodeURIComponent(gridRun)}` : ""),
+      ),
     release?.status === "building" ? 5000 : 60000,
-    [releaseId, filterQuery, page, pageSize, release?.status],
+    [releaseId, filterQuery, page, pageSize, release?.status, gridRun, predictionRuns?.length],
   );
 
   if (error && !release) return <div className="error">{error}</div>;
@@ -497,6 +528,19 @@ function ReleaseView({
             박스
           </label>
         )}
+        {task !== "classify" && predictionRuns && predictionRuns.length > 0 && (
+          <label className="inline-select" title="고른 모델의 예측을 썸네일에 점선으로 겹칩니다 (라벨은 실선)">
+            <span className="muted small">예측</span>
+            <select value={predictionRuns.some((r) => r.op_id === gridRun) ? gridRun : ""} onChange={(e) => pickGridRun(e.target.value)}>
+              <option value="">겹쳐 보지 않음</option>
+              {predictionRuns.map((r) => (
+                <option key={r.op_id} value={r.op_id}>
+                  {runName(r)} · {(r.images ?? 0).toLocaleString()}장
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="segmented" role="group" aria-label="보기">
           {VIEWS.map((v) => (
             <button key={v.id} className={view === v.id ? "active" : ""} onClick={() => setView(v.id)} aria-pressed={view === v.id}>
@@ -560,6 +604,8 @@ function ReleaseView({
                         boxes={showBoxes}
                         task={task}
                         skeletonOf={skeletonOf}
+                        predicted={item.pred}
+                        minScore={gridScore}
                       />
                     )}
                   </td>
@@ -592,6 +638,8 @@ function ReleaseView({
                   boxes={showBoxes}
                   task={task}
                   skeletonOf={skeletonOf}
+                  predicted={item.pred}
+                  minScore={gridScore}
                 />
               ) : (
                 <Icon name="images" size={22} />
@@ -668,6 +716,7 @@ function ReleaseView({
           classes={classes}
           task={task}
           checkOp={suspect || undefined}
+          predictionRun={predictionRuns?.some((r) => r.op_id === gridRun) ? gridRun : undefined}
           onClose={() => setViewing(null)}
           onSaved={() => {
             void refresh();

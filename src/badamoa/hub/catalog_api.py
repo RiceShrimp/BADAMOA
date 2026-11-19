@@ -295,6 +295,7 @@ def list_items(
     let_be: bool = False,
     offset: int = 0,
     limit: int = 60,
+    pred: str = "",
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -319,6 +320,7 @@ def list_items(
         let_be=let_be,
         offset=offset,
         limit=limit,
+        pred=pred,
     )
 
 
@@ -468,6 +470,20 @@ def label_checks(release_id: str, _: User = Depends(current_user), db: Session =
 def release_checks(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> list:
     """Evaluations that can sort this release's images by likely wrong labels (``items?suspect=<id>``)."""
     return checks.release_checks(db, catalog.get_release(db, release_id))
+
+
+@router.get("/releases/{release_id}/prediction-runs")
+def release_prediction_runs(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> list:
+    """Model runs (evaluations, 오토라벨) whose predictions can be laid over this version's images."""
+    return checks.release_prediction_runs(db, catalog.get_release(db, release_id))
+
+
+@router.get("/releases/{release_id}/items/{item_id}/prediction-runs")
+def item_prediction_runs(
+    release_id: str, item_id: int, _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> list:
+    """Every model run that predicted this image, which model and what it was, with its predictions."""
+    return checks.item_prediction_runs(db, catalog.get_release(db, release_id), item_id)
 
 
 @router.get("/releases/{release_id}/items/{item_id}/predictions")

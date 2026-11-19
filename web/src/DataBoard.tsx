@@ -99,12 +99,17 @@ export function Shot({
   boxes = true,
   task = shot.task ?? "detect",
   skeletonOf,
+  predicted,
+  minScore = 0,
 }: {
   shot: Shot;
   colorOf: (id: number) => string;
   boxes?: boolean;
   task?: string;
   skeletonOf?: (id: number) => number[][] | undefined;
+  /** A model run's predictions over the thumbnail: white dashes on a dark edge (labels are solid). */
+  predicted?: { labels: number[][]; scores: number[] };
+  minScore?: number;
 }) {
   const w = shot.width || 1;
   const h = shot.height || 1;
@@ -158,6 +163,16 @@ export function Shot({
             </g>
           );
         })}
+      {predicted?.labels.map((b, i) => {
+        if (b.length < 5 || (predicted.scores[i] ?? 0) < minScore) return null;
+        const box = { x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h };
+        return (
+          <g key={`pred${i}`}>
+            <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.65)" strokeWidth={line * 1.6} />
+            <rect {...box} fill="none" stroke="#fff" strokeWidth={line * 0.8} strokeDasharray={`${line * 3} ${line * 2}`} />
+          </g>
+        );
+      })}
     </svg>
   );
 }

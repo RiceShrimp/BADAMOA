@@ -82,16 +82,17 @@ def ingest(db: Session, op: ModelJob, raw: bytes) -> int:
     return matched
 
 
-def _offered(db: Session, release: Release) -> list[ModelJob]:
+def _offered(db: Session, release: Release, kinds: tuple[str, ...] = ("eval",)) -> list[ModelJob]:
     """Evaluations on this release or another version of its dataset with the same classes, newest first,
-    by a model of the dataset's task: a Seg model's view of a Det dataset is no check of its labels."""
+    by a model of the dataset's task: a Seg model's view of a Det dataset is no check of its labels.
+    ``kinds``: also 오토라벨 runs (``prediction_runs``)."""
     siblings = select(Release.id).where(
         Release.dataset_id == release.dataset_id, Release.label_space_id == release.label_space_id
     )
     has_rows = select(ItemPrediction.op_id).where(ItemPrediction.op_id == ModelJob.id).exists()
     ops = db.scalars(
         select(ModelJob)
-        .where(ModelJob.kind == "eval", ModelJob.release_id.in_(siblings), has_rows)
+        .where(ModelJob.kind.in_(kinds), ModelJob.release_id.in_(siblings), has_rows)
         .order_by(ModelJob.created_at.desc())
     ).all()
     dataset = db.get(Dataset, release.dataset_id)
@@ -110,6 +111,86 @@ def let_be(check: Any, item_id: Any, revision_id: Any) -> Any:
         .where(QaDismissal.item_id == item_id, QaDismissal.check == check, QaDismissal.revision_id == revision_id)
         .exists()
     )
+
+
+# ---- predictions over the dataset: every model run that predicted its images ------------------------------
+
+PREDICTING = ("eval", "autolabel")
+
+
+def prediction_runs(db: Session, release: Release) -> list[ModelJob]:
+    """Evaluations and 오토라벨 runs whose predictions belong to this version's images (same dataset, same classes,
+    a model of its task), newest first."""
+    return _offered(db, release, PREDICTING)
+
+
+def run_ref(db: Session, op: ModelJob, sets: dict[str, str] | None = None) -> dict[str, Any]:
+    """A model run as the screens tell it apart: which model, evaluation or 오토라벨, of what, when."""
+    params = op.params or {}
+    ref: dict[str, Any] = {
+        "op_id": op.id,
+        "kind": op.kind,  # eval | autolabel
+        "model": model_ref(db.get(ModelVersion, op.model_id)),
+        "created_at": iso(op.created_at),
+    }
+    if op.kind == "eval":
+        ref["split"] = params.get("split", "")
+    else:
+        set_id = str(params.get("set_id") or "")
+        ref["set"] = {"id": set_id, "name": (sets or {}).get(set_id, "")} if set_id else None
+        ref["keep"] = params.get("keep")
+    return ref
+
+
+def _set_names(db: Session, ops: list[ModelJob]) -> dict[str, str]:
+    from .catalog_models import LabelSet
+
+    ids = {str((op.params or {}).get("set_id") or "") for op in ops if op.kind == "autolabel"} - {""}
+    return dict(db.execute(select(LabelSet.id, LabelSet.name).where(LabelSet.id.in_(ids))).all()) if ids else {}
+
+
+def release_prediction_runs(db: Session, release: Release) -> list[dict[str, Any]]:
+    """The runs whose predictions can be laid over this version's images, with how many images each predicted."""
+    ops = prediction_runs(db, release)
+    sets = _set_names(db, ops)
+    counts = dict(
+        db.execute(
+            select(ItemPrediction.op_id, func.count())
+            .where(ItemPrediction.op_id.in_([op.id for op in ops]))
+            .group_by(ItemPrediction.op_id)
+        ).all()
+    )
+    return [{**run_ref(db, op, sets), "images": counts.get(op.id, 0)} for op in ops]
+
+
+def item_prediction_runs(db: Session, release: Release, item_id: int) -> list[dict[str, Any]]:
+    """Every run that predicted this image, newest first, each with what it predicted (in the version's label form)."""
+    ops = prediction_runs(db, release)
+    rows = {
+        row.op_id: row
+        for row in db.scalars(
+            select(ItemPrediction).where(ItemPrediction.item_id == item_id, ItemPrediction.op_id.in_([op.id for op in ops]))
+        )
+    }
+    sets = _set_names(db, [op for op in ops if op.id in rows])
+    out = []
+    for op in ops:
+        row = rows.get(op.id)
+        if row is None:
+            continue
+        run = {**run_ref(db, op, sets), "labels": row.labels or [], "scores": row.scores or []}
+        if op.kind == "eval":
+            run.update(found=row.found, missed=row.missed, extra=row.extra)
+        out.append(run)
+    return out
+
+
+def page_predictions(db: Session, release: Release, op_id: str, item_ids: list[int], limit: int) -> dict[int, dict]:
+    """One run's predictions for a page of images (the grid lays them over the thumbnails)."""
+    if op_id not in {op.id for op in prediction_runs(db, release)}:
+        raise ServiceError(404, "이 버전의 이미지에 겹쳐 볼 수 있는 예측이 아닙니다.")
+    rows = db.scalars(select(ItemPrediction).where(ItemPrediction.op_id == op_id, ItemPrediction.item_id.in_(item_ids)))
+    return {r.item_id: {"labels": (r.labels or [])[:limit], "scores": (r.scores or [])[:limit]} for r in rows}
 
 
 def model_ref(model: ModelVersion | None) -> dict[str, Any] | None:

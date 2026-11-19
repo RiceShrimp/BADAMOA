@@ -1117,8 +1117,11 @@ def list_items(
     let_be: bool = False,
     offset: int = 0,
     limit: int = 60,
+    pred: str = "",
 ) -> dict[str, Any]:
-    """A page of a release's items. ``edited``: only the images the dataset's work in progress changed.
+    """A page of a release's items. ``pred``: a model run's id (``checks.prediction_runs``): each image also carries
+    what that run predicted for it, to lay over the thumbnail.
+    ``edited``: only the images the dataset's work in progress changed.
     ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first.
     ``label_set`` (and ``part``): only a labeling set's images, in the set's order.
     ``check``: a label check's id (``qa.CHECKS``): only the images it flagged. ``mistake`` with ``suspect``:
@@ -1189,6 +1192,10 @@ def list_items(
         rev.id: rev.boxes or []
         for rev in db.scalars(select(LabelRevision).where(LabelRevision.id.in_([m.revision_id for m, _ in rows])))
     }
+    predicted: dict[int, dict[str, Any]] = {}
+    if pred:  # one model run's predictions, laid over the thumbnails
+        shown = checks.page_predictions(db, release, pred, [item.id for _, item in rows], GRID_BOXES)
+        predicted = {k: {"labels": [light_shape(b) for b in v["labels"]], "scores": v["scores"]} for k, v in shown.items()}
     return {
         "total": total,
         "offset": max(0, offset),
@@ -1215,6 +1222,8 @@ def list_items(
                 **({"qa": found[item.id]} if item.id in found else {}),
                 # judged right for the check in play ("문제 없음"): by whom, why
                 **({"let_be": kept_as[item.id]} if item.id in kept_as else {}),
+                # what the run asked for (``pred``) predicted for it: labels (light) and scores
+                **({"pred": predicted[item.id]} if item.id in predicted else {}),
             }
             for member, item in rows
         ],

@@ -3,7 +3,7 @@ import { ApiError, api } from "./api";
 import {
   type ItemDetail,
   type ItemPage,
-  type ItemPredictions,
+  type PredictionRun,
   type LabelSetView,
   SET_STATE_LABEL,
   type SetState,
@@ -14,6 +14,7 @@ import {
   bytesLabel,
   classColor,
   keypointsOf,
+  runName,
 } from "./catalogTypes";
 import {
   type Box,
@@ -47,6 +48,8 @@ interface Props {
   onSaved?: () => void;
   /** An evaluation the images are sorted by: its model's predictions are shown over each image. */
   checkOp?: string;
+  /** A model run whose predictions the grid lays over the thumbnails: shown over the image from the start. */
+  predictionRun?: string;
   /** A part of a labeling set opened to label (fixing from the start) or to review. */
   labeling?: LabelingMode;
   /** Opened from a label check (검수): its name; the labels it flagged are marked on the image. */
@@ -80,8 +83,53 @@ interface Saved {
 function sourceLabel(source: string): string {
   const [kind, ...rest] = source.split(":");
   const what = rest.join(":");
-  const words: Record<string, string> = { import: "가져오기", classes: "클래스 변경", human: "사람이 고침", autolabel: "자동 라벨" };
+  const words: Record<string, string> = {
+    import: "가져오기",
+    classes: "클래스 변경",
+    human: "사람이 고침",
+    autolabel: "자동 라벨",
+    model: "모델이 그림 (오토라벨)",
+  };
   return words[kind] ? (what ? `${words[kind]} · ${what}` : words[kind]) : source;
+}
+
+// Up to three runs' predictions over an image at once: each its letter and dash (the class colour stays the class's).
+interface RunStyle {
+  letter: string;
+  dash: string;
+}
+const RUN_STYLES: RunStyle[] = [
+  { letter: "A", dash: "6 4" },
+  { letter: "B", dash: "2 3" },
+  { letter: "C", dash: "12 4 2 4" },
+];
+const RUNS_KEY = "badamoa.predictionRuns"; // + the version: the runs picked to lay over its images
+const SCORE_KEY = "badamoa.predictionScore";
+
+function remember(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* not remembered */
+  }
+}
+
+function rememberedRuns(releaseId: string): string[] {
+  try {
+    const kept = JSON.parse(localStorage.getItem(`${RUNS_KEY}.${releaseId}`) ?? "[]");
+    return Array.isArray(kept) ? kept.filter((v) => typeof v === "string").slice(0, RUN_STYLES.length) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberedScore(): number {
+  try {
+    const kept = Number(localStorage.getItem(SCORE_KEY));
+    return Number.isFinite(kept) && kept >= 0 && kept < 1 && localStorage.getItem(SCORE_KEY) !== null ? kept : 0.25;
+  } catch {
+    return 0.25;
+  }
 }
 
 const copy = (boxes: Box[]) => boxes.map((b) => [...b]);
@@ -112,6 +160,7 @@ export function ItemViewer({
   task = "detect",
   onSaved,
   checkOp,
+  predictionRun,
   labeling,
   qaTitle,
   qaCheck,
@@ -158,8 +207,15 @@ export function ItemViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labeling?.setId, labeling?.part]);
 
-  // ---- an evaluated model's predictions for this image (when the grid is sorted by one)
-  const [pred, setPred] = useState<ItemPredictions | null>(null);
+  // ---- what models predicted for this image: every evaluation and 오토라벨 run that did. Up to three are laid
+  // over the labels at once, each with its own letter and dash; the choice stays from image to image.
+  const [runs, setRuns] = useState<PredictionRun[] | null>(null);
+  const [shownRuns, setShownRuns] = useState<string[]>(() => {
+    const kept = rememberedRuns(releaseId);
+    const first = [checkOp, predictionRun].filter((id): id is string => Boolean(id));
+    return [...first, ...kept.filter((id) => !first.includes(id))].slice(0, RUN_STYLES.length);
+  });
+  const [minScore, setMinScore] = useState<number>(rememberedScore);
   const [showPred, setShowPred] = useState(true);
   const [showDiff, setShowDiff] = useState(true); // what the work in progress changed, over the image
 
@@ -301,16 +357,31 @@ export function ItemViewer({
   }, [releaseId, filterQuery, index, reloads]);
 
   useEffect(() => {
-    setPred(null);
-    if (!checkOp || !item) return;
+    setRuns(null);
+    if (!item) return;
     let alive = true;
-    api<ItemPredictions>(`/releases/${releaseId}/items/${item.id}/predictions?op=${encodeURIComponent(checkOp)}`)
-      .then((p) => alive && setPred(p))
-      .catch(() => alive && setPred(null));
+    api<PredictionRun[]>(`/releases/${releaseId}/items/${item.id}/prediction-runs`)
+      .then((found) => alive && setRuns(found))
+      .catch(() => alive && setRuns([]));
     return () => {
       alive = false;
     };
-  }, [releaseId, checkOp, item?.id]);
+  }, [releaseId, item?.id]);
+  const pickRun = (opId: string, on: boolean) => {
+    const next = on ? [...shownRuns.filter((id) => id !== opId), opId].slice(-RUN_STYLES.length) : shownRuns.filter((id) => id !== opId);
+    setShownRuns(next);
+    remember(`${RUNS_KEY}.${releaseId}`, JSON.stringify(next));
+  };
+  const pickScore = (score: number) => {
+    setMinScore(score);
+    remember(SCORE_KEY, String(score));
+  };
+  // the runs laid over this image, in the order they were picked (that order gives each its letter and dash)
+  const overlays = shownRuns
+    .map((id) => (runs ?? []).find((r) => r.op_id === id))
+    .filter((r): r is PredictionRun => Boolean(r))
+    .map((run) => ({ run, style: RUN_STYLES[shownRuns.indexOf(run.op_id)] }));
+  const pred = checkOp ? ((runs ?? []).find((r) => r.op_id === checkOp) ?? null) : null;
 
   // ---- editing steps (each one an undo step)
   const commit = (before: Box[]) => {
@@ -1000,23 +1071,23 @@ export function ItemViewer({
       </svg>
     );
   };
-  /** The model's predictions over the image: dashed, with how sure it was. */
-  const drawPredictions = (labels: number[][], scores: number[]) => (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="predictions">
+  /** A model's predictions over the image: dashed (each run its own dash and letter), with how sure it was. */
+  const drawPredictions = (labels: number[][], scores: number[], style: RunStyle = RUN_STYLES[0]) => (
+    <svg key={style.letter} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="predictions">
       {labels.map((b, i) => {
-        if (b.length < 5) return null;
+        if (b.length < 5 || (scores[i] ?? 0) < minScore) return null;
         const [cls, cx, cy, bw, bh] = b;
         const color = colorOf(cls);
         const outline = task === "segment" ? b.slice(5) : [];
         const box = { x: (cx - bw / 2) * w, y: (cy - bh / 2) * h, width: bw * w, height: bh * h };
-        const tag = `예측 ${className(cls)} ${Math.round((scores[i] ?? 0) * 100)}%`;
+        const tag = `${style.letter} ${className(cls)} ${Math.round((scores[i] ?? 0) * 100)}%`;
         // White dashes on a dark edge: they stand apart from the labels, which are solid lines in the class colour.
         return (
           <g key={i}>
             {outline.length >= 6 &&
               [
                 { stroke: "rgb(0 0 0 / 0.6)", width: 4, dash: undefined },
-                { stroke: "#fff", width: 2, dash: "6 4" },
+                { stroke: "#fff", width: 2, dash: style.dash },
               ].map((s, n) => (
                 <polygon
                   key={n}
@@ -1029,7 +1100,7 @@ export function ItemViewer({
                 />
               ))}
             <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="4" vectorEffect="non-scaling-stroke" />
-            <rect {...box} fill="none" stroke="#fff" strokeWidth="2" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
+            <rect {...box} fill="none" stroke="#fff" strokeWidth="2" strokeDasharray={style.dash} vectorEffect="non-scaling-stroke" />
             <rect x={box.x} y={tagTop(box.y + box.height)} width={tag.length * font * 0.5 + font * 0.5} height={font * 1.2} fill="rgb(20 26 34 / 0.85)" />
             <rect x={box.x} y={tagTop(box.y + box.height)} width={font * 0.25} height={font * 1.2} fill={color} />
             <text x={box.x + font * 0.4} y={tagTop(box.y + box.height) + font * 0.9} fontSize={font * 0.8} fill="#fff" fontWeight="600">
@@ -1040,19 +1111,18 @@ export function ItemViewer({
       })}
     </svg>
   );
-  // Predictions the labels (as they are now) do not have yet: the ones worth taking.
+  // A run's predictions the labels (as they are now) do not have yet, at least as sure as asked: worth taking.
   const current = editing ? boxes : revision && !foreign(revision) ? revision.boxes : [];
-  const missing =
-    pred && pred.evaluated
-      ? pred.labels
-          .map((label, i) => ({ label, score: pred.scores[i] ?? 0 }))
-          .filter(({ label }) =>
-            task === "classify"
-              ? current[0]?.[0] !== label[0]
-              : !current.some((b) => b[0] === label[0] && b.length >= 5 && label.length >= 5 && iou(b, label) >= 0.5),
-          )
-          .sort((a, b) => b.score - a.score)
-      : [];
+  const missingOf = (run: PredictionRun) =>
+    (run.labels ?? [])
+      .map((label, i) => ({ label, score: run.scores?.[i] ?? 0 }))
+      .filter(({ score }) => score >= minScore)
+      .filter(({ label }) =>
+        task === "classify"
+          ? current[0]?.[0] !== label[0]
+          : !current.some((b) => b[0] === label[0] && b.length >= 5 && label.length >= 5 && iou(b, label) >= 0.5),
+      )
+      .sort((a, b) => b.score - a.score);
 
   const shown = editRevision ? [editRevision] : [revision, compare].filter((r): r is Revision => r !== null);
   const anyForeign = shown.some(foreign) && classes.length > 0;
@@ -1108,7 +1178,7 @@ export function ItemViewer({
                       />
                     )}
                     {(showLabels || editing) && r && task !== "classify" && drawBoxes(r)}
-                    {showPred && pred?.evaluated && n === 0 && task !== "classify" && drawPredictions(pred.labels, pred.scores)}
+                    {showPred && n === 0 && task !== "classify" && overlays.map(({ run, style }) => drawPredictions(run.labels ?? [], run.scores ?? [], style))}
                     {flagged && !editing && n === 0 && r && item && r.id === item.revision_id && drawFlagged(r.boxes, flagged.boxes)}
                     {showDiff && changeCount > 0 && n === 0 && baseRevision && afterLabels && drawChanges(baseRevision.boxes, afterLabels)}
                     {editing && shapes && fitWidth > 0 && (
@@ -1143,11 +1213,22 @@ export function ItemViewer({
                   </div>
                   {/* outside the zoomed canvas: it keeps its size */}
                   {(showLabels || editing) && r && task === "classify" && classBadge(r)}
-                  {showPred && pred?.evaluated && n === 0 && task === "classify" && pred.labels[0] && (
-                    <span className="class-badge predicted" style={{ color: colorOf(pred.labels[0][0]) }}>
-                      모델: {className(pred.labels[0][0])} {Math.round((pred.scores[0] ?? 0) * 100)}%
-                    </span>
-                  )}
+                  {showPred &&
+                    n === 0 &&
+                    task === "classify" &&
+                    overlays.map(
+                      ({ run, style }, k) =>
+                        run.labels?.[0] &&
+                        (run.scores?.[0] ?? 0) >= minScore && (
+                          <span
+                            key={run.op_id}
+                            className="class-badge predicted"
+                            style={{ color: colorOf(run.labels[0][0]), top: `${46 + k * 30}px` }}
+                          >
+                            {style.letter} {className(run.labels[0][0])} {Math.round((run.scores?.[0] ?? 0) * 100)}%
+                          </span>
+                        ),
+                    )}
                 </div>
                 {pair && r && (
                   <figcaption>
@@ -1301,6 +1382,15 @@ export function ItemViewer({
                 </button>
               </div>
             )}
+          </section>
+        )}
+
+        {item && !editing && revision && revision.source.startsWith("model:") && (
+          <section className="model-labels">
+            <div className="notice small">
+              지금 라벨은 <strong>모델이 그린 것</strong>입니다 ({revision.source.slice(6)}, 오토라벨에서 확신도가 높아 바로 넣음). 아직 사람이
+              확인하지 않았습니다. 고치면 사람이 고친 라벨이 됩니다.
+            </div>
           </section>
         )}
 
@@ -1478,46 +1568,92 @@ export function ItemViewer({
           </section>
         )}
 
-        {item && checkOp && pred && (
+        {item && runs && (runs.length > 0 || checkOp) && (
           <section className="prediction-panel">
-            <div className="eyebrow">
-              모델 예측 · {pred.model ? `${pred.model.name} v${pred.model.version}` : "모델"}
-            </div>
-            {!pred.evaluated ? (
-              <p className="muted small">이 이미지는 이 평가에 들지 않았습니다.</p>
-            ) : (
+            <div className="eyebrow">모델 예측 · 이 이미지를 예측한 실행 {runs.length}개</div>
+            {checkOp && !pred && <p className="muted small">이 이미지는 정렬에 쓴 평가에 들지 않았습니다.</p>}
+            {runs.length > 0 && (
               <>
-                <p className="muted small">
-                  평가할 때 맞춘 라벨 {pred.found} · 못 찾은 라벨 {pred.missed} · 라벨에 없는 예측 {pred.extra}
-                </p>
                 <label className="check">
-                  <input type="checkbox" checked={showPred} onChange={(e) => setShowPred(e.target.checked)} /> 예측 겹쳐 보기 (점선) <kbd>P</kbd>
+                  <input type="checkbox" checked={showPred} onChange={(e) => setShowPred(e.target.checked)} /> 예측 겹쳐 보기{" "}
+                  <kbd>P</kbd>
+                  <span className="muted small"> · 라벨은 실선, 예측은 점선 (셋까지)</span>
                 </label>
-                {missing.length > 0 ? (
-                  <>
-                    <div className="muted small">지금 라벨에 없는 예측 {missing.length}개</div>
-                    <div className="prediction-list">
-                      {missing.map(({ label, score }, i) => (
-                        <div key={i} className="prediction-row">
-                          <i style={{ borderColor: colorOf(label[0]) }} />
-                          <span>
-                            {className(label[0])} · {Math.round(score * 100)}%
+                <div className="pred-runs">
+                  {runs.map((run) => {
+                    const at = shownRuns.indexOf(run.op_id);
+                    const style = at >= 0 ? RUN_STYLES[at] : null;
+                    return (
+                      <label key={run.op_id} className={`check pred-run ${style ? "on" : ""}`} title={runName(run)}>
+                        <input type="checkbox" checked={Boolean(style)} onChange={(e) => pickRun(run.op_id, e.target.checked)} />
+                        {style ? (
+                          <span className="pred-key">
+                            <svg width="22" height="10" aria-hidden>
+                              <line x1="1" y1="5" x2="21" y2="5" stroke="currentColor" strokeWidth="2" strokeDasharray={style.dash} />
+                            </svg>
+                            <b>{style.letter}</b>
                           </span>
-                          {item.edit.allowed && (
-                            <button onClick={() => takePredictions([label])}>{task === "classify" ? "이 클래스로" : "라벨로 넣기"}</button>
+                        ) : (
+                          <span className="pred-key" />
+                        )}
+                        <span>
+                          {run.model ? `${run.model.name} v${run.model.version}` : "모델"}
+                          <span className="muted small">
+                            {" "}
+                            · {run.kind === "eval" ? `평가${run.split ? `(${run.split})` : ""}` : `오토라벨${run.set?.name ? ` · ${run.set.name}` : ""}`} ·{" "}
+                            {run.created_at.slice(0, 10)} · 예측 {(run.scores ?? []).filter((v) => v >= minScore).length}개
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <label className="pred-score">
+                  <span className="small">
+                    확신도 <strong>{Math.round(minScore * 100)}%</strong> 이상만
+                  </span>
+                  <input type="range" min={0} max={0.95} step={0.05} value={minScore} onChange={(e) => pickScore(Number(e.target.value))} />
+                </label>
+                {overlays.map(({ run, style }) => {
+                  const missing = missingOf(run);
+                  return (
+                    <div key={run.op_id} className="pred-run-detail">
+                      <div className="small">
+                        <b>{style.letter}</b> {runName(run, true)}
+                      </div>
+                      {run.kind === "eval" && (
+                        <p className="muted small">
+                          평가할 때 맞춘 라벨 {run.found ?? 0} · 못 찾은 라벨 {run.missed ?? 0} · 라벨에 없는 예측 {run.extra ?? 0}
+                        </p>
+                      )}
+                      {missing.length > 0 ? (
+                        <>
+                          <div className="muted small">지금 라벨에 없는 예측 {missing.length}개</div>
+                          <div className="prediction-list">
+                            {missing.map(({ label, score }, i) => (
+                              <div key={i} className="prediction-row">
+                                <i style={{ borderColor: colorOf(label[0]) }} />
+                                <span>
+                                  {className(label[0])} · {Math.round(score * 100)}%
+                                </span>
+                                {item.edit.allowed && (
+                                  <button onClick={() => takePredictions([label])}>{task === "classify" ? "이 클래스로" : "라벨로 넣기"}</button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          {missing.length > 1 && task !== "classify" && item.edit.allowed && (
+                            <button className="small" onClick={() => takePredictions(missing.map((m) => m.label))}>
+                              모두 라벨로 넣기
+                            </button>
                           )}
-                        </div>
-                      ))}
+                        </>
+                      ) : (
+                        <p className="muted small">이 확신도 이상의 예측은 모두 지금 라벨에 있습니다.</p>
+                      )}
                     </div>
-                    {missing.length > 1 && task !== "classify" && item.edit.allowed && (
-                      <button className="small" onClick={() => takePredictions(missing.map((m) => m.label))}>
-                        모두 라벨로 넣기
-                      </button>
-                    )}
-                  </>
-                ) : (
-                  <p className="muted small">예측이 모두 지금 라벨에 있습니다.</p>
-                )}
+                  );
+                })}
               </>
             )}
           </section>

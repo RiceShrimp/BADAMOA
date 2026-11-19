@@ -593,6 +593,18 @@ def test_autolabel_a_labeling_set(hub, release, tmp_path):
     assert {tuple(s["scores"]) for s in starts} == {(), (0.5,)}
     assert all(i["box_count"] == 0 for i in todo)  # not saved until a person does
 
+    # ---- the predictions over the dataset too: the run, told apart by its model and what it was
+    runs = hub.get(f"/api/releases/{opened}/prediction-runs").json()
+    (run,) = [r for r in runs if r["kind"] == "autolabel"]
+    assert run["model"]["id"] == model["id"] and run["set"] == {"id": made["id"], "name": made["name"]}
+    assert run["images"] == 8
+    unsure = next(i for i, s in zip(todo, starts, strict=True) if s["labels"])
+    (shown,) = hub.get(f"/api/releases/{opened}/items/{unsure['id']}/prediction-runs").json()
+    assert shown["op_id"] == run["op_id"] and shown["scores"] == [0.5] and len(shown["labels"]) == 1
+    page = hub.get(f"/api/releases/{opened}/items", params={"pred": run["op_id"], "limit": 50}).json()["items"]
+    assert next(i for i in page if i["id"] == unsure["id"])["pred"]["scores"] == [0.5]
+    assert hub.get(f"/api/releases/{opened}/items", params={"pred": "nope"}).status_code == 404
+
 
 def test_continue_from_a_registered_model_and_server_load(hub, release):
     first, job = _train(hub, release, {"model": "yolo11n.pt"})

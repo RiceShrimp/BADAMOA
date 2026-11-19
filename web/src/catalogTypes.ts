@@ -95,6 +95,7 @@ export interface GridItem {
   box_count: number;
   thumb_url: string | null;
   boxes: number[][]; // [class, cx, cy, w, h] as fractions, for drawing over the thumbnail
+  pred?: { labels: number[][]; scores: number[] }; // what the run picked over the grid predicted for it
   fixed?: boolean; // changed in the work in progress
   change?: ChangeCounts; // how: labels added, removed, moved, reclassed against the base version
   check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
@@ -206,6 +207,32 @@ export interface ItemPredictions {
   found: number;
   missed: number;
   extra: number;
+}
+
+/** A model run whose predictions can be laid over a version's images: an evaluation or a 오토라벨 run. */
+export interface PredictionRun {
+  op_id: string;
+  kind: "eval" | "autolabel";
+  model: { id: string; name: string; version: number } | null;
+  created_at: string;
+  split?: string; // an evaluation's split
+  set?: { id: string; name: string } | null; // the labeling set a 오토라벨 run labelled
+  keep?: number | null;
+  images?: number; // how many images it predicted (the version's list)
+  labels?: number[][]; // what it predicted for one image (an image's list)
+  scores?: number[];
+  found?: number;
+  missed?: number;
+  extra?: number;
+}
+
+/** A run as the screens name it: od-yolo11n v3 · 평가(val) · 11/19, or … · 오토라벨 · 1차 묶음 · 11/19. */
+export function runName(run: PredictionRun, short = false): string {
+  const model = run.model ? `${run.model.name} v${run.model.version}` : "모델";
+  const what =
+    run.kind === "eval" ? `평가${run.split ? `(${run.split})` : ""}` : `오토라벨${run.set?.name && !short ? ` · ${run.set.name}` : ""}`;
+  const day = run.created_at ? ` · ${run.created_at.slice(5, 10).replace("-", "/")}` : "";
+  return `${model} · ${what}${short ? "" : day}`;
 }
 
 export interface ItemPage {
