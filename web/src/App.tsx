@@ -296,7 +296,7 @@ function Shell({
           {page === "home" && <Home user={user} nodes={nodes} />}
           {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "labeling" && <Labeling setId={sub} arg={arg} />}
-          {page === "review" && <Review releaseId={sub} />}
+          {page === "review" && <Review sub={sub} arg={arg} />}
           {page === "training" && <Training runId={sub} arg={arg} />}
           {page === "models" && <Models modelId={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} isAdmin={isAdmin} /> : <Nodes isAdmin={isAdmin} />)}

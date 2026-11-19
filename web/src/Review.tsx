@@ -71,7 +71,7 @@ const MODEL: Record<"extra" | "missed", { group: Rule["group"]; title: string; h
 };
 const PAGE = 60;
 
-/** A dataset's newest labels as 검수's first screen shows them. */
+/** A dataset's newest labels as 검수's screens show them. */
 interface ReviewCard {
   project: BoardProject;
   dataset: { id: string; name: string };
@@ -88,105 +88,255 @@ interface ReviewCard {
 }
 
 interface ReviewBoardInfo {
-  datasets: ReviewCard[];
-  totals: { datasets: number; checked: number; flagged: number; missing: number; wrong: number; boxes: number; evaluated: number };
+  datasets: ReviewCard[]; // the most problems first
+  totals: Totals;
 }
 
-const projectOfCard = (c: ReviewCard) => c.project;
+interface Totals {
+  datasets: number;
+  checked: number;
+  flagged: number;
+  missing: number;
+  wrong: number;
+  boxes: number;
+  evaluated: number;
+}
 
-/** 검수: the first screen lists every dataset's problems; a version's own screen finds and fixes them. */
-export function Review({ releaseId }: { releaseId?: string }) {
-  return releaseId ? <ReviewPage key={releaseId} releaseId={releaseId} /> : <ReviewBoard />;
+/** A project's datasets on the board, in the board's order: the project with the worst dataset comes first. */
+interface ReviewProject {
+  project: BoardProject;
+  datasets: ReviewCard[];
+}
+
+function byProject(cards: ReviewCard[]): ReviewProject[] {
+  const out = new Map<string, ReviewProject>();
+  for (const c of cards) {
+    const group = out.get(c.project.id) ?? { project: c.project, datasets: [] };
+    group.datasets.push(c);
+    out.set(c.project.id, group);
+  }
+  return [...out.values()];
+}
+
+/** The board's numbers over some of its datasets: images with each kind of problem, among those checked. */
+function totalsOf(cards: ReviewCard[]): Totals {
+  const checked = cards.filter((c) => c.checked && c.groups);
+  const sum = (g: Rule["group"] | "any") => checked.reduce((n, c) => n + (c.groups?.[g] ?? 0), 0);
+  return {
+    datasets: cards.length,
+    checked: checked.length,
+    flagged: sum("any"),
+    missing: sum("missing"),
+    wrong: sum("wrong"),
+    boxes: sum("boxes"),
+    evaluated: cards.filter((c) => c.evaluation).length,
+  };
+}
+
+const projectOfGroup = (p: ReviewProject) => p.project;
+const LINES = 5; // datasets listed on a project's card; the rest are a click away
+const versionName = (c: ReviewCard) => (c.release.draft ? "작업 중" : c.release.version);
+
+/** 검수: projects (in folders, like the other first screens), then a project's datasets, then a version's checks. */
+export function Review({ sub, arg }: { sub?: string; arg?: string }) {
+  if (sub === "project" && arg) return <ReviewProjectPage key={arg} projectId={arg} />;
+  return sub ? <ReviewPage key={sub} releaseId={sub} /> : <ReviewBoard />;
+}
+
+function useReviewBoard() {
+  return usePolling(() => api<ReviewBoardInfo>("/boards/review"), 30000);
+}
+
+function ReviewStats({ totals: t }: { totals: Totals | undefined }) {
+  return (
+    <div className="stats five">
+      <Stat icon="database" label="데이터셋" value={t?.datasets ?? "–"} sub={t ? `검사함 ${t.checked}` : " "} />
+      {GROUPS.map((g) => (
+        <Stat key={g.id} icon={g.id === "missing" ? "images" : g.id === "wrong" ? "alert" : "box"} label={g.title} value={(t?.[g.id] ?? 0).toLocaleString()} sub={g.hint} />
+      ))}
+      <Stat icon="chart" label="모델로 평가함" value={t?.evaluated ?? "–"} sub="모델이 본 미라벨 · 오라벨도 셈" />
+    </div>
+  );
+}
+
+/** Images per kind of problem: one dataset's, or a project's datasets' together. */
+function ReviewCounts({ groups }: { groups: Record<Rule["group"], number> }) {
+  return (
+    <div className="review-counts">
+      {GROUPS.map((g) => (
+        <span key={g.id} className={`review-count ${groups[g.id] ? `has-${g.id}` : "zero"}`} title={g.hint}>
+          <strong>{groups[g.id].toLocaleString()}</strong>
+          {g.title}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function ReviewBoard() {
-  const { data: board, error } = usePolling(() => api<ReviewBoardInfo>("/boards/review"), 30000);
-  const { shown, tools } = useBoardFilter(board?.datasets, projectOfCard);
+  const { data: board, error } = useReviewBoard();
+  const projects = useMemo(() => byProject(board?.datasets ?? []), [board]);
+  const { shown, tools } = useBoardFilter(board ? projects : null, projectOfGroup);
   if (error && !board) return <div className="error">{error}</div>;
-  const t = board?.totals;
   return (
     <>
       <div className="page-head">
         <div>
           <h1>검수</h1>
           <p className="muted">
-            데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)에서 라벨이 빠졌거나(미라벨) 틀렸을(오라벨) 이미지 수를 봅니다. 문제가 많은
-            데이터셋이 먼저 나오고, 누르면 그 이미지를 보며 고치거나 라벨링 묶음으로 맡깁니다.
+            데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)에서 라벨이 빠졌거나(미라벨) 틀렸을(오라벨) 이미지 수를 프로젝트별로 봅니다. 문제가
+            많은 프로젝트가 먼저 나오고, 프로젝트를 누르면 데이터셋별로, 데이터셋을 누르면 그 이미지를 보며 고치거나 라벨링 묶음으로 맡깁니다.
           </p>
         </div>
       </div>
-      <div className="stats five">
-        <Stat icon="database" label="데이터셋" value={t?.datasets ?? "–"} sub={t ? `검사함 ${t.checked}` : " "} />
-        {GROUPS.map((g) => (
-          <Stat key={g.id} icon={g.id === "missing" ? "images" : g.id === "wrong" ? "alert" : "box"} label={g.title} value={(t?.[g.id] ?? 0).toLocaleString()} sub={g.hint} />
-        ))}
-        <Stat icon="chart" label="모델로 평가함" value={t?.evaluated ?? "–"} sub="모델이 본 미라벨 · 오라벨도 셈" />
-      </div>
+      <ReviewStats totals={board?.totals} />
       {tools}
-      {board && board.datasets.length === 0 && <div className="card empty">검사할 데이터셋 버전이 없습니다.</div>}
+      {!board && <p className="muted">불러오는 중…</p>}
+      {board && projects.length === 0 && <div className="card empty">검사할 데이터셋 버전이 없습니다.</div>}
       <div className="card-grid review-grid">
-        {shown.map((c) => (
-          <a key={c.dataset.id} className="data-card data-card-link review-card" href={`#/review/${c.release.id}`}>
-            <Collage shots={c.collage} colorOf={classColor} />
-            <div className="data-card-body">
-              <div className="data-card-title">
-                <strong>{c.dataset.name}</strong>
-                {c.release.draft && <span className="tag accent">작업 중</span>}
-              </div>
-              <div className="muted small">
-                {c.project.name} · {c.release.draft ? `${c.release.base}에서 고친 것 ${c.release.edited}` : c.release.version} · 이미지{" "}
-                {c.items.toLocaleString()}
-              </div>
-              {c.checked && c.groups ? (
-                <>
-                  <div className="review-counts">
-                    {GROUPS.map((g) => (
-                      <span key={g.id} className={`review-count ${c.groups?.[g.id] ? `has-${g.id}` : "zero"}`} title={g.hint}>
-                        <strong>{(c.groups?.[g.id] ?? 0).toLocaleString()}</strong>
-                        {g.title}
-                      </span>
-                    ))}
-                  </div>
-                  {c.checks.length > 0 ? (
-                    <div className="muted small">
-                      {c.checks
-                        .slice(0, 2)
-                        .map((k) => `${k.title} ${k.images.toLocaleString()}`)
-                        .join(" · ")}
-                      {c.checks.length > 2 ? ` 외 ${c.checks.length - 2}` : ""}
-                    </div>
-                  ) : (
-                    <div className="muted small">규칙 검사에 걸린 이미지가 없습니다</div>
-                  )}
-                </>
-              ) : (
-                <div className="muted small">이미지가 많아 아직 검사하지 않았습니다. 누르면 검사합니다.</div>
-              )}
-              {c.evaluation ? (
-                <div className="small">
-                  {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨에 없는 물체{" "}
-                  <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 못 찾은 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
-                </div>
-              ) : (
-                <div className="muted small">평가한 모델 없음</div>
-              )}
-              <div className="muted small">
-                {c.flagged_shots ? "사진은 걸린 이미지 · " : ""}
-                {c.computed_at ? `검사 ${timeAgo(c.computed_at)}` : "검사 전"}
-              </div>
-            </div>
-          </a>
+        {shown.map((p) => (
+          <ProjectReviewCard key={p.project.id} group={p} />
         ))}
       </div>
     </>
   );
 }
 
-/** One version's checks: the images each found, to fix or hand out. Other versions of the project are a pick away. */
+/** A project on the board: its datasets' problems together, and each dataset a click away. */
+function ProjectReviewCard({ group }: { group: ReviewProject }) {
+  const { project, datasets } = group;
+  const t = totalsOf(datasets);
+  const waiting = t.datasets - t.checked;
+  const images = datasets.reduce((n, c) => n + c.items, 0);
+  return (
+    <div className="data-card review-card">
+      <a className="data-card-link" href={`#/review/project/${project.id}`} onClick={() => rememberProject(project.id)}>
+        <Collage shots={datasets[0].collage} colorOf={classColor} />
+        <div className="data-card-body">
+          <div className="data-card-title">
+            <strong>{project.name}</strong>
+          </div>
+          <div className="muted small">
+            데이터셋 {datasets.length} · 이미지 {images.toLocaleString()}
+          </div>
+          {t.checked > 0 ? (
+            <ReviewCounts groups={t} />
+          ) : (
+            <div className="muted small">이미지가 많아 아직 검사하지 않았습니다. 데이터셋을 누르면 검사합니다.</div>
+          )}
+          <div className="muted small">
+            {t.checked > 0 && waiting > 0 && `검사 전 데이터셋 ${waiting} · `}
+            {t.evaluated > 0 ? `모델로 평가한 데이터셋 ${t.evaluated}` : "평가한 모델 없음"}
+          </div>
+        </div>
+      </a>
+      <div className="board-lines">
+        {datasets.slice(0, LINES).map((c) => (
+          <a key={c.dataset.id} href={`#/review/${c.release.id}`} className="board-line" onClick={() => rememberProject(project.id)}>
+            <Icon name="database" size={12} />
+            <span className="ellipsis">
+              {c.dataset.name} <span className="muted">{versionName(c)}</span>
+            </span>
+            <span className={`num${c.groups?.any ? "" : " muted"}`} title="검사에 걸린 이미지">
+              {c.checked && c.groups ? c.groups.any.toLocaleString() : "검사 전"}
+            </span>
+          </a>
+        ))}
+        {datasets.length > LINES && <div className="muted small board-foot">데이터셋 {datasets.length - LINES}개 더</div>}
+      </div>
+    </div>
+  );
+}
+
+/** A project's datasets, each with its newest labels' problems; a dataset opens its version's checks. */
+function ReviewProjectPage({ projectId }: { projectId: string }) {
+  const { data: board, error } = useReviewBoard();
+  const { projects } = useProject();
+  useEffect(() => rememberProject(projectId), [projectId]);
+  if (error && !board) return <div className="error">{error}</div>;
+  const datasets = (board?.datasets ?? []).filter((c) => c.project.id === projectId);
+  const project = datasets[0]?.project ?? projects?.find((p) => p.id === projectId);
+  return (
+    <>
+      <nav className="page-crumbs">
+        <a href="#/review">검수</a>
+        {project?.folder && <span>{project.folder}</span>}
+        <strong>{project?.name ?? "…"}</strong>
+      </nav>
+      <div className="page-head">
+        <div>
+          <h1>{project?.name ?? "검수"}</h1>
+          <p className="muted">
+            이 프로젝트의 데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)의 문제 수입니다. 문제가 많은 데이터셋이 먼저 나오고, 누르면 그 버전의
+            검수 화면이 열립니다. 다른 버전은 거기서 고릅니다.
+          </p>
+        </div>
+      </div>
+      <ReviewStats totals={board ? totalsOf(datasets) : undefined} />
+      {!board && <p className="muted">불러오는 중…</p>}
+      {board && datasets.length === 0 && <div className="card empty">이 프로젝트에는 검사할 데이터셋 버전이 없습니다.</div>}
+      <div className="card-grid review-grid">
+        {datasets.map((c) => (
+          <DatasetReviewCard key={c.dataset.id} card={c} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function DatasetReviewCard({ card: c }: { card: ReviewCard }) {
+  return (
+    <a className="data-card data-card-link review-card" href={`#/review/${c.release.id}`}>
+      <Collage shots={c.collage} colorOf={classColor} />
+      <div className="data-card-body">
+        <div className="data-card-title">
+          <strong>{c.dataset.name}</strong>
+          {c.release.draft && <span className="tag accent">작업 중</span>}
+        </div>
+        <div className="muted small">
+          {c.release.draft ? `${c.release.base}에서 고친 것 ${c.release.edited}` : c.release.version} · 이미지 {c.items.toLocaleString()}
+        </div>
+        {c.checked && c.groups ? (
+          <>
+            <ReviewCounts groups={c.groups} />
+            {c.checks.length > 0 ? (
+              <div className="muted small">
+                {c.checks
+                  .slice(0, 2)
+                  .map((k) => `${k.title} ${k.images.toLocaleString()}`)
+                  .join(" · ")}
+                {c.checks.length > 2 ? ` 외 ${c.checks.length - 2}` : ""}
+              </div>
+            ) : (
+              <div className="muted small">규칙 검사에 걸린 이미지가 없습니다</div>
+            )}
+          </>
+        ) : (
+          <div className="muted small">이미지가 많아 아직 검사하지 않았습니다. 누르면 검사합니다.</div>
+        )}
+        {c.evaluation ? (
+          <div className="small">
+            {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨에 없는 물체{" "}
+            <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 못 찾은 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
+          </div>
+        ) : (
+          <div className="muted small">평가한 모델 없음</div>
+        )}
+        <div className="muted small">
+          {c.flagged_shots ? "사진은 걸린 이미지 · " : ""}
+          {c.computed_at ? `검사 ${timeAgo(c.computed_at)}` : "검사 전"}
+        </div>
+      </div>
+    </a>
+  );
+}
+
+/** One version's checks: the images each found, to fix or hand out. The dataset's other versions are a pick away. */
 function ReviewPage({ releaseId }: { releaseId: string }) {
   const { projects } = useProject();
   const { data: release, error } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 0, [releaseId]);
   const projectId = release?.project_id ?? "";
+  const datasetId = release?.dataset.id ?? "";
   const { data: tree } = usePolling(
     () => (projectId ? api<TreeDataset[]>(`/projects/${projectId}/datasets`) : Promise.resolve([] as TreeDataset[])),
     30000,
@@ -195,25 +345,29 @@ function ReviewPage({ releaseId }: { releaseId: string }) {
   useEffect(() => {
     if (projectId) rememberProject(projectId);
   }, [projectId]);
-  // The versions to check: each dataset's work in progress (where fixes go) first, then its versions, newest first.
+  // This dataset's versions to check: its work in progress (where fixes go) first, then its versions, newest first.
   const choices = useMemo(
     () =>
-      (tree ?? []).flatMap((d) =>
-        d.releases
-          .filter((r) => !r.deleted_at && r.status !== "building")
-          .map((r) => ({ id: r.id, label: `${d.name} ${r.status === "draft" ? `작업 중 · 고친 것 ${r.edited ?? 0}` : r.version}` })),
-      ),
-    [tree],
+      (tree ?? [])
+        .filter((d) => d.id === datasetId)
+        .flatMap((d) =>
+          d.releases
+            .filter((r) => !r.deleted_at && r.status !== "building")
+            .map((r) => ({ id: r.id, label: r.status === "draft" ? `작업 중 · 고친 것 ${r.edited ?? 0}` : r.version })),
+        ),
+    [tree, datasetId],
   );
   if (error && !release) return <div className="error">{error}</div>;
   const project = projects?.find((p) => p.id === projectId);
+  const title = release ? (release.status === "draft" ? "작업 중" : release.version) : "";
 
   return (
     <>
       <nav className="page-crumbs">
         <a href="#/review">검수</a>
-        <span>{project?.name ?? "…"}</span>
-        <strong>{release ? `${release.dataset.name} ${release.status === "draft" ? "작업 중" : release.version}` : "…"}</strong>
+        {project?.folder && <span>{project.folder}</span>}
+        {projectId ? <a href={`#/review/project/${projectId}`}>{project?.name ?? "프로젝트"}</a> : <span>…</span>}
+        <strong>{release ? `${release.dataset.name} ${title}` : "…"}</strong>
       </nav>
       <div className="page-head">
         <div>
@@ -226,9 +380,9 @@ function ReviewPage({ releaseId }: { releaseId: string }) {
       </div>
       <div className="filters review-picker">
         <label className="project-picker">
-          <span className="eyebrow">버전</span>
+          <span className="eyebrow">{release ? `${release.dataset.name} 버전` : "버전"}</span>
           <select value={releaseId} onChange={(e) => (window.location.hash = `#/review/${e.target.value}`)} aria-label="버전">
-            {!choices.some((c) => c.id === releaseId) && <option value={releaseId}>{release ? `${release.dataset.name} ${release.version}` : "…"}</option>}
+            {!choices.some((c) => c.id === releaseId) && <option value={releaseId}>{title || "…"}</option>}
             {choices.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.label}
