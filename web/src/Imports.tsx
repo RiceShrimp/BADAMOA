@@ -80,11 +80,41 @@ function elapsed(info: ImportInfo): number {
   return since ? Math.max(1, (Date.now() - new Date(since).getTime()) / 1000) : 0;
 }
 
-/** Time left in this step, from its pace so far. */
-function left(info: ImportInfo): string {
+/** What each running import's step was seen at, for its pace over the last minute (screens poll every 2 s). */
+const seen = new Map<string, { step: string; points: { t: number; done: number; bytes: number }[] }>();
+const PACE_WINDOW_MS = 60_000;
+
+/** How fast the step goes now: items and bytes a second over the last minute, or since the step began
+ * until a minute has been seen (0 for the first few seconds). */
+function pace(info: ImportInfo): { items: number; bytes: number } {
+  const now = Date.now();
+  let mine = seen.get(info.job_id);
+  if (!mine || mine.step !== info.step) {
+    mine = { step: info.step, points: [] };
+    seen.set(info.job_id, mine);
+  }
+  const last = mine.points[mine.points.length - 1];
+  if (!last || last.done !== info.done || last.bytes !== info.bytes) mine.points.push({ t: now, done: info.done, bytes: info.bytes });
+  mine.points = mine.points.filter((p) => now - p.t <= PACE_WINDOW_MS);
+  const first = mine.points[0];
+  const newest = mine.points[mine.points.length - 1];
+  if (first && newest && newest.t - first.t >= 15_000) {
+    const span = (newest.t - first.t) / 1000;
+    return { items: (newest.done - first.done) / span, bytes: (newest.bytes - first.bytes) / span };
+  }
   const seconds = elapsed(info);
-  if (!seconds || info.done <= 0 || info.total <= info.done || seconds < 10) return "";
-  const rest = ((info.total - info.done) * seconds) / info.done;
+  return seconds >= 5 ? { items: info.done / seconds, bytes: info.bytes / seconds } : { items: 0, bytes: 0 };
+}
+
+function perSecond(value: number, unit: string): string {
+  return `초당 ${value.toLocaleString(undefined, { maximumFractionDigits: value < 10 ? 1 : 0 })}${unit}`;
+}
+
+/** Time left in this step, at its pace now. */
+function left(info: ImportInfo): string {
+  const speed = pace(info).items;
+  if (speed <= 0 || info.total <= info.done || elapsed(info) < 10) return "";
+  const rest = (info.total - info.done) / speed;
   if (rest < 60) return "1분 안에";
   if (rest < 3600) return `약 ${Math.round(rest / 60)}분 남음`;
   return `약 ${(rest / 3600).toFixed(1)}시간 남음`;
@@ -97,17 +127,23 @@ function size(bytes: number): string {
 
 const STEPS = { find: "이미지 찾는 중", labels: "라벨 읽는 중", read: "이미지 읽고 등록" } as const;
 
-/** What a running import is doing, e.g. 이미지 읽고 등록 (3/3) · 12,000 / 600,000장 · 2% · 15 GB · 110 MB/s · 약 1.4시간 남음. */
-function runningWords(info: ImportInfo, pct: number, compact: boolean): string {
+/** What a running import is doing and how fast, e.g. 이미지 읽고 등록 (3/3) · 12,000 / 600,000장 · 2% · 15 GB 읽음 ·
+ * 초당 34장 · 21 MB/s · 약 4.7시간 남음. */
+function runningWords(info: ImportInfo, pct: number): string {
   const step = info.step || (info.total > 0 ? "read" : "find");
   const head = `${STEPS[step]} (${["find", "labels", "read"].indexOf(step) + 1}/3)`;
-  if (step === "find") return `${head}${info.done > 0 ? ` · ${info.done.toLocaleString()}장 찾음` : ""}`;
+  const speed = pace(info);
+  if (step === "find") {
+    const parts = [head];
+    if (info.done > 0) parts.push(`${info.done.toLocaleString()}장 찾음`);
+    if (speed.items > 0) parts.push(perSecond(speed.items, "장"));
+    return parts.join(" · ");
+  }
   const parts = [head, `${info.done.toLocaleString()} / ${info.total.toLocaleString()}${step === "read" ? "장" : ""}`];
   parts.push(`${Math.floor(pct)}%`);
-  if (step === "read" && info.bytes > 0) {
-    parts.push(`${size(info.bytes)} 읽음`);
-    if (!compact && elapsed(info) >= 10) parts.push(`${Math.round(info.bytes / 1024 ** 2 / elapsed(info))} MB/s`);
-  }
+  if (step === "read" && info.bytes > 0) parts.push(`${size(info.bytes)} 읽음`);
+  if (speed.items > 0) parts.push(perSecond(speed.items, step === "read" ? "장" : "개"));
+  if (step === "read" && speed.bytes > 0) parts.push(`${Math.round(speed.bytes / 1024 ** 2).toLocaleString()} MB/s`);
   if (left(info)) parts.push(left(info));
   return parts.join(" · ");
 }
@@ -132,7 +168,7 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
           ? "중지함 · 남긴 것 없음"
           : info.status === "done"
             ? `완료 · ${info.total.toLocaleString()}장${info.skipped ? ` (읽지 못한 파일 ${info.skipped}개 건너뜀)` : ""}`
-            : runningWords(info, pct, compact);
+            : runningWords(info, pct);
   // Finding images has no end known yet: the bar moves without a %.
   const searching = info.status === "running" && (info.step === "find" || (!info.step && !info.total));
   return (
