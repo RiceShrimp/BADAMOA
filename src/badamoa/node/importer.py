@@ -4,6 +4,12 @@ The node walks a YOLO or COCO detection dataset, or a classification dataset lai
 out as one folder per class, hashes every image, makes a small thumbnail, and
 sends the *index* (hash, size, split, labels, thumbnail) to the Hub in chunks.
 The images themselves stay where they are.
+
+Datasets of hundreds of thousands of images often sit on a network folder, where
+every call per file is a round trip. Folders are listed with ``os.scandir`` (the
+file type comes with the listing, so no call per image), label files are read
+many at a time, and how far each step got goes to the Hub as it goes:
+finding the images, reading their labels, then reading and sending the images.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +40,17 @@ CHUNK = 200
 WORKERS = min(16, os.cpu_count() or 4)  # images read at once: decoding and hashing let go of the GIL
 REPORT_EVERY_S = 5.0
 THUMB_SIDE = 320
+# Label files read at once: each is a small read, so on a network folder the round trip is most of the time.
+LABEL_READERS = 32
+PROGRESS_EVERY_S = 2.0  # how often the Hub hears how far finding images and reading labels got
+LOG_EVERY_S = 30.0  # and the job's log
+
+# A step's progress: (step, done, total). Steps: "find" (images found so far, total 0), "labels" (label files read).
+Report = Callable[[str, int, int], None]
+
+
+def _quiet(step: str, done: int, total: int) -> None:
+    """No one to tell (tests, scans outside a job)."""
 
 
 @dataclass
@@ -125,8 +142,37 @@ def parse_yolo_yaml(text: str) -> dict[str, Any]:
     return data
 
 
-def _images_under(directory: Path) -> list[Path]:
-    return sorted(p for p in directory.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES and p.is_file())
+def _is_image(name: str) -> bool:
+    return os.path.splitext(name)[1].lower() in IMAGE_SUFFIXES
+
+
+def _images_under(directory: Path, report: Report = _quiet, found_before: int = 0) -> list[Path]:
+    """Every image under ``directory``, in order. Listed with ``os.scandir``: no call per file, which on a
+    network folder of hundreds of thousands of images is the difference between minutes and an hour.
+    Linked folders are followed, each folder once. ``found_before``: images other folders gave, for the count."""
+    found: list[str] = []
+    folders, visited = [str(directory)], set()
+    while folders:
+        folder = folders.pop()
+        try:
+            st = os.stat(folder)
+            if (st.st_dev, st.st_ino) in visited:
+                continue
+            visited.add((st.st_dev, st.st_ino))
+            with os.scandir(folder) as listing:
+                entries = list(listing)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    folders.append(entry.path)
+                elif _is_image(entry.name):
+                    found.append(entry.path)
+            except OSError:
+                continue
+        report("find", found_before + len(found), 0)
+    return sorted(Path(f) for f in found)
 
 
 def _yolo_label_path(image: Path) -> Path:
@@ -150,10 +196,12 @@ def _read_yolo_label(
     ``as_is`` (a task a team named): the box, then every value after it exactly as written —
     nothing is taken for an outline, cut off or moved into 0..1.
     """
-    if not path.is_file():
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
         return "unlabelled", []  # no label file: background or not labelled yet, by the import's rule (settle)
     boxes = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in text.splitlines():
         parts = line.split()
         if len(parts) < 5:
             continue
@@ -186,7 +234,7 @@ def _read_yolo_label(
     return ("labelled" if boxes else "background"), boxes
 
 
-def scan_yolo(root: Path, as_is: bool = False) -> Scan:
+def scan_yolo(root: Path, as_is: bool = False, report: Report = _quiet) -> Scan:
     """``as_is``: label values kept as written (see ``_read_yolo_label``)."""
     yaml_files = [p for p in (root / "data.yaml", root / "dataset.yaml") if p.is_file()] or sorted(root.glob("*.yaml"))
     config = parse_yolo_yaml(yaml_files[0].read_text(encoding="utf-8", errors="replace")) if yaml_files else {}
@@ -214,11 +262,23 @@ def scan_yolo(root: Path, as_is: bool = False) -> Scan:
         split_dirs = named or nested or [("", images)]
 
     kpt_shape = config.get("kpt_shape") or None
-    entries = []
+    images: list[tuple[str, Path]] = []
     for split, directory in split_dirs:
-        for image in _images_under(directory):
-            state, boxes = _read_yolo_label(_yolo_label_path(image), kpt_shape, as_is)
-            entries.append(Entry(path=image, split=split, state=state, boxes=boxes))
+        images += [(split, image) for image in _images_under(directory, report, len(images))]
+    report("find", len(images), 0)
+
+    def read(pair: tuple[str, Path]) -> Entry:
+        split, image = pair
+        state, boxes = _read_yolo_label(_yolo_label_path(image), kpt_shape, as_is)
+        return Entry(path=image, split=split, state=state, boxes=boxes)
+
+    entries = []
+    with ThreadPoolExecutor(LABEL_READERS) as pool:
+        for entry in _ordered(pool, read, images, LABEL_READERS * 8):
+            entries.append(entry)
+            if len(entries) % 500 == 0:
+                report("labels", len(entries), len(images))
+    report("labels", len(entries), len(images))
 
     classes = list(config.get("names") or [])
     if not classes and (root / "classes.txt").is_file():
@@ -272,7 +332,25 @@ def _coco_outline(segmentation: Any, width: float, height: float) -> list[float]
     return [round(min(1.0, max(0.0, float(v) / (width if n % 2 == 0 else height))), 5) for n, v in enumerate(largest)]
 
 
-def scan_coco(root: Path) -> Scan:
+class _Listings:
+    """Which files a folder holds, listed once: looking a name up costs nothing after that."""
+
+    def __init__(self) -> None:
+        self.folders: dict[Path, set[str]] = {}
+
+    def has(self, path: Path) -> bool:
+        names = self.folders.get(path.parent)
+        if names is None:
+            try:
+                with os.scandir(path.parent) as listing:
+                    names = {e.name for e in listing if not e.is_dir()}
+            except OSError:
+                names = set()
+            self.folders[path.parent] = names
+        return path.name in names
+
+
+def scan_coco(root: Path, report: Report = _quiet) -> Scan:
     categories: dict[int, str] = {}
     keypoints: dict[str, Any] | None = None
     parsed = []
@@ -293,6 +371,9 @@ def scan_coco(root: Path) -> Scan:
     index = {cid: i for i, cid in enumerate(class_ids)}
 
     entries = []
+    listings = _Listings()
+    total = sum(len(data["images"]) for _, data in parsed)
+    looked = 0
     for path, data in parsed:
         split = _split_from_name(path.stem)
         boxes_by_image: dict[Any, list[list[float]]] = {}
@@ -318,12 +399,16 @@ def scan_coco(root: Path) -> Scan:
             name = img["file_name"]
             candidates = [root / name, root / "images" / name, root / "images" / split / name, root / split / name]
             candidates += [root / f"{split}2017" / name, path.parent / name, root / Path(name).name]
-            image = next((c for c in candidates if c.is_file()), None)
+            image = next((c for c in candidates if listings.has(c)), None)
+            looked += 1
+            if looked % 500 == 0:
+                report("labels", looked, total)
             if image is None:
                 continue
             boxes = boxes_by_image.get(img["id"], [])
             state = "labelled" if boxes else "background"
             entries.append(Entry(path=image, split=split, state=state, boxes=boxes))
+    report("labels", total, total)
     return Scan(format="coco", classes=[categories[c] for c in class_ids], entries=entries, keypoints=keypoints)
 
 
@@ -332,11 +417,18 @@ def scan_coco(root: Path) -> Scan:
 
 def _class_dirs(directory: Path) -> list[Path]:
     """Sub-folders that hold images directly: the classes of an image-folder dataset."""
-    return [
-        d
-        for d in sorted(directory.iterdir())
-        if d.is_dir() and any(p.suffix.lower() in IMAGE_SUFFIXES for p in d.iterdir() if p.is_file())
-    ]
+    return [d for d in sorted(directory.iterdir()) if d.is_dir() and _holds_images(d)]
+
+
+def _holds_images(folder: Path) -> bool:
+    with os.scandir(folder) as listing:
+        return any(_is_image(e.name) and not e.is_dir() for e in listing)
+
+
+def _images_in(folder: Path) -> list[Path]:
+    """The images right in ``folder`` (not below it), in order."""
+    with os.scandir(folder) as listing:
+        return sorted(Path(e.path) for e in listing if _is_image(e.name) and not e.is_dir())
 
 
 def _imagefolder_splits(root: Path) -> list[tuple[str, Path]]:
@@ -351,17 +443,19 @@ def _imagefolder_splits(root: Path) -> list[tuple[str, Path]]:
     return [("", root)] if _class_dirs(root) else []
 
 
-def scan_imagefolder(root: Path) -> Scan:
+def scan_imagefolder(root: Path, report: Report = _quiet) -> Scan:
     """A classification dataset. Each image carries one label, written as ``[[class_id]]``."""
-    splits = _imagefolder_splits(root)
-    classes = sorted({d.name for _, base in splits for d in _class_dirs(base)})
+    splits = [(split, _class_dirs(base)) for split, base in _imagefolder_splits(root)]
+    classes = sorted({d.name for _, folders in splits for d in folders})
     index = {name: i for i, name in enumerate(classes)}
-    entries = [
-        Entry(path=image, split=split, state="labelled", boxes=[[index[folder.name]]])
-        for split, base in splits
-        for folder in _class_dirs(base)
-        for image in sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
-    ]
+    entries = []
+    for split, folders in splits:
+        for folder in folders:
+            entries += [
+                Entry(path=image, split=split, state="labelled", boxes=[[index[folder.name]]])
+                for image in _images_in(folder)
+            ]
+            report("find", len(entries), 0)
     return Scan(format="imagefolder", classes=classes, entries=entries)
 
 
@@ -375,31 +469,31 @@ def settle(found: Scan, rule: str = "auto") -> Scan:
     return found
 
 
-def scan(root: Path, fmt: str = "auto", unlabelled: str = "auto", task: str = "") -> Scan:
+def scan(root: Path, fmt: str = "auto", unlabelled: str = "auto", task: str = "", report: Report = _quiet) -> Scan:
     """The images and labels of a dataset folder. ``unlabelled``: see ``settle``.
 
     ``task``: what the dataset is labelled for. A task a team named (not Det · Seg · Kpt · Cls) keeps
-    the values of its YOLO labels as written.
+    the values of its YOLO labels as written. ``report``: told how far finding images and reading labels got.
     """
     try:
         named = bool(task_names.normalize(task)) and task_names.normalize(task) not in task_names.BUILTIN
     except ValueError:
         named = False
-    return settle(_scan(root, fmt, as_is=named), unlabelled)
+    return settle(_scan(root, fmt, as_is=named, report=report), unlabelled)
 
 
-def _scan(root: Path, fmt: str = "auto", as_is: bool = False) -> Scan:
+def _scan(root: Path, fmt: str = "auto", as_is: bool = False, report: Report = _quiet) -> Scan:
     if not root.is_dir():
         raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {root}")
     detection_layout = (root / "images").is_dir() or (root / "labels").is_dir() or list(root.glob("*.yaml"))
     looks_like_classes = not detection_layout and not _coco_files(root) and _imagefolder_splits(root)
     if fmt == "imagefolder" or (fmt == "auto" and looks_like_classes):
-        return scan_imagefolder(root)
+        return scan_imagefolder(root, report)
     if fmt == "coco" or (fmt == "auto" and not list(root.glob("*.yaml")) and _coco_files(root)):
-        result = scan_coco(root)
+        result = scan_coco(root, report)
         if result.entries or fmt == "coco":
             return result
-    return scan_yolo(root, as_is=as_is)
+    return scan_yolo(root, as_is=as_is, report=report)
 
 
 # ---- reading images and uploading ------------------------------------------------
@@ -470,24 +564,60 @@ def _batches(described: Iterator[dict[str, Any] | None]) -> Iterator[tuple[list[
         yield batch, skipped
 
 
+class Progress:
+    """Tells the Hub how far finding images and reading labels got (every few seconds), and the log now and then.
+
+    Reading and sending the images needs none of this: the Hub counts what it is sent."""
+
+    WORDS = {"find": "이미지 찾는 중: {done:,}장", "labels": "라벨 읽는 중: {done:,} / {total:,}"}
+
+    def __init__(self, client: httpx.Client, url: str) -> None:
+        self.client, self.url = client, url
+        self.step, self.sent, self.logged = "", 0.0, time.monotonic()
+
+    def __call__(self, step: str, done: int, total: int) -> None:
+        now = time.monotonic()
+        if step == self.step and now - self.sent < PROGRESS_EVERY_S:
+            return
+        self.step, self.sent = step, now
+        try:
+            self.client.post(self.url, json={"step": step, "done": done, "total": total}, timeout=15)
+        except httpx.HTTPError:
+            pass  # a Hub older than this, or a moment's trouble: the import goes on
+        if now - self.logged >= LOG_EVERY_S:
+            self.logged = now
+            print(self.WORDS.get(step, step).format(done=done, total=total), flush=True)
+
+
 def run(params: dict[str, Any]) -> dict[str, Any]:
     """Job entry point (``data.import``)."""
     hub, token, job_id = (os.environ.get(k) for k in ("BADAMOA_HUB_URL", "BADAMOA_NODE_TOKEN", "BADAMOA_JOB_ID"))
     if not (hub and token and job_id):
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     root = Path(params["path"]).expanduser()
-    print(f"폴더 확인: {root}")
-    found = scan(root, params.get("format") or "auto", params.get("unlabelled") or "auto", params.get("task") or "")
-    total = len(found.entries)
-    print(f"형식 {found.format} · 클래스 {len(found.classes)}개 · 이미지 {total:,}장")
-    waiting = sum(1 for e in found.entries if e.state == "unlabelled")
-    if waiting:
-        print(f"라벨 파일이 없는 이미지 {waiting:,}장은 '아직 라벨 안 함'으로 등록합니다.")
-    if total == 0:
-        raise RuntimeError("이미지를 찾지 못했습니다. 경로와 형식을 확인하세요.")
-
+    print(f"폴더 확인: {root}", flush=True)
     base = f"/api/agent/jobs/{job_id}/import"
     with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
+        report = Progress(client, base + "/progress")
+        began = time.monotonic()
+        found = scan(
+            root,
+            params.get("format") or "auto",
+            params.get("unlabelled") or "auto",
+            params.get("task") or "",
+            report=report,
+        )
+        total = len(found.entries)
+        print(
+            f"형식 {found.format} · 클래스 {len(found.classes)}개 · 이미지 {total:,}장"
+            f" (찾고 라벨 읽는 데 {time.monotonic() - began:,.0f}초)",
+            flush=True,
+        )
+        waiting = sum(1 for e in found.entries if e.state == "unlabelled")
+        if waiting:
+            print(f"라벨 파일이 없는 이미지 {waiting:,}장은 '아직 라벨 안 함'으로 등록합니다.")
+        if total == 0:
+            raise RuntimeError("이미지를 찾지 못했습니다. 경로와 형식을 확인하세요.")
 
         def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
             resp = client.post(base + path, json=body)

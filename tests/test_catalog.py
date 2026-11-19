@@ -50,6 +50,38 @@ def test_scan_coco_converts_pixel_boxes_and_category_ids(tmp_path):
     assert box[0] in (0, 1, 2) and all(0 <= v <= 1 for v in box[1:])
 
 
+def test_scan_reports_how_far_it_got(tmp_path):
+    """Finding images and reading labels tell how far they got: the first two of an import's three steps."""
+    heard: list[tuple[str, int, int]] = []
+
+    def report(step, done, total):
+        heard.append((step, done, total))
+
+    found = importer.scan(make_yolo(tmp_path / "yolo"), report=report)
+    assert len(found.entries) == 8 and [e.split for e in found.entries].count("train") == 6
+    assert ("find", 8, 0) in heard and heard[-1] == ("labels", 8, 8)
+    assert heard.index(("find", 8, 0)) < heard.index(("labels", 8, 8))  # labels are read after every image is found
+
+    heard.clear()
+    assert len(importer.scan(make_coco(tmp_path / "coco"), report=report).entries) == 4
+    assert heard[-1][0] == "labels" and heard[-1][1] == heard[-1][2]
+
+    heard.clear()
+    assert len(importer.scan(make_imagefolder(tmp_path / "cls"), report=report).entries) > 0
+    assert heard and {step for step, _, _ in heard} == {"find"}
+
+
+def test_scan_follows_a_linked_folder_once(tmp_path):
+    """A linked folder is read; one that points back up does not make the walk go round for ever."""
+    root = make_yolo(tmp_path / "ds")
+    try:
+        os.symlink(root / "images" / "train", root / "images" / "train" / "loop", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("links cannot be made here")
+    found = importer.scan(root)
+    assert len(found.entries) == 8
+
+
 # ---- end to end -------------------------------------------------------------------
 
 
@@ -136,6 +168,58 @@ def test_stopping_an_import(hub, tmp_path, settings):
     assert hub.get(f"/api/projects/{project['id']}/datasets").json() == []
     again = _import(hub, project["id"], root, "v1")
     assert hub.get(f"/api/releases/{again}").json()["stats"]["items"] == 8
+
+
+def test_import_progress_through_its_steps(hub, tmp_path, settings):
+    """Every screen sees the step an import is on: finding images, reading labels, then reading and sending
+    the images (with the bytes read so far), and when that step began."""
+    from badamoa.hub.db import Database, utcnow
+    from badamoa.hub.models import Job
+
+    project = hub.post("/api/projects", json={"name": "진행률", "task": "detect"}).json()
+    join = hub.post("/api/nodes/join-tokens", json={}).json()
+    (tmp_path / "idle").mkdir()
+    node = node_agent.join(str(hub.base_url).rstrip("/"), join["token"], tmp_path / "idle", name="busy-node")
+    body = {"node_id": node.node_id, "path": "/mnt/big", "dataset": "street", "version": "v1"}
+    job_id = hub.post(f"/api/projects/{project['id']}/imports", json=body).json()["id"]
+    database = Database(settings.database_url)
+    with database.session() as db:  # as if the node had claimed it
+        job = db.get(Job, job_id)
+        job.status, job.node_id = "running", node.node_id
+    database.engine.dispose()
+
+    def mine():
+        return next(i for i in hub.get("/api/imports").json() if i["job_id"] == job_id)
+
+    assert (mine()["step"], mine()["done"], mine()["total"]) == ("find", 0, 0)  # a node too old to tell
+    agent = httpx.Client(
+        base_url=str(hub.base_url).rstrip("/") + f"/api/agent/jobs/{job_id}/import",
+        headers={"Authorization": f"Bearer {node.node_token}"},
+    )
+    with agent:
+        assert agent.post("/progress", json={"step": "find", "done": 120_000, "total": 0}).status_code == 200
+        found = mine()
+        assert (found["step"], found["done"], found["total"]) == ("find", 120_000, 0) and found["step_started_at"]
+        agent.post("/progress", json={"step": "labels", "done": 300_000, "total": 600_000})
+        labels = mine()
+        assert (labels["step"], labels["done"], labels["total"]) == ("labels", 300_000, 600_000)
+        agent.post("/progress", json={"step": "labels", "done": 450_000, "total": 600_000})
+        assert mine()["step_started_at"] == labels["step_started_at"]  # the same step keeps its start
+
+        # The version exists: the third step counts what it is sent, bytes too.
+        assert agent.post("/begin", json={"classes": CLASSES, "total": 2, "format": "yolo"}).status_code == 200
+        item = {"file_name": "a.jpg", "rel_path": "a.jpg", "width": 4, "height": 4, "bytes": 5_000, "state": "background"}
+        sent = agent.post("/items", json={"items": [{**item, "sha256": "a" * 64}, {**item, "sha256": "b" * 64}]})
+        assert sent.status_code == 200, sent.text
+        reading = mine()
+        assert (reading["step"], reading["done"], reading["total"], reading["bytes"]) == ("read", 2, 2, 10_000)
+        assert reading["step_started_at"] and reading["release_id"]
+        assert agent.post("/finish", json={}).status_code == 200
+    with database.session() as db:
+        job = db.get(Job, job_id)
+        job.status, job.finished_at = "succeeded", utcnow()
+    database.engine.dispose()
+    assert mine()["status"] == "done" and mine()["step"] == ""
 
 
 def test_import_browse_and_compare_releases(hub, tmp_path, settings):

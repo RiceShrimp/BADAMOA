@@ -1312,3 +1312,24 @@ tr.clickable:hover td {
 .import-progress.canceled .bar i {
   background: var(--muted);
 }
+/* finding images: no end known yet, so a piece of bar slides along */
+.import-progress.searching .bar i {
+  width: 30%;
+  animation: import-search 1.6s ease-in-out infinite;
+  transition: none;
+}
+@keyframes import-search {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .import-progress.searching .bar i {
+    animation: none;
+    width: 100%;
+    opacity: 0.35;
+  }
+}

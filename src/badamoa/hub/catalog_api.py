@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from badamoa.core.protocol import ImportBegin, ImportChunk
+from badamoa.core.protocol import ImportBegin, ImportChunk, ImportProgress
 
 from . import catalog, checks, drafts, originals, overview, purge, qa, review, services
 from . import trash as trash_box
@@ -223,6 +223,15 @@ def start_import(
     )
     db.commit()
     return services.job_view(db, hub.settings, job)
+
+
+@agent_router.post("/progress")
+def import_progress(
+    job_id: str, body: ImportProgress, node: Node = Depends(current_node), db: Session = Depends(db_session)
+) -> dict[str, bool]:
+    catalog.import_progress(db, node, job_id, body)
+    db.commit()
+    return {"ok": True}
 
 
 @agent_router.post("/begin")

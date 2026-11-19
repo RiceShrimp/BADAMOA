@@ -11,9 +11,15 @@ export interface ImportInfo {
   version: string;
   release_id: string | null;
   node: string;
+  /** Of the step it is on: images found (find, no total), label files read (labels), images sent (read). */
   done: number;
   total: number;
   skipped: number;
+  /** "" while waiting or once ended. */
+  step: "" | "find" | "labels" | "read";
+  step_started_at: string | null;
+  /** Of the images read and sent so far. */
+  bytes: number;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -68,13 +74,50 @@ export function announceImport() {
   window.dispatchEvent(new Event("badamoa:import-started"));
 }
 
+/** Seconds the step it is on has run. */
+function elapsed(info: ImportInfo): number {
+  const since = info.step_started_at ?? info.started_at;
+  return since ? Math.max(1, (Date.now() - new Date(since).getTime()) / 1000) : 0;
+}
+
+/** Time left in this step, from its pace so far. */
 function left(info: ImportInfo): string {
-  if (!info.started_at || info.done <= 0 || info.total <= info.done) return "";
-  const elapsed = (Date.now() - new Date(info.started_at).getTime()) / 1000;
-  const seconds = ((info.total - info.done) * elapsed) / info.done;
-  if (seconds < 60) return "1분 안에";
-  if (seconds < 3600) return `약 ${Math.round(seconds / 60)}분 남음`;
-  return `약 ${(seconds / 3600).toFixed(1)}시간 남음`;
+  const seconds = elapsed(info);
+  if (!seconds || info.done <= 0 || info.total <= info.done || seconds < 10) return "";
+  const rest = ((info.total - info.done) * seconds) / info.done;
+  if (rest < 60) return "1분 안에";
+  if (rest < 3600) return `약 ${Math.round(rest / 60)}분 남음`;
+  return `약 ${(rest / 3600).toFixed(1)}시간 남음`;
+}
+
+function size(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(gb >= 100 ? 0 : 1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+const STEPS = { find: "이미지 찾는 중", labels: "라벨 읽는 중", read: "이미지 읽고 등록" } as const;
+
+/** What a running import is doing, e.g. 이미지 읽고 등록 (3/3) · 12,000 / 600,000장 · 2% · 15 GB · 110 MB/s · 약 1.4시간 남음. */
+function runningWords(info: ImportInfo, pct: number, compact: boolean): string {
+  const step = info.step || (info.total > 0 ? "read" : "find");
+  const head = `${STEPS[step]} (${["find", "labels", "read"].indexOf(step) + 1}/3)`;
+  if (step === "find") return `${head}${info.done > 0 ? ` · ${info.done.toLocaleString()}장 찾음` : ""}`;
+  const parts = [head, `${info.done.toLocaleString()} / ${info.total.toLocaleString()}${step === "read" ? "장" : ""}`];
+  parts.push(`${Math.floor(pct)}%`);
+  if (step === "read" && info.bytes > 0) {
+    parts.push(`${size(info.bytes)} 읽음`);
+    if (!compact && elapsed(info) >= 10) parts.push(`${Math.round(info.bytes / 1024 ** 2 / elapsed(info))} MB/s`);
+  }
+  if (left(info)) parts.push(left(info));
+  return parts.join(" · ");
+}
+
+/** The tray's short word for the first running import: its step and %. */
+function shortWords(info: ImportInfo): string {
+  if (info.status === "queued") return "대기";
+  if (info.step === "find" || (!info.step && !info.total)) return "찾는 중";
+  const pct = info.total ? Math.floor((info.done / info.total) * 100) : 0;
+  return info.step === "labels" ? `라벨 ${pct}%` : `${pct}%`;
 }
 
 /** One import's bar and words: n / total, speed-based time left, or how it ended. */
@@ -89,13 +132,13 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
           ? "중지함 · 남긴 것 없음"
           : info.status === "done"
             ? `완료 · ${info.total.toLocaleString()}장${info.skipped ? ` (읽지 못한 파일 ${info.skipped}개 건너뜀)` : ""}`
-            : info.total > 0
-              ? `${info.done.toLocaleString()} / ${info.total.toLocaleString()}장 · ${Math.floor(pct)}%${left(info) ? ` · ${left(info)}` : ""}`
-              : "폴더를 읽는 중";
+            : runningWords(info, pct, compact);
+  // Finding images has no end known yet: the bar moves without a %.
+  const searching = info.status === "running" && (info.step === "find" || (!info.step && !info.total));
   return (
-    <div className={`import-progress ${info.status}${compact ? " compact" : ""}`}>
+    <div className={`import-progress ${info.status}${compact ? " compact" : ""}${searching ? " searching" : ""}`}>
       <div className="bar">
-        <i style={{ width: `${info.status === "done" ? 100 : pct}%` }} />
+        <i style={{ width: searching ? undefined : `${info.status === "done" ? 100 : pct}%` }} />
       </div>
       <div className="import-progress-line">
         <span className="small">{words}</span>
@@ -162,7 +205,7 @@ export function ImportTray() {
   };
   const first = running[0];
   const label = running.length
-    ? `등록 중 ${running.length}${first && first.total ? ` · ${Math.floor((first.done / first.total) * 100)}%` : ""}`
+    ? `등록 중 ${running.length}${first ? ` · ${shortWords(first)}` : ""}`
     : failed.length
       ? `등록 실패 ${failed.length}`
       : shown.some((i) => i.status === "done")

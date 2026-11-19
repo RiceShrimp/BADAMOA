@@ -20,7 +20,7 @@ from sqlalchemy import and_, func, insert, select
 from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
-from badamoa.core.protocol import ImportBegin, ImportChunk
+from badamoa.core.protocol import ImportBegin, ImportChunk, ImportProgress
 from badamoa.core.storage import Storage
 
 from . import (  # these import this module too: each uses the other only when called
@@ -565,6 +565,19 @@ def _space_for(db: Session, project_id: str, classes: list[dict[str, Any]], want
     return space
 
 
+IMPORT_STEPS = ("find", "labels", "read")  # finding images, reading their labels, reading and sending the images
+
+
+def import_progress(db: Session, node: Node, job_id: str, body: ImportProgress) -> None:
+    """How far finding images and reading labels got, kept on the job until the version exists (``begin``)."""
+    job = _import_job(db, node, job_id)
+    before = (job.result or {}).get("progress") or {}
+    since = before.get("since") if before.get("step") == body.step else iso(utcnow())
+    job.result = {
+        "progress": {"step": body.step, "done": max(0, body.done), "total": max(0, body.total), "since": since}
+    }
+
+
 def import_begin(db: Session, node: Node, job_id: str, body: ImportBegin) -> dict[str, Any]:
     job = _import_job(db, node, job_id)
     release = db.scalar(select(Release).where(Release.job_id == job.id))
@@ -766,6 +779,7 @@ def import_items(db: Session, node: Node, job_id: str, chunk: ImportChunk, stora
     done = int(progress.get("done") or 0) + len(chunk.items)
     progress["done"] = min(done, total) if total else done
     progress["skipped"] = int(progress.get("skipped") or 0) + chunk.skipped
+    progress["bytes"] = int(progress.get("bytes") or 0) + sum(i.bytes for i in chunk.items)
     release.stats = {**stats, "import": progress}
     return {"accepted": len(incoming)}
 
@@ -800,6 +814,15 @@ def imports(db: Session) -> list[dict[str, Any]]:
         status = {"succeeded": "done"}.get(job.status, job.status)  # queued | running | done | failed | canceled
         total = int(progress.get("total") or stats.get("items") or 0)
         done = total if status == "done" else int(progress.get("done") or 0)
+        # The step it is on: the first two (finding images, reading labels) come before the version exists.
+        step, since = "", None
+        if status == "running" and release is not None:
+            step, since = "read", iso(release.created_at)
+        elif status == "running":
+            early = (job.result or {}).get("progress") or {}
+            step = early.get("step") if early.get("step") in IMPORT_STEPS else "find"
+            since = early.get("since") or iso(job.started_at)
+            done, total = int(early.get("done") or 0), int(early.get("total") or 0)
         out.append(
             {
                 "job_id": job.id,
@@ -812,6 +835,9 @@ def imports(db: Session) -> list[dict[str, Any]]:
                 "done": done,
                 "total": total,
                 "skipped": int(progress.get("skipped") or (job.result or {}).get("skipped") or 0),
+                "step": step,  # "" (waiting or ended) | find | labels | read
+                "step_started_at": since,
+                "bytes": int(progress.get("bytes") or 0),  # of the images read and sent so far
                 "created_at": iso(job.created_at),
                 "started_at": iso(job.started_at),
                 "finished_at": iso(job.finished_at),

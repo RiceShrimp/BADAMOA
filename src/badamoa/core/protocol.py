@@ -117,6 +117,15 @@ class ImportChunk(BaseModel):
     skipped: int = 0  # files in this stretch that were not readable images
 
 
+class ImportProgress(BaseModel):
+    """How far an import got before its version exists: "find" (images found so far) or "labels" (label files
+    read of ``total``). Reading and sending the images (the third step) the Hub counts from what it is sent."""
+
+    step: str = Field(max_length=20)
+    done: int = 0
+    total: int = 0
+
+
 class TrainReport(BaseModel):
     """Progress of a training job: ``stage`` (what it is doing now), ``export`` (dataset written),
     ``info`` (library versions, device), ``epoch`` (metrics)."""
