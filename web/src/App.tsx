@@ -159,10 +159,6 @@ function Shell({
   onLogout: () => void;
 }) {
   const [theme, toggleTheme] = useTheme();
-  const [unseen, setUnseen] = useState(() => hasUnseenRelease(version));
-  useEffect(() => {
-    if (page === "releases") setUnseen(false);
-  }, [page]);
   const { data: nodes } = usePolling(() => api<NodeInfo[]>("/nodes"), 10000);
   const { data: binned, refresh: recount } = usePolling(() => api<{ total: number }>("/trash/count"), 30000);
   useEffect(() => {
@@ -177,7 +173,14 @@ function Shell({
     document.addEventListener("visibilitychange", back);
     return () => document.removeEventListener("visibilitychange", back);
   }, [recheck]);
-  const updated = running && version && running.version !== version ? running.version : null;
+  // The version this page was loaded with; when that first question went unanswered (the Hub was restarting
+  // just then), the one the Hub gives on its next check, instead of a bare "v".
+  const loaded = version || running?.version || "";
+  const [unseen, setUnseen] = useState(() => hasUnseenRelease(loaded));
+  useEffect(() => {
+    if (loaded) setUnseen(page !== "releases" && hasUnseenRelease(loaded));
+  }, [loaded, page]);
+  const updated = running && loaded && running.version !== loaded ? running.version : null;
   const current =
     page === "releases"
       ? { group: undefined, label: "릴리즈" }
@@ -265,10 +268,11 @@ function Shell({
             <a
               className={`pill plain ${unseen ? "new" : ""}`}
               href="#/releases"
-              aria-label={`릴리즈 (v${version})`}
+              aria-label={`릴리즈 (v${loaded})`}
               title={unseen ? "새 버전입니다 — 무엇이 바뀌었는지 보기" : "릴리즈"}
             >
-              {unseen && <i />}v{version}
+              {unseen && <i />}
+              {loaded ? `v${loaded}` : "릴리즈"}
             </a>
             <button
               className="icon-btn"
@@ -300,7 +304,7 @@ function Shell({
           {page === "agents" && <Agents />}
           {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}
           {page === "trash" && <TrashPage isAdmin={isAdmin} />}
-          {page === "releases" && <ReleasesPage version={version} selected={sub} />}
+          {page === "releases" && <ReleasesPage version={loaded} selected={sub} />}
           {page === "guides" && <GuidesPage name={sub} />}
         </main>
       </div>

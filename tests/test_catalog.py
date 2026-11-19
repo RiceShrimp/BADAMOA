@@ -575,6 +575,20 @@ def test_cards_and_release_tabs(hub, tmp_path):
     assert charts["boxes"]["sampled_items"] == 6  # the labelled ones that have boxes
     assert hub.get(f"/api/releases/{v1}/models").json() == []
 
+    # ---- kept once computed: a version never changes; a work in progress is computed again when a label is fixed
+    assert hub.get(f"/api/releases/{v1}/charts").json() == charts
+    background = next(i for i in hub.get(f"/api/releases/{v1}/items").json()["items"] if i["state"] == "background")
+    body = {"boxes": [[0, 0.5, 0.5, 0.2, 0.2], [1, 0.3, 0.3, 0.1, 0.1]], "parent_revision_id": None, "force": False}
+    saved = hub.put(f"/api/releases/{v1}/items/{background['id']}/labels", json=body)
+    assert saved.status_code == 200, saved.text
+    draft = saved.json()["release_id"]
+    before = hub.get(f"/api/releases/{draft}/charts").json()
+    assert before["boxes"]["boxes"] == boxes + 2
+    body["boxes"] = [[0, 0.5, 0.5, 0.2, 0.2]]
+    assert hub.put(f"/api/releases/{draft}/items/{background['id']}/labels", json=body).status_code == 200
+    assert hub.get(f"/api/releases/{draft}/charts").json()["boxes"]["boxes"] == boxes + 1
+    assert hub.get(f"/api/releases/{v1}/charts").json() == charts  # the version itself is as it was
+
     # ---- a class's colour, kept with the label space
     assert hub.put(f"/api/releases/{v1}/classes/1", json={"color": "#FF0000"}).json() == {"id": 1, "color": "#ff0000"}
     assert next(c for c in hub.get(f"/api/releases/{v1}/charts").json()["classes"] if c["id"] == 1)["color"] == "#ff0000"

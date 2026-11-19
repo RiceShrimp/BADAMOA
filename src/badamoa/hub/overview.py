@@ -378,10 +378,49 @@ def _histogram(values: list[int], bins: int = 12) -> dict[str, Any]:
     return {"edges": [low + i * width for i in range(bins + 1)], "counts": counts}
 
 
+def _charts_key(db: Session, release: Release) -> str:
+    """What a version's kept statistics were computed for: a version never changes once made; a work in
+    progress does as labels are fixed (each fix is a new label record, so the newest record tells)."""
+    if release.status == "ready":
+        return "ready"
+    count, newest = db.execute(
+        select(func.count(), func.max(ReleaseItem.revision_id)).where(ReleaseItem.release_id == release.id)
+    ).one()
+    return f"{release.status}:{count}:{newest}"
+
+
 def release_charts(db: Session, release_id: str) -> dict[str, Any]:
+    """The statistics tab. Image sizes and the spread of boxes read the whole version (684,049 images took
+    7 s), so they are kept with it once computed (``Release.charts``); the counts come from its stats."""
     release = catalog.get_release(db, release_id)
     stats = release.stats or {}
     classes = _class_names(db, release)
+    key = _charts_key(db, release)
+    kept = release.charts or {}
+    if kept.get("key") != key or "sizes" not in kept or "boxes" not in kept:
+        kept = {"key": key, **_measure(db, release)}
+        release.charts = kept
+        db.commit()
+    return {
+        "splits": {name: s.get("items", 0) for name, s in (stats.get("splits") or {}).items()},
+        "states": stats.get("states", {}),
+        "classes": [
+            {
+                "id": cid,
+                "name": c.get("name"),
+                "color": c.get("color"),
+                "boxes": stats.get("classes", {}).get(str(cid), {}).get("boxes", 0),
+                "images": stats.get("classes", {}).get(str(cid), {}).get("items", 0),
+            }
+            for cid, c in sorted(classes.items())
+        ],
+        "sizes": kept["sizes"],
+        "boxes": kept["boxes"],
+    }
+
+
+def _measure(db: Session, release: Release) -> dict[str, Any]:
+    """Image sizes (every image, grouped in SQL) and where boxes sit and how big they are (a sample)."""
     # image sizes: every item, grouped by size in SQL
     sizes = db.execute(
         select(Item.width, Item.height, func.count())
@@ -396,21 +435,20 @@ def release_charts(db: Session, release_id: str) -> dict[str, Any]:
     grid = [[0] * GRID for _ in range(GRID)]
     for w, h, n in sizes:
         grid[min(GRID - 1, int(h / top * GRID))][min(GRID - 1, int(w / top * GRID))] += n
-    # boxes: from a sample of the labelled items
-    total = stats.get("items") or 0
+    # boxes: from a sample of the labelled items, every step-th image number, picked in SQL: only the sample's
+    # labels are read (before, every label of the version was read and all but the sample thrown away)
+    total = (release.stats or {}).get("items") or 0
     step = max(1, total // CHART_SAMPLE)
     revisions = db.execute(
         select(LabelRevision.boxes)
         .join(ReleaseItem, ReleaseItem.revision_id == LabelRevision.id)
-        .where(ReleaseItem.release_id == release.id, ReleaseItem.box_count > 0)
-        .order_by(ReleaseItem.item_id)
+        .where(ReleaseItem.release_id == release.id, ReleaseItem.box_count > 0, ReleaseItem.item_id % step == 0)
+        .limit(CHART_SAMPLE)
     )
     centres = [[0] * GRID for _ in range(GRID)]
     shapes = [[0] * GRID for _ in range(GRID)]
     sampled = boxes = 0
-    for n, (rows,) in enumerate(revisions):
-        if n % step:
-            continue
+    for (rows,) in revisions:
         sampled += 1
         for b in rows or []:
             if len(b) < 5:
@@ -419,21 +457,7 @@ def release_charts(db: Session, release_id: str) -> dict[str, Any]:
             centres[min(GRID - 1, max(0, int(cy * GRID)))][min(GRID - 1, max(0, int(cx * GRID)))] += 1
             shapes[min(GRID - 1, max(0, int(bh * GRID)))][min(GRID - 1, max(0, int(bw * GRID)))] += 1
             boxes += 1
-        if sampled >= CHART_SAMPLE:
-            break
     return {
-        "splits": {name: s.get("items", 0) for name, s in (stats.get("splits") or {}).items()},
-        "states": stats.get("states", {}),
-        "classes": [
-            {
-                "id": cid,
-                "name": c.get("name"),
-                "color": c.get("color"),
-                "boxes": stats.get("classes", {}).get(str(cid), {}).get("boxes", 0),
-                "images": stats.get("classes", {}).get(str(cid), {}).get("items", 0),
-            }
-            for cid, c in sorted(classes.items())
-        ],
         "sizes": {
             "images": images,
             "mean_width": round(sum(w * n for w, _, n in sizes) / images, 1) if images else None,

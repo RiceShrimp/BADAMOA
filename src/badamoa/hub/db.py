@@ -32,6 +32,7 @@ _ADDED_COLUMNS = [
     ("label_revisions", "parent_id", "INTEGER"),
     ("label_revisions", "created_by", "VARCHAR(32)"),
     ("releases", "digest", "VARCHAR(64) DEFAULT ''"),
+    ("releases", "charts", "JSON DEFAULT '{}'"),
     ("node_releases", "state", "VARCHAR(12) DEFAULT ''"),
     ("node_releases", "job_id", "VARCHAR(32)"),
     ("node_releases", "present_items", "INTEGER"),

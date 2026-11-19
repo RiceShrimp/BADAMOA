@@ -169,6 +169,9 @@ class Release(Base):
     stats: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     # A fingerprint of the content, like a commit hash (``catalog.release_digest``); "" until it is ready
     digest: Mapped[str] = mapped_column(String(64), default="")
+    # The statistics tab's image sizes and box spread, kept once computed (``overview.release_charts``):
+    # {"key": what they were computed for, "sizes": …, "boxes": …}
+    charts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     # 검수 when a work in progress became this version: problems before and after, what was fixed or let be
     review: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
