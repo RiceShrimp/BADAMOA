@@ -112,6 +112,23 @@ def main() -> None:
         print(f"내보낸 파일: {exported.name} ({exported.stat().st_size / 1024**2:.1f} MB)")
         bm.log_artifact(exported)
         bm.finish(file=exported.name, bytes=exported.stat().st_size)
+    elif action == "autolabel":  # a labeling set's images, named by their hash: the top class of each
+        from PIL import Image
+
+        paths = sorted(p for p in run.source.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+        print(f"오토라벨: {len(paths):,}장의 클래스를 고릅니다", flush=True)
+        predicted = []
+        for n, path in enumerate(paths, 1):
+            with Image.open(path) as opened:
+                batch = plain(opened.convert("RGB")).unsqueeze(0).to(device)
+            with torch.no_grad():
+                probabilities = model(batch).softmax(1)[0].cpu()
+            score, guess = probabilities.max(0)
+            predicted.append({"image": path.stem, "labels": [[int(guess)]], "scores": [round(float(score), 4)]})
+            if n % 200 == 0 or n == len(paths):
+                print(f"{n:,}/{len(paths):,}장", flush=True)
+        bm.log_predictions(predicted)
+        bm.finish(images=len(predicted), labels=len(predicted))
     else:
         from PIL import Image
 

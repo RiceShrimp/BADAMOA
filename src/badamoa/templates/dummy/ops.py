@@ -34,6 +34,15 @@ if action == "eval":
         ]
     )
     bm.finish({"map50_95": 0.4, "map50": 0.6, "images": images}, classes=per_class)
+elif action == "autolabel":
+    # one image in three each: a sure box, an unsure one, nothing (so the confidences can be tried)
+    predicted = []
+    for n, image in enumerate(sorted(run.source.iterdir())):
+        labels, scores = ([[0, 0.5, 0.5, 0.2, 0.2]], [[0.95], [0.5]][n % 3]) if n % 3 < 2 else ([], [])
+        predicted.append({"image": image.stem, "labels": labels, "scores": scores})
+    print(f"오토라벨: {len(predicted)}장")
+    bm.log_predictions(predicted)
+    bm.finish(images=len(predicted), labels=sum(len(p["labels"]) for p in predicted))
 elif action == "export":
     exported = run.out / f"model.{run.config.get('format', 'onnx')}"
     exported.write_bytes(b"exported:" + run.weights.read_bytes())

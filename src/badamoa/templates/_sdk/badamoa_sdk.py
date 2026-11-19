@@ -331,7 +331,10 @@ def log_artifact(path: str | Path, name: str | None = None) -> None:
 
 def log_predictions(images: list[dict[str, Any]]) -> None:
     """평가한 이미지마다 모델의 예측을 기록합니다. 데이터셋 화면의 "라벨 의심 순"(틀린 라벨을 찾기)과
-    이미지 보기의 예측 겹쳐 보기 · "라벨로 넣기"에 쓰입니다 (평가 진입점에서만).
+    이미지 보기의 예측 겹쳐 보기 · "라벨로 넣기"에 쓰입니다 (평가 진입점에서).
+
+    오토라벨(``run.cfg["action"] == "autolabel"``, predict 진입점)에서도 같은 형식으로 남깁니다: run.source의
+    파일 이름(확장자 뺀 것)이 이미지의 sha256이고, found · missed · extra는 빼도 됩니다.
 
     images: 이미지마다 {"image": 평가용으로 내보낸 파일 이름에서 확장자를 뺀 것(이미지의 sha256),
     "labels": [[클래스 번호, cx, cy, w, h, …]] (학습 클래스 순서의 번호, 0~1 비율. 분할은 뒤에 윤곽 x, y …,

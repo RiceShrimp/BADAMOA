@@ -210,7 +210,14 @@ def set_summary(db: Session, found: LabelSet, user: User, counts: dict[int, Coun
         "mine": sum(1 for p in parts if user.id in (p.assignee, p.reviewer)),
         "created_by": _names(db, {found.created_by or ""}).get(found.created_by or ""),
         "created_at": iso(found.created_at),
+        "autolabel": _autolabel_status(db, found),
     }
+
+
+def _autolabel_status(db: Session, found: LabelSet) -> dict[str, Any] | None:
+    from . import autolabel
+
+    return autolabel.status(db, found)
 
 
 def list_sets(db: Session, user: User, project_id: str = "") -> list[dict[str, Any]]:

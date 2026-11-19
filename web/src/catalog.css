@@ -1518,3 +1518,43 @@ select.active-select {
 .label-eye {
   flex: none;
 }
+
+/* ---- 오토라벨 ---- */
+.autolabel-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.autolabel-line svg {
+  flex: none;
+  margin-top: 3px;
+}
+.autolabel-line.bad {
+  border-color: var(--bad);
+}
+.autolabel-models {
+  display: grid;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 8px 0 12px;
+}
+.autolabel-model {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-weight: 400;
+}
+.autolabel-model.off {
+  opacity: 0.5;
+}
+.autolabel-model .tag {
+  margin-left: 4px;
+}
+.autolabel-start {
+  margin: 6px 0;
+}

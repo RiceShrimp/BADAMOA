@@ -123,6 +123,37 @@ export interface LabelSetSummary {
   mine: number; // parts given to the viewer (to label or review)
   created_by: string | null;
   created_at: string;
+  autolabel: AutolabelStatus | null; // the last 오토라벨 over the set's images
+}
+
+/** A labeling set's 오토라벨: a registered model drew labels first; people start from them. */
+export interface AutolabelStatus {
+  model: { id: string; name: string; version: number } | null;
+  keep: number; // predictions below were dropped
+  accept: number | null; // images whose predictions all reached it were saved and sent on
+  items: number; // images it was asked for
+  started_at: string;
+  finished_at: string | null;
+  result: { images: number; labels: number; accepted: number; empty: number; skipped: number } | null;
+  job_id: string | null;
+  status: string; // the job's: queued · running · succeeded · failed · canceled
+  error: string | null;
+}
+
+/** A model offered for 오토라벨, with why it cannot when it cannot. */
+export interface AutolabelModel {
+  id: string;
+  name: string;
+  version: number;
+  aliases: string[];
+  task: string;
+  metric: string;
+  value: number | null;
+  classes: number;
+  matched: number; // of its classes, those the dataset has (by name)
+  missing: string[];
+  problem: string;
+  created_at: string;
 }
 
 export interface LabelSetPart {

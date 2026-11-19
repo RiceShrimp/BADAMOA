@@ -26,6 +26,8 @@ from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, Template
 
 ACTIONS = {"eval": "평가", "export": "내보내기", "predict": "테스트"}
+# 오토라벨 runs the template's predict code in autolabel mode (see ``autolabel``)
+ENTRY = {"autolabel": "predict"}
 EXPORT_FORMATS = ("onnx", "torchscript")
 MAX_TEST_IMAGES = 20
 MAX_RESULT_ITEMS = 200
@@ -73,8 +75,9 @@ def _start(
 ) -> ModelJob:
     row = _template_of(db, model)
     manifest = registry.manifest_of(row)
-    if kind not in manifest.entrypoints:
-        raise ServiceError(400, f"{row.title}에는 {ACTIONS[kind]} 코드가 없습니다.")
+    entry = ENTRY.get(kind, kind)
+    if entry not in manifest.entrypoints:
+        raise ServiceError(400, f"{row.title}에는 {ACTIONS[entry]} 코드가 없습니다.")
     if node is None:
         raise ServiceError(409, "이 모델을 학습한 서버가 연결되어 있지 않아 실행할 곳이 없습니다.")
     run = db.get(Run, model.run_id) if model.run_id else None
@@ -105,7 +108,7 @@ def _start(
                 "version": row.version,
                 "builtin": row.builtin,
                 "sha256": row.blob or "",
-                "entrypoint": manifest.entrypoints[kind],
+                "entrypoint": manifest.entrypoints[entry],
                 "data_format": manifest.data_format,
             },
             "environment": env,
@@ -277,6 +280,10 @@ def _running(db: Session, node: Node, job_id: str) -> tuple[ModelJob, ModelVersi
 
 def manifest(db: Session, node: Node, job_id: str, after: int = 0, limit: int = 2000) -> dict[str, Any]:
     op, _ = _running(db, node, job_id)
+    if op.kind == "autolabel":
+        from . import autolabel
+
+        return autolabel.manifest(db, node, op, after, limit)
     release = db.get(Release, op.release_id) if op.release_id else None
     if release is None:
         raise ServiceError(404, "이 작업은 버전을 쓰지 않습니다.")
@@ -311,7 +318,8 @@ def add_file(
     or ``predictions`` (bm.log_predictions: every evaluated image's predictions, stored per image)."""
     op, _ = _running(db, node, job_id)
     if media == "predictions":
-        matched = checks.ingest(db, op, storage.get_blob(blob)) if storage is not None and op.kind == "eval" else 0
+        kept = op.kind in ("eval", "autolabel")  # per image, by image: a test's few uploads are not
+        matched = checks.ingest(db, op, storage.get_blob(blob)) if storage is not None and kept else 0
         files = [f for f in (op.files or []) if f.get("kind") != "predictions"]
         entry = {"name": "predictions.json", "blob": blob, "bytes": size, "kind": "predictions", "images": matched}
         op.files = [*files, entry]
@@ -334,6 +342,10 @@ def finish(db: Session, node: Node, job_id: str, result: dict[str, Any]) -> dict
     predictions = result.get("predictions")
     if isinstance(predictions, list):
         result = {**result, "predictions": predictions[:MAX_RESULT_ITEMS]}
+    if op.kind == "autolabel":
+        from . import autolabel
+
+        result = {**result, "autolabel": autolabel.apply(db, op)}
     op.result = result
     return {"ok": True}
 

@@ -252,9 +252,14 @@ def save_labels(
     parent_id: int | None = None,
     force: bool = False,
     label_set: str = "",
+    source: str = "",
+    seen: list[int] | None = None,
     via: str = "ui",
 ) -> dict[str, Any]:
     """Save a person's labels of one image into the dataset's work in progress (made on the first fix).
+
+    ``source`` and ``seen`` are for labels a model drew (오토라벨): where they came from, and the classes it
+    looked for (a person looks for all of them).
 
     ``parent_id`` is the revision the person started from: if someone else saved this image in the
     meantime the save is refused (unless ``force``) so nobody overwrites a fix without seeing it.
@@ -285,12 +290,12 @@ def save_labels(
             item_id=item_id,
             rev=max((r.rev for r in history), default=0) + 1,
             label_space_id=space.id,
-            source=f"human:{user.username}",
+            source=source or f"human:{user.username}",
             state=state,
             box_count=len(labels),
             boxes=labels,
             # A person who saves an image has seen all of it: every class was looked for.
-            labelled_class_ids=[int(c["id"]) for c in space.classes],
+            labelled_class_ids=list(seen) if seen is not None else [int(c["id"]) for c in space.classes],
             digest=digest,
             parent_id=member.revision_id,
             created_by=user.id,

@@ -64,6 +64,7 @@ export interface LabelingMode {
   review: boolean;
   name: string;
   instructions: string;
+  autolabel?: boolean; // the set's 오토라벨 is done: an image not labelled yet starts from the model's labels
 }
 
 interface Saved {
@@ -127,6 +128,7 @@ export function ItemViewer({
   const [fill, setFill] = useState(false);
   const [onlyHere, setOnlyHere] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set()); // class names
+  const [prefilled, setPrefilled] = useState<{ item: number; n: number; model: string } | null>(null); // from 오토라벨
   const [hiddenBoxes, setHiddenBoxes] = useState<Set<string>>(new Set()); // single labels turned off: "revision:index"
   const [hoverBox, setHoverBox] = useState<number | null>(null); // the label pointed at in the list
   const [focusBox, setFocusBox] = useState<number | null>(null); // the label picked in the list: the others dim
@@ -209,6 +211,29 @@ export function ItemViewer({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // 오토라벨: an image nobody labelled yet starts from what the model drew (above the set's lowest confidence).
+  useEffect(() => {
+    if (!labeling?.autolabel || !editing || !item || prefilled?.item === item.id) return;
+    const start = item.revisions.find((r) => r.id === item.edit.revision_id);
+    if ((start && start.state !== "unlabelled") || boxes.length > 0) return;
+    let live = true;
+    api<{ model: { name: string; version: number } | null; labels: number[][] }>(
+      `/label-sets/${labeling.setId}/items/${item.id}/autolabel`,
+    )
+      .then((found) => {
+        if (!live || found.labels.length === 0) return;
+        setBoxes(found.labels as Box[]);
+        setPrefilled({ item: item.id, n: found.labels.length, model: found.model ? `${found.model.name} v${found.model.version}` : "모델" });
+      })
+      .catch(() => {
+        /* no predictions for this image: start empty */
+      });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labeling?.autolabel, labeling?.setId, editing, item?.id]);
 
   const select = (index: number | null, at: number | null = null) => {
     setSelected(index);
@@ -929,7 +954,9 @@ export function ItemViewer({
   /** A tag goes under its box; at the image's bottom edge, inside the box instead. */
   const tagTop = (bottom: number) => (bottom + font * 1.2 <= h ? bottom : bottom - font * 1.2);
   // What changed against the base version: the labels shown (or being fixed) next to the base's.
-  const baseRevision = item?.edit.base_revision_id != null ? item.revisions.find((r) => r.id === item.edit.base_revision_id) : undefined;
+  const baseFound = item?.edit.base_revision_id != null ? item.revisions.find((r) => r.id === item.edit.base_revision_id) : undefined;
+  // An image the base version had no labels for (labelling it from scratch): every label would read "추가".
+  const baseRevision = baseFound && baseFound.boxes.length > 0 ? baseFound : undefined;
   const afterLabels = editing ? boxes : revision && revision.id !== baseRevision?.id ? revision.boxes : null;
   const changes =
     baseRevision && afterLabels && (editing || revision?.label_space.id === baseRevision.label_space.id)
@@ -1326,6 +1353,20 @@ export function ItemViewer({
               </div>
             )}
             <div className="muted small edit-hint">{hint}</div>
+            {prefilled?.item === item.id && (
+              <div className="notice small autolabel-start">
+                {prefilled.model}이 그린 라벨 {prefilled.n}개에서 시작합니다. 틀린 것을 고치고 저장하세요.{" "}
+                <button
+                  className="link small"
+                  onClick={() => {
+                    setBoxes([]);
+                    setPrefilled({ ...prefilled, n: 0 });
+                  }}
+                >
+                  모두 지우고 처음부터
+                </button>
+              </div>
+            )}
             {drawing && kind === "outline" && sketch.length >= 3 && (
               <button className="small" onClick={closeSketch}>
                 윤곽 닫기 <kbd>Enter</kbd>
