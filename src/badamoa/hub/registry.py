@@ -347,12 +347,23 @@ def environment_view(db: Session, settings: HubSettings, env: Environment) -> di
 
 # ---- installing environments on servers ahead of the first training ----------------------
 
-TRAINS = "compute"  # the node role that trains (shown as 학습·오토라벨): environments go only there
+TRAINS = "compute"  # 학습용: training runs only there
+AUTOLABELS = "autolabel"  # 오토라벨용: a set's images are auto-labelled on the server holding them only with this role
 REMOVE_SINCE = (0, 47, 0)  # nodes from here on remove an installed environment (``env.remove``)
+NOT_FOR_MODELS = "학습용·오토라벨용 아님"
+
+
+def has_role(node: Node, role: str) -> bool:
+    return node.enabled and role in (node.roles or [])
 
 
 def trains(node: Node) -> bool:
-    return node.enabled and TRAINS in (node.roles or [])
+    return has_role(node, TRAINS)
+
+
+def runs_models(node: Node) -> bool:
+    """Templates' environments go to these servers: they train or auto-label."""
+    return trains(node) or has_role(node, AUTOLABELS)
 
 
 def has_docker(node: Node) -> bool:
@@ -395,8 +406,8 @@ def _same_env(found: dict[str, Any], spec: dict[str, Any]) -> bool:
 
 def _why_not(node: Node, spec: dict[str, Any]) -> str:
     """Why an environment cannot be installed on a server ("" when it can)."""
-    if not trains(node):
-        return "학습 역할 아님"
+    if not runs_models(node):
+        return NOT_FOR_MODELS
     if spec.get("kind") == "docker" and not has_docker(node):
         return "Docker 없음"
     return ""
@@ -422,7 +433,7 @@ def environment_status(db: Session, row: Template, manifest: TemplateManifest | 
             "id": n.id,
             "name": n.name,
             "status": "online" if n.last_seen_at and (now - n.last_seen_at).total_seconds() < 120 else "offline",
-            "trains": trains(n),
+            "trains": runs_models(n),
             "why": _why_not(n, spec),
             "state": "preparing" if n.id in preparing else "ready" if n.id in ready else "",
         }
@@ -444,8 +455,8 @@ def prepare_environment(
 ) -> list[Job]:
     """Install a template's environment on servers before anyone trains with it.
 
-    ``node_ids``: the servers to install on (none: every server that trains and can take it). A server
-    without the training role, or without Docker for an image, is turned away with the reason.
+    ``node_ids``: the servers to install on (none: every server that trains or auto-labels and can take it).
+    A server with neither role, or without Docker for an image, is turned away with the reason.
     """
     services.require_admin(user)
     row = get_template(db, template_id)
@@ -458,15 +469,16 @@ def prepare_environment(
         nodes = [services.get_node(db, n) for n in dict.fromkeys(node_ids)]
         for node in nodes:
             why = "작업을 받지 않도록 꺼 둠" if not node.enabled else _why_not(node, spec)
-            if why == "학습 역할 아님":
-                hint = "노드 설정에서 '학습·오토라벨'을 켜세요"
-                raise ServiceError(400, f"{node.name}은(는) 학습 역할이 아니라 학습 환경을 두지 않습니다. {hint}.")
+            if why == NOT_FOR_MODELS:
+                hint = "노드 설정에서 '학습용'이나 '오토라벨용'을 켜세요"
+                what = "학습용·오토라벨용 서버가 아니라 모델 환경을 두지 않습니다"
+                raise ServiceError(400, f"{node.name}은(는) {what}. {hint}.")
             if why:
                 raise ServiceError(400, f"{node.name}에는 이 환경을 설치할 수 없습니다: {why}.")
     else:
         nodes = [n for n in db.scalars(select(Node).order_by(Node.name)) if n.enabled and not _why_not(n, spec)]
     if not nodes:
-        need = "학습 역할이 있고 Docker가 있는" if spec["kind"] == "docker" else "학습 역할이 있는"
+        need = "학습용·오토라벨용이고 Docker가 있는" if spec["kind"] == "docker" else "학습용·오토라벨용"
         raise ServiceError(400, f"환경을 준비할 서버가 없습니다. {need} 서버가 있어야 합니다.")
     params = {"template": row.name, "version": row.version, "environment": with_packages(db, spec, row)}
     jobs = [services.create_job(db, user, "env.prepare", params, n.id, via=via, gpus=0) for n in nodes]
@@ -510,7 +522,7 @@ def list_environments(db: Session, settings: HubSettings) -> list[dict[str, Any]
 def check_environment(db: Session, user: User, env_id: str) -> list[Job]:
     """Ask the servers to try a registered environment. Results arrive when the jobs finish.
 
-    A server's Python: every server it is set up on. A Docker image: every server that trains and has
+    A server's Python: every server it is set up on. A Docker image: every server that trains or auto-labels and has
     Docker (it pulls the image if it has not, and runs Python in it).
     """
     services.require_admin(user)
@@ -518,7 +530,7 @@ def check_environment(db: Session, user: User, env_id: str) -> list[Job]:
     jobs = []
     nodes = dict(env.nodes or {})
     if env.kind == "docker":
-        targets = [n for n in db.scalars(select(Node).order_by(Node.name)) if trains(n) and has_docker(n)]
+        targets = [n for n in db.scalars(select(Node).order_by(Node.name)) if runs_models(n) and has_docker(n)]
         for node in targets:
             params = {"environment_id": env.id, "kind": "docker", "image": env.image}
             job = services.create_job(db, user, "env.check", params, node.id, via="ui", gpus=0)
@@ -526,7 +538,7 @@ def check_environment(db: Session, user: User, env_id: str) -> list[Job]:
             jobs.append(job)
         env.nodes = nodes
         if not jobs:
-            raise ServiceError(400, "학습 역할이 있고 Docker가 있는 서버가 없습니다.")
+            raise ServiceError(400, "학습용·오토라벨용이고 Docker가 있는 서버가 없습니다.")
         return jobs
     for node_id, entry in nodes.items():
         node = db.get(Node, node_id)

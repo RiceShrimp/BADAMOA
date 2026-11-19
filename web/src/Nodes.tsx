@@ -4,9 +4,10 @@ import { type HubAddress, type JoinToken, api } from "./api";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
 const ROLES = [
-  { id: "compute", label: "학습·오토라벨" },
-  { id: "storage", label: "데이터 저장" },
-  { id: "inference", label: "추론" },
+  { id: "compute", label: "학습용" },
+  { id: "autolabel", label: "오토라벨용" },
+  { id: "inference", label: "추론용" },
+  { id: "storage", label: "데이터 서버용" },
 ];
 
 // ---- what the Hub sends (/api/gpu-board) ----------------------------------------------------
@@ -272,6 +273,7 @@ function ServerRow({
           {node.gpus.length > 0 ? `${node.gpu_name ?? "GPU"} × ${node.gpus.length}` : "GPU 없음"}
           {node.is_local ? " · Hub" : ""}
         </div>
+        <RoleChips roles={node.roles} />
         {sys.length > 0 && <SysBars bars={sys} />}
         {!online && (
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
@@ -532,6 +534,27 @@ function fileSizeGb(bytes: number): string {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
+/** What the server is for, as chips in the order of the role list (what a job can be sent to it for). */
+function RoleChips({ roles }: { roles: string[] }) {
+  const known = ROLES.filter((r) => roles.includes(r.id));
+  const other = roles.filter((r) => !ROLES.some((k) => k.id === r));
+  if (known.length + other.length === 0) return <div className="small warn-text">역할 없음 — 작업을 받지 않습니다</div>;
+  return (
+    <div className="role-chips" aria-label="역할">
+      {known.map((r) => (
+        <span key={r.id} className={`role-chip role-${r.id}`}>
+          {r.label}
+        </span>
+      ))}
+      {other.map((r) => (
+        <span key={r} className="role-chip">
+          {r}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function RolePicker({ roles, onChange }: { roles: string[]; onChange: (roles: string[]) => void }) {
   return (
     <div className="checks">
@@ -589,8 +612,9 @@ function AddNode({ onClose }: { onClose: () => void }) {
             </div>
           )}
           <CopyBlock label="Ubuntu / Linux" text={join.commands.linux} />
+          <CopyBlock label="Ubuntu / Linux — sudo 권한이 없을 때 (그 계정에만 설치)" text={join.commands.linux_user} />
           <CopyBlock label="Windows (관리자 PowerShell)" text={join.commands.windows} />
-          <p className="muted small">설치가 끝나면 노드 목록에 자동으로 나타납니다.</p>
+          <p className="muted small">설치가 끝나면 노드 목록에 자동으로 나타나고, 서버를 재부팅해도 자동으로 다시 연결됩니다.</p>
           <div className="modal-actions">
             <button onClick={onClose}>닫기</button>
           </div>
@@ -718,7 +742,7 @@ function UpdateNode({ node, onClose }: { node: BoardNode; onClose: () => void })
 interface Deleted {
   removed_on_server: boolean;
   reason: string;
-  commands: { linux: string; windows: string };
+  commands: { linux: string; linux_user: string; windows: string };
 }
 
 /** Deleting a node: what it means, whether BADAMOA leaves the server too, and the command when it could not. */
@@ -748,6 +772,7 @@ function DeleteNode({ node, onBack, onDone }: { node: BoardNode; onBack: () => v
       <Modal title={`${node.name} 삭제됨`} onClose={onDone}>
         <p>Hub에서 노드를 지웠습니다. {left.reason} 그 서버에서 아래 명령을 실행하면 BADAMOA가 지워집니다(데이터 폴더는 그대로).</p>
         <CopyBlock label="Ubuntu / Linux" text={left.commands.linux} />
+        <CopyBlock label="Ubuntu / Linux — sudo 없이 설치한 노드 (그 계정으로)" text={left.commands.linux_user} />
         <CopyBlock label="Windows (관리자 PowerShell)" text={left.commands.windows} />
         <p className="muted small">그냥 두어도 해는 없습니다. 지워진 노드는 5분에 한 번만 Hub를 확인하고 작업을 받지 않습니다.</p>
         <div className="modal-actions">

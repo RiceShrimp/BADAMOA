@@ -470,7 +470,7 @@ function PrepareDialog({
     <Modal title={`${template.title} 환경 관리`} onClose={onClose}>
       <p className="muted small">
         고른 서버에 이 모델 종류의 학습 환경({what})을 지금 {docker ? "받습니다" : "설치합니다"}. 첫 학습이 기다리지 않습니다.
-        학습 · 오토라벨 역할이 있는 서버만 고를 수 있습니다. 준비된 서버에서는 지울 수 있습니다
+        학습용 · 오토라벨용 서버만 고를 수 있습니다. 준비된 서버에서는 지울 수 있습니다
         {docker ? " (BADAMOA가 받기 전부터 있던 이미지는 남김)" : ""}.
       </p>
       <div className="node-pick">
@@ -507,7 +507,7 @@ function PrepareDialog({
         <p className="error">
           {servers.some((s) => s.trains)
             ? "Docker가 있는 학습 서버가 없습니다."
-            : "학습 역할이 있는 서버가 없습니다. 노드의 설정에서 \u201c학습·오토라벨\u201d 역할을 켜세요."}
+            : "학습용 · 오토라벨용 서버가 없습니다. 노드의 설정에서 \u201c학습용\u201d이나 \u201c오토라벨용\u201d을 켜세요."}
         </p>
       )}
       <div className="modal-actions">

@@ -54,11 +54,39 @@ def test_join_token_is_single_use_and_commands_point_at_hub(client, admin):
     assert body["roles"] == ["compute"]
     assert body["token"] in body["commands"]["linux"] and "/install/node.sh" in body["commands"]["linux"]
     assert "/install/node.ps1" in body["commands"]["windows"]
+    # a server where the account has no sudo: the same script, run as that account
+    assert body["commands"]["linux_user"] == body["commands"]["linux"].replace("| sudo bash", "| bash")
 
     payload = {"join_token": body["token"], "agent_version": "0.1.0", "info": INFO}
     assert client.post("/api/agent/register", json=payload).status_code == 200
     assert client.post("/api/agent/register", json=payload).status_code == 401
     assert client.post("/api/nodes/join-tokens", json={"roles": ["gpu"]}, headers=admin).status_code == 400
+
+
+def test_roles_default_to_all_and_training_and_autolabel_split_once(client, admin, settings):
+    """학습용 · 오토라벨용 · 추론용 · 데이터 서버용. Before 0.54.0 "학습·오토라벨" was one role (compute): a
+    server with it keeps doing both, once — switching 오토라벨용 off afterwards stays off."""
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import HubSetting, Node
+
+    body = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()
+    assert body["roles"] == ["compute", "autolabel", "inference", "storage"]
+    bad = client.post("/api/nodes/join-tokens", json={"roles": ["gpu"]}, headers=admin)
+    assert "compute(학습용)" in bad.json()["detail"] and "storage(데이터 서버용)" in bad.json()["detail"]
+
+    db = Database(settings.database_url or "")
+    with db.session() as s:  # as an older Hub left them
+        s.add(Node(name="old", token_hash="h-old", roles=["compute", "storage"]))
+        s.add(Node(name="data", token_hash="h-data", roles=["storage"]))
+        s.delete(s.get(HubSetting, "migration.autolabel_role"))
+    db.create_all()
+    with db.session() as s:
+        roles = {n.name: n.roles for n in s.query(Node).all()}
+        assert roles["old"] == ["compute", "autolabel", "storage"] and roles["data"] == ["storage"]
+        s.query(Node).filter(Node.name == "old").one().roles = ["compute"]
+    db.create_all()
+    with db.session() as s:
+        assert s.query(Node).filter(Node.name == "old").one().roles == ["compute"]
 
 
 def test_node_lifecycle_and_job_flow(client, admin):
@@ -159,6 +187,9 @@ def test_disabled_node_gets_no_jobs_and_deleted_node_is_rejected(client, admin):
 def test_install_scripts_and_wheel_index(client, settings):
     sh = client.get("/install/node.sh").text
     assert 'HUB_URL="http://testserver"' in sh and "{{" not in sh
+    assert 'ROOT="$HOME/.badamoa"' in sh and "badamoa node install-service" in sh  # also without sudo
+    gone = client.get("/install/node-remove.sh").text
+    assert "node uninstall-service" in gone and "rm -f /etc/systemd/system/badamoa-node.service" in gone
     assert "{{" not in client.get("/install/node.ps1").text
 
     (settings.wheels_dir / "badamoa-0.1.0-py3-none-any.whl").write_bytes(b"wheel")

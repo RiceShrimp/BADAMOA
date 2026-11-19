@@ -83,8 +83,10 @@ def ensure_node_wheel(settings: HubSettings) -> str:
 
 
 def join_commands(hub_url: str, token: str) -> dict[str, str]:
+    """``linux_user``: the same script without sudo installs for that account only (~/.badamoa, its crontab)."""
     return {
         "linux": f"curl -fsSL {hub_url}/install/node.sh | sudo bash -s -- --token {token}",
+        "linux_user": f"curl -fsSL {hub_url}/install/node.sh | bash -s -- --token {token}",
         "windows": f"& ([scriptblock]::Create((irm {hub_url}/install/node.ps1))) -Token {token}",
         "dev": f"uv run badamoa node join --hub {hub_url} --token {token}",
     }
@@ -130,6 +132,7 @@ def remove_commands(hub_url: str) -> dict[str, str]:
     """Taking BADAMOA off a machine by hand (the node was off when it was deleted)."""
     return {
         "linux": f"curl -fsSL {hub_url}/install/node-remove.sh | sudo bash",
+        "linux_user": f"curl -fsSL {hub_url}/install/node-remove.sh | bash",
         "windows": f"irm {hub_url}/install/node-remove.ps1 | iex",
     }
 

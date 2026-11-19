@@ -77,9 +77,13 @@ When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8
 
 ### Add training and data servers
 
-In the web app, **Nodes** (노드) → **Add node** (노드 추가) shows a one-line command for Ubuntu and one for Windows. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows): it registers to start automatically and shows up on the node board shortly after. From then on the node updates itself to follow the Hub's version.
+In the web app, **Nodes** (노드) → **Add node** (노드 추가) asks which roles the server takes (training 학습용 · auto-labeling 오토라벨용 · inference 추론용 · data server 데이터 서버용), then shows a one-line command for Ubuntu and one for Windows. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows): it registers to start automatically and shows up on the node board shortly after. It comes back and reconnects after a reboot, and from then on the node updates itself to follow the Hub's version.
 
-Only node-to-node image transfers use TCP 8475, and the install command opens it in the firewall.
+For a server where you have no sudo (say one whose datasets you only read), use the "sudo 권한이 없을 때" command on the same screen. It installs into that account's home (`~/.badamoa`), and that account's crontab starts the node at boot and every five minutes when it is not running. Registering a dataset only reads the images, so read access is all the account needs.
+
+Training runs on training servers; auto-labeling runs on the server holding the images when that server has the auto-labeling role. Templates' environments are installed only on training or auto-labeling servers.
+
+Only node-to-node image transfers use TCP 8475, and the install command opens it in the firewall (without sudo the firewall is left alone: if one is on, ask the server's admin to open the port).
 
 <details>
 <summary>If the Hub was not started from this repository</summary>

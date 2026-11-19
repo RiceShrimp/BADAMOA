@@ -87,7 +87,8 @@ def _start(
     if same == registry.DECLARED_IMAGE and not manifest.environment.image:
         same = ""
     env = registry.environment_for_run(db, manifest, same, node, row)
-    _, unfit = training.fitting([node], env, gpus)
+    role = registry.AUTOLABELS if kind == "autolabel" else registry.TRAINS
+    _, unfit = training.fitting([node], env, gpus, role)
     if unfit:
         raise ServiceError(400, " ".join(unfit))
     declared = manifest.params
@@ -122,6 +123,7 @@ def _start(
         node.id,
         via=via,
         gpus=gpus,
+        role=role,
     )
     op.job_id = job.id
     services.audit(db, user.id, via, f"model.{kind}", model.id, name=model.name, version=model.version)

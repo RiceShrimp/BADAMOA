@@ -238,7 +238,7 @@ def node_run(
 ) -> None:
     """Node Agent를 실행합니다 (Ctrl+C로 종료)."""
     _logging(verbose)
-    from badamoa.node import agent
+    from badamoa.node import agent, service
 
     node_dir = agent.node_home(home)
     try:
@@ -246,6 +246,10 @@ def node_run(
     except FileNotFoundError as e:
         typer.secho(str(e), fg="red")
         raise typer.Exit(1) from e
+    lock = service.hold_lock(node_dir)  # held until this process ends
+    if lock is None:
+        typer.echo(f"이 노드({node_dir})의 Node Agent가 이미 실행 중입니다.")
+        return
     runner = agent.NodeAgent(config, node_dir, max_jobs=max_jobs)
     try:
         runner.run_forever()
@@ -271,9 +275,22 @@ def node_status(home: HomeOpt = None) -> None:
         typer.echo(f"gpu {gpu['index']}   : {gpu['name']} {gpu['memory_total_mb']} MB (driver {gpu['driver_version']})")
 
 
+@node_app.command("start")
+def node_start(home: HomeOpt = None) -> None:
+    """Node Agent를 백그라운드로 켭니다. 이미 켜져 있으면 그대로 둡니다 (sudo 없이 설치한 노드가 부팅 시 씀)."""
+    from badamoa.node import agent, service
+
+    node_dir = agent.node_home(home)
+    if not agent.NodeConfig.path(node_dir).is_file():
+        typer.secho(f"노드 설정이 없습니다: {node_dir}. 먼저 `badamoa node join`을 실행하세요.", fg="red")
+        raise typer.Exit(1)
+    started = service.start(node_dir)
+    typer.echo(f"Node Agent를 켰습니다. 로그: {node_dir / service.LOG}" if started else "Node Agent가 이미 실행 중입니다.")
+
+
 @node_app.command("install-service")
 def node_install_service() -> None:
-    """부팅 시 Node Agent가 자동 실행되도록 등록합니다 (관리자 권한 필요)."""
+    """부팅 시 Node Agent가 자동 실행되도록 등록하고 켭니다. root면 systemd, sudo가 없는 계정이면 그 계정의 crontab."""
     from badamoa.node import service
 
     typer.echo(service.install("node", "node run"))

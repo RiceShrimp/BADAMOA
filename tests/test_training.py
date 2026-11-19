@@ -562,6 +562,12 @@ def test_autolabel_a_labeling_set(hub, release, tmp_path):
     assert hub.post(url, json={"model_id": model["id"], "keep": 0.3, "accept": 0.2}).status_code == 400
     assert hub.post(url, json={"model_id": "nope"}).status_code == 404
 
+    # ---- 오토라벨용: it runs on the server holding the images only with that role (학습용 is neither enough nor needed)
+    hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "storage"]})
+    refused = hub.post(url, json={"model_id": model["id"], "accept": 0.9, "gpus": 0})
+    assert refused.status_code == 400 and "오토라벨용 서버가 아닙니다" in refused.json()["detail"]
+    hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["autolabel", "storage"]})
+
     # ---- run (the dummy model: a sure box, an unsure one, nothing, in turn): sure images accepted, to review
     started = hub.post(url, json={"model_id": model["id"], "accept": 0.9, "gpus": 0})
     assert started.status_code == 200, started.text
