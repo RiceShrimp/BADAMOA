@@ -47,20 +47,34 @@ def _latest(db: Session, dataset_id: str) -> Release | None:
 
 
 def _collage(db: Session, settings: HubSettings, release: Release | None, count: int = COLLAGE) -> list[dict[str, Any]]:
-    """A few labelled images of a release, spread over it, with their boxes (fractions of the image)."""
+    """A few labelled images of a release, spread over it, with their boxes (fractions of the image).
+
+    Each is the first labelled image at or after an evenly spaced image number: a jump in the release's own
+    index, so a version of a million images costs what one of ten does (reading the release up to the spot
+    took half a minute for 684,049 images and held every screen that shows project cards)."""
     if release is None:
         return []
-    total = (release.stats or {}).get("items") or 0
-    step = max(1, total // (count * 2)) if total else 1
-    rows = db.execute(
-        select(Item, LabelRevision)
-        .join(ReleaseItem, ReleaseItem.item_id == Item.id)
-        .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id)
-        .where(ReleaseItem.release_id == release.id, ReleaseItem.box_count > 0, Item.thumb_key.is_not(None))
-        .order_by(Item.id)
-        .limit(count * step)
-    ).all()
-    picked = rows[::step][:count] or rows[:count]
+    lo, hi = db.execute(
+        select(func.min(ReleaseItem.item_id), func.max(ReleaseItem.item_id)).where(ReleaseItem.release_id == release.id)
+    ).one()
+    if lo is None:
+        return []
+    spots: list[tuple[int, int]] = []
+    for n in range(count * 2):  # twice as many tries as pictures: some spots land on images without a thumbnail
+        start = lo + (hi - lo + 1) * n // (count * 2)
+        found = db.execute(
+            select(ReleaseItem.item_id, ReleaseItem.revision_id)
+            .where(ReleaseItem.release_id == release.id, ReleaseItem.item_id >= start, ReleaseItem.box_count > 0)
+            .order_by(ReleaseItem.item_id)
+            .limit(1)
+        ).first()
+        if found is not None and (found[0], found[1]) not in spots:
+            spots.append((found[0], found[1]))
+    shown = select(Item).where(Item.id.in_([i for i, _ in spots]), Item.thumb_key.is_not(None))
+    items = {i.id: i for i in db.scalars(shown)}
+    revisions = {r.id: r for r in db.scalars(select(LabelRevision).where(LabelRevision.id.in_([r for _, r in spots])))}
+    rows = [(items[i], revisions[r]) for i, r in spots if i in items and r in revisions]
+    picked = rows[:: max(1, len(rows) // count)][:count]
     task = catalog.release_task(db, release)  # how to draw what follows each box
     return [
         {

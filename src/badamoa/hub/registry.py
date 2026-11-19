@@ -6,6 +6,9 @@ import hashlib
 import os
 import re
 import shutil
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -832,16 +835,47 @@ def package_blob(db: Session, digest: str) -> str:
 # ---- where everything is kept ---------------------------------------------------------
 
 
+# The storage folder counted in the background: with a dataset of 684,049 thumbnails a count took 37 s, and
+# every screen showing storage (the home screen too) waited on it.
+COUNT_EVERY_S = 600
+_counted: dict[str, Any] = {"bytes": 0, "files": 0, "at": 0.0, "thread": None}
+
+
+def _count_folder(folder: Path) -> None:
+    total = files = 0
+    stack = [str(folder)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as listing:
+                for entry in listing:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size  # with the listing on Windows
+                            files += 1
+                    except OSError:
+                        continue  # removed meanwhile
+        except OSError:
+            continue
+    _counted.update(bytes=total, files=files, at=time.time())
+
+
+def stored_files(settings: HubSettings) -> tuple[int, int]:
+    """The last count of the storage folder (bytes, files); a new count starts in the background when it is
+    older than ten minutes. (0, 0) until the first one is done."""
+    running = _counted["thread"]
+    if time.time() - _counted["at"] > COUNT_EVERY_S and (running is None or not running.is_alive()):
+        _counted["thread"] = threading.Thread(
+            target=_count_folder, args=(Path(settings.storage_dir),), name="storage-count", daemon=True
+        )
+        _counted["thread"].start()
+    return _counted["bytes"], _counted["files"]
+
+
 def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, Any]:
     """How much the Hub keeps and of what. The Hub's folder holds every record: nodes keep only caches."""
-    stored = files = 0
-    for folder, _, names in os.walk(settings.storage_dir):
-        for name in names:
-            try:
-                stored += os.path.getsize(os.path.join(folder, name))
-                files += 1
-            except OSError:
-                pass  # removed meanwhile
+    stored, files = stored_files(settings)
     database = sum(p.stat().st_size for p in settings.home.glob("hub.db*") if p.is_file())
     # What only the trash holds: deleted runs and models, and those of deleted projects.
     gone = set(db.scalars(select(Project.id).where(Project.deleted_at.is_not(None))))
@@ -877,6 +911,8 @@ def storage_usage(db: Session, settings: HubSettings, user: User) -> dict[str, A
         else:
             outputs += size
     disk = shutil.disk_usage(settings.home)
+    if not _counted["at"]:  # before the first count: what the records say
+        stored = models + outputs + checkpoints + trash
     return {
         "policy": cleanup.get_policy(db),
         "projects": project_usage(db),
