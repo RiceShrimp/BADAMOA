@@ -44,6 +44,8 @@ class Template(Base):
     # The uploader's own ``badamoa template check --run`` of this very bundle (steps, SDK, Python, OS, GPU,
     # packages): required from members, a guard against mistakes rather than proof (it can be faked).
     report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # A memo on this version written on the Hub (설정 → 모델 종류 → 버전): what changed, what to watch for.
+    memo: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

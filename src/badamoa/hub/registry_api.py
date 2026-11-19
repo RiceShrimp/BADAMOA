@@ -81,6 +81,38 @@ def get_template(
     return _with_links(registry.template_view(db, registry.get_template(db, template_id)), user, hub)
 
 
+class TextBody(BaseModel):
+    text: str = ""
+
+
+@router.put("/templates/{template_id}/description")
+def describe_template(
+    template_id: str, body: TextBody, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, str]:
+    """The model kind's description, written on the Hub (empty: what its bundle says)."""
+    text = registry.set_description(db, user, template_id, body.text)
+    db.commit()
+    return {"description": text}
+
+
+@router.put("/templates/{template_id}/memo")
+def template_memo(
+    template_id: str, body: TextBody, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, str]:
+    """A memo on this version."""
+    row = registry.set_memo(db, user, template_id, body.text)
+    db.commit()
+    return {"memo": row.memo}
+
+
+@router.get("/templates/{template_id}/versions")
+def template_versions(
+    template_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> list[dict[str, Any]]:
+    """Every version of this model kind, newest first, with its trial and memo."""
+    return registry.versions_of(db, template_id, user)
+
+
 @media_router.get("/template/{template_id}")
 def template_code(
     template_id: str, exp: int, sig: str, hub: Hub = Depends(get_hub), db: Session = Depends(db_session)

@@ -270,3 +270,54 @@ def test_agent_runs_gpu_job_on_reserved_gpu(live_hub, settings, tmp_path, monkey
             assert node["metrics"]["gpus"][0]["power_w"] is not None and node["gpu_states"][0]["state"] == "free"
         finally:
             runner.stop()
+
+
+def test_a_job_waits_for_the_gpus_it_names(client, admin, settings):
+    """A run that picked its GPUs gets those and no others: it waits while one of them is in use."""
+    from sqlalchemy import select
+
+    from badamoa.hub import services, transfers
+    from badamoa.hub.models import User
+    from badamoa.hub.services import ServiceError
+
+    node_id, node = _join(client, admin)
+    _beat(client, node, [_gpu(0, 200), _gpu(1, 20000, util=100, users=["kgu"])])
+    client.patch(f"/api/nodes/{node_id}", json={"reserved_gpus": [0]}, headers=admin)
+    database = Database(settings.database_url)
+    with database.session() as db:
+        # what the new-run dialog shows of the node: each GPU and its state
+        (choice,) = transfers.node_choices(db, settings, "no-such-version")["nodes"]
+        assert [(g["index"], g["state"], g["reserved"], g["users"]) for g in choice["gpu_list"]] == [
+            (0, "reserved", True, []),
+            (1, "busy", False, ["kgu"]),
+        ]
+        client.patch(f"/api/nodes/{node_id}", json={"reserved_gpus": []}, headers=admin)
+        user = db.scalar(select(User))
+        job = services.create_job(db, user, "system.gpu", {}, node_id, gpu_indices=[1, 1])
+        job_id = job.id
+        assert job.requirements["gpus"] == 1 and job.requirements["gpu_indices"] == [1]
+        with pytest.raises(ServiceError, match="하나로"):
+            services.create_job(db, user, "system.gpu", {}, None, gpu_indices=[0])
+    database.engine.dispose()
+
+    assert _claim(client, node) is None  # GPU 0 is free, but the job named GPU 1, which kgu is using
+    reason = client.get(f"/api/jobs/{job_id}", headers=admin).json()["wait_reason"]
+    assert "고른 GPU" in reason and "GPU 1 사용 중 (kgu)" in reason
+    _beat(client, node, [_gpu(0, 200), _gpu(1, 200)])
+    assert _claim(client, node)["gpu_indices"] == [1]
+
+
+def test_a_run_names_gpus_on_one_server_and_never_the_ones_kept_for_people():
+    from badamoa.hub import training
+    from badamoa.hub.services import ServiceError
+
+    node = SimpleNamespace(name="ai-200", info=TWO_GPUS, reserved_gpus=[1])
+    other = SimpleNamespace(name="ai-201", info=TWO_GPUS, reserved_gpus=[])
+    assert training.pick_gpus(node, [node], [0, 0]) == [0]
+    assert training.pick_gpus(node, [node, other], None) == []  # none named: any free ones, on any of them
+    with pytest.raises(ServiceError, match="사람 전용"):
+        training.pick_gpus(node, [node], [1])
+    with pytest.raises(ServiceError, match="없습니다"):
+        training.pick_gpus(node, [node], [5])
+    with pytest.raises(ServiceError, match="하나여야"):
+        training.pick_gpus(node, [node, other], [0])

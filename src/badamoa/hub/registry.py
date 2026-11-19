@@ -27,7 +27,7 @@ from . import cleanup, services
 from .catalog_models import Project
 from .config import HubSettings
 from .db import iso, utcnow
-from .models import Job, Node, User
+from .models import HubSetting, Job, Node, User
 from .services import ServiceError
 from .train_models import Environment, ModelJob, ModelVersion, Package, Run, RunFile, Template
 
@@ -174,6 +174,85 @@ def manifest_of(row: Template) -> TemplateManifest:
     return TemplateManifest(**row.manifest)
 
 
+# ---- what admins write on the Hub: a model kind's description, a version's memo -----------------
+
+ABOUT_KEY = "template_about"  # {template name: description written on the Hub}
+MAX_ABOUT = 4000
+
+
+def _about(db: Session) -> dict[str, str]:
+    row = db.get(HubSetting, ABOUT_KEY)
+    return dict((row.value or {}).get("about") or {}) if row is not None else {}
+
+
+def description_of(db: Session, row: Template, written: dict[str, str] | None = None) -> str:
+    """What the model kind is: written on the Hub, else what its newest bundle says."""
+    found = (written if written is not None else _about(db)).get(row.name, "")
+    return found or manifest_of(row).description
+
+
+def set_description(db: Session, user: User, template_id: str, text: str) -> str:
+    """Describe a model kind on the Hub (every version shows it). Empty: back to what the bundle says."""
+    services.require_admin(user)
+    row = get_template(db, template_id)
+    text = text.strip()[:MAX_ABOUT]
+    setting = db.get(HubSetting, ABOUT_KEY)
+    if setting is None:
+        setting = HubSetting(key=ABOUT_KEY, value={})
+        db.add(setting)
+    about = dict((setting.value or {}).get("about") or {})
+    if text:
+        about[row.name] = text
+    else:
+        about.pop(row.name, None)
+    setting.value = {"about": about}
+    services.audit(db, user.id, "ui", "template.describe", row.id, name=row.name, cleared=not text)
+    return description_of(db, row, about)
+
+
+def set_memo(db: Session, user: User, template_id: str, text: str) -> Template:
+    """A memo on one version (what changed in it, what to watch for)."""
+    services.require_admin(user)
+    row = get_template(db, template_id)
+    row.memo = text.strip()[:MAX_ABOUT]
+    services.audit(db, user.id, "ui", "template.memo", row.id, name=row.name, version=row.version)
+    return row
+
+
+def versions_of(db: Session, template_id: str, user: User) -> list[dict[str, Any]]:
+    """Every version of a model kind, newest first: when and by whom it came, its trial, its memo.
+    Members see the versions offered to everyone and their own drafts."""
+    from . import template_checks
+
+    row = get_template(db, template_id)
+    rows = db.scalars(
+        select(Template)
+        .where(Template.name == row.name, Template.deleted_at.is_(None))
+        .order_by(Template.created_at.desc(), Template.id)
+    ).all()
+    shown = []
+    for version in rows:
+        offered = version.builtin or template_checks.offered(version)
+        if user.role != "admin" and not offered and version.created_by != user.id:
+            continue
+        manifest = manifest_of(version)
+        shown.append(
+            {
+                "id": version.id,
+                "version": version.version,
+                "title": version.title,
+                "description": manifest.description,  # what that bundle says
+                "memo": version.memo or "",
+                "created_at": iso(version.created_at),
+                "uploaded_by": _username(db, version.created_by),
+                "builtin": version.builtin,
+                "offered": offered,
+                "check": template_checks.view(version),
+            }
+        )
+    return shown
+
+
 def template_view(
     db: Session, row: Template, versions: int = 1, models: int = 0, offered_version: str = ""
 ) -> dict[str, Any]:
@@ -187,7 +266,9 @@ def template_view(
         "version": row.version,
         "versions": versions,
         "task": row.task,
-        "description": manifest.description,
+        "description": description_of(db, row),
+        "declared_description": manifest.description,  # what the bundle says (the above may be written on the Hub)
+        "memo": row.memo or "",  # this version's memo, written on the Hub
         "license": manifest.license,
         "builtin": row.builtin,
         "hidden": row.hidden,

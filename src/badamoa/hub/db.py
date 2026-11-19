@@ -43,6 +43,7 @@ _ADDED_COLUMNS = [
     ("templates", "trial", "JSON DEFAULT '{}'"),
     ("users", "template_upload", "BOOLEAN DEFAULT 0"),
     ("templates", "report", "JSON DEFAULT '{}'"),
+    ("templates", "memo", "TEXT DEFAULT ''"),
 ]
 
 

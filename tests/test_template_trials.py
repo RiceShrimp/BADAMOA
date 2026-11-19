@@ -538,3 +538,41 @@ def test_a_newer_version_that_reads_older_weights_gives_older_models_what_it_add
         assert modelops._code_of(db.get(Job, op.job_id))["trained_with"] == "1.0.0"
         assert db.get(Template, old["id"]).version == "1.0.0"
     database.engine.dispose()
+
+
+def test_a_kinds_description_and_each_versions_memo_are_written_on_the_hub(client, admin, tmp_path):
+    """설정 → 모델 종류: the name opens what the kind is, the version every version with its memo (admins write)."""
+
+    def upload(version):
+        sent = client.post(
+            "/api/templates", content=_bundle(tmp_path, version=version), headers={**admin, "Content-Type": "application/zip"}
+        )
+        assert sent.status_code == 200, sent.text
+        return sent.json()
+
+    first, second = upload("1"), upload("2")
+    declared = second["description"]
+    written = client.put(f"/api/templates/{second['id']}/description", json={"text": "  커리큘럼 검출기\n둘째 줄 "}, headers=admin)
+    assert written.status_code == 200 and written.json()["description"] == "커리큘럼 검출기\n둘째 줄"
+    view = next(t for t in client.get("/api/templates", headers=admin).json() if t["name"] == "trial")
+    assert (view["description"], view["declared_description"]) == ("커리큘럼 검출기\n둘째 줄", declared)
+    # it belongs to the kind: every version shows it
+    assert client.get(f"/api/templates/{first['id']}", headers=admin).json()["description"] == "커리큘럼 검출기\n둘째 줄"
+
+    assert client.put(f"/api/templates/{first['id']}/memo", json={"text": "첫 버전: 박스만"}, headers=admin).status_code == 200
+    versions = client.get(f"/api/templates/{second['id']}/versions", headers=admin).json()
+    assert [(v["version"], v["memo"]) for v in versions] == [("2", ""), ("1", "첫 버전: 박스만")]
+    assert versions[0]["check"]["state"] == "pending" and versions[0]["uploaded_by"] == "admin"
+    assert client.get(f"/api/templates/{first['id']}", headers=admin).json()["memo"] == "첫 버전: 박스만"
+
+    # members read what is offered to them and write nothing
+    client.post("/api/users", json={"username": "kim", "password": "kim-pass-123", "role": "member"}, headers=admin)
+    token = client.post("/api/auth/login", json={"username": "kim", "password": "kim-pass-123"}).json()["token"]
+    member = {"Authorization": f"Bearer {token}"}
+    assert client.put(f"/api/templates/{second['id']}/memo", json={"text": "x"}, headers=member).status_code == 403
+    assert client.put(f"/api/templates/{second['id']}/description", json={"text": "x"}, headers=member).status_code == 403
+    assert client.get(f"/api/templates/{second['id']}/versions", headers=member).json() == []  # neither is offered yet
+
+    # cleared: what the bundle says again
+    cleared = client.put(f"/api/templates/{second['id']}/description", json={"text": ""}, headers=admin)
+    assert cleared.json()["description"] == declared

@@ -1149,3 +1149,36 @@ button.overlay-picture:hover {
   background: var(--accent);
   transition: width 0.6s ease;
 }
+
+/* ---- new run: the GPUs of the node it trains on ---- */
+.gpu-field {
+  margin: 4px 0 10px;
+}
+.gpu-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 6px 0 2px;
+}
+.gpu-pick .chip {
+  padding: 3px 10px;
+  font-size: 12.5px;
+}
+.gpu-pick .chip.gpu span {
+  font: 500 11px/1 var(--sans, inherit);
+  margin-left: 2px;
+}
+.gpu-pick .chip.busy:not(.active) span,
+.gpu-pick .chip.job:not(.active) span {
+  color: var(--warn, #b7791f);
+}
+.gpu-pick .chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+.class-pick-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}

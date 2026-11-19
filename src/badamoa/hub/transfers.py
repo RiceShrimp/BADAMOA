@@ -309,6 +309,7 @@ def node_choices(db: Session, settings: Any, release_id: str) -> dict[str, Any]:
         status = services.node_status(node, settings)
         gpus = (node.info or {}).get("gpus") or []
         free = resources.free_gpus(node, settings, assigned.get(node.id), 0) if status == "online" else []
+        states = {g["index"]: g for g in resources.gpu_states(node, settings, assigned.get(node.id))}
         cache = (node.metrics or {}).get("cache") or {}
         shown.append(
             {
@@ -318,6 +319,20 @@ def node_choices(db: Session, settings: Any, release_id: str) -> dict[str, Any]:
                 "enabled": node.enabled,
                 "gpus": len(gpus),
                 "gpus_free": len(free),
+                # each GPU, to pick by number: free · busy (someone uses it) · job (a BADAMOA job) · reserved (people's)
+                "gpu_list": [
+                    {
+                        "index": g.get("index"),
+                        "name": g.get("name") or "",
+                        "memory_total_mb": g.get("memory_total_mb"),
+                        "state": (states.get(g.get("index")) or {}).get("state", "free")
+                        if status == "online"
+                        else "offline",
+                        "users": (states.get(g.get("index")) or {}).get("users", []),
+                        "reserved": g.get("index") in (node.reserved_gpus or []),
+                    }
+                    for g in gpus
+                ],
                 # registered: the images were imported here · received: copied here before · "": must be copied
                 "images": "registered" if node.id == source else "received" if node.id in received else "",
                 "cache_free_gb": cache.get("free_gb"),

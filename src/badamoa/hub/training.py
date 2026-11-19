@@ -274,6 +274,22 @@ def fitting(
     return nodes, list(dict.fromkeys(reason for reasons in why.values() for reason in reasons))
 
 
+def pick_gpus(node: Node, candidates: list[Node], wanted: list[int] | None) -> list[int]:
+    """The GPUs a run asked for by number: on the one server it trains on, there, and not kept for people."""
+    picked = sorted({int(i) for i in wanted or []})
+    if not picked:
+        return []
+    if len(candidates) != 1:
+        names = ", ".join(n.name for n in candidates)
+        raise ServiceError(400, f"GPU를 고르려면 학습할 노드가 하나여야 합니다 (지금 {names}). 노드를 하나만 고르세요.")
+    known = {g.get("index") for g in (node.info or {}).get("gpus") or []}
+    if missing := [i for i in picked if i not in known]:
+        raise ServiceError(400, f"{node.name}에 GPU {', '.join(map(str, missing))}번이 없습니다.")
+    if kept := [i for i in picked if i in (node.reserved_gpus or [])]:
+        raise ServiceError(400, f"{node.name}의 GPU {', '.join(map(str, kept))}번은 사람 전용입니다 (노드 설정).")
+    return picked
+
+
 def start_run(
     db: Session,
     user: User,
@@ -288,6 +304,7 @@ def start_run(
     unlabelled: str = "exclude",
     val_fraction: float = 0.2,
     gpus: int | None = None,
+    gpu_indices: list[int] | None = None,
     min_vram_mb: int = 0,
     source_run_id: str | None = None,
     base_model_id: str = "",
@@ -310,7 +327,8 @@ def start_run(
     ``template`` and ``environment`` may be left empty: the project's default
     template and the template's default environment are used. ``base_model_id``
     starts from the weights of a registered model instead of pretrained ones
-    (training on with new data).
+    (training on with new data). ``gpu_indices`` are the GPUs it takes on the one server it trains on
+    (none: as many free ones as ``gpus`` asks, whichever they are).
     """
     release = catalog.get_release(db, release_id)
     catalog.require_ready(release)
@@ -355,7 +373,9 @@ def start_run(
         base = get_model(db, base_model_id)
         if base.project_id != project.id or base.trainer != row.name:
             raise ServiceError(400, f"{row.title}로 만든 이 프로젝트의 모델에서만 이어서 학습할 수 있습니다.")
+    picked = pick_gpus(node, candidates, gpu_indices)
     gpu_count = (1 if any((n.info or {}).get("gpus") for n in candidates) else 0) if gpus is None else gpus
+    gpu_count = len(picked) if picked else gpu_count
 
     # What the model is called: the chosen variant (yolo11n.pt → yolo11n), else the template itself.
     variant = Path(str(settings.get(manifest.variant, ""))).stem if manifest.variant else ""
@@ -383,6 +403,7 @@ def start_run(
             "unlabelled": unlabelled,
             "val_fraction": val_fraction,
             "gpus": gpu_count,
+            **({"gpu_indices": picked} if picked else {}),
             "min_vram_mb": min_vram_mb,
             "model_name": _slug(model_name),
             **({"nodes": list(dict.fromkeys(nodes))} if nodes else {}),
@@ -432,6 +453,7 @@ def start_run(
         min_vram_mb=min_vram_mb,
         nodes=[n.id for n in candidates] if len(candidates) > 1 else None,
         after=after,
+        gpu_indices=picked,
     )
     run.job_id = job.id
     services.audit(
@@ -464,6 +486,7 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         unlabelled=c.get("unlabelled", "exclude"),
         val_fraction=c.get("val_fraction", 0.2),
         gpus=c.get("gpus"),
+        gpu_indices=c.get("gpu_indices"),
         min_vram_mb=c.get("min_vram_mb", 0),
         base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,
@@ -504,6 +527,7 @@ def resume(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         unlabelled=c.get("unlabelled", "exclude"),
         val_fraction=c.get("val_fraction", 0.2),
         gpus=c.get("gpus"),
+        gpu_indices=c.get("gpu_indices"),
         min_vram_mb=c.get("min_vram_mb", 0),
         base_model_id=(c.get("base_model") or {}).get("id", ""),
         source_run_id=source.id,

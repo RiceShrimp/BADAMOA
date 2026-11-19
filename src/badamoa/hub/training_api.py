@@ -46,6 +46,7 @@ class NewRun(BaseModel):
     unlabelled: str = "exclude"
     val_fraction: float = 0.2
     gpus: int | None = None
+    gpu_indices: list[int] = Field(default_factory=list)  # these GPUs of the one server it trains on
     min_vram_mb: int = 0
     base_model_id: str = ""  # continue from this registered model's weights
     tags: list[str] = Field(default_factory=list)
@@ -94,6 +95,7 @@ class NewSweep(BaseModel):
     unlabelled: str = "exclude"
     val_fraction: float = 0.2
     gpus: int | None = None
+    gpu_indices: list[int] = Field(default_factory=list)  # these GPUs of the one server it trains on
     min_vram_mb: int = 0
     base_model_id: str = ""
     tags: list[str] = Field(default_factory=list)

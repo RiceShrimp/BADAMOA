@@ -905,6 +905,11 @@ td.empty {
   color: inherit;
   opacity: 0.7;
 }
+/* a chosen chip keeps its colours under the pointer (the plain button hover would leave dark text on dark) */
+button.chip.active:hover:not(:disabled) {
+  background: var(--primary-bg);
+  opacity: 0.88;
+}
 
 /* ---- tables ---- */
 .table-wrap {
@@ -1486,4 +1491,68 @@ input[type="file"][hidden] {
 }
 .kit-steps > button {
   justify-self: start;
+}
+
+/* ---- 설정 → 모델 종류: a kind's description, every version's memo ---- */
+button.link.template-name {
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  white-space: normal;
+}
+button.link.template-name:hover strong {
+  text-decoration: underline;
+}
+.template-about {
+  max-width: 300px;
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.memo-text {
+  white-space: pre-line;
+}
+.version-list {
+  display: grid;
+  gap: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.version-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+.version-item.current {
+  border-color: var(--accent);
+}
+.version-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.version-memo textarea {
+  width: 100%;
+  margin-top: 4px;
+}
+.version-memo-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+/* the version and its trial line keep room; a long Docker image name wraps instead of squeezing them */
+td.version-cell {
+  min-width: 200px;
+}
+td.env-cell {
+  min-width: 170px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
 }

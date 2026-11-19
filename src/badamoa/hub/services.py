@@ -416,20 +416,27 @@ def create_job(
     nodes: list[str] | None = None,
     after: str | None = None,
     role: str = "compute",
+    gpu_indices: list[int] | None = None,
 ) -> Job:
     """``nodes``: the job may run on any of these (``node_id`` pins one). ``after``: it starts once that job succeeded.
-    ``role``: the role a server needs to take it when it takes GPUs (autolabel: ``autolabel``)."""
+    ``role``: the role a server needs to take it when it takes GPUs (autolabel: ``autolabel``).
+    ``gpu_indices``: these GPUs of the pinned node and no others (the job waits until all of them are free)."""
     try:
         clean = validate_params(job_type, params or {})
     except ValueError as e:
         raise ServiceError(400, str(e)) from e
     spec = BUILTIN_JOB_TYPES[job_type]
-    gpu_count = spec.gpus if gpus is None else gpus
+    picked = sorted({int(i) for i in gpu_indices or []})
+    gpu_count = len(picked) if picked else spec.gpus if gpus is None else gpus
     if not 0 <= gpu_count <= 16 or min_vram_mb < 0:
         raise ServiceError(400, "GPU 수는 0~16, 최소 VRAM은 0 이상이어야 합니다.")
     requirements: dict[str, Any] = {}
     if gpu_count:
         requirements = {"roles": [role], "gpus": gpu_count, "min_vram_mb": min_vram_mb}
+    if picked:
+        if not node_id:
+            raise ServiceError(400, "GPU를 고르려면 작업이 갈 노드를 하나로 정해야 합니다.")
+        requirements["gpu_indices"] = picked
     if node_id:
         node = get_node(db, node_id)
         if not node.enabled:
@@ -481,7 +488,12 @@ def try_claim(db: Session, node: Node, settings: HubSettings) -> Job | None:
             if first is not None and first.status != "succeeded":
                 continue  # still waiting for what it needs (the images it trains on)
         gpu_indices: list[int] = []
-        if req.get("gpus"):
+        if req.get("gpu_indices"):  # these GPUs and no others: wait until every one of them is free
+            free = resources.free_gpus(node, settings, assigned, req.get("min_vram_mb", 0))
+            if not set(req["gpu_indices"]) <= set(free):
+                continue
+            gpu_indices = list(req["gpu_indices"])
+        elif req.get("gpus"):
             free = resources.free_gpus(node, settings, assigned, req.get("min_vram_mb", 0))
             if len(free) < req["gpus"]:
                 if not req.get("gpu_if_free"):
@@ -632,6 +644,24 @@ def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
         wanted = ", ".join(ROLE_LABELS.get(r, r) for r in req.get("roles", []))
         return f"{wanted} 역할을 가진 온라인 노드가 없습니다."
     need = req.get("gpus", 0)
+    if req.get("gpu_indices"):
+        assigned = resources.assignments(db)
+        node = eligible[0]
+        states = {g["index"]: g for g in resources.gpu_states(node, settings, assigned.get(node.id))}
+        waiting = []
+        for index in req["gpu_indices"]:
+            g = states.get(index)
+            if g is None:
+                waiting.append(f"GPU {index} 없음")
+            elif g["state"] == "job":
+                waiting.append(f"GPU {index} BADAMOA 작업 중")
+            elif g["state"] == "busy":
+                waiting.append(f"GPU {index} 사용 중" + (f" ({', '.join(g['users'])})" if g["users"] else ""))
+            elif g["state"] == "reserved":
+                waiting.append(f"GPU {index} 사람 전용")
+        if not waiting:
+            return "고른 GPU가 모두 비어 곧 배정됩니다."
+        return f"{node.name}의 고른 GPU를 기다리는 중입니다: " + " · ".join(waiting)
     if need:
         assigned = resources.assignments(db)
         details = []

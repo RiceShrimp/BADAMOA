@@ -23,7 +23,10 @@ export interface Template {
   version: string;
   versions: number;
   task: string;
+  /** What the model kind is: written on the Hub (설정 → 모델 종류), else what its bundle says. */
   description: string;
+  declared_description?: string; // what the bundle says
+  memo?: string; // this version's memo, written on the Hub
   license: string;
   builtin: boolean;
   data_format: string;
@@ -56,6 +59,20 @@ export interface Template {
 }
 
 /** The trial run before a template version is offered to everyone. */
+/** One version of a model kind (설정 → 모델 종류 → 버전). */
+export interface TemplateVersion {
+  id: string;
+  version: string;
+  title: string;
+  description: string; // what that bundle says
+  memo: string;
+  created_at: string;
+  uploaded_by: string;
+  builtin: boolean;
+  offered: boolean;
+  check: TemplateCheck;
+}
+
 export interface TemplateCheck {
   state: "pending" | "checking" | "passed" | "ok" | "failed" | "allowed" | "legacy";
   offered: boolean;
@@ -136,9 +153,20 @@ export interface NodeChoice {
   enabled: boolean;
   gpus: number;
   gpus_free: number;
+  /** Each GPU: free · busy (someone uses it) · job (a BADAMOA job) · reserved (kept for people) · offline */
+  gpu_list?: NodeGpu[];
   images: "" | "registered" | "received"; // "": they would be copied there first
   cache_free_gb: number | null;
   can_receive: boolean;
+}
+
+export interface NodeGpu {
+  index: number;
+  name: string;
+  memory_total_mb: number | null;
+  state: "free" | "busy" | "job" | "reserved" | "offline";
+  users: string[];
+  reserved: boolean;
 }
 
 export interface NodeChoices {

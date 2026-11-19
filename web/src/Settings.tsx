@@ -3,7 +3,7 @@ import { GpuBusyPanel, HubAutostartPanel, MyAccount, UsersPanel } from "./AdminS
 import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
 import { type Project, announceTrash } from "./catalogTypes";
-import type { Environment, EnvironmentNode, Template, TemplateCheck } from "./trainTypes";
+import type { Environment, EnvironmentNode, Template, TemplateCheck, TemplateVersion } from "./trainTypes";
 import { Badge, CopyBlock, Icon, Modal, timeAgo, useHubUrl, usePolling } from "./ui";
 
 const ENTRY_LABEL: Record<string, string> = { train: "학습", eval: "평가", predict: "추론", export: "내보내기" };
@@ -623,6 +623,162 @@ interface TemplateKitInfo {
   draft: boolean;
 }
 
+/** A model kind's description: what the table shows under its name. Admins write it here; empty, the bundle's own. */
+function TemplateAbout({ t, isAdmin, onClose, onSaved }: { t: Template; isAdmin: boolean; onClose: () => void; onSaved: () => void }) {
+  const [text, setText] = useState(t.description);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const declared = t.declared_description ?? "";
+  const save = async (value: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/templates/${t.id}/description`, { method: "PUT", body: { text: value } });
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={t.title} onClose={onClose}>
+      <p className="muted small">
+        {t.name} · 지금 버전 {t.version}
+        {t.versions > 1 ? ` (버전 ${t.versions}개)` : ""}
+        {t.builtin ? " · 기본 제공" : t.uploaded_by ? ` · 올린 사람 ${t.uploaded_by}` : ""}
+      </p>
+      {isAdmin ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save(text);
+          }}
+        >
+          <label>
+            설명
+            <textarea rows={7} value={text} onChange={(e) => setText(e.target.value)} placeholder={declared || "이 모델 종류가 무엇인지, 언제 쓰는지"} />
+          </label>
+          <p className="muted small">
+            이 표와 학습 창의 모델 종류 아래에 나옵니다. 비우고 저장하면 올린 파일(badamoa.toml)의 설명으로 돌아갑니다
+            {declared ? `: "${declared}"` : "."}
+          </p>
+          {error && <div className="error">{error}</div>}
+          <div className="modal-actions">
+            {text.trim() !== declared && declared && (
+              <button type="button" onClick={() => setText(declared)} disabled={busy}>
+                올린 파일의 설명으로
+              </button>
+            )}
+            <button type="button" onClick={onClose}>
+              취소
+            </button>
+            <button className="primary" disabled={busy || text.trim() === t.description}>
+              {busy ? "저장 중…" : "저장"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p className="memo-text">{t.description || "설명이 없습니다."}</p>
+      )}
+    </Modal>
+  );
+}
+
+const VERSION_STATE: Record<TemplateCheck["state"], string> = {
+  pending: "시험 전",
+  checking: "시험 실행 중",
+  passed: "통과 · 허용 대기",
+  ok: "허용됨",
+  failed: "시험 실패",
+  allowed: "통과 없이 허용",
+  legacy: "시험 실행 전에 등록",
+};
+
+/** One version's memo: read, or for admins written in place. */
+function VersionMemo({ v, isAdmin, onSaved }: { v: TemplateVersion; isAdmin: boolean; onSaved: () => void }) {
+  const [text, setText] = useState(v.memo);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setText(v.memo), [v.memo]);
+  if (!isAdmin) return v.memo ? <p className="memo-text">{v.memo}</p> : null;
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/templates/${v.id}/memo`, { method: "PUT", body: { text } });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="version-memo">
+      <textarea rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="이 버전의 메모 — 무엇이 바뀌었는지, 쓸 때 주의할 점" />
+      <div className="version-memo-actions">
+        {error && <span className="bad-text small">{error}</span>}
+        <button type="button" className="mini" onClick={() => void save()} disabled={busy || text.trim() === v.memo}>
+          {busy ? "저장 중…" : "메모 저장"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Every version of a model kind, newest first: when and by whom, its trial, the bundle's description, the memo. */
+function TemplateVersions({ t, isAdmin, onClose, onSaved }: { t: Template; isAdmin: boolean; onClose: () => void; onSaved: () => void }) {
+  const [versions, setVersions] = useState<TemplateVersion[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () =>
+    api<TemplateVersion[]>(`/templates/${t.id}/versions`)
+      .then(setVersions)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  useEffect(() => {
+    void load();
+  }, [t.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Modal title={`${t.title} — 버전`} onClose={onClose}>
+      {error && <div className="error">{error}</div>}
+      {!versions && !error && <p className="muted">불러오는 중…</p>}
+      <div className="version-list">
+        {versions?.map((v) => (
+          <div key={v.id} className={`version-item ${v.id === t.id ? "current" : ""}`}>
+            <div className="version-head">
+              <strong>{v.version}</strong>
+              {v.id === t.id && <span className="tag">지금 보이는 버전</span>}
+              <span className={`small ${v.check.state === "failed" ? "bad-text" : v.offered ? "" : "warn-text"}`}>
+                {v.builtin ? "기본 제공" : (VERSION_STATE[v.check.state] ?? v.check.state)}
+                {!v.builtin && !v.offered && v.check.state !== "failed" ? " · 다른 사람에게 안 보임" : ""}
+              </span>
+              <span className="muted small">
+                {v.uploaded_by ? `${v.uploaded_by} · ` : ""}
+                {timeAgo(v.created_at)}
+              </span>
+            </div>
+            {v.title !== t.title && <div className="muted small">이 버전의 이름: {v.title}</div>}
+            {v.description && <div className="muted small">올린 파일의 설명: {v.description}</div>}
+            <VersionMemo
+              v={v}
+              isAdmin={isAdmin}
+              onSaved={() => {
+                void load();
+                onSaved();
+              }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button type="button" onClick={onClose}>
+          닫기
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
   const [watching, setWatching] = useState(false);
   const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), watching ? 3000 : 20000, [watching]);
@@ -631,6 +787,8 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [guide, setGuide] = useState(false);
+  const [about, setAbout] = useState<Template | null>(null);
+  const [versionsOf, setVersionsOf] = useState<Template | null>(null);
   const picker = useRef<HTMLInputElement>(null);
 
   const upload = async (file: File | undefined) => {
@@ -762,13 +920,19 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
             {templates?.map((t) => (
               <tr key={t.id}>
                 <td>
-                  <strong>{t.title}</strong> {t.builtin && <span className="tag">기본 제공</span>}
+                  <button type="button" className="link template-name" onClick={() => setAbout(t)} title="설명 보기 · 고치기">
+                    <strong>{t.title}</strong>
+                  </button>{" "}
+                  {t.builtin && <span className="tag">기본 제공</span>}
                   {t.draft && !isAdmin && <span className="tag">내 초안</span>}
-                  <div className="muted small">{t.description || t.name}</div>
+                  <div className="muted small template-about">{t.description || t.name}</div>
                 </td>
-                <td className="num">
-                  {t.version}
+                <td className="num version-cell">
+                  <button type="button" className="link" onClick={() => setVersionsOf(t)} title="버전마다 메모 · 시험 실행 보기">
+                    {t.version}
+                  </button>
                   {t.versions > 1 && <span className="muted small"> 외 {t.versions - 1}개</span>}
+                  {t.memo && <div className="muted small template-about">{t.memo}</div>}
                   {(isAdmin || (t.draft && t.uploaded_by === user.username)) && !t.builtin && t.check && <TrialLine t={t} />}
                 </td>
                 <td>
@@ -778,7 +942,7 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
                     </span>
                   ))}
                 </td>
-                <td>
+                <td className="env-cell">
                   {t.environment.default || (t.environment.kind === "docker" ? `Docker ${t.environment.image}` : "자동 설치")}
                   {t.environment.installs && (
                     <div className="muted small">
@@ -834,6 +998,22 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
           </tbody>
         </table>
       </div>
+      {about && (
+        <TemplateAbout
+          t={templates?.find((x) => x.id === about.id) ?? about}
+          isAdmin={isAdmin}
+          onClose={() => setAbout(null)}
+          onSaved={() => void refresh()}
+        />
+      )}
+      {versionsOf && (
+        <TemplateVersions
+          t={templates?.find((x) => x.id === versionsOf.id) ?? versionsOf}
+          isAdmin={isAdmin}
+          onClose={() => setVersionsOf(null)}
+          onSaved={() => void refresh()}
+        />
+      )}
       {preparingFor && (
         <PrepareDialog
           template={templates?.find((t) => t.id === preparingFor.id) ?? preparingFor}

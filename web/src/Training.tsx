@@ -21,7 +21,9 @@ import {
   type ProjectTags,
   type Run,
   type RunDetail,
+  type NodeChoice,
   type NodeChoices,
+  type NodeGpu,
   type RunSync,
   STAGE_LABEL,
   type Template,
@@ -305,6 +307,114 @@ function SyncProgress({ sync }: { sync: RunSync }) {
 }
 
 /** Where a run may train: automatically where the images are, or on the servers picked. */
+/** Where a run will train, as the Hub decides it (``training.placement``): the node with the images, the picked
+ * ones that have them, or the one that receives them first. GPUs can be picked by number only when it is one. */
+function trainTargets(choices: NodeChoices, mode: "auto" | "pick", picked: string[]): NodeChoice[] {
+  if (mode === "auto") return choices.nodes.filter((n) => n.id === choices.source);
+  const chosen = choices.nodes.filter((n) => picked.includes(n.id));
+  const ready = chosen.filter((n) => n.images);
+  if (ready.length) return ready;
+  const receiver = [...chosen].sort((a, b) => Number(b.status === "online") - Number(a.status === "online") || b.gpus - a.gpus)[0];
+  return receiver ? [receiver] : [];
+}
+
+export type GpuPick = "auto" | "cpu" | number[];
+
+const GPU_STATE: Record<NodeGpu["state"], string> = {
+  free: "비어 있음",
+  busy: "사용 중",
+  job: "다른 학습 중",
+  reserved: "사람 전용",
+  offline: "오프라인",
+};
+
+/** The GPUs of the node a run trains on: 자동 (a free one), CPU only, or the ones ticked (people's GPUs cannot be). */
+function GpuField({
+  targets,
+  pick,
+  onPick,
+  count,
+  onCount,
+}: {
+  targets: NodeChoice[];
+  pick: GpuPick;
+  onPick: (pick: GpuPick) => void;
+  count: string;
+  onCount: (count: string) => void;
+}) {
+  const one = targets.length === 1 ? targets[0] : null;
+  const gpus = one?.gpu_list ?? [];
+  if (!one || gpus.length === 0) {
+    // Several servers may take it (or one without GPUs): only how many, up to what one of them can give.
+    const most = Math.max(0, ...targets.map((n) => (n.gpu_list ?? []).filter((g) => !g.reserved).length));
+    const kept = targets.some((n) => (n.gpu_list ?? []).some((g) => g.reserved));
+    return (
+      <label>
+        GPU 수
+        <select value={count} onChange={(e) => onCount(e.target.value)}>
+          <option value="">자동{most ? " (빈 GPU 1개)" : ""}</option>
+          <option value="0">CPU만</option>
+          {Array.from({ length: most }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={String(n)}>
+              {n}개
+            </option>
+          ))}
+        </select>
+        {kept && <span className="muted small">사람 전용 GPU는 고를 수 없어 셈에서 뺐습니다.</span>}
+      </label>
+    );
+  }
+  const ticked = Array.isArray(pick) ? pick : [];
+  const toggle = (index: number) => {
+    const next = ticked.includes(index) ? ticked.filter((i) => i !== index) : [...ticked, index].sort((a, b) => a - b);
+    onPick(next.length ? next : "auto");
+  };
+  const waiting = gpus.filter((g) => ticked.includes(g.index) && g.state !== "free");
+  return (
+    <div className="gpu-field">
+      <div className="eyebrow">GPU — {one.name}</div>
+      <div className="gpu-pick">
+        <button type="button" className={`chip ${pick === "auto" ? "active" : ""}`} onClick={() => onPick("auto")}>
+          자동
+        </button>
+        <button type="button" className={`chip ${pick === "cpu" ? "active" : ""}`} onClick={() => onPick("cpu")}>
+          CPU만
+        </button>
+        {gpus.map((g) => {
+          const label = `GPU ${g.index}${g.name ? ` · ${g.name.replace(/^NVIDIA (GeForce )?/, "")}` : ""}`;
+          const who = g.users.length ? g.users.join(", ") : "";
+          const why = g.reserved
+            ? `사람 전용${who ? ` · ${who}` : ""}`
+            : g.state === "busy" && who
+              ? `사용 중: ${who}`
+              : GPU_STATE[g.state];
+          return (
+            <button
+              type="button"
+              key={g.index}
+              className={`chip gpu ${g.state} ${ticked.includes(g.index) ? "active" : ""}`}
+              disabled={g.reserved}
+              aria-pressed={ticked.includes(g.index)}
+              title={g.reserved ? "사람 전용으로 빼 둔 GPU입니다 (노드 설정)" : why}
+              onClick={() => toggle(g.index)}
+            >
+              {label} <span>{why}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="muted small">
+        {pick === "auto"
+          ? "비어 있는 GPU 1개를 씁니다."
+          : pick === "cpu"
+            ? "GPU 없이 CPU로 학습합니다."
+            : `GPU ${ticked.join(", ")} (${ticked.length}개)로 학습합니다.` +
+              (waiting.length ? ` 지금 쓰이고 있는 GPU ${waiting.map((g) => g.index).join(", ")}이(가) 비면 시작합니다.` : "")}
+      </p>
+    </div>
+  );
+}
+
 function NodeField({
   choices,
   mode,
@@ -1060,7 +1170,7 @@ function NewRun({
   const [values, setValues] = useState<Record<string, FormValue>>({});
   const [classes, setClasses] = useState<LabelClass[]>([]);
   const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
-  const [chosen, setChosen] = useState<number[]>([]); // empty = all classes
+  const [chosen, setChosen] = useState<number[]>([]); // the classes ticked (every one when the version loads)
   const [extra, setExtra] = useState({ environment: "", gpus: "", name: "", model_name: "", base: "" });
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -1077,6 +1187,7 @@ function NewRun({
   const [nodeMode, setNodeMode] = useState<"auto" | "pick">("auto");
   const [pickedNodes, setPickedNodes] = useState<string[]>([]);
   const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
+  const [gpuPick, setGpuPick] = useState<GpuPick>("auto");
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -1106,12 +1217,28 @@ function NewRun({
     if (!release) return setClasses([]);
     void api<ReleaseInfo>(`/releases/${release}`).then((info) => {
       setClasses(info.label_space.classes);
+      setChosen(info.label_space.classes.map((c) => c.id)); // every class, until some are left out
       setReleaseInfo(info);
     });
     void api<NodeChoices>(`/releases/${release}/nodes`).then(setChoices);
   }, [release]);
 
   const template = templates?.find((t) => t.name === templateName);
+  // Where it trains decides the GPUs on offer: pick again whenever that changes.
+  const targets = choices ? trainTargets(choices, nodeMode, pickedNodes) : [];
+  const targetKey = targets.map((n) => n.id).join(",");
+  useEffect(() => setGpuPick("auto"), [targetKey]);
+  const single = targets.length === 1 && (targets[0].gpu_list ?? []).length > 0;
+  const gpuBody = single
+    ? gpuPick === "auto"
+      ? { gpus: null }
+      : gpuPick === "cpu"
+        ? { gpus: 0 }
+        : { gpus: gpuPick.length, gpu_indices: gpuPick }
+    : { gpus: extra.gpus === "" ? null : Number(extra.gpus) };
+  // every class ticked is sent as "all" (also what a version with classes added later means)
+  const sentClasses = chosen.length === classes.length ? [] : chosen;
+  const noClass = classes.length > 0 && chosen.length === 0;
   const fields = (template?.params ?? []).filter((p) => p.type !== "object");
   const basic = fields.filter((p) => !p.advanced);
   const advanced = fields.filter((p) => p.advanced);
@@ -1145,7 +1272,7 @@ function NewRun({
 
   // Whether the version fits the model, asked as one picks: what would stop the start, and what to know first.
   const [preflight, setPreflight] = useState<{ problems: string[]; notes: string[] } | null>(null);
-  const checkKey = JSON.stringify([release, template?.id, chosen, nodeMode, pickedNodes, trials.map((t) => t.name), values]);
+  const checkKey = JSON.stringify([release, template?.id, sentClasses, nodeMode, pickedNodes, trials.map((t) => t.name), values]);
   useEffect(() => {
     const nodes = nodeMode === "pick" ? pickedNodes : [];
     if (!release || !template || (nodeMode === "pick" && nodes.length === 0)) {
@@ -1156,7 +1283,7 @@ function NewRun({
     const timer = window.setTimeout(() => {
       const space = Object.fromEntries(trials.map((t) => [t.name, {}]));
       void api<{ problems: string[]; notes: string[] }>("/runs/check", {
-        body: { release_id: release, template: template.id, params: collectParams(), classes: chosen, nodes, space },
+        body: { release_id: release, template: template.id, params: collectParams(), classes: sentClasses, nodes, space },
       })
         .then((found) => !stale && setPreflight(found))
         .catch(() => !stale && setPreflight(null));
@@ -1186,6 +1313,11 @@ function NewRun({
       delete params[t.name];
     }
     const ranged = Object.values(space).some((s) => s.min !== undefined);
+    if (noClass) {
+      setError("학습할 클래스를 하나 이상 고르세요.");
+      setBusy(false);
+      return;
+    }
     if (nodeMode === "pick" && pickedNodes.length === 0) {
       setError("학습할 노드를 하나 이상 고르세요.");
       setBusy(false);
@@ -1205,8 +1337,8 @@ function NewRun({
             max_runs: drawCount,
             parallel,
             metric: goalMetric,
-            gpus: extra.gpus === "" ? null : Number(extra.gpus),
-            classes: chosen,
+            ...gpuBody,
+            classes: sentClasses,
             name: extra.name,
             base_model_id: extra.base,
             nodes,
@@ -1222,8 +1354,8 @@ function NewRun({
           template: template.id,
           environment: extra.environment,
           params,
-          gpus: extra.gpus === "" ? null : Number(extra.gpus),
-          classes: chosen,
+          ...gpuBody,
+          classes: sentClasses,
           name: extra.name,
           model_name: extra.model_name,
           base_model_id: extra.base,
@@ -1315,6 +1447,15 @@ function NewRun({
               sweep={trials.length > 0}
             />
           )}
+          {choices && (
+            <GpuField
+              targets={targets}
+              pick={gpuPick}
+              onPick={setGpuPick}
+              count={extra.gpus}
+              onCount={(gpus) => setExtra({ ...extra, gpus })}
+            />
+          )}
 
           <details className="advanced">
             <summary>
@@ -1347,15 +1488,17 @@ function NewRun({
                   ))}
                 </select>
               </label>
-              <label>
-                GPU 수
-                <input type="number" min={0} max={16} value={extra.gpus} onChange={setExtraField("gpus")} placeholder="자동" />
-              </label>
             </div>
             {classes.length > 0 && (
               <>
-                <div className="eyebrow">
-                  학습할 클래스 — {chosen.length === 0 ? `전체 ${classes.length}개` : `${chosen.length}개 선택`}
+                <div className="eyebrow class-pick-head">
+                  학습할 클래스 — {chosen.length === classes.length ? `전체 ${classes.length}개` : `${chosen.length}/${classes.length}개`}
+                  <button type="button" className="link small" onClick={() => setChosen(classes.map((c) => c.id))}>
+                    모두 선택
+                  </button>
+                  <button type="button" className="link small" onClick={() => setChosen([])}>
+                    모두 해제
+                  </button>
                 </div>
                 <div className="class-pick">
                   {classes.map((c) => (
@@ -1430,12 +1573,13 @@ function NewRun({
               ))}
             </div>
           )}
+          {noClass && <div className="error">학습할 클래스를 하나 이상 고르세요 (세부 설정).</div>}
           {error && <div className="error">{error}</div>}
           <div className="modal-actions">
             <button type="button" onClick={onClose}>
               취소
             </button>
-            <button className="primary" disabled={busy || !release || !template || blocked}>
+            <button className="primary" disabled={busy || !release || !template || blocked || noClass}>
               {trials.length > 0 ? "탐색 시작" : "학습 시작"}
             </button>
           </div>
