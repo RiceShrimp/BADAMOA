@@ -173,19 +173,16 @@ def run(db: Session, release: Release) -> QaRun:
     if len(per_class) < 3:  # a dataset of one or two classes has no "rare" one
         rare = set()
 
-    db.execute(delete(QaResult).where(QaResult.release_id == release.id))
+    # Everything is read and judged first, and only then written: the database's write lock is held for the
+    # writing alone (deleting the old results first held it for the whole check, 55 s on 684,049 images, and
+    # every other write of the Hub waited and failed: "database is locked").
     counts = Counter()
     # images nobody labelled: no labels to read
     waiting = db.scalars(
         select(ReleaseItem.item_id).where(ReleaseItem.release_id == release.id, ReleaseItem.state == "unlabelled")
     ).all()
-    for start in range(0, len(waiting), CHUNK):
-        part = waiting[start : start + CHUNK]
-        db.execute(
-            insert(QaResult),
-            [{"release_id": release.id, "check": "unlabelled", "item_id": i, "boxes": [], "note": ""} for i in part],
-        )
-        counts["unlabelled"] += len(part)
+    counts["unlabelled"] = len(waiting)
+    flagged: list[dict[str, Any]] = []
     # the images with labels, in order of their number, each label record read once as text and parsed here
     # (faster than SQLAlchemy turning each into a Python value); images without labels fail no check
     last = 0
@@ -201,16 +198,22 @@ def run(db: Session, release: Release) -> QaRun:
         ).all()
         if not rows:
             break
-        found = []
         for item_id, raw, width, height in rows:
             boxes = json.loads(raw) if isinstance(raw, str) else raw
             for check, (indices, note) in _flags(boxes or [], width or 1, height or 1, rare, task, names).items():
                 row = {"release_id": release.id, "check": check, "item_id": item_id, "boxes": indices, "note": note[:255]}
-                found.append(row)
-        if found:
-            db.execute(insert(QaResult), found)
-            counts.update(f["check"] for f in found)
+                flagged.append(row)
+                counts[check] += 1
         last = rows[-1][0]
+    db.execute(delete(QaResult).where(QaResult.release_id == release.id))
+    for start in range(0, len(waiting), CHUNK):
+        part = waiting[start : start + CHUNK]
+        db.execute(
+            insert(QaResult),
+            [{"release_id": release.id, "check": "unlabelled", "item_id": i, "boxes": [], "note": ""} for i in part],
+        )
+    for start in range(0, len(flagged), CHUNK):
+        db.execute(insert(QaResult), flagged[start : start + CHUNK])
     if done is None:
         done = QaRun(release_id=release.id)
         db.add(done)
