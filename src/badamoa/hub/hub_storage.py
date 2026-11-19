@@ -178,26 +178,30 @@ def shrink_thumbs(database: Any, settings: HubSettings, limit: int | None = None
         with database.session() as db:
             if importing(db):
                 break
-            keys = db.scalars(
-                select(Item.thumb_key).where(Item.thumb_v == 0, Item.thumb_key.is_not(None)).distinct().limit(SHRINK_BATCH)
+            # by image number: the thumbnail's name has no index, and matching on it read every image each time
+            # (690,000 images: a few a second instead of a few hundred)
+            rows = db.execute(
+                select(Item.id, Item.thumb_key).where(Item.thumb_v == 0, Item.thumb_key.is_not(None)).limit(SHRINK_BATCH)
             ).all()
-            if not keys:
+            if not rows:
                 break
-            for key in keys:
+            by_key: dict[str, list[int]] = {}
+            for item_id, key in rows:
+                by_key.setdefault(key, []).append(item_id)
+            for key, ids in by_key.items():
                 try:
                     data = storage.get_blob(key)
                     small = None if thumb_current(data) else shrink(data)
                 except Exception:  # noqa: BLE001 - gone or unreadable: left as it is, not tried again
                     small = None
                 if small is None:
-                    db.execute(update(Item).where(Item.thumb_key == key).values(thumb_v=1))
+                    db.execute(update(Item).where(Item.id.in_(ids)).values(thumb_v=1))
                     continue
+                # the same old thumbnail makes the same new one: images sharing it in a later batch get this file too
                 new = storage.put_blob(small)
-                db.execute(
-                    update(Item).where(Item.thumb_key == key).values(thumb_key=new, thumb_bytes=len(small), thumb_v=1)
-                )
+                db.execute(update(Item).where(Item.id.in_(ids)).values(thumb_key=new, thumb_bytes=len(small), thumb_v=1))
                 made += 1
-        _shrinking["done"] += len(keys)
+        _shrinking["done"] += len(rows)
         time.sleep(0.05)  # let the requests in between batches
     return made
 
