@@ -16,6 +16,8 @@ badamoa template check .
 badamoa template push . --hub http://<hub>:8470 --token <API 토큰>
 ```
 
-코드를 바꿔 다시 올릴 때는 `version`을 올립니다. 가중치나 데이터는 이 폴더에 넣지 않습니다.
+올리면 Hub가 학습 서버 한 대에서 작은 합성 데이터로 짧게 돌려 봅니다(학습 → 테스트 · 평가 · 내보내기). 통과하면 모두의 학습 화면에 나오고, 실패하면 관리자 설정의 모델 종류에 실패한 단계와 이유가 보입니다. 코드는 `run.check`(True)를 보고 몇 step만에 끝내도 됩니다. 시험 실행의 설정은 `badamoa.toml`의 `[check]`로 바꿉니다.
+
+코드를 바꿔 다시 올릴 때는 `version`을 올립니다. 새 버전이 시험 실행 중이거나 실패해도 다른 사람은 그 전 버전을 그대로 씁니다. 가중치나 데이터는 이 폴더에 넣지 않습니다.
 
 `badamoa_sdk.py`는 BADAMOA가 실행할 때 자동으로 제공하므로 지워도 됩니다. 폴더에 두면 BADAMOA 밖에서도 `python train.py`로 돌려 볼 수 있습니다.

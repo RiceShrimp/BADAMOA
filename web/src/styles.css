@@ -1444,3 +1444,14 @@ button.legend-item:hover {
   padding: 6px 10px;
   font-size: 13px;
 }
+
+/* a template version's trial run, under its version in 설정 → 모델 종류 (admins) */
+.trial-line {
+  display: grid;
+  gap: 2px;
+  max-width: 340px;
+  margin-top: 4px;
+  font-variant-numeric: normal;
+  text-align: left;
+  white-space: normal;
+}

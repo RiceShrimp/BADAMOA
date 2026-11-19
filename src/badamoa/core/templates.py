@@ -88,6 +88,15 @@ class DataSpec(BaseModel):
         return self.classes.min or (2 if task == "classify" else 1)
 
 
+class CheckSpec(BaseModel):
+    """How the trial run before a version is offered goes (``[check]``): short, on a CPU unless ``gpu``."""
+
+    params: dict[str, Any] = Field(default_factory=dict)  # settings only the trial run uses, e.g. epochs = 1
+    timeout_min: int = 15  # for the code's own runs; preparing the environment does not count
+    gpu: bool = False  # code that cannot run on a CPU takes one GPU for the trial
+    skip: list[str] = Field(default_factory=list)  # entry points not to try, e.g. ["export"]
+
+
 # What each task's labels become in each format the node writes: "" as they are, a note when part of
 # them is left out. A pair not here cannot be written, and a template declaring it is turned away.
 _FITS = {
@@ -127,6 +136,7 @@ class TemplateManifest(BaseModel):
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     environment: EnvironmentSpec = Field(default_factory=EnvironmentSpec)
     data: DataSpec = Field(default_factory=DataSpec)
+    check: CheckSpec = Field(default_factory=CheckSpec)
     # What the checks found worth saying but not worth refusing (set by BADAMOA, not written by hand)
     notes: list[str] = Field(default_factory=list)
 
@@ -262,8 +272,30 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
             raise TemplateError(f"기본값이 맞지 않습니다 — {e}") from e
     if manifest.variant and manifest.variant not in manifest.params:
         raise TemplateError(f"variant가 가리키는 설정 {manifest.variant}이 [params]에 없습니다.")
+    _check_check(manifest)
     manifest.title = manifest.title or manifest.name
     return manifest
+
+
+def _check_check(manifest: TemplateManifest) -> None:
+    check = manifest.check
+    if not 1 <= check.timeout_min <= 180:
+        raise TemplateError("[check] timeout_min은 1~180분이어야 합니다.")
+    for entry in check.skip:
+        if entry == "train":
+            raise TemplateError("[check] skip에 train은 넣을 수 없습니다. 시험 실행은 학습부터 합니다.")
+        if entry not in manifest.entrypoints:
+            raise TemplateError(f"[check] skip의 {entry}은(는) [entrypoints]에 없는 진입점입니다.")
+    try:
+        check_params(manifest)
+    except TemplateError as e:
+        raise TemplateError(f"[check] params — {e}") from e
+
+
+def check_params(manifest: TemplateManifest) -> dict[str, Any]:
+    """The settings of a trial run: the defaults, one epoch where there is such a setting, and ``[check] params``."""
+    short = {"epochs": 1} if "epochs" in manifest.params else {}
+    return resolve_params(manifest, {**short, **manifest.check.params})
 
 
 def _check_requirements(requirements: list[str]) -> None:

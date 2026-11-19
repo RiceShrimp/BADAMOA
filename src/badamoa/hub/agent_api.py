@@ -23,7 +23,7 @@ from badamoa.core.protocol import (
     RegisterResponse,
 )
 
-from . import asks, cleanup, node_data, node_storage, originals, registry, services, sweeps, transfers
+from . import asks, cleanup, node_data, node_storage, originals, registry, services, sweeps, template_checks, transfers
 from .db import utcnow
 from .deps import Hub, bearer_token, current_node, db_session, get_hub
 from .models import Node
@@ -42,12 +42,17 @@ def register(body: RegisterRequest, db: Session = Depends(db_session)) -> Regist
 
 @router.post("/heartbeat", response_model=HeartbeatResponse)
 def heartbeat(
-    body: HeartbeatRequest, request: Request, node: Node = Depends(current_node), db: Session = Depends(db_session)
+    body: HeartbeatRequest,
+    request: Request,
+    node: Node = Depends(current_node),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
 ) -> HeartbeatResponse:
     seen = request.client.host if request.client else ""
     cancel_ids = services.heartbeat(db, node, body, seen_from=seen)
     if body.storage:
         node_storage.save(node, body.storage)
+    template_checks.queue_legacy(db, hub.settings, node)  # versions from before trials, once a server can try them
     db.commit()
     days = cleanup.get_policy(db)["workdir_days"]
     return HeartbeatResponse(
@@ -192,6 +197,7 @@ def complete(
     transfers.on_job_finished(db, job)
     node_data.on_job_finished(db, job)
     node_storage.on_job_finished(db, job)
+    template_checks.on_job_finished(db, job)
     db.commit()
     sweeps.on_job_finished(job)  # a search may start its next run
     return {"status": job.status}

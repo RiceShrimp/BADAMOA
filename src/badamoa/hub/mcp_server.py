@@ -682,9 +682,9 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         기본 제공: yolo · torchvision(검출), classify(분류: ResNet 등). 사내에서 등록한 것도 함께 나옵니다.
         task로 detect 또는 classify만 볼 수 있습니다. 프로젝트의 task와 같은 템플릿만 그 프로젝트에서 쓸 수 있습니다.
         """
-        user_of(ctx)
+        user = user_of(ctx)
         with hub.db.session() as db:
-            return registry.list_templates(db, task=task)
+            return registry.list_templates(db, task=task, admin=user.role == "admin")
 
     @mcp.tool(title="모델 종류의 환경 미리 준비", annotations=WRITE)
     @guarded

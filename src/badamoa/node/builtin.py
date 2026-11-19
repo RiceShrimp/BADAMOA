@@ -90,6 +90,12 @@ def train_run(params: dict[str, Any]) -> dict[str, Any]:
     return trainer.run(params)
 
 
+def template_check(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import checker
+
+    return checker.run(params)
+
+
 def model_run(params: dict[str, Any]) -> dict[str, Any]:
     from badamoa.node import modelops
 
@@ -181,6 +187,7 @@ HANDLERS = {
     "data.check": data_check,
     "train.run": train_run,
     "model.run": model_run,
+    "template.check": template_check,
     "env.check": env_check,
     "env.prepare": env_prepare,
     "env.remove": env_remove,

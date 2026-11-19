@@ -31,3 +31,12 @@ train = "python train.py --config {config}"
 # default = 0.001
 # group = "최적화"
 # advanced = true
+
+# Hub에 올리면 학습 서버 한 대가 작은 합성 데이터로 짧게 돌려 본 뒤(학습 → 테스트 · 평가 · 내보내기) 모두에게 보입니다.
+# 그 시험 실행에서만 쓸 설정이나 시간을 바꾸려면:
+#
+# [check]
+# params = { epochs = 1, imgsz = 64 }   # 설정에 epochs가 있으면 따로 적지 않아도 1로 돕니다
+# timeout_min = 15                      # 환경 준비를 뺀 시간
+# gpu = false                           # CPU로 돌 수 없는 코드만 true (GPU 1장을 짧게 씁니다)
+# skip = []                             # 시험하지 않을 진입점. 예: ["export"]

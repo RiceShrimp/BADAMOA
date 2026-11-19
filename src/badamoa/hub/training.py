@@ -16,7 +16,7 @@ from badamoa.core.protocol import TERMINAL_STATUSES, TrainFinish, TrainReport
 from badamoa.core.storage import Storage
 from badamoa.core.templates import RESERVED, TemplateError, resolve_params
 
-from . import catalog, node_data, registry, resources, services, transfers
+from . import catalog, node_data, registry, resources, services, template_checks, transfers
 from .catalog_models import (
     Dataset,
     Item,
@@ -195,6 +195,7 @@ def check_run(
     space: dict[str, Any] | None = None,
     environment: str = "",
     gpus: int | None = None,
+    user: User | None = None,
 ) -> dict[str, list[str]]:
     """What starting this run would run into, without starting it: ``problems`` stop it, ``notes`` do not.
 
@@ -202,6 +203,7 @@ def check_run(
     ``space``: the settings a search would try (left out of the check of the settings).
     """
     problems: list[str] = []
+    warnings: list[str] = []
     try:
         release = catalog.get_release(db, release_id)
         catalog.require_ready(release)
@@ -214,6 +216,13 @@ def check_run(
             short = task_names.short
             why = f"{row.title}은(는) {short(manifest.task)}용이고 이 데이터셋은 {short(task)}입니다."
             return {"problems": [why], "notes": []}
+        if not template_checks.offered(row):
+            if user is None or user.role != "admin":
+                return {"problems": [template_checks.NOT_YET], "notes": []}
+            trial = template_checks.view(row)
+            said = f" ({trial['reason']})" if trial.get("reason") else ""
+            not_yet = f"{row.title} {row.version}은(는) 시험 실행을 통과하지 않았습니다{said}."
+            warnings.append(f"{not_yet} 관리자만 쓸 수 있습니다.")
         try:
             resolve_params(manifest, {k: v for k, v in (params or {}).items() if k not in (space or {})})
         except TemplateError as e:
@@ -225,7 +234,7 @@ def check_run(
     except ServiceError as e:
         return {"problems": [*problems, e.message], "notes": []}
     found, notes = data_checks(db, release, manifest, chosen, candidates, val_fraction)
-    return {"problems": problems + found + fitting(candidates, env, gpus)[1], "notes": notes}
+    return {"problems": problems + found + fitting(candidates, env, gpus)[1], "notes": warnings + notes}
 
 
 def fitting(nodes: list[Node], env: dict[str, Any], gpus: int | None) -> tuple[list[Node], list[str]]:
@@ -297,6 +306,7 @@ def start_run(
     project = catalog.get_project(db, dataset.project_id)
     task = catalog.dataset_task(dataset)
     row = registry.template_for(db, project.settings, task, template)
+    template_checks.require_offered(row, user)
     manifest = registry.manifest_of(row)
     if not task_names.same(manifest.task, task):
         short = task_names.short

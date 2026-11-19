@@ -39,6 +39,7 @@ _ADDED_COLUMNS = [
     ("environments", "image", "VARCHAR(512) DEFAULT ''"),
     ("releases", "review", "JSON DEFAULT '{}'"),
     ("nodes", "storage", "JSON DEFAULT '{}'"),
+    ("templates", "trial", "JSON DEFAULT '{}'"),
 ]
 
 

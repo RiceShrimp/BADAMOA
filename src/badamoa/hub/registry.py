@@ -78,11 +78,11 @@ def template_for(db: Session, settings: dict[str, Any] | None, task: str, ref: s
     """The template a run on data of ``task`` uses when none is named: the project's last choice
     if it trains that task, else the task's built-in one, else any template that declares the task."""
     if ref:
-        return get_template(db, ref)
+        return get_template(db, ref, offered_only=True)
     saved = (settings or {}).get("template")
     if saved:
         try:
-            row = get_template(db, saved)
+            row = get_template(db, saved, offered_only=True)
         except ServiceError:
             row = None
         if row is not None and task_names.same(row.task, task):
@@ -103,16 +103,20 @@ def template_for(db: Session, settings: dict[str, Any] | None, task: str, ref: s
     )
 
 
-def get_template(db: Session, ref: str) -> Template:
-    """By id, or by name (the newest version)."""
+def get_template(db: Session, ref: str, offered_only: bool = False) -> Template:
+    """By id, or by name: the newest version, or with ``offered_only`` the newest one offered to everyone
+    (a version still being tried, or that failed, leaves the one before in use)."""
+    from . import template_checks
+
     row = db.get(Template, ref)
     if row is None:
-        row = db.scalar(
+        versions = db.scalars(
             select(Template)
             .where(Template.name == ref, Template.deleted_at.is_(None))
             .order_by(Template.created_at.desc(), Template.id)
-            .limit(1)
-        )
+        ).all()
+        row = next((v for v in versions if template_checks.offered(v)), None) if offered_only else None
+        row = row or (versions[0] if versions else None)
     if row is None or row.deleted_at is not None:
         raise ServiceError(404, f"모델 템플릿을 찾을 수 없습니다: {ref}")
     return row
@@ -122,7 +126,11 @@ def manifest_of(row: Template) -> TemplateManifest:
     return TemplateManifest(**row.manifest)
 
 
-def template_view(db: Session, row: Template, versions: int = 1, models: int = 0) -> dict[str, Any]:
+def template_view(
+    db: Session, row: Template, versions: int = 1, models: int = 0, offered_version: str = ""
+) -> dict[str, Any]:
+    from . import template_checks
+
     manifest = manifest_of(row)
     return {
         "id": row.id,
@@ -151,19 +159,33 @@ def template_view(db: Session, row: Template, versions: int = 1, models: int = 0
         "bytes": row.bytes,
         "models": models,
         "created_at": iso(row.created_at),
+        # the trial run before it is offered; for admins, the version everyone else gets when this one is not
+        "check": template_checks.view(row),
+        "offered_version": offered_version,
     }
 
 
-def list_templates(db: Session, include_hidden: bool = False, task: str = "") -> list[dict[str, Any]]:
-    """The newest version of each template, optionally only those for one task."""
+def list_templates(
+    db: Session, include_hidden: bool = False, task: str = "", admin: bool = False
+) -> list[dict[str, Any]]:
+    """Each template once, optionally only those for one task: the newest version offered to everyone, or
+    for ``admin`` the newest version whatever its trial says (with the one everyone else gets)."""
+    from . import template_checks
+
     rows = db.scalars(
         select(Template).where(Template.deleted_at.is_(None)).order_by(Template.created_at.desc(), Template.id)
     ).all()
     counts: dict[str, int] = {}
     newest: dict[str, Template] = {}
+    usable: dict[str, Template] = {}
     for row in rows:
         counts[row.name] = counts.get(row.name, 0) + 1
-        newest.setdefault(row.name, row)
+        if admin:
+            newest.setdefault(row.name, row)
+        if template_checks.offered(row):
+            usable.setdefault(row.name, row)
+            if not admin:
+                newest.setdefault(row.name, row)
     models = dict(
         db.execute(
             select(ModelVersion.trainer, func.count())
@@ -176,7 +198,16 @@ def list_templates(db: Session, include_hidden: bool = False, task: str = "") ->
     ]
     first = list(dict.fromkeys(DEFAULT_BY_TASK.values()))  # each task's default template leads, detection first
     shown.sort(key=lambda t: (first.index(t.name) if t.name in first else len(first), not t.builtin, t.title.lower()))
-    return [template_view(db, t, counts[t.name], models.get(t.name, 0)) for t in shown]
+    return [
+        template_view(
+            db,
+            t,
+            counts[t.name],
+            models.get(t.name, 0),
+            usable[t.name].version if admin and t.name in usable and usable[t.name] is not t else "",
+        )
+        for t in shown
+    ]
 
 
 def delete_template(db: Session, user: User, template_id: str) -> None:

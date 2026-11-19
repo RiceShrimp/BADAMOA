@@ -457,7 +457,7 @@ class NodeAgent:
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
                     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # match nvidia-smi numbering
-                if job["type"].startswith(("data.", "train.", "model.", "env.")):
+                if job["type"].startswith(("data.", "train.", "model.", "env.", "template.")):
                     # These jobs exchange data with the Hub themselves (import chunks, metrics, weights).
                     env["BADAMOA_HUB_URL"] = self.config.hub_url
                     env["BADAMOA_NODE_TOKEN"] = self.config.node_token
@@ -509,7 +509,7 @@ class NodeAgent:
             error = f"{type(e).__name__}: {e}"
             emit(error, "system")
         finally:
-            if status != "succeeded" and job["type"].startswith(("train.", "model.")):
+            if status != "succeeded" and job["type"].startswith(("train.", "model.", "template.")):
                 containers.kill(job_id)  # a container its stopped process left behind
             if status != "succeeded" and job["type"].startswith("train."):
                 self._keep_checkpoint(job_id, emit)
@@ -519,7 +519,7 @@ class NodeAgent:
                     break
                 time.sleep(0.5)
             self._complete(job_id, status, result, error)
-            changes = job["type"].startswith(("env.", "train.", "model.")) or job["type"] == "node.clean"
+            changes = job["type"].startswith(("env.", "train.", "model.", "template.")) or job["type"] == "node.clean"
             if changes:
                 self._envs_changed.set()  # tell the Hub which environments are here now
             if changes or job["type"] in ("data.sync", "data.check"):

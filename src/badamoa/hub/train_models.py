@@ -38,6 +38,9 @@ class Template(Base):
     bytes: Mapped[int] = mapped_column(Integer, default=0)
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The trial run before the version is offered (``template_checks``): state, the step that failed and
+    # why, what each step did, where and when.
+    trial: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

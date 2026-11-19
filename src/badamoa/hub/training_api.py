@@ -229,9 +229,9 @@ class RunCheck(BaseModel):
 
 
 @router.post("/runs/check")
-def check_run(body: RunCheck, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+def check_run(body: RunCheck, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
     """What starting this run would run into, without starting it: ``problems`` stop it, ``notes`` do not."""
-    return training.check_run(db, **body.model_dump())
+    return training.check_run(db, **body.model_dump(), user=user)
 
 
 @router.get("/runs/{run_id}")

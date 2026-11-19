@@ -1,12 +1,68 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { GpuBusyPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
 import { type Project, announceTrash } from "./catalogTypes";
-import type { Environment, EnvironmentNode, Template } from "./trainTypes";
+import type { Environment, EnvironmentNode, Template, TemplateCheck } from "./trainTypes";
 import { Badge, CopyBlock, Icon, Modal, timeAgo, useHubUrl, usePolling } from "./ui";
 
 const ENTRY_LABEL: Record<string, string> = { train: "학습", eval: "평가", predict: "추론", export: "내보내기" };
+const STEP_LABEL: Record<string, string> = { data: "시험 데이터", env: "환경", train: "학습", predict: "테스트", eval: "평가", export: "내보내기" };
+
+/** A template version's trial as an admin reads it: one line, the details on hover, the log a click away. */
+function TrialLine({ t }: { t: Template }) {
+  const c: TemplateCheck = t.check;
+  const steps = (c.steps ?? []).map((s) => `${STEP_LABEL[s.step] ?? s.step} ${s.took_s}초 · ${s.detail}`).join("\n");
+  const log = c.job_id ? (
+    <a className="link" href={`#/jobs/${c.job_id}`}>
+      로그
+    </a>
+  ) : null;
+  let line: ReactNode;
+  if (c.state === "checking") {
+    line = (
+      <>
+        <Badge kind="running">시험 실행 중</Badge> {c.node && <span className="muted">{c.node}</span>} {log}
+      </>
+    );
+  } else if (c.state === "ok") {
+    line = (
+      <span className="muted" title={steps}>
+        {c.via === "run" ? "학습이 성공해 쓸 수 있음" : `시험 실행 통과${c.node ? ` · ${c.node}` : ""}`}
+        {c.checked_at ? ` · ${timeAgo(c.checked_at)}` : ""} {log}
+      </span>
+    );
+  } else if (c.state === "failed") {
+    line = (
+      <span className="bad-text" title={steps}>
+        실패 — {STEP_LABEL[c.failed ?? ""] ?? "시험 실행"}: {c.reason} {log}
+      </span>
+    );
+  } else if (c.state === "unchecked") {
+    line = <span className="warn-text">확인 못 함: {c.reason}</span>;
+  } else if (c.state === "allowed") {
+    line = (
+      <span className="muted" title={c.reason ? `시험 실행: ${c.reason}` : undefined}>
+        허용 — {c.why} ({c.by}{c.at ? `, ${timeAgo(c.at)}` : ""})
+      </span>
+    );
+  } else {
+    line = <span className="muted">시험 실행 전에 등록됨 · 쓸 수 있는 서버가 생기면 확인{c.reason ? ` (${c.reason})` : ""}</span>;
+  }
+  return (
+    <div className="small trial-line">
+      {line}
+      {(c.notes ?? []).map((n) => (
+        <div key={n} className="muted">
+          알림: {n}
+        </div>
+      ))}
+      {!c.offered && (
+        <div className="muted">{t.offered_version ? `다른 사람에게는 ${t.offered_version} 버전이 보입니다` : "다른 사람에게는 보이지 않습니다"}</div>
+      )}
+    </div>
+  );
+}
 
 /** The settings menu; ``admin`` entries are shown to admins only. */
 const SECTIONS: { id: string; label: string; admin?: boolean }[] = [
@@ -429,7 +485,7 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
   const hubUrl = useHubUrl();
   const [watching, setWatching] = useState(false);
   const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), watching ? 3000 : 20000, [watching]);
-  const preparing = templates?.some((t) => t.environment.preparing.length > 0) ?? false;
+  const preparing = templates?.some((t) => t.environment.preparing.length > 0 || t.check?.state === "checking") ?? false;
   useEffect(() => setWatching(preparing), [preparing]);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -442,7 +498,14 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
     setMessage(null);
     try {
       const added = await apiUpload<Template>("/templates", file);
-      setMessage({ kind: "ok", text: `${added.title} ${added.version} 버전을 등록했습니다.` });
+      const next =
+        added.check?.state === "checking"
+          ? " 서버에서 짧게 시험 실행하고, 통과하면 모두에게 보입니다."
+          : added.check?.state === "unchecked"
+            ? ` 시험 실행할 서버가 없어 아직 다른 사람에게는 보이지 않습니다 (${added.check.reason}).`
+            : "";
+      setMessage({ kind: "ok", text: `${added.title} ${added.version} 버전을 등록했습니다.${next}` });
+      setWatching(true);
       await refresh();
     } catch (e) {
       setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
@@ -472,6 +535,31 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
       setMessage({ kind: "ok", text: `${t.title}의 환경을 지우기 시작했습니다.` });
       setWatching(true);
       window.setTimeout(() => void refresh(), 4000); // the server reports what it has left after the job
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  const trial = async (t: Template) => {
+    setMessage(null);
+    try {
+      await api(`/templates/${t.id}/check`, { method: "POST" });
+      setMessage({ kind: "ok", text: `${t.title} ${t.version}을(를) 다시 시험 실행합니다.` });
+      setWatching(true);
+      await refresh();
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  const allow = async (t: Template) => {
+    const reason = window.prompt(
+      `${t.title} ${t.version}을(를) 시험 실행 통과 없이 모두가 쓰게 할까요? 이유를 적어 주세요 (기록에 남습니다).`,
+    );
+    if (!reason?.trim()) return;
+    setMessage(null);
+    try {
+      await api(`/templates/${t.id}/allow`, { body: { reason } });
+      setMessage({ kind: "ok", text: `${t.title} ${t.version}을(를) 허용했습니다.` });
+      await refresh();
     } catch (e) {
       setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     }
@@ -527,6 +615,7 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
                 <td className="num">
                   {t.version}
                   {t.versions > 1 && <span className="muted small"> 외 {t.versions - 1}개</span>}
+                  {isAdmin && !t.builtin && t.check && <TrialLine t={t} />}
                 </td>
                 <td>
                   {t.entrypoints.map((e) => (
@@ -558,6 +647,16 @@ function Templates({ isAdmin }: { isAdmin: boolean }) {
                         title="고른 서버에 이 모델 종류의 학습 환경을 지금 설치하거나 지웁니다"
                       >
                         환경 관리
+                      </button>
+                    )}{" "}
+                    {!t.builtin && t.check && t.check.state !== "checking" && (
+                      <button className="mini" onClick={() => void trial(t)} title="서버에서 짧게 다시 시험 실행합니다">
+                        다시 확인
+                      </button>
+                    )}{" "}
+                    {!t.builtin && (t.check?.state === "failed" || t.check?.state === "unchecked") && (
+                      <button className="mini" onClick={() => void allow(t)} title="시험 실행 통과 없이 모두가 쓰게 합니다">
+                        허용
                       </button>
                     )}{" "}
                     {!t.builtin && (

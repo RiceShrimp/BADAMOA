@@ -181,6 +181,8 @@ class Run:
         self.train_params: dict[str, Any] = cfg.get("train_params", {})  # 그 모델을 학습할 때의 설정
         self.split: str = cfg.get("split", "val")  # 평가할 split
         self.source = Path(cfg.get("source", "."))  # 테스트할 이미지가 있는 폴더
+        # 등록 전 시험 실행이면 True: 작은 합성 데이터로 돌므로 몇 step만 하고 끝내도 됩니다
+        self.check: bool = bool(cfg.get("check", False))
         self.summary: dict[str, float] = {}
         self._step = 0
         self._weights = ""

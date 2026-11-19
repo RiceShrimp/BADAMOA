@@ -45,6 +45,29 @@ export interface Template {
   bytes: number;
   models: number;
   created_at: string;
+  check: TemplateCheck;
+  offered_version: string; // admins: the version everyone else gets when this one is not offered ("" otherwise)
+}
+
+/** The trial run before a template version is offered to everyone. */
+export interface TemplateCheck {
+  state: "checking" | "ok" | "failed" | "unchecked" | "allowed" | "legacy";
+  offered: boolean;
+  reason?: string;
+  failed?: string; // the step that failed: data · env · train · predict · eval · export
+  steps?: { step: string; ok: boolean; took_s: number; detail: string }[];
+  notes?: string[];
+  node?: string;
+  job_id?: string;
+  checked_at?: string;
+  started_at?: string;
+  took_s?: number;
+  packages?: number;
+  legacy?: boolean;
+  via?: string; // "run": a real training with it succeeded
+  by?: string; // allowed: who, why and when
+  why?: string;
+  at?: string;
 }
 
 export interface EnvironmentNode {

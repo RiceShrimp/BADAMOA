@@ -8,17 +8,20 @@ from __future__ import annotations
 from typing import Any
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from badamoa.core.templates import MAX_BUNDLE_BYTES
 
-from . import catalog, cleanup, registry, services
-from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
-from .models import User
+from . import catalog, cleanup, registry, services, template_checks
+from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
+from .models import Job, Node, User
+from .services import ServiceError
+from .train_models import Template
 
 router = APIRouter(prefix="/api")
+agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/check")  # a server trying a template version
 
 
 # ---- templates -----------------------------------------------------------------------
@@ -26,9 +29,10 @@ router = APIRouter(prefix="/api")
 
 @router.get("/templates")
 def list_templates(
-    hidden: bool = False, task: str = "", _: User = Depends(current_user), db: Session = Depends(db_session)
+    hidden: bool = False, task: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)
 ) -> list[dict[str, Any]]:
-    return registry.list_templates(db, include_hidden=hidden, task=task)
+    """Each template's newest version offered to everyone; admins get the newest of all, with its trial."""
+    return registry.list_templates(db, include_hidden=hidden, task=task, admin=user.role == "admin")
 
 
 @router.get("/templates/{template_id}")
@@ -53,6 +57,8 @@ async def upload_template(request: Request, hub: Hub = Depends(get_hub)) -> dict
                 raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
             storage = catalog.storage_for(str(hub.settings.storage_dir))
             row = registry.register_template(db, user, data, storage)
+            if not row.trial:  # a new version (the same content again keeps its trial)
+                template_checks.start(db, hub.settings, row, user.id, "ui")
             return registry.template_view(db, row)
 
     return await anyio.to_thread.run_sync(work)
@@ -63,6 +69,45 @@ def delete_template(template_id: str, user: User = Depends(admin_user), db: Sess
     registry.delete_template(db, user, template_id)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/templates/{template_id}/check")
+def check_template(
+    template_id: str, user: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Try the version again on a server (after a fix on the server's side, or a failed trial)."""
+    template_checks.recheck(db, hub.settings, user, template_id, via="ui")
+    db.commit()
+    return registry.template_view(db, registry.get_template(db, template_id))
+
+
+class AllowBody(BaseModel):
+    reason: str
+
+
+@router.post("/templates/{template_id}/allow")
+def allow_template(
+    template_id: str, body: AllowBody, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Offer the version without a passed trial; the reason is kept with it and in the audit log."""
+    row = template_checks.allow(db, user, template_id, body.reason, via="ui")
+    db.commit()
+    return registry.template_view(db, row)
+
+
+@agent_router.get("/template")
+def check_bundle(
+    job_id: str, node: Node = Depends(current_node), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> Response:
+    """The code of the version a server is trying, as the zip it was registered with."""
+    job = db.get(Job, job_id)
+    if job is None or job.node_id != node.id or job.type != "template.check":
+        raise ServiceError(404, "이 노드에 할당된 시험 실행이 아닙니다.")
+    row = db.get(Template, (job.params or {}).get("template_id", ""))
+    storage = catalog.storage_for(str(hub.settings.storage_dir))
+    if row is None or not row.blob or not storage.has_blob(row.blob):
+        raise HTTPException(status_code=404, detail="템플릿 묶음이 저장소에 없습니다.")
+    return Response(storage.get_blob(row.blob), media_type="application/zip")
 
 
 @router.post("/templates/{template_id}/restore")

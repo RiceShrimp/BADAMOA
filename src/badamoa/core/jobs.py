@@ -183,6 +183,23 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             },
         ),
         JobTypeSpec(
+            type="template.check",
+            title="모델 종류 시험 실행",
+            description="새로 올린 모델 종류를 작은 합성 데이터로 짧게 학습 · 테스트 · 평가 · 내보내기 해 봅니다.",
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "string"},
+                    "template": {"type": "object"},  # name, version, sha256, builtin, task, data_format, entrypoints
+                    "environment": {"type": "object"},
+                    "params": {"type": "object"},  # the trial run's settings
+                    "check": {"type": "object"},  # timeout_min, gpu, skip
+                    "data": {"type": "object"},  # classes min/max, min_images
+                },
+            },
+        ),
+        JobTypeSpec(
             type="node.clean",
             title="서버 정리",
             description="BADAMOA가 서버에 둔 것(가상환경, Docker 이미지, 가중치 · 코드 캐시, 작업 폴더)을 지웁니다.",

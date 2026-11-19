@@ -30,6 +30,7 @@ from . import (
     resources,
     services,
     sweeps,
+    template_checks,
     training_api,
 )
 from .config import HubSettings
@@ -102,6 +103,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     hub = Hub(settings=settings, db=db)
     with db.session() as session:
         registry.sync_builtin(session)
+        template_checks.mark_legacy(session)
         admin.load_gpu_busy(session, settings)
         address.load(session, settings)
     mcp, mcp_endpoint = build_mcp(hub)
@@ -144,6 +146,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(training_api.agent_router)
     app.include_router(training_api.media_router)
     app.include_router(registry_api.router)
+    app.include_router(registry_api.agent_router)
     app.include_router(modelops_api.router)
     app.include_router(modelops_api.agent_router)
     app.include_router(modelops_api.media_router)
