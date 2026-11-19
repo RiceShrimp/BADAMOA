@@ -20,7 +20,7 @@
 | **4. Develop: 확장·Export·추론** | Trainer 추가(RT-DETR/D-FINE, Seg, Cls — 1C의 템플릿 형식으로), 증류·semi-supervised 모드, golden set·슬라이스 평가·실패 케이스 뷰, ONNX/TensorRT export, Model Contract, 추론 서비스(REST)·샘플 테스트·RTSP 스트리밍, Jetson 노드, Python SDK | x86 GPU에서 TensorRT 엔진의 FPS·정확도 리포트(Jetson 확보 시 Jetson도), 추론 API 호출, 실시간 스트림 표시 |
 | **5. Automate: 플라이휠** | 파이프라인 템플릿·트리거, 승격 게이트 + 승인, 추론 노드 배포·롤백, 현장 샘플 피드백, 드리프트 감시 | 새 데이터를 넣기만 하면 재학습 → 게이트 → 승인 대기까지 자동으로 진행 |
 | **6. MOA: 에이전트** | (MCP Tools·Resources·Prompts는 매 Phase 기능과 함께 추가) Claude Code 플러그인 생성, 승인 요청 게이트, 내장 런타임(로컬 LLM·Claude), 서브에이전트 + subagent-as-tool, 채팅 패널 | Claude Code에서, 그리고 로컬 모델만으로 "검색 → 오토라벨 → 학습 → 비교"를 수행하고 승격에서 승인 요청으로 멈춤 |
-| **7. Build: 데이터 생성** | Generator 플러그인(Cosmos Transfer IAA — 로컬 또는 원격 엔드포인트, 희귀 클래스 합성), 생성 검증, A/B | 야간·우천 슬라이스의 성능 향상이 수치로 확인됨 |
+| **7. Build: 데이터 생성** | 이미지 속성 증강(IAA — 사람 크롭의 옷 · 색 · 신발 속성을 이미지 편집 모델로 바꾸고 VLM으로 확인, 원격 엔드포인트 또는 노드), 영상 증강(날씨 · 시간대 · 조명, Cosmos Transfer), 희귀 클래스 · 결함 합성, 생성 검증, A/B — [GENERATION_PLAN.md](GENERATION_PLAN.md) | 증강한 데이터를 더해 학습한 모델이 같은 평가 세트에서 더 나은 것이 수치로 확인됨 (IAA는 사람 검색 · 재식별, 영상 증강은 야간 · 우천 슬라이스) |
 | **8. 제품화** (노드 자동 업데이트는 0.31.0) | Hub 설치 스크립트·네이티브 설치기(.deb/EXE), 오프라인 번들, 자동 업데이트, DB 마이그레이션, 백업·복원, TLS, 진단 번들 | 폐쇄망에서 설치 성공, 버전 업그레이드 후 데이터·모델 보존 |
 
 데이터 생성이 뒤에 있는 이유: 효과를 재려면 학습·평가 루프가 먼저 있어야 하고 GPU 비용이 가장 크다.
