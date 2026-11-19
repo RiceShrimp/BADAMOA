@@ -237,20 +237,29 @@ def check_run(
     return {"problems": problems + found + fitting(candidates, env, gpus)[1], "notes": warnings + notes}
 
 
-def fitting(nodes: list[Node], env: dict[str, Any], gpus: int | None) -> tuple[list[Node], list[str]]:
-    """Of the servers a run may go to, those that can run it: they train (the role), and for a Docker
-    environment they have Docker (with GPUs when the run takes some). The reasons when none can."""
+def fitting(
+    nodes: list[Node], env: dict[str, Any], gpus: int | None, role: str = registry.TRAINS
+) -> tuple[list[Node], list[str]]:
+    """Of the servers a run may go to, those that can run it: they have the role (학습용, or 오토라벨용 for an
+    autolabel), and for a Docker environment they have Docker (with GPUs when the run takes some). The reasons
+    when none can."""
+    autolabel = role == registry.AUTOLABELS
     why: dict[str, list[str]] = {}
     for node in nodes:
         found = why.setdefault(node.id, [])
-        if not registry.trains(node):
-            hint = "학습할 노드를 고르거나 노드 설정에서 '학습·오토라벨'을 켜세요"
-            found.append(f"{node.name}은(는) 학습 역할이 아닙니다. {hint}.")
+        if not registry.has_role(node, role):
+            if autolabel:
+                hint = "오토라벨은 이미지가 있는 서버에서 돕니다. 노드 설정에서 '오토라벨용'을 켜세요"
+                found.append(f"{node.name}은(는) 오토라벨용 서버가 아닙니다. {hint}.")
+            else:
+                hint = "학습할 노드를 고르거나 노드 설정에서 '학습용'을 켜세요"
+                found.append(f"{node.name}은(는) 학습용 서버가 아닙니다. {hint}.")
         if env.get("kind") == "docker":
             docker = (node.info or {}).get("docker")
             wants_gpu = bool((node.info or {}).get("gpus")) if gpus is None else gpus > 0
             if not docker:
-                found.append(f"{node.name}에는 Docker가 없어 '{env.get('name')}' 환경으로 학습할 수 없습니다.")
+                verb = "돌릴" if autolabel else "학습할"
+                found.append(f"{node.name}에는 Docker가 없어 '{env.get('name')}' 환경으로 {verb} 수 없습니다.")
             elif wants_gpu and not docker.get("gpu"):
                 found.append(
                     f"{node.name}의 Docker는 GPU를 넘기지 못합니다(NVIDIA Container Toolkit 필요). "

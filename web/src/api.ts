@@ -246,7 +246,7 @@ export interface JoinToken {
   hub_url: string;
   address: HubAddress;
   node_package: { version: string; ready: boolean };
-  commands: { linux: string; windows: string; dev: string };
+  commands: { linux: string; linux_user: string; windows: string; dev: string };
 }
 
 export interface ApiTokenInfo {

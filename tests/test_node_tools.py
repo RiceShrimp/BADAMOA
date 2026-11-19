@@ -12,7 +12,7 @@ from sample_data import make_imagefolder, make_yolo
 
 from badamoa import __version__
 from badamoa.node import agent as node_agent
-from badamoa.node import updater
+from badamoa.node import service, updater
 
 
 @pytest.fixture
@@ -89,6 +89,24 @@ def test_update_helpers(client, admin):
     script = client.get("/install/node-update.sh").text
     assert f'VERSION="{__version__}"' in script and "systemctl restart badamoa-node" in script
     assert "uv tool install --force" in client.get("/install/node-update.ps1").text
+
+
+def test_a_node_without_root_starts_from_its_own_crontab(tmp_path):
+    home = tmp_path / "my node"
+    home.mkdir()
+    boot, every = service._cron_lines(home)
+    assert boot.startswith("@reboot ") and every.startswith("*/5 * * * * ")
+    for line in (boot, every):
+        assert line.endswith(service.CRON_MARK) and "node start --home" in line and ">/dev/null 2>&1" in line
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "fork"), reason="the agent lock is Linux / macOS only")
+def test_one_agent_per_node_home(tmp_path):
+    assert not service.running(tmp_path)
+    held = service.hold_lock(tmp_path)
+    assert held is not None and service.running(tmp_path) and service.hold_lock(tmp_path) is None
+    held.close()
+    assert not service.running(tmp_path)
 
 
 def test_delete_takes_the_node_off_its_machine(hub):

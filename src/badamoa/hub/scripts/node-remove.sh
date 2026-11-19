@@ -2,9 +2,24 @@
 # Take the BADAMOA node off this machine: the service, the program, its settings.
 # Data folders (images and labels registered from here) are not touched. Served by the Hub:
 #   curl -fsSL <hub>/install/node-remove.sh | sudo bash
+# A node installed without sudo (in ~/.badamoa) is removed by the same line without `sudo`, as that account.
 set -euo pipefail
 
-if [ "$(id -u)" -ne 0 ]; then echo "run as root (sudo)" >&2; exit 1; fi
+if [ "$(id -u)" -ne 0 ]; then
+  ROOT="$HOME/.badamoa"
+  if [ ! -d "$ROOT" ]; then
+    echo "no BADAMOA node installed for $(id -un) (~/.badamoa). One installed with sudo: run this with sudo." >&2
+    exit 1
+  fi
+  echo "==> stopping the node and taking it out of this account's crontab"
+  "$ROOT/bin/badamoa" node uninstall-service 2>/dev/null || true
+  echo "==> removing the program and its settings"
+  rm -rf "$ROOT" "${XDG_DATA_HOME:-$HOME/.local/share}/badamoa/node"
+  if [ -L "$HOME/.local/bin/badamoa" ]; then rm -f "$HOME/.local/bin/badamoa"; fi
+  rmdir "${XDG_DATA_HOME:-$HOME/.local/share}/badamoa" 2>/dev/null || true
+  echo "BADAMOA node removed for $(id -un). Data folders were not touched."
+  exit 0
+fi
 
 echo "==> stopping and unregistering the service"
 systemctl disable --now badamoa-node 2>/dev/null || true

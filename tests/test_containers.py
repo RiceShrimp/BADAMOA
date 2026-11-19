@@ -159,14 +159,14 @@ def test_environments_go_only_to_servers_that_train(hub, tmp_path):
     # the node no longer trains: nothing is installed there, and runs are refused before they start
     assert hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["storage"]}).status_code == 200
     template = hub.get(f"/api/templates/{template['id']}").json()
-    assert template["environment"]["servers"][0]["why"] == "학습 역할 아님" and template["environment"]["nodes"] == 0
+    assert template["environment"]["servers"][0]["why"] == "학습용·오토라벨용 아님" and template["environment"]["nodes"] == 0
     picked = hub.post(f"/api/templates/{template['id']}/prepare", json={"node_ids": [hub.node_id]})
-    assert picked.status_code == 400 and "학습 역할이 아니라" in picked.json()["detail"]
+    assert picked.status_code == 400 and "학습용·오토라벨용 서버가 아니라" in picked.json()["detail"]
     nobody = hub.post(f"/api/templates/{template['id']}/prepare", json={"node_ids": []})
-    assert nobody.status_code == 400 and "학습 역할이 있는" in nobody.json()["detail"]
+    assert nobody.status_code == 400 and "학습용·오토라벨용" in nobody.json()["detail"]
     release = _import(hub, tmp_path)
     check = hub.post("/api/runs/check", json={"release_id": release, "template": "dummy", "gpus": 0}).json()
-    assert check["problems"] and "학습 역할이 아닙니다" in check["problems"][0]
+    assert check["problems"] and "학습용 서버가 아닙니다" in check["problems"][0]
 
     # a Docker environment needs Docker on the server
     hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "storage"]})

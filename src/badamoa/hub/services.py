@@ -18,6 +18,7 @@ from badamoa import __version__ as core_version
 from badamoa.core.jobs import BUILTIN_JOB_TYPES, validate_params
 from badamoa.core.protocol import (
     ALL_ROLES,
+    ROLE_LABELS,
     TERMINAL_STATUSES,
     CompleteRequest,
     HeartbeatRequest,
@@ -172,7 +173,8 @@ def _clean_roles(roles: list[str] | None) -> list[str]:
     roles = list(dict.fromkeys(roles or ALL_ROLES))
     bad = [r for r in roles if r not in ALL_ROLES]
     if bad:
-        raise ServiceError(400, f"알 수 없는 역할: {bad}. 가능한 값: {ALL_ROLES}")
+        known = ", ".join(f"{r}({ROLE_LABELS[r]})" for r in ALL_ROLES)
+        raise ServiceError(400, f"알 수 없는 역할: {bad}. 가능한 값: {known}")
     return roles
 
 
@@ -406,8 +408,10 @@ def create_job(
     min_vram_mb: int = 0,
     nodes: list[str] | None = None,
     after: str | None = None,
+    role: str = "compute",
 ) -> Job:
-    """``nodes``: the job may run on any of these (``node_id`` pins one). ``after``: it starts once that job succeeded."""
+    """``nodes``: the job may run on any of these (``node_id`` pins one). ``after``: it starts once that job succeeded.
+    ``role``: the role a server needs to take it when it takes GPUs (autolabel: ``autolabel``)."""
     try:
         clean = validate_params(job_type, params or {})
     except ValueError as e:
@@ -418,7 +422,7 @@ def create_job(
         raise ServiceError(400, "GPU 수는 0~16, 최소 VRAM은 0 이상이어야 합니다.")
     requirements: dict[str, Any] = {}
     if gpu_count:
-        requirements = {"roles": ["compute"], "gpus": gpu_count, "min_vram_mb": min_vram_mb}
+        requirements = {"roles": [role], "gpus": gpu_count, "min_vram_mb": min_vram_mb}
     if node_id:
         node = get_node(db, node_id)
         if not node.enabled:
@@ -616,7 +620,8 @@ def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
     req = job.requirements or {}
     eligible = [n for n in online if all(role in n.roles for role in req.get("roles", []))]
     if not eligible:
-        return f"필요한 역할({', '.join(req.get('roles', []))})을 가진 온라인 노드가 없습니다."
+        wanted = ", ".join(ROLE_LABELS.get(r, r) for r in req.get("roles", []))
+        return f"{wanted} 역할을 가진 온라인 노드가 없습니다."
     need = req.get("gpus", 0)
     if need:
         assigned = resources.assignments(db)

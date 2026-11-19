@@ -59,6 +59,11 @@ print(json.dumps(found))
 
 def find_uv() -> str:
     found = os.environ.get("BADAMOA_UV") or shutil.which("uv")
+    if not found:  # the uv the install script put beside the node (its folder is not on a service's PATH)
+        from badamoa.node import updater
+
+        where = updater.layout()
+        found = str(where["uv"]) if where else None
     if not found:
         raise RuntimeError(
             "uv를 찾을 수 없습니다. 환경을 자동으로 만들려면 이 노드에 uv가 필요합니다 "

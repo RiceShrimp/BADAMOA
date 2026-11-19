@@ -87,6 +87,23 @@ class Database:
 
         Base.metadata.create_all(self.engine)
         self._add_missing_columns()
+        self._split_autolabel_role()
+
+    def _split_autolabel_role(self) -> None:
+        """0.54.0: the "학습·오토라벨" role became 학습용 (compute) and 오토라벨용 (autolabel). A server (or an
+        unused join command) that had it keeps doing both. Once: an admin may switch 오토라벨용 off afterwards."""
+        from .models import HubSetting, JoinToken, Node
+
+        key = "migration.autolabel_role"
+        with self.session() as s:
+            if s.get(HubSetting, key) is not None:
+                return
+            for row in [*s.query(Node).all(), *s.query(JoinToken).all()]:
+                roles = list(row.roles or [])
+                if "compute" in roles and "autolabel" not in roles:
+                    roles.insert(roles.index("compute") + 1, "autolabel")
+                    row.roles = roles
+            s.add(HubSetting(key=key, value={"done": utcnow().isoformat()}))
 
     def _add_missing_columns(self) -> None:
         """Minimal forward migration until Alembic lands: add columns newer versions introduced."""

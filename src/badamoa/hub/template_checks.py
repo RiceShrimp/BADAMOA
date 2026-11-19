@@ -74,7 +74,7 @@ def _settle(row: Template, **fields: Any) -> None:
 def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tuple[list[tuple[Node, dict]], str]:
     """Servers that can try the template, the one already holding its environment first; or why none can."""
     found: list[tuple[int, str, Node, dict[str, Any]]] = []
-    why = "켜져 있는 학습 서버가 없습니다 (노드 설정에서 '학습·오토라벨' 역할)."
+    why = "켜져 있는 학습 서버가 없습니다 (노드 설정에서 '학습용' 역할)."
     for node in db.scalars(select(Node).order_by(Node.name)):
         if not registry.trains(node):
             continue
