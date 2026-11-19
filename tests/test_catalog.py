@@ -260,7 +260,7 @@ def test_import_browse_and_compare_releases(hub, tmp_path, settings):
     # ---- images: signed thumbnail and the original file read in place
     first = items(q="train_0000")["items"][0]
     thumb = httpx.get(str(hub.base_url).rstrip("/") + first["thumb_url"])
-    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
+    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/webp"  # 256 px WebP since 0.61.0
     assert httpx.get(str(hub.base_url).rstrip("/") + first["thumb_url"].replace("sig=", "sig=0")).status_code == 403
     detail = hub.get(f"/api/releases/{v1}/items/{first['id']}").json()
     assert detail["site"] == "Hangang" and detail["camera"] == "4Kx4" and len(detail["sha256"]) == 64
