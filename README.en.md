@@ -180,9 +180,11 @@ The node board shows each server's GPUs alongside its CPU, memory and disk. A GP
 | Task | Built in | Evaluate · export · test |
 |---|---|---|
 | Detection | Ultralytics YOLO11 · YOLO26<br>torchvision Faster R-CNN · RetinaNet · FCOS · SSDlite | mAP, ONNX · TorchScript, images with boxes |
-| Segmentation | Ultralytics YOLO11-seg · YOLO26-seg | mask mAP, ONNX, images with masks |
-| Classification | torchvision ResNet · EfficientNet · MobileNetV3<br>ConvNeXt · RegNet · ViT · Swin | Top-1 · Top-5, confusion matrix, ONNX |
-| Keypoints | Import and view only (training planned) | — |
+| Segmentation | Ultralytics YOLO11-seg · YOLO26-seg<br>torchvision Mask R-CNN (v1 · v2) | mask mAP, ONNX, images with masks |
+| Classification | Ultralytics YOLO11-cls · YOLO26-cls<br>torchvision ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin | Top-1 · Top-5, confusion matrix, ONNX |
+| Keypoints | Ultralytics YOLO11-pose · YOLO26-pose<br>torchvision Keypoint R-CNN | pose mAP (OKS), ONNX, images with points |
+
+There is one model kind per library: "Ultralytics YOLO" and "torchvision" each train all four tasks, and the model list follows the task of the dataset you pick.
 
 The first time a node trains, it installs PyTorch and the training libraries in a separate virtual environment on that node (a few minutes). The build is chosen to fit the GPU driver; set `BADAMOA_TORCH_BACKEND` on the node (e.g. `cpu`, `cu128`) to pick one yourself.
 
@@ -242,7 +244,7 @@ BADAMOA is in 0.x development. Here is what works and what is still to come; the
 |---|---|---|
 | **Build** · data | ✅ Registering in place, versions with fingerprints, version diff, node-to-node transfer and copies per server | 🚧 Sample library, embedding search, curation |
 | **Annotate** · labels | ✅ Fixing boxes, outlines, keypoints and classes; work in progress → version; labeling sets with a board; label checks (rules and model) | 🚧 Autolabel, CVAT integration |
-| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates, virtualenv and Docker environments | 🚧 TensorRT, keypoint training |
+| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates, virtualenv and Docker environments | 🚧 TensorRT |
 | **Automate** · deployment | — | 🚧 Inference service, deployment, pipelines |
 | **MOA** · operations | ✅ Nodes and GPU assignment, self-updating nodes, MCP agents | 🚧 Approval gates, built-in agent |
 

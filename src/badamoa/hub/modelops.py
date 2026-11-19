@@ -47,7 +47,7 @@ def _template_of(db: Session, model: ModelVersion) -> Template:
 
 
 def _does(row: Template, kind: str) -> bool:
-    manifest = registry.manifest_of(row)
+    manifest = registry.manifest_of(row)  # entry points and autolabel are the same for every task it trains
     return ENTRY.get(kind, kind) in manifest.entrypoints and (kind != "autolabel" or manifest.autolabel)
 
 
@@ -117,7 +117,7 @@ def _start(
     if row is None:
         what = "오토라벨" if kind == "autolabel" else ACTIONS[entry]
         raise ServiceError(400, f"{own.title} {own.version}에는 {what} 코드가 없습니다 (이 가중치를 읽는 새 버전도 없음).")
-    manifest = registry.manifest_of(row)
+    manifest = registry.manifest_of(row, model.task or "")  # a kind of several tasks: the model's
     if node is None:
         raise ServiceError(409, "이 모델을 학습한 서버가 연결되어 있지 않아 실행할 곳이 없습니다.")
     run = db.get(Run, model.run_id) if model.run_id else None
@@ -151,6 +151,7 @@ def _start(
                 "sha256": row.blob or "",
                 "entrypoint": manifest.entrypoints[entry],
                 "data_format": manifest.data_format,
+                "task": manifest.task,
                 # the version that trained the model, when the code is a newer one's
                 **({"trained_with": own.version} if row.id != own.id else {}),
             },

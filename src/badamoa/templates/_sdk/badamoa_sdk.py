@@ -172,6 +172,9 @@ class Run:
         self.cache = Path(cfg.get("cache", "."))  # 실행 사이에 유지되는 폴더 (사전학습 가중치 등)
         self.device: str = cfg.get("device", "cpu")  # "cpu" 또는 "0", "0,1" (배정받은 GPU는 0번부터)
         self.classes: list[str] = cfg.get("classes", [])
+        # 이번 실행의 태스크: "detect" · "segment" · "classify" · "pose" 또는 팀이 정한 이름. 여러 태스크를 학습하는
+        # 모델 종류(badamoa.toml의 tasks)는 이것을 보고 무엇을 할지 고릅니다 (데이터셋의 태스크, BADAMOA 0.60 이상)
+        self.task: str = cfg.get("task", "")
         # 등록된 모델에서 이어서 학습할 때 그 모델의 가중치 파일 (아니면 None)
         self.init_weights = Path(cfg["init_weights"]) if cfg.get("init_weights") else None
         # 멈춘 실행을 이어 갈 때 그 실행이 마지막으로 남긴 체크포인트 파일 (아니면 None)

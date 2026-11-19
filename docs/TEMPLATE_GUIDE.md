@@ -79,6 +79,7 @@ title = "우리 검출기"           # 화면에 보이는 이름
 version = "1.0.0"              # 코드를 바꾸면 올림
 description = "사내 검출 모델"
 task = "detect"                # detect · segment · pose · classify 또는 팀이 정한 태스크 이름
+# tasks = ["detect", "segment"]  # (선택) 여러 태스크를 학습하는 코드라면 대신 이렇게 (아래 "여러 태스크")
 data_format = "yolo"           # 학습 데이터를 받을 형식 (아래 표)
 variant = "model"              # (선택) 모델 크기를 고르는 설정 이름 — 모델 이름에 붙음 (예: yolo11n)
 resume = true                  # (선택) 멈춘 학습을 이어서 할 수 있음 (save_checkpoint 필요)
@@ -118,11 +119,36 @@ skip = []                      # 시험하지 않을 진입점, 예: ["export"]
 | 검출 `detect` | `yolo` | 박스 그대로 |
 | 분할 `segment` | `yolo-seg` | 윤곽 그대로 |
 | 분할 `segment` | `yolo` | 박스만 (윤곽은 버림) |
+| 키포인트 `pose` | `yolo-pose` | 박스와 점 그대로 (data.yaml에 `kpt_shape`, 점 이름이 left · right로 짝지어지면 `flip_idx`) |
 | 키포인트 `pose` | `yolo` | 박스만 (점은 버림) |
 | 분류 `classify` | `imagefolder` | 클래스별 폴더 |
 | 팀이 정한 태스크 | `yolo` | 박스만 (박스 뒤의 값은 버림) |
 
 맞지 않는 짝은 올릴 때 거부됩니다. 팀 고유의 데이터 형식(manifest · 팀 형식 등록)은 계획에 있습니다.
+
+**여러 태스크를 한 모델 종류로.** 라이브러리 하나가 여러 태스크를 하면(Ultralytics YOLO, torchvision처럼) 모델 종류를 나누지 말고 `tasks`에 모두 적습니다. 학습 창은 고른 데이터셋의 태스크로 이 모델 종류를 보여 주고, 코드는 `run.task`(설정 파일의 `task`)를 보고 무엇을 할지 고릅니다. 환경은 하나라서 서버에 한 번만 설치됩니다.
+
+```toml
+tasks = ["detect", "segment", "classify", "pose"]   # 첫 것이 대표 태스크
+# 태스크마다 그 태스크의 형식으로 받음: detect yolo · segment yolo-seg · classify imagefolder · pose yolo-pose
+# data_formats = { segment = "yolo" }               # (선택) 다르게 받으려면
+
+[params.model]
+type = "string"
+default = "yolo11n.pt"
+choices = ["yolo11n.pt", "yolo11s.pt"]
+by_task.segment = { default = "yolo11n-seg.pt", choices = ["yolo11n-seg.pt", "yolo11s-seg.pt"] }  # 태스크마다 다른 목록 · 기본값
+
+[params.mosaic]
+type = "number"
+default = 1.0
+tasks = ["detect", "segment", "pose"]               # 이 태스크들에서만 보이는 설정
+```
+
+- `by_task.<태스크>`에는 `default` · `choices` · `label` · `help`를 바꿔 적을 수 있습니다.
+- 시험 실행(8 · 9장)은 적은 태스크마다 그 형식의 합성 데이터로 학습부터 내보내기까지 한 번씩 합니다.
+- 모델은 학습한 태스크를 기억합니다. 평가 · 내보내기 · 테스트 · 오토라벨도 그 태스크로 코드에 넘어갑니다.
+- 태스크마다 나뉘어 있던 모델 종류를 합칠 때는, 예전 것을 `hidden = true`와 `replaced_by = "<합친 이름>"`으로 남겨 두세요. 새 학습은 합친 것으로 가고, 예전 것으로 학습한 모델은 그 코드로 계속 평가 · 내보내기 · 테스트됩니다.
 
 **설정(하이퍼파라미터)은 코드에서 선언합니다.** `bm.params(...)`(5장)에 적은 값이 학습 창의 입력 칸이 됩니다. BADAMOA는 코드를 실행하지 않고 읽어서 칸을 만들므로, 기본값 · 범위는 숫자나 글자로 직접 적어야 합니다(변수 · 계산식 불가).
 
@@ -159,11 +185,12 @@ bm.finish({"map50_95": best})                      # 최종 지표와 함께 끝
 | `run.cache` | 실행 사이에 남는 폴더 (사전학습 가중치 등) |
 | `run.device` | `"cpu"` 또는 `"0"`, `"0,1"` (배정받은 GPU는 0번부터) |
 | `run.classes` | 클래스 이름 목록 (학습 순서) |
+| `run.task` | 이번 실행의 태스크 (`detect` · `segment` · `classify` · `pose` …). `tasks`로 여러 태스크를 학습하는 코드가 봄 |
 | `run.init_weights` | 등록된 모델에서 이어서 학습할 때 그 가중치 (아니면 None) |
 | `run.resume_checkpoint` | 멈춘 학습을 이어 갈 때 마지막 체크포인트 (아니면 None) |
 | `run.check` | 시험 실행이면 True — 몇 step만 하고 끝내도 됨 |
 
-- `map50_95 · map50 · precision · recall`(분류는 `top1` 등) 이름의 지표는 학습 표의 열과 타일에, 다른 이름은 그래프로 나옵니다.
+- `map50_95 · map50 · precision · recall`(분할은 `mask_map50_95`, 키포인트는 `pose_map50_95`, 분류는 `top1` 등) 이름의 지표는 학습 표의 열과 타일에, 다른 이름은 그래프로 나옵니다. 학습끼리는 태스크의 첫 지표로 순위를 매깁니다.
 - `print`한 것은 모두 작업 로그가 됩니다.
 - PyTorch Lightning이나 Hugging Face Trainer를 쓰면 `bm.lightning_callback()` · `bm.hf_callback()`을 콜백으로 넣으면 지표와 진행이 알아서 갑니다.
 

@@ -1,16 +1,19 @@
 name = "torchvision"
-title = "torchvision 검출"
-version = "4"
-description = "torchvision의 검출 모델: Faster R-CNN · RetinaNet · FCOS (ResNet-50 백본), SSDlite (MobileNetV3)"
-task = "detect"
-data_format = "yolo"
+title = "torchvision"
+version = "5"
+description = "torchvision 모델: 검출 Faster R-CNN · RetinaNet · FCOS · SSDlite, 인스턴스 분할 Mask R-CNN, 분류 ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin, 키포인트 Keypoint R-CNN. 데이터셋의 태스크에 맞춰 학습합니다."
+# One library, one environment: the task of each run is its dataset's (the code reads it from its config).
+# Each task reads its own format: detect yolo · segment yolo-seg · classify imagefolder · pose yolo-pose.
+tasks = ["detect", "segment", "classify", "pose"]
 license = "BSD-3-Clause"
 variant = "model"
 resume = true
 autolabel = true
 
 [environment]
-requirements = ["torch", "torchvision", "torchmetrics", "pycocotools", "onnx", "onnxscript"]
+requirements = [
+    "torch", "torchvision", "torchmetrics>=1.3", "pycocotools", "opencv-python-headless", "pyyaml", "onnx", "onnxscript",
+]
 python = "3.12"
 torch = true
 
@@ -20,4 +23,172 @@ eval = "python ops.py --config {config}"
 export = "python ops.py --config {config}"
 predict = "python ops.py --config {config}"
 
-# 설정은 train.py의 bm.params(...)에 선언되어 있습니다.
+[check]  # small images, one epoch, small batches: a few minutes on a CPU for each task
+params = { epochs = 1, imgsz = 160, batch = 2, workers = 0 }
+timeout_min = 20
+
+[params.model]
+type = "string"
+label = "모델"
+default = "fasterrcnn_resnet50_fpn"
+choices = [
+    "fasterrcnn_resnet50_fpn", "fasterrcnn_mobilenet_v3_large_fpn", "retinanet_resnet50_fpn", "fcos_resnet50_fpn",
+    "ssdlite320_mobilenet_v3_large",
+]
+custom = true
+help = "resnet50은 정확하지만 무겁고, mobilenet과 ssdlite는 가볍고 빠릅니다. torchvision의 다른 검출 모델 이름도 직접 입력할 수 있습니다."
+
+[params.model.by_task.segment]
+default = "maskrcnn_resnet50_fpn"
+choices = ["maskrcnn_resnet50_fpn", "maskrcnn_resnet50_fpn_v2"]
+help = "Mask R-CNN (ResNet-50 FPN, COCO 사전학습). v2는 더 정확하지만 조금 무겁습니다."
+
+[params.model.by_task.classify]
+default = "resnet18"
+choices = [
+    "resnet18", "resnet34", "resnet50", "resnet101", "efficientnet_b0", "efficientnet_v2_s", "mobilenet_v3_small",
+    "mobilenet_v3_large", "convnext_tiny", "regnet_y_400mf", "vit_b_16", "swin_t",
+]
+help = "ImageNet 사전학습 모델의 마지막 층을 클래스 수에 맞춰 바꿉니다. torchvision의 다른 분류 모델 이름도 직접 입력할 수 있습니다."
+
+[params.model.by_task.pose]
+default = "keypointrcnn_resnet50_fpn"
+choices = ["keypointrcnn_resnet50_fpn"]
+help = "Keypoint R-CNN (ResNet-50 FPN). 점이 17개(COCO 사람)면 COCO 사전학습 전체에서, 다르면 점을 찾는 층만 새로 배웁니다."
+
+[params.epochs]
+type = "integer"
+label = "epoch"
+default = 30
+minimum = 1
+
+# ---- 세부 설정: 학습 ----
+[params.imgsz]
+type = "integer"
+label = "이미지 크기"
+default = 640
+minimum = 32
+maximum = 2048
+advanced = true
+group = "학습"
+by_task.classify = { default = 224 }
+
+[params.batch]
+type = "integer"
+label = "배치"
+default = 4
+minimum = 1
+advanced = true
+group = "학습"
+by_task.classify = { default = 32 }
+
+[params.workers]
+type = "integer"
+label = "데이터 로더 수"
+default = 2
+minimum = 0
+maximum = 32
+advanced = true
+group = "학습"
+
+[params.pretrained]
+type = "boolean"
+label = "사전학습 가중치에서 시작"
+default = true
+advanced = true
+group = "학습"
+
+[params.freeze]
+tasks = ["classify"]
+type = "boolean"
+label = "마지막 층만 학습"
+default = false
+advanced = true
+group = "학습"
+help = "백본을 고정합니다. 데이터가 적을 때 빠릅니다."
+
+# ---- 세부 설정: 최적화 ----
+[params.optimizer]
+type = "string"
+label = "옵티마이저"
+default = "SGD"
+choices = ["SGD", "AdamW"]
+advanced = true
+group = "최적화"
+by_task.classify = { default = "AdamW", choices = ["AdamW", "SGD"] }
+
+[params.lr]
+type = "number"
+label = "학습률"
+default = 0.005
+minimum = 0
+advanced = true
+group = "최적화"
+by_task.classify = { default = 0.001 }
+
+[params.clip]
+tasks = ["detect", "segment", "pose"]
+type = "number"
+label = "기울기 자르기 (norm)"
+default = 10.0
+minimum = 0.1
+advanced = true
+group = "최적화"
+
+[params.momentum]
+type = "number"
+label = "모멘텀 (SGD)"
+default = 0.9
+minimum = 0
+maximum = 1
+advanced = true
+group = "최적화"
+unused_when = { optimizer = ["AdamW"] }
+
+[params.weight_decay]
+type = "number"
+label = "weight decay"
+default = 0.0001
+minimum = 0
+advanced = true
+group = "최적화"
+by_task.classify = { default = 0.01 }
+
+[params.label_smoothing]
+tasks = ["classify"]
+type = "number"
+label = "label smoothing"
+default = 0.0
+minimum = 0
+maximum = 0.5
+advanced = true
+group = "최적화"
+
+[params.cos_lr]
+type = "boolean"
+label = "코사인 학습률 스케줄"
+default = true
+advanced = true
+group = "최적화"
+
+# ---- 세부 설정: 증강 ----
+[params.fliplr]
+type = "number"
+label = "좌우 뒤집기 확률"
+default = 0.5
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+help = "숫자·글자처럼 방향이 뜻을 갖는 데이터는 0으로 둡니다."
+by_task.pose = { help = "점은 data.yaml에 좌우 짝(flip_idx)이 있을 때만 뒤집습니다. 숫자·글자처럼 방향이 뜻을 갖는 데이터는 0으로 둡니다." }
+
+[params.crop_scale]
+tasks = ["classify"]
+type = "number"
+label = "무작위 자르기 최소 비율"
+default = 0.6
+minimum = 0.08
+maximum = 1
+advanced = true
+group = "증강"

@@ -177,9 +177,11 @@ YOLO, COCO, 클래스별 폴더 형식을 그대로 읽어 검출 · 분할 · �
 | 작업 | 기본 제공 | 평가 · 내보내기 · 테스트 |
 |---|---|---|
 | 검출 | Ultralytics YOLO11 · YOLO26<br>torchvision Faster R-CNN · RetinaNet · FCOS · SSDlite | mAP, ONNX · TorchScript, 박스를 그린 이미지 |
-| 분할 | Ultralytics YOLO11-seg · YOLO26-seg | mask mAP, ONNX, 마스크를 그린 이미지 |
-| 분류 | torchvision ResNet · EfficientNet · MobileNetV3<br>ConvNeXt · RegNet · ViT · Swin | Top-1 · Top-5, 혼동 행렬, ONNX |
-| 키포인트 | 가져오기와 보기만 (학습은 예정) | — |
+| 분할 | Ultralytics YOLO11-seg · YOLO26-seg<br>torchvision Mask R-CNN (v1 · v2) | mask mAP, ONNX, 마스크를 그린 이미지 |
+| 분류 | Ultralytics YOLO11-cls · YOLO26-cls<br>torchvision ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin | Top-1 · Top-5, 혼동 행렬, ONNX |
+| 키포인트 | Ultralytics YOLO11-pose · YOLO26-pose<br>torchvision Keypoint R-CNN | pose mAP(OKS), ONNX, 점을 그린 이미지 |
+
+모델 종류는 라이브러리마다 하나입니다: "Ultralytics YOLO"와 "torchvision"이 네 작업을 모두 하고, 고른 데이터셋의 작업에 맞는 모델 목록이 나옵니다.
 
 노드가 처음 학습할 때 PyTorch와 학습 라이브러리를 노드 안의 별도 가상환경에 설치합니다(몇 분 걸림). GPU 드라이버에 맞는 빌드를 자동으로 고르고, 노드 환경 변수 `BADAMOA_TORCH_BACKEND`(예: `cpu`, `cu128`)로 지정할 수도 있습니다.
 
@@ -239,7 +241,7 @@ badamoa template push my-model --hub http://<hub>:8470 --token <관리자 API �
 |---|---|---|
 | **Build** · 데이터 | ✅ 복사 없는 등록, 버전과 지문, 버전 비교, 노드 간 직접 전송과 서버별 사본 관리 | 🚧 샘플 라이브러리, 임베딩 검색, 큐레이션 |
 | **Annotate** · 라벨 | ✅ 박스 · 윤곽 · 키포인트 · 클래스 고치기, 작업 중 → 버전 확정, 라벨링 묶음과 보드, 검수(규칙 · 모델 기준) | 🚧 오토라벨, CVAT 연동 |
-| **Develop** · 학습 | ✅ 학습, 탐색, 평가, 내보내기, 모델 레지스트리, 사내 템플릿, 가상환경 · Docker 환경 | 🚧 TensorRT, 키포인트 학습 |
+| **Develop** · 학습 | ✅ 학습, 탐색, 평가, 내보내기, 모델 레지스트리, 사내 템플릿, 가상환경 · Docker 환경 | 🚧 TensorRT |
 | **Automate** · 배포 | — | 🚧 추론 서비스, 배포, 파이프라인 |
 | **MOA** · 운영 | ✅ 노드와 GPU 배정, 자동 업데이트, MCP 에이전트 | 🚧 승인 게이트, 내장 에이전트 |
 

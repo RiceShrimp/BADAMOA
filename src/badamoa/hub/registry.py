@@ -35,8 +35,9 @@ from .services import ServiceError
 from .train_models import Environment, ModelJob, ModelVersion, Package, Run, RunFile, Template
 
 DEFAULT_TEMPLATE = "yolo"
-# What a project trains with when nobody chose: the built-in template for its task.
-DEFAULT_BY_TASK = {"detect": "yolo", "segment": "yolo-seg", "classify": "classify"}
+# What a project trains with when nobody chose: the built-in template for its task (Ultralytics YOLO trains
+# Det · Seg · Kpt; classification stays with torchvision, as before 0.60.0).
+DEFAULT_BY_TASK = {"detect": "yolo", "segment": "yolo", "pose": "yolo", "classify": "torchvision"}
 AUTO = {"kind": "auto", "name": "자동 설치"}
 _ENV_NAME_RE = re.compile(r"^[A-Za-z0-9가-힣][A-Za-z0-9가-힣 ._-]{0,62}$")
 
@@ -128,27 +129,22 @@ def register_template(
 def template_for(db: Session, settings: dict[str, Any] | None, task: str, ref: str = "") -> Template:
     """The template a run on data of ``task`` uses when none is named: the project's last choice
     if it trains that task, else the task's built-in one, else any template that declares the task."""
-    if ref:
-        return get_template(db, ref, offered_only=True)
+    if ref:  # a kind merged into another (``replaced_by``) gives way to it, as for the project's last choice
+        return successor(db, get_template(db, ref, offered_only=True))
     saved = (settings or {}).get("template")
     if saved:
         try:
             row = get_template(db, saved, offered_only=True)
         except ServiceError:
             row = None
-        if row is not None and task_names.same(row.task, task):
+        row = successor(db, row) if row is not None else None
+        if row is not None and supports(row, task):
             return row
     if task in DEFAULT_BY_TASK:
         return get_template(db, DEFAULT_BY_TASK[task])
     offered = list_templates(db, task=task)
     if offered:
         return get_template(db, offered[0]["id"])
-    if task == "pose":
-        raise ServiceError(
-            400,
-            "Kpt 학습 템플릿은 아직 없습니다(지금은 가져오기 · 보기까지). "
-            "박스로 학습하려면 같은 폴더를 태스크 Det에 두고 새 데이터셋으로 가져오세요.",
-        )
     raise ServiceError(
         400, f"{task_names.short(task)} 태스크를 학습하는 템플릿이 없습니다. 이 태스크를 적은 모델 템플릿을 등록하세요."
     )
@@ -173,8 +169,27 @@ def get_template(db: Session, ref: str, offered_only: bool = False) -> Template:
     return row
 
 
-def manifest_of(row: Template) -> TemplateManifest:
-    return TemplateManifest(**row.manifest)
+def manifest_of(row: Template, task: str = "") -> TemplateManifest:
+    """The declaration; with ``task``, as a run on data of that task sees it (a kind of several tasks)."""
+    manifest = TemplateManifest(**row.manifest)
+    return manifest.for_task(task) if task else manifest
+
+
+def supports(row: Template, task: str) -> bool:
+    """Whether the kind trains data of ``task`` (one of the tasks it declares)."""
+    return manifest_of(row).supports(task)
+
+
+def successor(db: Session, row: Template) -> Template:
+    """The kind new runs use instead of one merged into another (``replaced_by``), else the kind itself."""
+    seen = {row.name}
+    while (after := manifest_of(row).replaced_by) and after not in seen:
+        seen.add(after)
+        try:
+            row = get_template(db, after, offered_only=True)
+        except ServiceError:
+            break
+    return row
 
 
 # ---- what admins write on the Hub: a model kind's description, a version's memo -----------------
@@ -257,20 +272,25 @@ def versions_of(db: Session, template_id: str, user: User) -> list[dict[str, Any
 
 
 def template_view(
-    db: Session, row: Template, versions: int = 1, models: int = 0, offered_version: str = ""
+    db: Session, row: Template, versions: int = 1, models: int = 0, offered_version: str = "", task: str = ""
 ) -> dict[str, Any]:
+    """``task``: the settings, data format and checks as a run on data of that task sees them."""
     from . import template_checks
 
-    manifest = manifest_of(row)
+    whole = manifest_of(row)
+    manifest = whole.for_task(task) if task else whole
     return {
         "id": row.id,
         "name": row.name,
         "title": row.title,
         "version": row.version,
         "versions": versions,
-        "task": row.task,
+        "task": manifest.task,
+        "tasks": whole.trains(),  # every task it trains
+        "data_formats": {t: whole.for_task(t).data_format for t in whole.trains()},
+        "replaced_by": whole.replaced_by,
         "description": description_of(db, row),
-        "declared_description": manifest.description,  # what the bundle says (the above may be written on the Hub)
+        "declared_description": whole.description,  # what the bundle says (the above may be written on the Hub)
         "memo": row.memo or "",  # this version's memo, written on the Hub
         "license": manifest.license,
         "builtin": row.builtin,
@@ -338,10 +358,9 @@ def list_templates(
             .group_by(ModelVersion.trainer)
         ).all()
     )
-    shown = [
-        t for t in newest.values() if (include_hidden or not t.hidden) and (not task or task_names.same(t.task, task))
-    ]
-    first = list(dict.fromkeys(DEFAULT_BY_TASK.values()))  # each task's default template leads, detection first
+    shown = [t for t in newest.values() if (include_hidden or not t.hidden) and (not task or supports(t, task))]
+    # the task's default kind leads (asked for one task), else each task's default, detection first
+    first = [DEFAULT_BY_TASK[task]] if task in DEFAULT_BY_TASK else list(dict.fromkeys(DEFAULT_BY_TASK.values()))
     shown.sort(key=lambda t: (first.index(t.name) if t.name in first else len(first), not t.builtin, t.title.lower()))
     return [
         template_view(
@@ -350,6 +369,7 @@ def list_templates(
             counts[t.name],
             models.get(t.name, 0),
             usable[t.name].version if admin and t.name in usable and usable[t.name] is not t else "",
+            task,
         )
         for t in shown
     ]

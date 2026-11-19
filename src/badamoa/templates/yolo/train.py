@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -32,7 +33,44 @@ NAMES = {
     "metrics/recall(M)": "mask_recall",
     "metrics/mAP50(M)": "mask_map50",
     "metrics/mAP50-95(M)": "mask_map50_95",
+    # pose models: the same four for their keypoints (OKS)
+    "metrics/precision(P)": "pose_precision",
+    "metrics/recall(P)": "pose_recall",
+    "metrics/mAP50(P)": "pose_map50",
+    "metrics/mAP50-95(P)": "pose_map50_95",
+    # classification models
+    "metrics/accuracy_top1": "top1",
+    "metrics/accuracy_top5": "top5",
 }
+
+TASKS = ("detect", "segment", "classify", "pose")
+# The ending of an Ultralytics model name for each task: yolo11n.pt detects, yolo11n-seg.pt segments …
+ENDINGS = {"detect": "", "segment": "-seg", "classify": "-cls", "pose": "-pose"}
+_OFFICIAL = re.compile(r"^(yolo(?:v)?\d+[nslmx])(-seg|-cls|-pose|-obb)?\.(pt|yaml)$", re.IGNORECASE)
+
+
+def task_of(cfg: dict) -> str:
+    """What this run trains: the config says (BADAMOA 0.60+); a Hub before that does not, and the model's name
+    tells, as Ultralytics reads it (``-seg``, ``-cls``, ``-pose``)."""
+    task = str(cfg.get("task") or "")
+    if task in TASKS:
+        return task
+    name = str((cfg.get("train_params") or cfg.get("params") or {}).get("model") or "")
+    ending = _OFFICIAL.match(Path(name).name)
+    return (
+        {"-seg": "segment", "-cls": "classify", "-pose": "pose"}.get((ending.group(2) or "").lower(), "detect")
+        if ending
+        else "detect"
+    )
+
+
+def model_for(name: str, task: str) -> str:
+    """An Ultralytics model name for this task: ``yolo11n.pt`` on segmentation data is ``yolo11n-seg.pt``.
+    Names of files on the server, and names it does not know, stay as they are."""
+    found = _OFFICIAL.match(str(name))
+    if not found or found.group(2) == "-obb":
+        return str(name)
+    return f"{found.group(1)}{ENDINGS[task]}.{found.group(3)}"
 
 
 def emit(event: str, **data) -> None:
@@ -77,8 +115,9 @@ def sample_images(val: str | list[str] | None, count: int) -> list[Path]:
     return files[:: max(1, len(files) // count)][:count]
 
 
-def truth_of(image: Path) -> tuple[list[list[float]], list[list]]:
-    """The image's label file (the Ultralytics layout: ``images/`` → ``labels/``) as boxes, and outlines for segments."""
+def truth_of(image: Path, task: str = "detect") -> tuple[list[list[float]], list[list]]:
+    """The image's label file (the Ultralytics layout: ``images/`` → ``labels/``) as boxes, and outlines for segments.
+    Pose labels are a box and its keypoints: the box counts."""
     images, labels = f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"
     label = Path(labels.join(str(image).rsplit(images, 1))).with_suffix(".txt")
     boxes: list[list[float]] = []
@@ -90,8 +129,8 @@ def truth_of(image: Path) -> tuple[list[list[float]], list[list]]:
             values = [float(v) for v in line.split()]
         except ValueError:
             continue
-        if len(values) == 5:
-            boxes.append([int(values[0]), *values[1:]])
+        if len(values) == 5 or (task == "pose" and len(values) > 5):
+            boxes.append([int(values[0]), *values[1:5]])
         elif len(values) >= 7 and len(values) % 2 == 1:  # a polygon: class x1 y1 x2 y2 …
             xs, ys = values[1::2], values[2::2]
             x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
@@ -124,11 +163,18 @@ def match(predicted: list[list[float]], truth: list[list[float]]) -> tuple[int, 
     return found, len(truth) - found, len(predicted) - found
 
 
-class Samples:
-    """Predictions of each epoch's weights on the same validation images, as a table of pictures with boxes."""
+def class_folder_index(image: Path) -> int:
+    """A classification image's class: its folder, named ``0003_<name>`` in class order (BADAMOA's export)."""
+    head = image.parent.name.split("_", 1)[0]
+    return int(head) if head.isdigit() else -1
 
-    def __init__(self, count: int, out: Path, imgsz: int, device: str) -> None:
-        self.count, self.out, self.imgsz = count, out, imgsz
+
+class Samples:
+    """Predictions of each epoch's weights on the same validation images, as a table of pictures with boxes
+    (classification: the class it gave and the right one)."""
+
+    def __init__(self, count: int, out: Path, imgsz: int, device: str, task: str = "detect") -> None:
+        self.count, self.out, self.imgsz, self.task = count, out, imgsz, task
         self.device = device.split(",")[0]  # predictions need one device
         self.picked: list[dict] | None = None
         self.off = count <= 0
@@ -146,8 +192,10 @@ class Samples:
                     picture = ImageOps.exif_transpose(opened).convert("RGB")
                     picture.thumbnail((SAMPLE_SIDE, SAMPLE_SIDE))
                     picture.save(copy, quality=85)
-                boxes, outlines = truth_of(image)
-                self.picked.append({"image": image, "copy": copy, "truth": boxes, "outlines": outlines})
+                boxes, outlines = truth_of(image, self.task) if self.task != "classify" else ([], [])
+                self.picked.append(
+                    {"image": image, "copy": copy, "truth": boxes, "outlines": outlines, "class": class_folder_index(image)}
+                )
         return self.picked
 
     def record(self, weights: Path, epoch: int, val: str | list[str] | None) -> None:
@@ -177,6 +225,14 @@ class Samples:
             save=False,
         )
         rows = []
+        if self.task == "classify":
+            for sample, result in zip(picked, results, strict=True):
+                guess, score = int(result.probs.top1), float(result.probs.top1conf)
+                cell = bm.overlay(sample["copy"])
+                rows.append([cell, sample["class"], guess, round(score, 4), int(guess == sample["class"])])
+            bm.log_table(SAMPLES_KEY, ["image", "truth", "predicted", "confidence", "correct"], rows, step=epoch)
+            del model, results
+            return
         for sample, result in zip(picked, results, strict=True):
             boxes, outlines = [], []
             if result.boxes is not None and len(result.boxes):
@@ -253,7 +309,11 @@ def main(argv: list[str]) -> int:
     gpus = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if device != "cpu" else []
     bm.init(ultralytics=ultralytics.__version__, torch=torch.__version__, gpus=gpus)
 
-    weights = params["model"]
+    task = task_of(cfg)
+    # the model list follows the dataset's task; a name of another task's model (a rerun, a search) is matched to it
+    weights = model_for(params["model"], task) if cfg.get("task") in TASKS else params["model"]
+    if weights != params["model"]:
+        print(f"{task} 데이터라 {params['model']} 대신 {weights}로 학습합니다.", flush=True)
     if cfg.get("init_weights"):
         weights = cfg["init_weights"]  # continue from a registered model
     elif not params.get("pretrained", True):
@@ -265,7 +325,7 @@ def main(argv: list[str]) -> int:
         # The interrupted run's checkpoint carries its epoch, optimizer state and settings.
         weights = str(continue_here(last, Path(cfg["out"])))
     model = YOLO(weights)
-    samples = Samples(int(params.get("samples", 16)), Path(cfg["out"]), params.get("imgsz", 640), device)
+    samples = Samples(int(params.get("samples", 16)), Path(cfg["out"]), params.get("imgsz", 640), device, task)
 
     training_epoch = False
 
@@ -291,19 +351,23 @@ def main(argv: list[str]) -> int:
     model.add_callback("on_model_save", on_model_save)
     model.add_callback("on_train_epoch_start", on_train_epoch_start)
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-    results = model.train(resume=True, data=cfg["data"], device=device) if resuming else model.train(
-        data=cfg["data"],
-        epochs=params["epochs"],
-        imgsz=params.get("imgsz", 640),
-        batch=params.get("batch", 16),
-        workers=params.get("workers", 4),
-        device=device,
-        project=cfg["out"],
-        name="train",
-        exist_ok=True,
-        plots=True,  # curves, confusion matrix, sample batches: the node keeps the whole folder with the run
-        **{name: params[name] for name in HYPERPARAMETERS if name in params},
-        **(params.get("extra") or {}),
+    results = (
+        model.train(resume=True, data=cfg["data"], device=device)
+        if resuming
+        else model.train(
+            data=cfg["data"],
+            epochs=params["epochs"],
+            imgsz=params.get("imgsz", 640),
+            batch=params.get("batch", 16),
+            workers=params.get("workers", 4),
+            device=device,
+            project=cfg["out"],
+            name="train",
+            exist_ok=True,
+            plots=True,  # curves, confusion matrix, sample batches: the node keeps the whole folder with the run
+            **{name: params[name] for name in HYPERPARAMETERS if name in params},
+            **(params.get("extra") or {}),
+        )
     )
 
     trainer = model.trainer
@@ -328,6 +392,9 @@ def main(argv: list[str]) -> int:
             masks = getattr(results, "seg", None)
             if masks is not None and i < len(getattr(masks, "ap", [])):
                 classes[-1]["mask_map50_95"] = round(float(masks.ap[i]), 6)
+            points = getattr(results, "pose", None)
+            if points is not None and i < len(getattr(points, "ap", [])):
+                classes[-1]["pose_map50_95"] = round(float(points.ap[i]), 6)
     summary = clean(getattr(results, "results_dict", {}) or {})
     emit("result", weights=str(best), metrics=summary, classes=classes)
     return 0

@@ -386,8 +386,12 @@ STEP_LABEL = {
 
 def _print_trial(result: dict) -> None:
     """A trial's verdict, step by step, as the Hub's admin screen shows it."""
+    from badamoa.core import tasks as task_names
+
     for step in result.get("steps") or []:
         label = STEP_LABEL.get(step["step"], step["step"])
+        if step.get("task"):  # a kind of several tasks: each task's pass
+            label = f"{task_names.short(step['task'])} {label}"
         if step.get("skipped"):
             typer.echo(f"  건너뜀 {label}: {step['detail']}")
         else:
@@ -460,6 +464,14 @@ def _read_report(folder: Path) -> tuple[dict | None, str]:
     return report, ""
 
 
+def _task_pass(manifest, task: str) -> dict:
+    """One task's pass of a trial of a kind of several tasks: its data format and settings."""
+    from badamoa.core.templates import check_params
+
+    mine = manifest.for_task(task)
+    return {"task": task, "data_format": mine.data_format, "params": check_params(mine)}
+
+
 def _local_trial(folder: Path, manifest, home: Path | None) -> dict:
     """The Hub's trial run, here: the same sample, environment, steps and pass rules, nothing sent anywhere."""
     import time
@@ -488,7 +500,9 @@ def _local_trial(folder: Path, manifest, home: Path | None) -> dict:
             "entrypoints": manifest.entrypoints,
         },
         "environment": spec,
-        "params": check_params(manifest),
+        "params": check_params(manifest.for_task(manifest.task)),
+        # a kind of several tasks: each in turn, as the server's trial does
+        **({"tasks": [_task_pass(manifest, t) for t in manifest.trains()]} if len(manifest.trains()) > 1 else {}),
         "check": manifest.check.model_dump(exclude={"params"}),
         "data": manifest.data.model_dump(),
         "code": str(folder),
@@ -515,7 +529,10 @@ def template_check(
     except TemplateError as e:
         raise _fail(str(e)) from e
     typer.echo(f"{manifest.title} ({manifest.name} {manifest.version})")
-    typer.echo(f"  태스크 : {manifest.task} · 데이터 형식 {manifest.data_format}")
+    if len(manifest.trains()) > 1:
+        typer.echo("  태스크 : " + " · ".join(f"{t} ({manifest.for_task(t).data_format})" for t in manifest.trains()))
+    else:
+        typer.echo(f"  태스크 : {manifest.task} · 데이터 형식 {manifest.data_format}")
     typer.echo(f"  진입점 : {', '.join(manifest.entrypoints)}{' · 오토라벨' if manifest.autolabel else ''}")
     if manifest.reads_weights_from:
         typer.echo(f"  이전 버전 : {manifest.reads_weights_from}로 학습한 모델에도 이 버전의 코드를 씀")

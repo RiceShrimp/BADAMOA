@@ -43,7 +43,7 @@ MAX_NOTE = 20000
 STAGES = ("data", "env", "train", "upload")
 MANIFEST_MAX = 5000
 # The number a run is judged by: decides which step counts as "best so far".
-PRIMARY_METRIC = {"detect": "map50_95", "segment": "mask_map50_95", "classify": "top1"}
+PRIMARY_METRIC = {"detect": "map50_95", "segment": "mask_map50_95", "classify": "top1", "pose": "pose_map50_95"}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
 MAX_FILES_PER_RUN = 5000  # per-step images add up: 16 pictures × 100 epochs
 HISTORY_POINTS = 600  # more steps than this are thinned out when read
@@ -102,7 +102,12 @@ def placement(db: Session, release: Release, nodes: list[str] | None) -> tuple[l
 
 
 # The node writes each format from this BADAMOA on: an older node cannot hand the data to the code.
-FORMAT_SINCE = {"yolo": (0, 5, 0), "imagefolder": (0, 8, 0), "yolo-seg": (0, 11, 0)}
+def _tasks_text(manifest: Any) -> str:
+    """The tasks a kind trains, as shown: Det, or Det · Seg · Kpt."""
+    return " · ".join(task_names.short(t) for t in manifest.trains())
+
+
+FORMAT_SINCE = {"yolo": (0, 5, 0), "imagefolder": (0, 8, 0), "yolo-seg": (0, 11, 0), "yolo-pose": (0, 60, 0)}
 
 
 def _version(text: str) -> tuple[int, ...] | None:
@@ -211,10 +216,9 @@ def check_run(
         project = catalog.get_project(db, dataset.project_id)
         task = catalog.dataset_task(dataset)
         row = registry.template_for(db, project.settings, task, template)
-        manifest = registry.manifest_of(row)
-        if not task_names.same(manifest.task, task):
-            short = task_names.short
-            why = f"{row.title}은(는) {short(manifest.task)}용이고 이 데이터셋은 {short(task)}입니다."
+        manifest = registry.manifest_of(row, task)
+        if not manifest.supports(task):
+            why = f"{row.title}은(는) {_tasks_text(manifest)}용이고 이 데이터셋은 {task_names.short(task)}입니다."
             return {"problems": [why], "notes": []}
         own = user is not None and row.created_by == user.id
         if not template_checks.offered(row) and own and user.role != "admin":
@@ -337,10 +341,10 @@ def start_run(
     task = catalog.dataset_task(dataset)
     row = registry.template_for(db, project.settings, task, template)
     template_checks.require_offered(row, user)
-    manifest = registry.manifest_of(row)
-    if not task_names.same(manifest.task, task):
-        short = task_names.short
-        raise ServiceError(400, f"{row.title} 템플릿은 {short(manifest.task)}용이고 이 데이터셋은 {short(task)}입니다.")
+    manifest = registry.manifest_of(row, task)
+    if not manifest.supports(task):
+        why = f"{row.title} 템플릿은 {_tasks_text(manifest)}용이고 이 데이터셋은 {task_names.short(task)}입니다."
+        raise ServiceError(400, why)
     try:
         settings = resolve_params(manifest, params or {})
     except TemplateError as e:
@@ -438,6 +442,7 @@ def start_run(
                 "sha256": row.blob or "",
                 "entrypoint": manifest.entrypoints["train"],
                 "data_format": manifest.data_format,
+                "task": manifest.task,  # the code reads it from its config (a kind of several tasks)
             },
             "environment": env,
             "params": settings,

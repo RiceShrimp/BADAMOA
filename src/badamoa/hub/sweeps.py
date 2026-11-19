@@ -314,7 +314,7 @@ def start_sweep(
     project = catalog.get_project(db, dataset.project_id)
     task = catalog.dataset_task(dataset)
     row = registry.template_for(db, project.settings, task, template)
-    manifest = registry.manifest_of(row)
+    manifest = registry.manifest_of(row, task)
     fixed = {k: v for k, v in (params or {}).items() if k not in space}
     try:
         resolve_params(manifest, fixed)

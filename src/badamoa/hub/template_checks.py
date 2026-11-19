@@ -86,6 +86,16 @@ def uploaded(row: Template) -> None:
 # ---- starting a trial (an admin) -----------------------------------------------------------------
 
 
+# A node that tries each task of a kind of several tasks (older ones would try the first only).
+SEVERAL_TASKS_SINCE = (0, 60, 0)
+
+
+def _task_pass(manifest: Any, task: str) -> dict[str, Any]:
+    """One task's pass of a trial: its data format and settings."""
+    mine = manifest.for_task(task)
+    return {"task": task, "data_format": mine.data_format, "params": check_params(mine)}
+
+
 def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tuple[list[tuple[Node, dict, bool]], str]:
     """Servers that can try the template, with whether one of their GPUs is free now: those with a free GPU
     first, then the one already holding its environment; or why none can."""
@@ -95,9 +105,11 @@ def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tu
     for node in db.scalars(select(Node).order_by(Node.name)):
         if not registry.trains(node):
             continue
-        if _version(node) < CHECK_SINCE:
-            need = ".".join(str(n) for n in CHECK_SINCE)
-            why = f"학습 서버의 BADAMOA가 시험 실행을 모릅니다. {need} 이상으로 업데이트하세요."
+        since = SEVERAL_TASKS_SINCE if len(manifest.trains()) > 1 else CHECK_SINCE
+        if _version(node) < since:
+            need = ".".join(str(n) for n in since)
+            what = "여러 태스크의 시험 실행을" if since == SEVERAL_TASKS_SINCE else "시험 실행을"
+            why = f"학습 서버의 BADAMOA가 {what} 모릅니다. {need} 이상으로 업데이트하세요."
             continue
         if services.node_status(node, settings) != "online":
             continue
@@ -143,11 +155,14 @@ def start(db: Session, settings: HubSettings, user: User, template_id: str, via:
             "task": manifest.task,
             "data_format": manifest.data_format,
             "resume": manifest.resume,
+            "tasks": manifest.trains(),
             "autolabel": manifest.autolabel,
             "entrypoints": manifest.entrypoints,
         },
         "environment": spec,
-        "params": check_params(manifest),
+        "params": check_params(manifest.for_task(manifest.task)),
+        # a kind of several tasks is tried on each of them in turn, with that task's data format and settings
+        **({"tasks": [_task_pass(manifest, t) for t in manifest.trains()]} if len(manifest.trains()) > 1 else {}),
         "check": manifest.check.model_dump(exclude={"params"}),
         "data": manifest.data.model_dump(),
     }

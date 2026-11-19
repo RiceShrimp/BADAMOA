@@ -416,6 +416,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             "classes": summary["classes"],
             "params": params.get("params") or {},
         }
+        if template.get("task"):  # what to train: a kind of several tasks reads it (detect, segment, classify, pose …)
+            config["task"] = template["task"]
         if params.get("init_weights"):  # continue from a registered model instead of pretrained weights
             start = params["init_weights"]
             cached = node_home / "cache" / "models" / f"{start['blob']}{Path(start['file_name']).suffix}"

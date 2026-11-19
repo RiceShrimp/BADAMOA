@@ -103,9 +103,12 @@ def test_keypoint_datasets_end_to_end(hub, tmp_path):
     assert len(item["boxes"][0]) == 5 + 9  # the grid gets the keypoints too
     detail = hub.get(f"/api/releases/{release['id']}/items/{item['id']}").json()
     assert detail["revisions"][0]["boxes"][0][5:8] == [0.4, 0.3, 2.0]
-    # no keypoint template yet: said plainly, with the way to train the boxes
-    resp = hub.post("/api/runs", json={"release_id": release["id"]})
-    assert resp.status_code == 400 and "Kpt 학습 템플릿은 아직" in resp.json()["detail"]
+    # keypoints train since 0.60.0: Ultralytics YOLO is offered for Kpt, with its pose models
+    offered = hub.get("/api/templates", params={"task": "pose"}).json()
+    assert offered[0]["name"] == "yolo" and offered[0]["data_format"] == "yolo-pose"
+    assert {p["name"]: p for p in offered[0]["params"]}["model"]["default"] == "yolo11n-pose.pt"
+    checked = hub.post("/api/runs/check", json={"release_id": release["id"]}).json()
+    assert not [p for p in checked["problems"] if "태스크" in p or "Kpt" in p], checked
 
     # keypoint data imported as Det keeps the boxes; plain boxes are not imported as Kpt
     job = _import(hub, project["id"], make_yolo_pose(tmp_path / "pose2"), "boxes", "Det")

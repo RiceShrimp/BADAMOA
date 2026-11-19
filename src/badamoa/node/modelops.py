@@ -64,6 +64,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             "params": params.get("params") or {},
             "train_params": params.get("train_params") or {},
         }
+        if template.get("task"):  # the model's task: a kind of several tasks reads it
+            config["task"] = template["task"]
 
         spec = params.get("environment") or {}
         in_container = spec.get("kind") == "docker"

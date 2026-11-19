@@ -1,9 +1,9 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "10"
-description = "Ultralytics YOLO 객체 검출 (YOLO11, YOLO26)"
-task = "detect"
-data_format = "yolo"
+version = "11"
+description = "Ultralytics YOLO11 · YOLO26: 객체 검출 · 인스턴스 분할 · 분류 · 키포인트. 데이터셋의 태스크에 맞춰 학습합니다."
+# One library, one environment: the task of each run is its dataset's (the code reads it from its config).
+tasks = ["detect", "segment", "classify", "pose"]
 license = "AGPL-3.0"
 variant = "model"
 resume = true
@@ -31,6 +31,28 @@ choices = [
 custom = true
 help = "n이 가장 작고 빠르며 x가 가장 큽니다. 목록에 없는 가중치 이름이나 노드의 파일 경로도 쓸 수 있습니다."
 
+[params.model.by_task.segment]
+default = "yolo11n-seg.pt"
+choices = [
+    "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt", "yolo11x-seg.pt",
+    "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt", "yolo26x-seg.pt",
+]
+
+[params.model.by_task.classify]
+default = "yolo11n-cls.pt"
+choices = [
+    "yolo11n-cls.pt", "yolo11s-cls.pt", "yolo11m-cls.pt", "yolo11l-cls.pt", "yolo11x-cls.pt",
+    "yolo26n-cls.pt", "yolo26s-cls.pt", "yolo26m-cls.pt", "yolo26l-cls.pt", "yolo26x-cls.pt",
+]
+
+[params.model.by_task.pose]
+default = "yolo11n-pose.pt"
+choices = [
+    "yolo11n-pose.pt", "yolo11s-pose.pt", "yolo11m-pose.pt", "yolo11l-pose.pt", "yolo11x-pose.pt",
+    "yolo26n-pose.pt", "yolo26s-pose.pt", "yolo26m-pose.pt", "yolo26l-pose.pt", "yolo26x-pose.pt",
+]
+help = "n이 가장 작고 빠르며 x가 가장 큽니다. 사전학습 가중치는 사람 17점(COCO)이고, 점 수가 다르면 그 부분만 새로 배웁니다."
+
 [params.epochs]
 type = "integer"
 label = "epoch"
@@ -47,6 +69,7 @@ minimum = 32
 maximum = 4096
 advanced = true
 group = "학습"
+by_task.classify = { default = 224 }
 
 [params.batch]
 type = "integer"
@@ -157,6 +180,7 @@ group = "최적화"
 
 # ---- 세부 설정: 증강 ----
 [params.mosaic]
+tasks = ["detect", "segment", "pose"]
 type = "number"
 label = "mosaic 확률"
 default = 1.0
@@ -166,6 +190,7 @@ advanced = true
 group = "증강"
 
 [params.close_mosaic]
+tasks = ["detect", "segment", "pose"]
 type = "integer"
 label = "mosaic 끄는 마지막 epoch 수"
 default = 10
@@ -174,6 +199,7 @@ advanced = true
 group = "증강"
 
 [params.mixup]
+tasks = ["detect", "segment", "pose"]
 type = "number"
 label = "mixup 확률"
 default = 0.0
@@ -201,6 +227,7 @@ advanced = true
 group = "증강"
 
 [params.degrees]
+tasks = ["detect", "segment", "pose"]
 type = "number"
 label = "회전 (도)"
 default = 0.0
@@ -210,6 +237,7 @@ advanced = true
 group = "증강"
 
 [params.translate]
+tasks = ["detect", "segment", "pose"]
 type = "number"
 label = "이동 비율"
 default = 0.1
@@ -219,6 +247,7 @@ advanced = true
 group = "증강"
 
 [params.scale]
+tasks = ["detect", "segment", "pose"]
 type = "number"
 label = "크기 변화 비율"
 default = 0.5
@@ -263,6 +292,7 @@ maximum = 64
 advanced = true
 group = "기록"
 help = "epoch마다 같은 검증 이미지에 예측한 박스를 남겨, 실행 화면에서 epoch를 넘기며 봅니다. 0이면 남기지 않습니다."
+by_task.classify = { help = "epoch마다 같은 검증 이미지에 매긴 클래스를 남겨, 실행 화면에서 epoch를 넘기며 봅니다. 0이면 남기지 않습니다." }
 
 [params.extra]
 type = "object"

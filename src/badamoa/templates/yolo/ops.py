@@ -9,7 +9,17 @@ import shutil
 from pathlib import Path
 
 import badamoa_sdk as bm
-from train import IMAGE_SUFFIXES, MAX_OUTLINE, SAMPLE_CONF, SAMPLE_SIDE, clean, match, truth_of
+from train import (
+    IMAGE_SUFFIXES,
+    MAX_OUTLINE,
+    SAMPLE_CONF,
+    SAMPLE_SIDE,
+    class_folder_index,
+    clean,
+    match,
+    task_of,
+    truth_of,
+)
 
 FAILURES = 48  # images with the most mistakes, kept as pictures with their boxes
 COLUMNS = ["image", "truth", "predicted", "found", "missed", "extra"]
@@ -18,6 +28,8 @@ COLUMNS = ["image", "truth", "predicted", "found", "missed", "extra"]
 def as_labels(result) -> dict:
     """A result's predictions in the dataset's label form: [class, cx, cy, w, h, then the outline or keypoints]."""
     labels, scores = [], []
+    if getattr(result, "probs", None) is not None:  # classification: the class it gives the image
+        return {"labels": [[int(result.probs.top1)]], "scores": [round(float(result.probs.top1conf), 4)]}
     if result.boxes is None or not len(result.boxes):
         return {"labels": labels, "scores": scores}
     masks = result.masks.xyn if result.masks is not None else None
@@ -38,12 +50,43 @@ def as_labels(result) -> dict:
     return {"labels": labels, "scores": scores}
 
 
+def per_class_image(run, model) -> None:
+    """Classification: every image of the evaluated split with the class it got and the right one (its folder)."""
+    folder = Path(run.data) / run.split
+    images = sorted(p for p in folder.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES) if folder.is_dir() else []
+    if not images:
+        return
+    try:
+        registered = json.loads((Path(run.data) / "files.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        registered = {}
+    print(f"이미지별 결과: {len(images):,}장을 분류합니다")
+    rows, predicted = [], []
+    results = model.predict([str(p) for p in images], stream=True, imgsz=run.train_params.get("imgsz", 224),
+                            device=run.device, verbose=False)  # fmt: skip
+    for image, result in zip(images, results, strict=True):
+        truth, guess, score = class_folder_index(image), int(result.probs.top1), float(result.probs.top1conf)
+        wrong = int(guess != truth)
+        predicted.append({"image": image.stem, "labels": [[guess]], "scores": [round(score, 4)],
+                          "found": 1 - wrong, "missed": wrong, "extra": wrong})  # fmt: skip
+        rows.append([Path(registered.get(image.stem, image.name)).name, truth, guess, round(score, 4), 1 - wrong])
+    rows.sort(key=lambda r: (r[4], -r[3], r[0]))  # wrong ones first, the surest of them first
+    bm.log_table("per_image", ["image", "truth", "predicted", "confidence", "correct"], rows)
+    if hasattr(bm, "log_predictions"):
+        bm.log_predictions(predicted)
+    print(f"틀린 이미지 {sum(1 for r in rows if not r[4]):,}장 / {len(rows):,}장")
+
+
 def per_image(run, model) -> None:
     """Every image of the evaluated split: true, predicted, found, missed and extra boxes (a prediction finds a
     true box of its class it overlaps by half). The ones with the most mistakes also as pictures with the boxes.
     """
     from PIL import Image, ImageOps
 
+    task = task_of(run.cfg)
+    if task == "classify":
+        per_class_image(run, model)
+        return
     data = Path(run.data).parent
     folder = data / "images" / run.split
     images = sorted(p for p in folder.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES) if folder.is_dir() else []
@@ -64,7 +107,7 @@ def per_image(run, model) -> None:
         verbose=False,
     )
     for image, result in zip(images, results, strict=True):
-        truth, true_outlines = truth_of(image)
+        truth, true_outlines = truth_of(image, task)
         boxes, outlines = [], []
         if result.boxes is not None and len(result.boxes):
             classes, scores = result.boxes.cls.tolist(), result.boxes.conf.tolist()
@@ -136,6 +179,10 @@ def evaluate(run, model) -> None:
                     "map50_95": round(float(box.ap[i]), 6),
                 }
             )
+            for key, part in (("mask_map50_95", "seg"), ("pose_map50_95", "pose")):
+                found = getattr(results, part, None)
+                if found is not None and i < len(getattr(found, "ap", [])):
+                    per_class[-1][key] = round(float(found.ap[i]), 6)
     try:
         per_image(run, model)
     except Exception as e:  # the metrics stand without it
@@ -169,6 +216,15 @@ def predict(run, model) -> None:
     )
     for result in results:
         name = Path(result.path).name
+        if getattr(result, "probs", None) is not None:  # classification: the five likeliest classes
+            top = [
+                [int(i), round(float(p), 4)] for i, p in zip(result.probs.top5, result.probs.top5conf.tolist(), strict=False)
+            ]
+            result.save(filename=str(run.out / name))
+            bm.log_artifact(run.out / name)
+            predictions.append({"image": name, "top": top})
+            print(f"{name}: {top[0][0] if top else '-'} ({top[0][1] if top else 0:.2f})")
+            continue
         boxes = []
         if result.boxes is not None:
             rows = zip(result.boxes.cls.tolist(), result.boxes.conf.tolist(), result.boxes.xywhn.tolist(), strict=True)

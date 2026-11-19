@@ -185,8 +185,11 @@ def test_a_version_that_does_not_fit_the_model_is_refused_before_it_starts(hub, 
 
     # a model for another task, and settings it does not have
     street = _import(hub, make_yolo(tmp_path / "street"), "street")
-    other = hub.post("/api/runs/check", json={"release_id": street, "template": "classify"}).json()
-    assert other["problems"] == ["torchvision 분류은(는) Cls용이고 이 데이터셋은 Det입니다."]
+    other = hub.post("/api/runs/check", json={"release_id": two, "template": "dummy"}).json()
+    assert other["problems"] == ["테스트 학습은(는) Det용이고 이 데이터셋은 Cls입니다."]
+    # classify was merged into torchvision, which trains Det too: a run that names it goes there
+    merged = hub.post("/api/runs/check", json={"release_id": street, "template": "classify"}).json()
+    assert merged["problems"] == []
     unknown = hub.post("/api/runs/check", json={"release_id": street, "template": "dummy", "params": {"nope": 1}}).json()
     assert "nope" in unknown["problems"][0]
 

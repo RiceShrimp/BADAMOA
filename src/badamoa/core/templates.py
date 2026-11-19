@@ -26,8 +26,10 @@ from pydantic import BaseModel, Field, ValidationError
 from badamoa.core import tasks as task_names
 
 MANIFEST = "badamoa.toml"
-TASKS = ("detect", "segment", "classify")  # what the built-in templates train; a template may name any task
-DATA_FORMATS = ("yolo", "yolo-seg", "imagefolder")  # coco and manifest come with the templates that need them
+TASKS = ("detect", "segment", "classify", "pose")  # what the built-in templates train; a template may name any task
+DATA_FORMATS = ("yolo", "yolo-seg", "imagefolder", "yolo-pose")  # coco and manifest come with the templates that need them
+# Each built-in task's own format: what a template that trains several tasks reads for one it gives none for.
+NATURAL_FORMAT = {"detect": "yolo", "segment": "yolo-seg", "classify": "imagefolder", "pose": "yolo-pose"}
 ENTRYPOINTS = ("train", "eval", "predict", "export")
 PARAM_TYPES = ("string", "integer", "number", "boolean", "object")
 # Set by BADAMOA for every run; a template may not use these as param names.
@@ -91,6 +93,15 @@ class TemplateError(ValueError):
     """The declaration or the bundle is not usable; the message is shown to whoever registers it."""
 
 
+class TaskOverride(BaseModel):
+    """What a setting is for one task of a template that trains several (``[params.model.by_task.segment]``)."""
+
+    default: Any = None
+    choices: list[Any] | None = None
+    label: str | None = None
+    help: str | None = None
+
+
 class ParamSpec(BaseModel):
     type: str = "string"
     default: Any = None
@@ -105,6 +116,10 @@ class ParamSpec(BaseModel):
     # The code does not use this setting while another one has one of these values:
     # ``unused_when = { optimizer = ["auto"] }`` (Ultralytics picks the learning rate itself then).
     unused_when: dict[str, list[Any]] = Field(default_factory=dict)
+    # A template that trains several tasks: the tasks this setting is for (empty: all of them), and
+    # what changes for one of them, e.g. the model list: ``by_task = { segment = { default = "yolo11n-seg.pt" } }``.
+    tasks: list[str] = Field(default_factory=list)
+    by_task: dict[str, TaskOverride] = Field(default_factory=dict)
 
 
 class EnvironmentSpec(BaseModel):
@@ -148,6 +163,7 @@ _FITS = {
     ("detect", "yolo"): "",
     ("segment", "yolo-seg"): "",
     ("classify", "imagefolder"): "",
+    ("pose", "yolo-pose"): "",
     ("segment", "yolo"): "윤곽은 버리고 박스만 넘깁니다",
     ("pose", "yolo"): "점은 버리고 박스만 넘깁니다",
     ("*", "yolo"): "박스 뒤의 값은 버리고 박스만 넘깁니다",  # a task a team named
@@ -171,7 +187,14 @@ class TemplateManifest(BaseModel):
     version: str
     description: str = ""
     task: str = "detect"
+    # Every task the code trains, for one template that does several (one library, one environment): the
+    # task of each run is its dataset's, and the code reads it from its config (``task``). Empty: ``task``.
+    tasks: list[str] = Field(default_factory=list)
     data_format: str = "yolo"
+    # With ``tasks``: each task's data format; a task left out reads its own (``NATURAL_FORMAT``).
+    data_formats: dict[str, str] = Field(default_factory=dict)
+    # A kind merged into another: new runs use that one, while models trained with this one keep its code.
+    replaced_by: str = ""
     license: str = ""
     hidden: bool = False  # not offered in the training dialog (test helpers)
     variant: str = ""  # the param that names the model variant, e.g. "model" → yolo11n
@@ -190,6 +213,36 @@ class TemplateManifest(BaseModel):
     check: CheckSpec = Field(default_factory=CheckSpec)
     # What the checks found worth saying but not worth refusing (set by BADAMOA, not written by hand)
     notes: list[str] = Field(default_factory=list)
+
+    def trains(self) -> list[str]:
+        """The tasks the code trains."""
+        return self.tasks or [self.task]
+
+    def supports(self, task: str) -> bool:
+        return any(task_names.same(t, task) for t in self.trains())
+
+    def for_task(self, task: str) -> TemplateManifest:
+        """The declaration as a run on data of ``task`` sees it: that task, its data format, the settings for it
+        with their values for it. Unchanged for a template of one task or a task it does not train."""
+        chosen = next((t for t in self.trains() if task_names.same(t, task)), None)
+        if not self.tasks or chosen is None:
+            return self
+        out = self.model_copy(deep=True)
+        out.task = chosen
+        out.data_format = self.data_formats.get(chosen) or NATURAL_FORMAT.get(chosen, "yolo")
+        params = {}
+        for name, spec in self.params.items():
+            if spec.tasks and not any(task_names.same(t, chosen) for t in spec.tasks):
+                continue
+            mine = spec.model_copy(deep=True)
+            change = spec.by_task.get(chosen)
+            if change is not None:
+                for field, value in change.model_dump(exclude_none=True).items():
+                    setattr(mine, field, value)
+            mine.tasks, mine.by_task = [], {}
+            params[name] = mine
+        out.params = params
+        return out
 
 
 # ---- settings declared in the code itself (``badamoa_sdk.params(...)``) ---------------
@@ -279,25 +332,22 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
         raise TemplateError("name은 영문 소문자·숫자·`-`·`_`·`.`로 2~63자여야 합니다 (예: inhouse-rtdetr).")
     if not manifest.version.strip():
         raise TemplateError("version을 적어 주세요 (예: 1.0.0).")
-    try:  # detect · segment · pose · classify (Det, Seg, Kpt, Cls), or a task a team names, such as ocr
-        manifest.task = task_names.normalize(manifest.task) or "detect"
-    except ValueError as e:
-        raise TemplateError(f"task: {e}") from e
-    if manifest.data_format not in DATA_FORMATS:
-        raise TemplateError(f"data_format은 지금 {', '.join(DATA_FORMATS)}만 지원합니다.")
+    _check_tasks(manifest)
     manifest.notes = []
-    fit = format_fit(manifest.task, manifest.data_format)
-    shown = task_names.short(manifest.task)
-    if fit is None:
-        usable = _formats_for(manifest.task)
-        hint = f" {', '.join(usable)}을(를) 쓰세요." if usable else " 이 태스크를 풀 수 있는 형식이 아직 없습니다."
-        raise TemplateError(f"{shown} 데이터는 data_format {manifest.data_format}으로 풀 수 없습니다.{hint}")
-    if fit:
-        manifest.notes.append(f"{shown} 데이터를 {manifest.data_format}로 풀면 {fit}.")
+    for task in manifest.trains():
+        fmt = manifest.data_formats.get(task, manifest.data_format)
+        fit = format_fit(task, fmt)
+        shown = task_names.short(task)
+        if fit is None:
+            usable = _formats_for(task)
+            hint = f" {', '.join(usable)}을(를) 쓰세요." if usable else " 이 태스크를 풀 수 있는 형식이 아직 없습니다."
+            raise TemplateError(f"{shown} 데이터는 data_format {fmt}으로 풀 수 없습니다.{hint}")
+        if fit:
+            manifest.notes.append(f"{shown} 데이터를 {fmt}로 풀면 {fit}.")
     data = manifest.data
     if data.classes.min < 0 or data.classes.max < 0 or data.min_images < 1 or data.keypoints < 0:
         raise TemplateError("[data]의 값은 0 이상이어야 합니다 (min_images는 1 이상).")
-    if data.classes.max and data.classes.max < data.min_classes(manifest.task):
+    if data.classes.max and data.classes.max < max(data.min_classes(t) for t in manifest.trains()):
         raise TemplateError("[data] classes의 max가 min보다 작습니다.")
     _check_requirements(manifest.environment.requirements)
     manifest.environment.image = manifest.environment.image.strip()
@@ -328,16 +378,89 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
             raise TemplateError(f"설정 이름 {name}은 BADAMOA가 쓰는 이름이라 사용할 수 없습니다.")
         if spec.type not in PARAM_TYPES:
             raise TemplateError(f"설정 {name}의 type은 {', '.join(PARAM_TYPES)} 중 하나여야 합니다.")
-        try:
-            if spec.default is not None:
-                spec.default = _coerce(name, spec, spec.default)
-        except TemplateError as e:
-            raise TemplateError(f"기본값이 맞지 않습니다 — {e}") from e
+        _check_param_tasks(manifest, name, spec)
+    for task in manifest.trains():  # each task's defaults, with what changes for it
+        for name, spec in manifest.for_task(task).params.items():
+            try:
+                if spec.default is not None:
+                    _coerce(name, spec, spec.default)
+            except TemplateError as e:
+                where = f" ({task_names.short(task)})" if manifest.tasks else ""
+                raise TemplateError(f"기본값이 맞지 않습니다{where} — {e}") from e
+        if manifest.variant and manifest.variant not in manifest.for_task(task).params:
+            raise TemplateError(f"variant가 가리키는 설정 {manifest.variant}이 [params]에 없습니다.")
+    for spec in manifest.params.values():
+        if spec.default is not None and not spec.by_task and not spec.tasks:
+            spec.default = _coerce("", spec, spec.default)
     if manifest.variant and manifest.variant not in manifest.params:
         raise TemplateError(f"variant가 가리키는 설정 {manifest.variant}이 [params]에 없습니다.")
-    _check_check(manifest)
+    for task in manifest.trains():
+        _check_check(manifest.for_task(task))
+    manifest.replaced_by = manifest.replaced_by.strip()
     manifest.title = manifest.title or manifest.name
     return manifest
+
+
+def _check_tasks(manifest: TemplateManifest) -> None:
+    """``task`` and ``tasks`` as stored: built-in ids or named tasks, each once; with ``tasks``, every task's data
+    format filled in (``data_formats``), ``task`` the first of them unless it names another, ``data_format`` its."""
+    try:  # detect · segment · pose · classify (Det, Seg, Kpt, Cls), or a task a team names, such as ocr
+        manifest.task = task_names.normalize(manifest.task) or "detect"
+        tasks = [task_names.normalize(t) for t in manifest.tasks]
+    except ValueError as e:
+        raise TemplateError(f"task: {e}") from e
+    if any(not t for t in tasks) or len({t.lower() for t in tasks}) != len(tasks):
+        raise TemplateError("tasks에는 태스크를 하나씩, 겹치지 않게 적어 주세요 (예: [\"detect\", \"segment\"]).")
+    for fmt in [manifest.data_format, *manifest.data_formats.values()]:
+        if fmt not in DATA_FORMATS:
+            raise TemplateError(f"data_format은 지금 {', '.join(DATA_FORMATS)}만 지원합니다.")
+    if not tasks:
+        if manifest.data_formats:
+            raise TemplateError("data_formats는 tasks와 함께 씁니다. 태스크가 하나면 data_format을 쓰세요.")
+        return
+    named = "task" in manifest.model_fields_set
+    if named and not any(task_names.same(t, manifest.task) for t in tasks):
+        raise TemplateError(f"task {manifest.task}이(가) tasks에 없습니다.")
+    manifest.tasks = tasks
+    manifest.task = next(t for t in tasks if task_names.same(t, manifest.task)) if named else tasks[0]
+    def plain(task: str) -> str:
+        try:
+            return task_names.normalize(task) or task
+        except ValueError:
+            return task
+
+    given_formats = {plain(t): f for t, f in manifest.data_formats.items()}
+    formats = {}
+    for task in tasks:
+        given = next((f for t, f in given_formats.items() if task_names.same(t, task)), "")
+        if not given and task == manifest.task and "data_format" in manifest.model_fields_set:
+            given = manifest.data_format
+        formats[task] = given or NATURAL_FORMAT.get(task, "yolo")
+    unknown = [t for t in given_formats if not any(task_names.same(t, task) for task in tasks)]
+    if unknown:
+        raise TemplateError(f"data_formats의 {', '.join(unknown)}은(는) tasks에 없습니다.")
+    manifest.data_formats, manifest.data_format = formats, formats[manifest.task]
+
+
+def _check_param_tasks(manifest: TemplateManifest, name: str, spec: ParamSpec) -> None:
+    """A setting's ``tasks`` and ``by_task`` name tasks the template trains (stored as ``tasks`` writes them)."""
+    if not (spec.tasks or spec.by_task):
+        return
+    if not manifest.tasks:
+        raise TemplateError(f"설정 {name}: tasks · by_task는 tasks로 여러 태스크를 학습하는 모델 종류에서 씁니다.")
+
+    def known(task: str) -> str:
+        try:
+            plain = task_names.normalize(task) or task
+        except ValueError:
+            plain = task
+        found = next((t for t in manifest.tasks if task_names.same(t, plain)), None)
+        if found is None:
+            raise TemplateError(f"설정 {name}: 태스크 {task}은(는) tasks에 없습니다.")
+        return found
+
+    spec.tasks = [known(t) for t in spec.tasks]
+    spec.by_task = {known(t): change for t, change in spec.by_task.items()}
 
 
 def _check_check(manifest: TemplateManifest) -> None:
@@ -358,7 +481,10 @@ def _check_check(manifest: TemplateManifest) -> None:
 def check_params(manifest: TemplateManifest) -> dict[str, Any]:
     """The settings of a trial run: the defaults, one epoch where there is such a setting, and ``[check] params``."""
     short = {"epochs": 1} if "epochs" in manifest.params else {}
-    return resolve_params(manifest, {**short, **manifest.check.params})
+    given = manifest.check.params
+    if manifest.tasks:  # one task's view of a template of several: what the trial sets for the others is not here
+        given = {k: v for k, v in given.items() if k in manifest.params}
+    return resolve_params(manifest, {**short, **given})
 
 
 def _check_requirements(requirements: list[str]) -> None:

@@ -28,6 +28,7 @@ class ExportOptions:
     # Evaluation wants the release's splits exactly as they are: no stand-in for a missing val split.
     keep_splits: bool = False
     masks: bool = False  # write outlines (segmentation) instead of boxes where a label has one
+    points: bool = False  # write each box with its keypoints (YOLO pose)
     symlinks: bool = True  # False: hard links or copies only (code in a container that cannot follow a link)
 
 
@@ -38,7 +39,8 @@ def select_boxes(item: dict[str, Any], keep: dict[int, int], options: ExportOpti
     (nobody labelled it) or ``partial`` (labelled, but not for every class being trained).
     """
     state = item["state"]
-    boxes = [[keep[int(b[0])], *(b[1:] if options.masks else b[1:5])] for b in item.get("boxes", []) if int(b[0]) in keep]
+    whole = options.masks or options.points
+    boxes = [[keep[int(b[0])], *(b[1:] if whole else b[1:5])] for b in item.get("boxes", []) if int(b[0]) in keep]
     if state == "background":
         return [], ""
     if state == "unlabelled":
@@ -90,10 +92,27 @@ def _place(source: Path, target: Path, symlinks: bool = True) -> str:
     return "copy"
 
 
-def _label_line(row: list[float], masks: bool) -> str:
-    """One YOLO label line: the box, or for segmentation the outline that follows it in the stored label."""
+def _label_line(row: list[float], masks: bool, points: int = 0) -> str:
+    """One YOLO label line: the box; for segmentation the outline that follows it in the stored label; for pose
+    the box and its ``points`` keypoints (x, y, visibility), those a label lacks written as not there (0 0 0)."""
+    if points:
+        kpts = [*row[5 : 5 + points * 3], *[0.0] * max(0, points * 3 - len(row[5:]))]
+        cells = [f"{v:.6f}" for v in row[1:5]] + [f"{v:.6f}" if i % 3 != 2 else str(int(v)) for i, v in enumerate(kpts)]
+        return f"{int(row[0])} " + " ".join(cells) + "\n"
     values = row[5:] if masks and len(row) > 5 else row[1:5]
     return f"{int(row[0])} " + " ".join(f"{v:.6f}" for v in values) + "\n"
+
+
+def _flip_pairs(names: list[str]) -> list[int] | None:
+    """For a horizontal flip: each point's mirror image by name (left_eye ↔ right_eye, l_hand ↔ r_hand), itself
+    when it has none. None when no point has a pair: then the trainer does not flip the images."""
+    swaps = (("left", "right"), ("right", "left"), ("l_", "r_"), ("r_", "l_"))
+    low = [n.lower() for n in names]
+    flip = []
+    for name in low:
+        mirror = next((name.replace(a, b, 1) for a, b in swaps if a in name and name.replace(a, b, 1) in low), name)
+        flip.append(low.index(mirror))
+    return flip if any(i != j for i, j in enumerate(flip)) else None
 
 
 def build(
@@ -114,6 +133,8 @@ def build(
         raise ValueError("학습할 클래스가 없습니다.")
     keep = {cid: i for i, cid in enumerate(chosen)}
     names = {int(c["id"]): str(c["name"]) for c in classes}
+    # Pose: the points every object has, named by the classes (the same for all of them in a version)
+    point_names = next((list(c.get("keypoints") or []) for c in classes if int(c["id"]) in keep and c.get("keypoints")), [])
 
     selected: list[tuple[dict[str, Any], str, list[list[float]]]] = []
     excluded = {"unlabelled": 0, "partial": 0, "missing": 0}
@@ -127,6 +148,11 @@ def build(
             as_background += 1
         split = item.get("split") if item.get("split") in SPLITS else "train"
         selected.append((item, split, boxes))
+    points = 0
+    if options.points:  # how many points each object has: the classes say, else the labels
+        points = len(point_names) or max((len(b[5:]) // 3 for _, _, boxes in selected for b in boxes), default=0)
+        if not points:
+            raise ValueError("키포인트가 있는 라벨이 없습니다. Kpt 데이터셋인지 확인하세요.")
 
     val_source = "release"
     if not options.keep_splits and not any(split == "val" for _, split, _ in selected):
@@ -160,7 +186,7 @@ def build(
         label.parent.mkdir(parents=True, exist_ok=True)
         method = _place(source, image, options.symlinks)
         methods[method] = methods.get(method, 0) + 1
-        label.write_text("".join(_label_line(row, options.masks) for row in boxes), encoding="utf-8")
+        label.write_text("".join(_label_line(row, options.masks, points) for row in boxes), encoding="utf-8")
         registered[stem] = item["rel_path"]
         counts[split] += 1
         box_total += len(boxes)
@@ -172,6 +198,11 @@ def build(
     lines.append(f"val: images/{'val' if counts['val'] else 'train'}")
     if counts["test"]:
         lines.append("test: images/test")
+    if points:
+        lines.append(f"kpt_shape: [{points}, 3]")
+        flip = _flip_pairs(point_names) if len(point_names) == points else None
+        if flip:
+            lines.append(f"flip_idx: {json.dumps(flip)}")
     lines.append("names:")
     lines += [f"  {i}: {json.dumps(names[cid], ensure_ascii=False)}" for cid, i in keep.items()]
     (out / "data.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -289,7 +320,20 @@ def build_segmentation(
     return build(items, classes, locations, out, options)
 
 
-BUILDERS = {"yolo": build, "yolo-seg": build_segmentation, "imagefolder": build_imagefolder}
+def build_pose(
+    items: Iterable[dict[str, Any]],
+    classes: list[dict[str, Any]],
+    locations: dict[str, str],
+    out: Path,
+    options: ExportOptions,
+) -> dict[str, Any]:
+    """The YOLO layout with each box's keypoints after it, and ``kpt_shape`` (and ``flip_idx`` when the points'
+    names pair up left and right) in data.yaml (YOLO pose format)."""
+    options.points = True
+    return build(items, classes, locations, out, options)
+
+
+BUILDERS = {"yolo": build, "yolo-seg": build_segmentation, "imagefolder": build_imagefolder, "yolo-pose": build_pose}
 
 
 # ---- downloads: a release as one zip in a common format ------------------------------------

@@ -200,8 +200,9 @@ def test_classification_project_from_import_to_model_with_files(hub, tmp_path):
     # Templates are offered by task; a detection template is refused here.
     names = lambda task: [t["name"] for t in hub.get("/api/templates", params={"task": task}).json()]  # noqa: E731
     offered = {task: names(task) for task in ("classify", "detect")}
-    assert offered == {"classify": ["classify", "tiny-classifier"], "detect": ["yolo", "torchvision"]}
-    refused = hub.post("/api/runs", json={"release_id": release["id"], "template": "yolo"})
+    # classify was merged into torchvision (hidden); torchvision and yolo train every task, torchvision leads here
+    assert offered == {"classify": ["torchvision", "yolo", "tiny-classifier"], "detect": ["yolo", "torchvision"]}
+    refused = hub.post("/api/runs", json={"release_id": release["id"], "template": "dummy"})
     assert refused.status_code == 400 and "Det용이고 이 데이터셋은 Cls입니다" in refused.json()["detail"]
 
     run = hub.post("/api/runs", json={"release_id": release["id"], "template": "tiny-classifier", "gpus": 0}).json()
@@ -238,9 +239,9 @@ def test_classification_project_from_import_to_model_with_files(hub, tmp_path):
     assert _wait(hub, slow["job_id"])["status"] == "succeeded"
     assert hub.get(f"/api/runs/{slow['id']}").json()["metrics"]["top1"] == pytest.approx(1 - 30 / 40)
 
-    # An empty request uses the built-in template for the project's task.
+    # An empty request uses the built-in template for the project's task (torchvision, which classify merged into).
     default = hub.post("/api/runs", json={"release_id": release["id"], "gpus": 0}).json()
-    assert default["template"]["name"] == "classify"
+    assert default["template"]["name"] == "torchvision"
     hub.post(f"/api/jobs/{default['job_id']}/cancel")
 
 
@@ -289,7 +290,7 @@ def test_outlines_are_kept_in_segmentation_datasets_only(hub, tmp_path):
     assert stored["segment"][0] == [2, 0.3, 0.4, 0.4, 0.4, 0.1, 0.2, 0.5, 0.2, 0.5, 0.6, 0.1, 0.6]
     assert stored["detect"] == [[2, 0.3, 0.4, 0.4, 0.4], [1, 0.7, 0.7, 0.2, 0.2]]
     offered = [t["name"] for t in hub.get("/api/templates", params={"task": "segment"}).json()]
-    assert offered == ["yolo-seg"]
+    assert offered[0] == "yolo" and "yolo-seg" not in offered  # one Ultralytics kind for every task since 0.59.0
 
 
 def test_coco_outlines_are_read_and_the_largest_polygon_kept(tmp_path):

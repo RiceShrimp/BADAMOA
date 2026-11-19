@@ -1,13 +1,16 @@
 name = "classify"
 title = "torchvision 분류"
-version = "5"
-description = "이미지 분류: ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin (torchvision, ImageNet 사전학습)"
+version = "6"
+description = "이미지 분류: ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin (torchvision, ImageNet 사전학습). torchvision 모델 종류로 합쳐졌습니다. 이것으로 학습한 모델은 이 코드로 평가 · 테스트 · 내보내기 · 오토라벨을 합니다."
 task = "classify"
 data_format = "imagefolder"
 license = "BSD-3-Clause"
 variant = "model"
 resume = true
 autolabel = true
+# Merged into the torchvision kind, which trains classification too: new runs go there, and the code here is its.
+hidden = true
+replaced_by = "torchvision"
 
 [environment]
 requirements = ["torch", "torchvision", "onnx", "onnxscript"]
@@ -20,4 +23,132 @@ eval = "python ops.py --config {config}"
 export = "python ops.py --config {config}"
 predict = "python ops.py --config {config}"
 
-# 설정은 train.py의 bm.params(...)에 선언되어 있습니다.
+[params.model]
+type = "string"
+label = "모델"
+default = "resnet18"
+choices = [
+    "resnet18", "resnet34", "resnet50", "resnet101", "efficientnet_b0", "efficientnet_v2_s", "mobilenet_v3_small",
+    "mobilenet_v3_large", "convnext_tiny", "regnet_y_400mf", "vit_b_16", "swin_t",
+]
+custom = true
+help = "torchvision의 다른 분류 모델 이름도 직접 입력할 수 있습니다."
+
+[params.epochs]
+type = "integer"
+label = "epoch"
+default = 30
+minimum = 1
+
+# ---- 세부 설정: 학습 ----
+[params.imgsz]
+type = "integer"
+label = "이미지 크기"
+default = 224
+minimum = 32
+maximum = 1024
+advanced = true
+group = "학습"
+
+[params.batch]
+type = "integer"
+label = "배치"
+default = 32
+minimum = 1
+advanced = true
+group = "학습"
+
+[params.workers]
+type = "integer"
+label = "데이터 로더 수"
+default = 2
+minimum = 0
+maximum = 32
+advanced = true
+group = "학습"
+
+[params.pretrained]
+type = "boolean"
+label = "사전학습 가중치에서 시작"
+default = true
+advanced = true
+group = "학습"
+
+[params.freeze]
+type = "boolean"
+label = "마지막 층만 학습"
+default = false
+advanced = true
+group = "학습"
+help = "백본을 고정합니다. 데이터가 적을 때 빠릅니다."
+
+# ---- 세부 설정: 최적화 ----
+[params.optimizer]
+type = "string"
+label = "옵티마이저"
+default = "AdamW"
+choices = ["AdamW", "SGD"]
+advanced = true
+group = "최적화"
+
+[params.lr]
+type = "number"
+label = "학습률"
+default = 0.001
+minimum = 0
+advanced = true
+group = "최적화"
+
+[params.momentum]
+type = "number"
+label = "모멘텀 (SGD)"
+default = 0.9
+minimum = 0
+maximum = 1
+advanced = true
+group = "최적화"
+unused_when = { optimizer = ["AdamW"] }
+
+[params.weight_decay]
+type = "number"
+label = "weight decay"
+default = 0.01
+minimum = 0
+advanced = true
+group = "최적화"
+
+[params.label_smoothing]
+type = "number"
+label = "label smoothing"
+default = 0.0
+minimum = 0
+maximum = 0.5
+advanced = true
+group = "최적화"
+
+[params.cos_lr]
+type = "boolean"
+label = "코사인 학습률 스케줄"
+default = true
+advanced = true
+group = "최적화"
+
+# ---- 세부 설정: 증강 ----
+[params.fliplr]
+type = "number"
+label = "좌우 뒤집기 확률"
+default = 0.5
+minimum = 0
+maximum = 1
+advanced = true
+group = "증강"
+help = "숫자·글자처럼 방향이 뜻을 갖는 데이터는 0으로 둡니다."
+
+[params.crop_scale]
+type = "number"
+label = "무작위 자르기 최소 비율"
+default = 0.6
+minimum = 0.08
+maximum = 1
+advanced = true
+group = "증강"

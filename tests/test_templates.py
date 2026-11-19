@@ -300,13 +300,24 @@ def test_yolo_hyperparameters_are_detailed_settings():
     with pytest.raises(fmt.TemplateError, match="옵티마이저"):
         fmt.resolve_params(manifest, {"optimizer": "Lion"})
     assert manifest.params["lr0"].unused_when == {"optimizer": ["auto"]}  # Ultralytics picks it itself then
-    classify = fmt.load_manifest(shipped.builtin()["classify"])  # declared in code, read without running it
+    # classify was merged into torchvision: it stays, hidden, with its settings, for the models trained with it
+    classify = fmt.load_manifest(shipped.builtin()["classify"])
     assert classify.params["momentum"].unused_when == {"optimizer": ["AdamW"]}
+    assert (classify.hidden, classify.replaced_by, classify.task) == (True, "torchvision", "classify")
 
-    # the torchvision template declares everything in code
+    # the torchvision template trains four tasks, each with its own models and defaults
     torchvision = fmt.load_manifest(shipped.builtin()["torchvision"])
-    assert "fasterrcnn_resnet50_fpn" in torchvision.params["model"].choices
-    assert torchvision.params["lr"].group == "최적화" and torchvision.variant == "model"
+    assert torchvision.trains() == ["detect", "segment", "classify", "pose"] and torchvision.variant == "model"
+    detect, segment, cls, pose = (torchvision.for_task(t) for t in torchvision.trains())
+    assert "fasterrcnn_resnet50_fpn" in detect.params["model"].choices and detect.params["lr"].group == "최적화"
+    assert segment.params["model"].default == "maskrcnn_resnet50_fpn" and segment.data_format == "yolo-seg"
+    assert pose.params["model"].default == "keypointrcnn_resnet50_fpn" and pose.data_format == "yolo-pose"
+    assert (cls.params["model"].default, cls.params["imgsz"].default, cls.params["optimizer"].default) == (
+        "resnet18",
+        224,
+        "AdamW",
+    )
+    assert "freeze" in cls.params and "freeze" not in detect.params and "clip" not in cls.params
 
 
 # ---- registering and running in-house code ---------------------------------------------
@@ -369,7 +380,7 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     assert pushed.exit_code == 0 and "my-detector 0.1.0" in pushed.output, pushed.output
     assert _push(hub, folder).exit_code == 0  # the same content again is fine
     listed = {t["name"]: t for t in hub.get("/api/templates").json()}
-    assert set(listed) == {"yolo", "yolo-seg", "classify", "torchvision", "my-detector"}
+    assert set(listed) == {"yolo", "torchvision", "my-detector"}  # yolo-seg · classify: merged, hidden
     assert listed["yolo"]["builtin"] is True
     mine = listed["my-detector"]
     assert (mine["title"], mine["versions"], mine["entrypoints"]) == ("My Detector", 1, ["train"])
@@ -421,10 +432,10 @@ def test_init_push_and_train_an_in_house_template(hub, release, tmp_path):
     member = {"Authorization": f"Bearer {login['token']}"}
     assert httpx.post(f"{hub.url}/api/templates", content=fmt.bundle(folder), headers=member).status_code == 403
     # everyone picks among the offered ones: a pushed version waits for an admin's trial and 허용 first
-    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 4
+    assert len(httpx.get(f"{hub.url}/api/templates", headers=member).json()) == 2  # yolo · torchvision
     assert hub.delete(f"/api/templates/{listed['yolo']['id']}").status_code == 400
     assert hub.delete(f"/api/templates/{latest['id']}").status_code == 200
-    assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "yolo-seg", "classify", "torchvision"]
+    assert [t["name"] for t in hub.get("/api/templates").json()] == ["yolo", "torchvision"]
     assert hub.get(f"/api/runs/{run['id']}").json()["template"]["title"] == "My Detector"  # the record stays
 
     # ---- in the trash with every version: back on the list, then gone for good

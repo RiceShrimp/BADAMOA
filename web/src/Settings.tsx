@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { GpuBusyPanel, HubAutostartPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
-import { type Project, announceTrash } from "./catalogTypes";
+import { type Project, announceTrash, taskLabel } from "./catalogTypes";
 import type { Environment, EnvironmentNode, Template, TemplateCheck, TemplateVersion } from "./trainTypes";
 import { Badge, CopyBlock, Icon, Modal, timeAgo, useHubUrl, usePolling } from "./ui";
 
@@ -27,11 +27,16 @@ function sourceNote(c: TemplateCheck): string {
     .join(", ")}${odd.length > 3 ? ` 외 ${odd.length - 3}개` : ""}`;
 }
 
+/** A trial step's name; a kind of several tasks is tried on each in turn, so its steps say which (Seg 학습). */
+function stepName(s: { step: string; task?: string }): string {
+  return `${s.task ? `${taskLabel(s.task)} ` : ""}${STEP_LABEL[s.step] ?? s.step}`;
+}
+
 /** A template version's trial as an admin reads it: one line, the details on hover, the log a click away. */
 function TrialLine({ t }: { t: Template }) {
   const c: TemplateCheck = t.check;
   const steps = (c.steps ?? [])
-    .map((s) => (s.skipped ? `${STEP_LABEL[s.step] ?? s.step}: ${s.detail}` : `${STEP_LABEL[s.step] ?? s.step} ${s.took_s}초 · ${s.detail}`))
+    .map((s) => (s.skipped ? `${stepName(s)}: ${s.detail}` : `${stepName(s)} ${s.took_s}초 · ${s.detail}`))
     .join("\n");
   const log = c.job_id ? (
     <a className="link" href={`#/jobs/${c.job_id}`}>
@@ -113,7 +118,7 @@ function TrialLine({ t }: { t: Template }) {
         </div>
       )}
       {t.local_check?.ok && (
-        <div className="muted" title={(t.local_check.steps ?? []).map((s) => `${STEP_LABEL[s.step] ?? s.step}: ${s.detail}`).join("\n")}>
+        <div className="muted" title={(t.local_check.steps ?? []).map((s) => `${stepName(s)}: ${s.detail}`).join("\n")}>
           올린 사람 PC에서 통과{t.local_check.by ? ` (${t.local_check.by})` : ""}: {(t.local_check.steps ?? []).filter((s) => !s.skipped).length}단계 · Python{" "}
           {t.local_check.python} · {(t.local_check.os ?? "").split("-")[0]}
           {t.local_check.gpus?.length ? ` · ${t.local_check.gpus[0]}` : ""}
@@ -925,6 +930,11 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
                   </button>{" "}
                   {t.builtin && <span className="tag">기본 제공</span>}
                   {t.draft && !isAdmin && <span className="tag">내 초안</span>}
+                  {(t.tasks ?? [t.task]).map((task) => (
+                    <span key={task} className="task-tag">
+                      {taskLabel(task)}
+                    </span>
+                  ))}
                   <div className="muted small template-about">{t.description || t.name}</div>
                 </td>
                 <td className="num version-cell">

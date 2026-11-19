@@ -30,6 +30,7 @@ from typing import Any
 
 import httpx
 
+from badamoa.core import tasks as task_names
 from badamoa.core.templates import CONTRACT
 
 from . import containers, exporter, samples, trainer
@@ -151,7 +152,9 @@ def _trial(
     steps: list[dict[str, Any]],
     notes: list[str],
     facts: dict[str, Any],
+    label: str = "",
 ) -> None:
+    """``label``: the task this pass tries, for a kind of several tasks (Det, Seg …); its steps say it."""
     template = params["template"]
     spec = params.get("environment") or {}
     check = params.get("check") or {}
@@ -161,7 +164,7 @@ def _trial(
     skip = set(check.get("skip") or [])
 
     def step(name: str, act: Callable[[], str]) -> None:
-        print(f"── {STEP_NAMES.get(name, name)} ──", flush=True)
+        print(f"── {label + ': ' if label else ''}{STEP_NAMES.get(name, name)} ──", flush=True)
         started = time.monotonic()
         try:
             detail = act()
@@ -169,7 +172,8 @@ def _trial(
             raise
         except Exception as e:  # noqa: BLE001 - whatever went wrong is the reason this step failed
             raise Failed(name, f"{type(e).__name__}: {e}") from e
-        steps.append({"step": name, "ok": True, "took_s": round(time.monotonic() - started, 1), "detail": detail})
+        done = {"step": name, "ok": True, "took_s": round(time.monotonic() - started, 1), "detail": detail}
+        steps.append({**done, "task": template.get("task")} if label else done)
         print(f"통과: {detail}", flush=True)
 
     # 1. data
@@ -184,7 +188,8 @@ def _trial(
             raise Failed("data", f"이 서버의 BADAMOA는 데이터 형식 {data_format}을 쓸 줄 모릅니다. 서버를 업데이트하세요.")
         count = samples.class_count(kind, int(classes.get("min") or 0), int(classes.get("max") or 0))
         train = max(8, int(data.get("min_images") or 0))
-        items, names, locations = samples.make(work / "sample", kind, classes=count, train=train)
+        points = int(data.get("keypoints") or 0)
+        items, names, locations = samples.make(work / "sample", kind, classes=count, train=train, points=points)
         options = exporter.ExportOptions(keep_splits=True, symlinks=not (in_container and os.name == "nt"))
         summary.update(build(items, names, locations, work / "data", options))
         counts = summary["items"]
@@ -234,6 +239,8 @@ def _trial(
     device = trainer._device() if given else ("0" if on_gpu else "cpu")
     settings = params.get("params") or {}
     common = {"cache": str(cache), "device": device, "classes": summary["classes"], "check": True}
+    if template.get("task"):  # the task of this pass: a kind of several tasks reads it to know what to train
+        common["task"] = template["task"]
 
     def start(name: str, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Callable[[str], Path]]:
         command, env, where = trainer.launch(
@@ -361,9 +368,9 @@ def _trial(
         if entry not in entrypoints:
             continue
         if name == "autolabel" and not template.get("autolabel"):
-            steps.append(
-                {"step": name, "ok": True, "skipped": True, "took_s": 0, "detail": "하지 않음 (autolabel을 선언하지 않음)"}
-            )
+            why = "하지 않음 (autolabel을 선언하지 않음)"
+            skipped = {"step": name, "ok": True, "skipped": True, "took_s": 0, "detail": why}
+            steps.append({**skipped, "task": template.get("task")} if label else skipped)
             print("── 오토라벨: 하지 않음 (badamoa.toml에 autolabel = true가 없음) ──", flush=True)
         elif entry in skip:
             print(f"── {STEP_NAMES[name]}: [check] skip으로 건너뜀 ──", flush=True)
@@ -396,8 +403,23 @@ def attempt(
     facts: dict[str, Any] = {}
     started = time.monotonic()
     failed: Failed | None = None
+    # A kind of several tasks: each task in turn, on its own sample data, with its settings (``tasks``).
+    passes = params.get("tasks") or [{}]
     try:
-        _trial(client, base, params, node_home, work, job_id, steps, notes, facts)
+        for one in passes:
+            label = task_names.short(one.get("task")) if len(passes) > 1 else ""
+            here = params
+            if one:
+                template_here = {**template, "task": one["task"], "data_format": one.get("data_format") or "yolo"}
+                here = {**params, "template": template_here, "params": one.get("params") or {}}
+            folder = work / one["task"] if label else work
+            folder.mkdir(parents=True, exist_ok=True)
+            try:
+                _trial(client, base, here, node_home, folder, job_id, steps, notes, facts, label)
+            except Failed as e:
+                if label:
+                    e.reason = f"{label}: {e.reason}"
+                raise
     except Failed as e:
         failed = e
     finally:

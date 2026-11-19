@@ -40,6 +40,7 @@ const COMPARE_CHARTS: Record<string, string[]> = {
   detect: ["map50_95", "map50", "precision", "recall", "train_box_loss", "val_box_loss", "train_loss"],
   classify: ["top1", "top5", "f1", "train_loss", "val_loss"],
   segment: ["mask_map50_95", "mask_map50", "map50_95", "map50", "train_seg_loss", "val_seg_loss"],
+  pose: ["pose_map50_95", "pose_map50", "map50_95", "map50", "train_pose_loss", "val_pose_loss"],
 };
 
 export function Training({ runId, arg }: { runId?: string; arg?: string }) {

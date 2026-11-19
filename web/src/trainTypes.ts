@@ -22,7 +22,12 @@ export interface Template {
   title: string;
   version: string;
   versions: number;
+  /** The task it is shown for (the one asked about, or its first). */
   task: string;
+  /** Every task it trains (one model kind can train several: Ultralytics YOLO trains all four). */
+  tasks?: string[];
+  /** A kind merged into another: new runs use that one. */
+  replaced_by?: string;
   /** What the model kind is: written on the Hub (설정 → 모델 종류), else what its bundle says. */
   description: string;
   declared_description?: string; // what the bundle says
@@ -78,7 +83,8 @@ export interface TemplateCheck {
   offered: boolean;
   reason?: string;
   failed?: string; // the step that failed: data · env · train · predict · eval · export
-  steps?: { step: string; ok: boolean; took_s: number; detail: string; skipped?: boolean }[];
+  /** ``task``: the task of the pass, for a kind of several tasks (each is tried in turn). */
+  steps?: { step: string; ok: boolean; took_s: number; detail: string; skipped?: boolean; task?: string }[];
   notes?: string[];
   node?: string;
   device?: string; // GPU or CPU: what the trial ran on
@@ -334,6 +340,8 @@ export const METRIC_LABEL: Record<string, string> = {
   lr: "학습률",
   mask_map50_95: "mask mAP50-95",
   mask_map50: "mask mAP50",
+  pose_map50_95: "pose mAP50-95",
+  pose_map50: "pose mAP50",
   mask_precision: "mask Precision",
   mask_recall: "mask Recall",
   train_seg_loss: "seg loss (train)",
@@ -344,6 +352,7 @@ const TASK_METRICS: Record<string, string[]> = {
   detect: ["map50_95", "map50", "precision", "recall"],
   classify: ["top1", "top5", "f1", "val_loss"],
   segment: ["mask_map50_95", "mask_map50", "map50_95", "map50"],
+  pose: ["pose_map50_95", "pose_map50", "map50_95", "map50"],
 };
 
 /** The four numbers shown in tables and tiles for a task; the first is the one runs are ranked by. */

@@ -5,6 +5,31 @@ BADAMOA의 버전별 변경 내용입니다. 사용자에게 보이는 변화를
 
 형식: `## [버전] - 날짜` 아래에 `### 추가 / 변경 / 수정 / 제거 / 알려진 문제` 를 두고 항목을 `- ` 로 적습니다.
 
+## [0.60.0] - 2026-11-19
+
+**모델 종류가 라이브러리마다 하나가 됐습니다: "Ultralytics YOLO"와 "torchvision"이 검출 · 분할 · 분류 · 키포인트를 모두 학습합니다.** 학습 창은 고른 데이터셋의 태스크에 맞는 모델 목록을 보여 줍니다. 키포인트 데이터셋도 이제 학습합니다.
+
+### 추가
+- Ultralytics YOLO: 분류(YOLO11-cls · YOLO26-cls, 이미지 크기 기본 224)와 키포인트(YOLO11-pose · YOLO26-pose). 분할도 이 종류가 함
+- torchvision: 분할(Mask R-CNN v1 · v2, 윤곽 → 마스크, mask mAP)과 키포인트(Keypoint R-CNN, 점 17개면 COCO 사전학습 그대로, 아니면 점 부분만 새로 배움, OKS로 pose mAP). 분류도 이 종류가 함
+- 키포인트 학습 데이터 형식 `yolo-pose`: 박스와 점(x y 보임), data.yaml의 `kpt_shape`, 점 이름이 left · right(l_ · r_)로 짝지어지면 좌우 뒤집기용 `flip_idx`
+- 키포인트 학습의 순위 지표 `pose_map50_95`(학습 표 · 비교 그래프 · 오토라벨 모델 고르기)
+- 선언 파일(badamoa.toml)의 `tasks = [...]`: 한 모델 종류가 여러 태스크를 학습. 태스크마다 그 형식으로 데이터를 받고(`data_formats`로 바꿀 수 있음), 설정은 `by_task.<태스크>`로 태스크마다 기본값 · 선택지 · 설명을, `tasks`로 그 태스크에서만 보이게. 코드는 `run.task`(설정 파일의 `task`)로 이번 태스크를 앎
+- 시험 실행(`check --run`과 서버의 시험 실행)은 적은 태스크마다 합성 데이터로 학습부터 내보내기까지 한 번씩. 단계에 태스크가 붙음(예: Seg 학습)
+- 선언 파일의 `replaced_by`: 합쳐진 예전 모델 종류는 숨기고, 새 학습은 합친 종류로. 예전 종류로 학습한 모델은 그 코드로 계속 평가 · 내보내기 · 테스트 · 오토라벨
+- 설정 → 모델 종류에 종류마다 학습하는 태스크(Det · Seg · Cls · Kpt)
+- API: 모델 종류의 `tasks` · `data_formats` · `replaced_by`, `GET /api/templates?task=`가 그 태스크로 본 설정을 줌
+
+### 변경
+- "Ultralytics YOLO 분할"(yolo-seg)과 "torchvision 분류"(classify)는 숨김. 그것을 기본으로 고른 프로젝트는 Ultralytics YOLO · torchvision으로 학습함
+- 처음 고르는 모델 종류: 검출 · 분할 · 키포인트는 Ultralytics YOLO, 분류는 torchvision(전과 같음)
+- YOLO 코드는 태스크와 맞지 않는 공식 모델 이름을 그 태스크의 것으로 바꿔 학습(분할 데이터에 yolo11n.pt → yolo11n-seg.pt, 다시 실행 · 탐색에서)
+- torchvision의 설치 패키지에 opencv-python-headless · pyyaml가 더해져, 서버에서 torchvision 환경을 한 번 다시 만듦
+- torchvision 검출 · 분할 · 키포인트의 평가도 이미지별 결과와 "라벨 의심 순"용 예측을 남김. 데이터 로더를 epoch 사이에 다시 만들지 않아 Windows에서 epoch가 빨라짐
+
+### 알려진 문제
+- 여러 태스크의 서버 시험 실행은 학습 서버가 0.60.0 이상이어야 함(설치 스크립트로 깐 노드는 스스로 업데이트)
+- torchvision의 모델 이름 칸은 모든 태스크에서 직접 적을 수 있음. 태스크에 맞지 않는 이름은 학습이 시작될 때 거부됨
 ## [0.59.1] - 2026-11-19
 
 **이미지가 수십만 장인 데이터셋이 있으면 홈 · 데이터셋 화면이 "불러오는 중"에 멈추던 문제를 고쳤습니다.**
