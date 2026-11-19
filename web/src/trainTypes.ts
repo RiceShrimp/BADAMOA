@@ -35,6 +35,8 @@ export interface Template {
   license: string;
   builtin: boolean;
   data_format: string;
+  /** The setting that names the model (e.g. "model"): the one setting the new-run dialog shows up front. */
+  variant?: string;
   entrypoints: string[];
   params: TemplateParam[];
   environment: {

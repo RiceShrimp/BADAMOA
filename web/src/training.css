@@ -376,6 +376,20 @@ table.runs td.right {
   grid-column: 1 / -1;
   margin-bottom: 10px;
 }
+.param-grid.basic-params {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.param-check {
+  align-items: flex-start;
+}
+.param-check input {
+  margin-top: 3px;
+}
+.param-help {
+  display: block;
+  margin-top: 2px;
+  line-height: 1.45;
+}
 @media (max-width: 640px) {
   .param-grid {
     grid-template-columns: 1fr;

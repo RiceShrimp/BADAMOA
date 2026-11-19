@@ -1098,10 +1098,14 @@ function ParamField({ spec, value, onChange }: { spec: TemplateParam; value: For
   const label = spec.label || spec.name;
   const [typing, setTyping] = useState(false); // "직접 입력" on a list that allows other values
   if (spec.type === "boolean") {
+    // a whole row: the name, then what it does in small print under it (never squeezed into a narrow cell)
     return (
-      <label className="check" title={spec.help}>
-        <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} /> {label}
-        {spec.help && <span className="muted"> — {spec.help}</span>}
+      <label className="check param-check" title={spec.help}>
+        <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
+        <span>
+          {label}
+          {spec.help && <span className="muted small param-help">{spec.help}</span>}
+        </span>
       </label>
     );
   }
@@ -1241,8 +1245,11 @@ function NewRun({
   const sentClasses = chosen.length === classes.length ? [] : chosen;
   const noClass = classes.length > 0 && chosen.length === 0;
   const fields = (template?.params ?? []).filter((p) => p.type !== "object");
-  const basic = fields.filter((p) => !p.advanced);
-  const advanced = fields.filter((p) => p.advanced);
+  // Only the model is picked up front; everything else (epochs, a curriculum's classes and switch …) is under
+  // 세부 설정, the settings the kind gives no heading first. The model: the kind's variant, else its first list.
+  const lead = template?.variant || fields.find((p) => !p.advanced && p.choices.length > 0)?.name || "";
+  const basic = fields.filter((p) => p.name === lead);
+  const advanced = fields.filter((p) => p.name !== lead);
   // Hyperparameters under the headings the template gave them, in the template's order.
   const groups: [string, TemplateParam[]][] = [];
   for (const p of advanced) {
@@ -1424,7 +1431,7 @@ function NewRun({
             </label>
           )}
           {template?.description && templates && templates.length > 1 && <p className="muted small">{template.description}</p>}
-          {basic.length > 0 && <div className="form-row">{basic.map(field)}</div>}
+          {basic.length > 0 && <div className="param-grid basic-params">{basic.map(field)}</div>}
           {releaseInfo?.draft && releaseInfo.draft.base?.id === releaseInfo.id && releaseInfo.draft.edited > 0 && (
             <div className="notice compact">
               작업 중에 고친 이미지 {releaseInfo.draft.edited.toLocaleString()}장은 아직 이 버전에 없습니다. 고친 라벨로 학습하려면{" "}
@@ -1468,7 +1475,11 @@ function NewRun({
             {groups.map(([group, members]) => (
               <fieldset className="param-group" key={group}>
                 {group && <legend>{group}</legend>}
-                <div className="param-grid">{members.map(field)}</div>
+                {/* values first, a few to a row; switches after them, each on a row of its own */}
+                <div className="param-grid">
+                  {members.filter((p) => p.type !== "boolean").map(field)}
+                  {members.filter((p) => p.type === "boolean").map(field)}
+                </div>
               </fieldset>
             ))}
             <fieldset className="param-group">
