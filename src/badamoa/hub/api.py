@@ -260,6 +260,14 @@ class UserPatch(BaseModel):
     password: str | None = None  # a new password set by the admin; the person's browser sessions end
 
 
+@router.delete("/users/{user_id}")
+def delete_user(user_id: str, who: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """Remove an account for good (not one's own, not the last admin); what the person made stays."""
+    done = admin.delete_user(db, who, user_id)
+    db.commit()
+    return done
+
+
 @router.patch("/users/{user_id}")
 def update_user(
     user_id: str, body: UserPatch, who: User = Depends(admin_user), db: Session = Depends(db_session)

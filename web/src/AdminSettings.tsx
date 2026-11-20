@@ -54,6 +54,22 @@ export function UsersPanel({ me }: { me: User }) {
     const text = `${user.username} 계정을 중지할까요?\n로그인할 수 없고 API 토큰도 멈춥니다. 그 사람이 만든 데이터 · 학습 · 모델은 그대로 남고, 다시 사용하게 할 수 있습니다.`;
     if (window.confirm(text)) void change(user, { disabled: true });
   };
+  const remove = async (user: Account) => {
+    const text =
+      `${user.username} 계정을 지울까요? 되돌릴 수 없습니다.\n` +
+      "· 바로 로그아웃되고 API 토큰도 지워집니다. 같은 아이디로 새 계정을 만들 수 있게 됩니다.\n" +
+      "· 그 사람이 만든 데이터셋 · 라벨 · 학습 · 모델은 그대로 남습니다(만든 사람만 비어 보임).\n" +
+      "· 라벨링 세트에서 맡은 부분은 담당자가 비워져 다른 사람이 맡을 수 있습니다.\n\n" +
+      "잠시 막기만 하려면 '중지'를 쓰세요.";
+    if (!window.confirm(text)) return;
+    try {
+      setFailed(null);
+      await api(`/users/${user.id}`, { method: "DELETE" });
+      await refresh();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   return (
     <section className="card">
@@ -144,6 +160,11 @@ export function UsersPanel({ me }: { me: User }) {
                           중지
                         </button>
                       )
+                    )}
+                    {u.id !== me.id && (
+                      <button className="small danger" onClick={() => void remove(u)} title="계정을 지웁니다(되돌릴 수 없음)">
+                        삭제
+                      </button>
                     )}
                   </td>
                 </tr>

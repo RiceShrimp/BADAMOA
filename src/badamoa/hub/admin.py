@@ -126,6 +126,32 @@ def update_user(
     return user
 
 
+def delete_user(db: Session, admin: User, user_id: str) -> dict[str, Any]:
+    """Remove someone's account for good: they cannot sign in and their tokens stop at once, and the name is free
+    for a new account. What they made (datasets, runs, models, labels) stays, made by a person no longer there;
+    labeling-set parts they had to label or review lose that person so someone else can take them. Not one's own
+    account, and not the last admin who can sign in."""
+    from sqlalchemy import update
+
+    from .catalog_models import LabelSetPart
+
+    services.require_admin(admin)
+    user = db.get(User, user_id)
+    if user is None:
+        raise ServiceError(404, "사용자를 찾을 수 없습니다.")
+    if user.id == admin.id:
+        raise ServiceError(409, "자기 계정은 지울 수 없습니다.")
+    if user.role == "admin" and user.disabled_at is None and _active_admins(db) <= 1:
+        raise ServiceError(409, "관리자가 한 명은 있어야 합니다. 다른 사람을 먼저 관리자로 만드세요.")
+    freed = db.execute(update(LabelSetPart).where(LabelSetPart.assignee == user.id).values(assignee=None)).rowcount
+    freed += db.execute(update(LabelSetPart).where(LabelSetPart.reviewer == user.id).values(reviewer=None)).rowcount
+    db.execute(delete(ApiToken).where(ApiToken.user_id == user.id))
+    name = user.username
+    services.audit(db, admin.id, "ui", "user.delete", user.id, username=name, label_parts=freed)
+    db.delete(user)
+    return {"ok": True, "username": name, "label_parts": freed}
+
+
 def change_own_password(db: Session, user: User, current: str, new: str, token: str) -> None:
     """Anyone, their own password: the current one first. Other browser sessions are signed out."""
     if not verify_password(current, user.password_hash):

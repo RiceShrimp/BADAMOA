@@ -104,3 +104,26 @@ def test_heartbeat_tells_nodes_how_long_work_folders_stay(client, admin):
     assert client.post("/api/agent/heartbeat", json=body, headers=node).json()["workdir_days"] == 30
     client.put("/api/storage/policy", json={"workdir_days": 0}, headers=admin)
     assert client.post("/api/agent/heartbeat", json=body, headers=node).json()["workdir_days"] == 0
+
+
+def test_admins_delete_accounts_and_what_they_made_stays(client, admin):
+    client.post("/api/users", json={"username": "kim", "password": "kim-delete-pw"}, headers=admin)
+    kim = _headers(_login(client, "kim", "kim-delete-pw"))
+    made = client.post("/api/projects", json={"name": "김의 프로젝트"}, headers=kim).json()
+    users = {u["username"]: u["id"] for u in client.get("/api/users", headers=admin).json()}
+
+    assert client.delete(f"/api/users/{users['kim']}", headers=kim).status_code == 403  # admins only
+    assert client.delete(f"/api/users/{users['admin']}", headers=admin).status_code == 409  # not one's own
+    done = client.delete(f"/api/users/{users['kim']}", headers=admin).json()
+    assert done["ok"] is True and done["username"] == "kim"
+    assert "kim" not in {u["username"] for u in client.get("/api/users", headers=admin).json()}
+    assert client.get("/api/auth/me", headers=kim).status_code == 401  # signed out at once
+    assert [p["id"] for p in client.get("/api/projects", headers=admin).json()] == [made["id"]]  # what kim made stays
+    assert client.post("/api/users", json={"username": "kim", "password": "kim-again-pw1"}, headers=admin).status_code == 200
+
+    # the last admin who can sign in stays: another admin may be deleted, then nobody can delete the one left
+    client.post("/api/users", json={"username": "lee", "password": "lee-admin-pw1", "role": "admin"}, headers=admin)
+    lee = _headers(_login(client, "lee", "lee-admin-pw1"))
+    users = {u["username"]: u["id"] for u in client.get("/api/users", headers=admin).json()}
+    assert client.delete(f"/api/users/{users['admin']}", headers=lee).status_code == 200
+    assert client.delete(f"/api/users/{users['lee']}", headers=lee).status_code == 409
