@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -117,10 +119,17 @@ def _place(settings, release_id, **values):
 
 
 def _import(hub, project_id, path, version, **extra):
+    return _wait_import(hub, _start_import(hub, project_id, path, version, **extra))
+
+
+def _start_import(hub, project_id, path, version, **extra):
     body = {"node_id": hub.node_id, "path": str(path), "dataset": "street", "version": version, **extra}
     resp = hub.post(f"/api/projects/{project_id}/imports", json=body)
     assert resp.status_code == 200, resp.text
-    job = resp.json()
+    return resp.json()
+
+
+def _wait_import(hub, job):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         job = hub.get(f"/api/jobs/{job['id']}").json()
@@ -311,6 +320,68 @@ def test_import_browse_and_compare_releases(hub, tmp_path, settings):
     assert [r["version"] for r in hub.get(f"/api/projects/{project['id']}/datasets").json()[0]["releases"]] == ["v1"]
     assert hub.post(f"/api/releases/{v2}/restore").status_code == 200
     assert hub.get(f"/api/releases/{v2}").json()["stats"]["items"] == 8
+
+
+def test_imports_at_once_share_their_images(hub, tmp_path, settings, monkeypatch):
+    """Two imports into one project at the same time whose folders share images (a folder and an edited copy of
+    it) both succeed and register each image once; an image labelled differently gets one revision from each."""
+    from sqlalchemy import func, select
+
+    from badamoa.core.storage import Storage
+    from badamoa.hub import catalog
+    from badamoa.hub.catalog_models import Item
+    from badamoa.hub.db import Database
+
+    original = make_yolo(tmp_path / "a")
+    copy = tmp_path / "b"
+    shutil.copytree(original, copy)
+    label = copy / "labels" / "train" / "train_0000.txt"
+    label.write_text(label.read_text() + "1 0.5 0.5 0.2 0.2\n")
+    make_yolo(tmp_path / "extra", train=9, val=0, seed=7)
+    (tmp_path / "extra" / "images" / "train" / "train_0008.jpg").rename(copy / "images" / "train" / "new_0000.jpg")
+
+    # Each import's chunk waits, once it has looked up which images are new to the project, for the other's:
+    # both find the shared images missing, as when they arrive together.
+    gate, met, guard = threading.Barrier(2, timeout=60), [], threading.Lock()
+
+    class Meeting(Storage):
+        def put_blob(self, stream):
+            with guard:
+                wait = len(met) < 2 and threading.get_ident() not in met
+                if wait:
+                    met.append(threading.get_ident())
+            if wait:
+                try:
+                    gate.wait()
+                except threading.BrokenBarrierError:
+                    pass  # asserted below
+            return super().put_blob(stream)
+
+    monkeypatch.setattr(catalog, "storage_for", lambda root: Meeting(Path(root)))
+    project = hub.post("/api/projects", json={"name": "동시에", "task": "detect"}).json()
+    jobs = [
+        _start_import(hub, project["id"], original, "v1"),
+        _start_import(hub, project["id"], copy, "v1", dataset="copy"),
+    ]
+    first, second = (_wait_import(hub, job) for job in jobs)
+    assert not gate.broken, "the two imports did not send their images at the same time"
+
+    assert hub.get(f"/api/releases/{first}").json()["stats"]["items"] == 8
+    assert hub.get(f"/api/releases/{second}").json()["stats"]["items"] == 9
+    database = Database(settings.database_url)
+    with database.session() as db:
+        assert db.scalar(select(func.count(Item.id)).where(Item.project_id == project["id"])) == 9
+    database.engine.dispose()
+
+    def detail(release_id, name):
+        item = hub.get(f"/api/releases/{release_id}/items", params={"q": name}).json()["items"][0]
+        return hub.get(f"/api/releases/{release_id}/items/{item['id']}").json()
+
+    edited = detail(first, "train_0000"), detail(second, "train_0000")
+    assert edited[0]["id"] == edited[1]["id"] and [r["rev"] for r in edited[0]["revisions"]] == [1, 2]
+    assert sorted(r["rev"] for r in edited[0]["releases"]) == [1, 2]  # each version its own labels
+    same = detail(first, "train_0003"), detail(second, "train_0003")
+    assert same[0]["id"] == same[1]["id"] and len(same[0]["revisions"]) == 1  # same labels: one revision
 
 
 def test_import_of_missing_folder_fails_with_a_clear_log(hub, tmp_path):

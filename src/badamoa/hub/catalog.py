@@ -48,7 +48,7 @@ from .catalog_models import (
     StorageLocation,
 )
 from .config import HubSettings
-from .db import iso, utcnow
+from .db import insert_new, iso, utcnow, write_lock
 from .models import HubSetting, Job, Node, User
 from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, Sweep
@@ -644,6 +644,9 @@ def import_begin(
     if release is not None:
         return {"release_id": release.id}
     room = hub_storage.check_room(db, settings, int(body.total or 0)) if settings is not None else {}
+    # Imports into one project begin one at a time: two at once would both find no dataset or label space
+    # with these classes and both make one.
+    write_lock(db)
     p = job.params
     project = get_project(db, p["project_id"])
     dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == p["dataset"]))
@@ -745,11 +748,15 @@ def import_items(
     whole = release_task(db, release) not in ("detect", "classify")
     incoming = {item.sha256: item for item in chunk.items}  # a file listed twice counts once
 
-    items = {
-        i.sha256: i for i in db.scalars(select(Item).where(Item.project_id == project_id, Item.sha256.in_(list(incoming))))
-    }
+    def in_project():
+        return select(Item).where(Item.project_id == project_id, Item.sha256.in_(list(incoming)))
+
+    # Thumbnails of the images new to the project are stored before taking the database's write lock (the disk
+    # can be slow); images already there keep theirs.
+    known = set(db.scalars(in_project().with_only_columns(Item.sha256)))
+    rows = []
     for sha, data in incoming.items():
-        if sha in items:
+        if sha in known:
             continue
         thumb_key, thumb_bytes, thumb_v = None, 0, 0
         if data.thumb_b64:
@@ -759,24 +766,30 @@ def import_items(
                 thumb_v = 1 if hub_storage.thumb_current(thumb) else 0  # a node before 0.61: shrunk here later
             except (binascii.Error, ValueError):
                 thumb_key = None
-        items[sha] = Item(
-            project_id=project_id,
-            sha256=sha,
-            file_name=data.file_name[:512],
-            width=data.width,
-            height=data.height,
-            bytes=data.bytes,
-            site=site,
-            camera=camera,
-            location_id=batch.location_id,
-            rel_path=data.rel_path,
-            thumb_key=thumb_key,
-            thumb_bytes=thumb_bytes,
-            thumb_v=thumb_v,
-            batch_id=batch.id,
+        rows.append(
+            {
+                "project_id": project_id,
+                "sha256": sha,
+                "file_name": data.file_name[:512],
+                "width": data.width,
+                "height": data.height,
+                "bytes": data.bytes,
+                "site": site,
+                "camera": camera,
+                "location_id": batch.location_id,
+                "rel_path": data.rel_path,
+                "thumb_key": thumb_key,
+                "thumb_bytes": thumb_bytes,
+                "thumb_v": thumb_v,
+                "batch_id": batch.id,
+            }
         )
-        db.add(items[sha])
-    db.flush()
+    # Imports into one project at once (a folder and a copy of it, Det and Seg of the same images) share their
+    # images: from here one chunk at a time, so an image another import registered meanwhile is used, not
+    # inserted again, and its label revisions are numbered after the ones that import added.
+    write_lock(db)
+    insert_new(db, Item, rows, ["project_id", "sha256"])
+    items = {i.sha256: i for i in db.scalars(in_project())}
 
     item_ids = [i.id for i in items.values()]
     revisions: dict[int, list[LabelRevision]] = {}

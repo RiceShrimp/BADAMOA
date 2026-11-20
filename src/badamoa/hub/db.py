@@ -4,6 +4,7 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -64,6 +65,28 @@ def utcnow() -> datetime:
 
 def iso(dt: datetime | None) -> str | None:
     return None if dt is None else dt.isoformat(timespec="milliseconds") + "Z"
+
+
+def write_lock(db: Session) -> None:
+    """Take SQLite's write lock now, held until the session commits or rolls back.
+
+    SQLite starts a transaction only at a session's first write, so what it read before was read outside it: two
+    requests can both find a row missing and both insert it. Called before such reads, the second request waits
+    here and then reads what the first committed. A session that has written already holds the lock."""
+    conn = db.connection()
+    if conn.dialect.name == "sqlite" and not conn.connection.dbapi_connection.in_transaction:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def insert_new(db: Session, model: type, rows: list[dict[str, Any]], unique: list[str]) -> None:
+    """Insert ``rows``, skipping any whose ``unique`` columns match a row already there (ON CONFLICT DO NOTHING)."""
+    if not rows:
+        return
+    if db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    db.execute(insert(model).on_conflict_do_nothing(index_elements=unique), rows)
 
 
 def make_engine(url: str) -> Engine:
