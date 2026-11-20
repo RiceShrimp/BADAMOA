@@ -145,7 +145,7 @@ const SECTIONS: { id: string; label: string; admin?: boolean }[] = [
   { id: "environments", label: "환경" },
   { id: "projects", label: "프로젝트 기본값", admin: true },
   { id: "gpu", label: "GPU 배정" },
-  { id: "storage", label: "저장 공간" },
+  { id: "storage", label: "Hub 저장 공간" },
   { id: "users", label: "사용자", admin: true },
   { id: "hub", label: "Hub 실행", admin: true },
   { id: "account", label: "내 계정" },
@@ -321,7 +321,7 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
     <section className="card">
       <div className="card-head">
         <div>
-          <h3>저장 공간</h3>
+          <h3>Hub 저장 공간</h3>
           <div className="muted small">
             모델과 지표, 로그, 학습 · 평가가 남긴 파일은 모두 BADAMOA가 설치된 이 서버에 보관합니다. 학습 서버에는 캐시만
             남습니다.
