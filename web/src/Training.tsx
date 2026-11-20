@@ -1033,7 +1033,7 @@ function SystemLoad({ runId, live }: { runId: string; live: boolean }) {
   );
 }
 
-function LogTail({ jobId, live }: { jobId: string; live: boolean }) {
+export function LogTail({ jobId, live }: { jobId: string; live: boolean }) {
   const { data: job } = usePolling(() => api<Job>(`/jobs/${jobId}`), live ? 2000 : 30000, [jobId]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const lastSeq = useRef(0);

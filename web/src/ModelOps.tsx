@@ -80,8 +80,10 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                     <Fragment key={op.id}>
                       <tr>
                         <td>
-                          {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 버전"} ·{" "}
-                          {SPLIT_LABEL[String(op.params.split)] ?? String(op.params.split)}
+                          <a href={`#/models/eval/${op.id}`} title="평가 화면: 로그 · 클래스별 · 다시 실행 · 같은 데이터로 비교">
+                            {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 버전"} ·{" "}
+                            {SPLIT_LABEL[String(op.params.split)] ?? String(op.params.split)}
+                          </a>
                         </td>
                         {metricKeys.map((k) => (
                           <td key={k} className="num right">
@@ -181,13 +183,21 @@ export function ModelOps({ model }: { model: ModelDetail }) {
 }
 
 function OpStatus({ op }: { op: ModelOp }) {
+  const stop = () => {
+    if (op.job_id && window.confirm("중단할까요?")) void api(`/jobs/${op.job_id}/cancel`, { method: "POST" });
+  };
   return (
     <>
       <Badge kind={op.status}>{STATUS_LABEL[op.status]}</Badge>
+      {ACTIVE.includes(op.status) && op.job_id && (
+        <button className="link small" onClick={stop}>
+          중단
+        </button>
+      )}
       {op.status === "queued" && op.wait_reason && <div className="wait-reason">{op.wait_reason}</div>}
       {op.status === "failed" && op.error && (
         <div className="wait-reason">
-          {op.error} <a href="#/jobs">작업 화면에서 로그 보기</a>
+          {op.error} {op.kind === "eval" ? <a href={`#/models/eval/${op.id}`}>로그 · 다시 실행</a> : <a href="#/jobs">작업 화면에서 로그 보기</a>}
         </div>
       )}
     </>

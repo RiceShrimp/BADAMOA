@@ -104,6 +104,44 @@ def model_places(
     return modelops.places(db, hub.settings, model_id, kind, release_id)
 
 
+@router.get("/model-ops/{op_id}")
+def op_detail(
+    op_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """One evaluation (export, test): status, server, time, numbers per class and split, log size."""
+    return modelops.op_detail(db, hub.settings, op_id)
+
+
+class RerunRequest(BaseModel):
+    node_id: str = ""  # empty: the server it ran on (or the default when that one is gone)
+
+
+@router.post("/model-ops/{op_id}/rerun")
+def rerun_op(
+    op_id: str,
+    body: RerunRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """The same evaluation (export, test) again, with the same settings."""
+    op = modelops.rerun(db, user, hub.settings, op_id, body.node_id, via="ui")
+    db.commit()
+    return modelops.op_view(db, hub.settings, op)
+
+
+@router.get("/releases/{release_id}/evaluations")
+def release_evaluations(
+    release_id: str,
+    split: str = "",
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """Every model evaluated on this version (and split): to compare them on the same data."""
+    return modelops.release_evaluations(db, hub.settings, release_id, split)
+
+
 @router.get("/releases/{release_id}/eval-models")
 def eval_models(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
     """The project's models for checking this version's labels, the ones that fit first, with why others do not."""

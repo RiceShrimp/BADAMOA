@@ -595,6 +595,135 @@ def op_view(db: Session, settings: HubSettings, op: ModelJob, node_names: dict[s
     }
 
 
+def _model_ref(model: ModelVersion | None) -> dict[str, Any] | None:
+    if model is None:
+        return None
+    return {
+        "id": model.id,
+        "name": model.name,
+        "version": model.version,
+        "task": model.task or "detect",
+        "aliases": training._aliases(model),
+        "project_id": model.project_id,
+        "deleted": model.deleted_at is not None,
+    }
+
+
+def _splits_of(op: ModelJob) -> list[str]:
+    params = op.params or {}
+    return [str(s) for s in params.get("splits") or [params.get("split") or "val"]]
+
+
+def op_detail(db: Session, settings: HubSettings, op_id: str) -> dict[str, Any]:
+    """One evaluation (export, test) on its own screen: what ran where and how long, its numbers per class and per
+    split, and what the job said (``log_count`` lines)."""
+    op = get_op(db, op_id)
+    job = db.get(Job, op.job_id) if op.job_id else None
+    data = services.job_view(db, settings, job) if job else {}
+    result = op.result or {}
+    return {
+        **op_view(db, settings, op),
+        "model": _model_ref(db.get(ModelVersion, op.model_id)),
+        "splits": _splits_of(op) if op.kind == "eval" else [],
+        "split_metrics": result.get("splits") or {},  # several splits: each one's numbers
+        "class_metrics": result.get("classes") or [],  # per class (of the first split when there are several)
+        "node_id": data.get("node_id"),
+        "started_at": data.get("started_at"),
+        "finished_at": iso(job.finished_at) if job and job.finished_at else None,
+        "log_count": job.log_count if job else 0,
+        "gpus": data.get("gpus_requested"),
+    }
+
+
+def rerun(db: Session, user: User, settings: HubSettings, op_id: str, node_id: str = "", via: str = "api") -> ModelJob:
+    """The same evaluation (export, test) again: same model, version, splits and settings, on the server it ran on
+    unless another is picked. For one that was stopped or failed, or to measure again."""
+    op = get_op(db, op_id)
+    job = db.get(Job, op.job_id) if op.job_id else None
+    if job is not None and job.status in ("queued", "running"):
+        raise ServiceError(409, "아직 돌고 있습니다. 끝나거나 중단한 뒤에 다시 실행하세요.")
+    if not node_id and job is not None and job.node_id:  # where it ran, while that server still takes jobs
+        before = db.get(Node, job.node_id)
+        node_id = before.id if before is not None and before.enabled else ""
+    params = op.params or {}
+    if op.kind == "eval":
+        if not op.release_id:
+            raise ServiceError(400, "평가한 버전이 지워져 다시 실행할 수 없습니다.")
+        splits = _splits_of(op)
+        # as many GPUs as it took (a job that took none keeps no "gpus" in its requirements)
+        gpus = int((job.requirements or {}).get("gpus") or 0) if job is not None else None
+        return start_eval(
+            db, user, op.model_id, op.release_id, splits[0], gpus, via=via, node_id=node_id, splits=splits
+        )
+    if op.kind == "export":
+        fmt = str(params.get("format") or "onnx")
+        return start_export(db, user, op.model_id, fmt, via=via, node_id=node_id, settings=settings)
+    if op.kind == "predict":
+        from .catalog import storage_for
+
+        storage = storage_for(str(settings.storage_dir))
+        images = [{"name": i.get("name"), "blob": i.get("blob")} for i in params.get("images") or []]
+        conf = float(params.get("conf", 0.25))
+        return start_predict(db, user, op.model_id, images, storage, conf, via=via, node_id=node_id, settings=settings)
+    raise ServiceError(400, "이 작업은 여기서 다시 실행할 수 없습니다.")
+
+
+def release_evaluations(db: Session, settings: HubSettings, release_id: str, split: str = "") -> dict[str, Any]:
+    """Every model evaluated on this version (on ``split``, or each split there is), newest first: the board to
+    compare models on the same data. ``latest`` marks each model's newest evaluation on a split."""
+    release = catalog.get_release(db, release_id)
+    ops = db.scalars(
+        select(ModelJob)
+        .where(ModelJob.kind == "eval", ModelJob.release_id == release.id)
+        .order_by(ModelJob.created_at.desc())
+    ).all()
+    jobs = {j.id: j for j in db.scalars(select(Job).where(Job.id.in_([op.job_id for op in ops if op.job_id])))}
+    models = {m.id: m for m in db.scalars(select(ModelVersion).where(ModelVersion.id.in_({op.model_id for op in ops})))}
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    found_splits: list[str] = []
+    for op in ops:
+        job = jobs.get(op.job_id or "")
+        result = op.result or {}
+        if job is None or job.status != "succeeded" or not result.get("metrics"):
+            continue
+        splits = _splits_of(op)
+        per_split = result.get("splits") or {}
+        for n, each in enumerate(splits):
+            if each not in found_splits:
+                found_splits.append(each)
+            if split and each != split:
+                continue
+            numbers = per_split.get(each) if len(splits) > 1 else result.get("metrics")
+            if not numbers:
+                continue
+            model = models.get(op.model_id)
+            key = (op.model_id, each)
+            rows.append(
+                {
+                    "op_id": op.id,
+                    "model": _model_ref(model),
+                    "split": each,
+                    "metrics": numbers,
+                    "class_metrics": (result.get("classes") or []) if n == 0 else [],
+                    "created_at": iso(op.created_at),
+                    "duration_s": (job.finished_at - job.started_at).total_seconds()
+                    if job.finished_at and job.started_at
+                    else None,
+                    "latest": key not in seen,
+                }
+            )
+            seen.add(key)
+    dataset = db.get(Dataset, release.dataset_id)
+    order = {"val": 0, "test": 1, "train": 2}
+    return {
+        "release": {"id": release.id, "dataset": dataset.name if dataset else "", "version": release.version},
+        "task": catalog.dataset_task(dataset) if dataset else "detect",
+        "splits": sorted(found_splits, key=lambda s: order.get(s, 9)),
+        "rows": rows,
+    }
+
+
 def list_ops(db: Session, settings: HubSettings, model_id: str, limit: int = 50) -> list[dict[str, Any]]:
     training.get_model(db, model_id)
     ops = db.scalars(

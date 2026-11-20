@@ -1273,3 +1273,28 @@ button.overlay-picture:hover {
     grid-row: 2;
   }
 }
+
+/* an evaluation's screen and the board of evaluations on the same data (EvalView.tsx) */
+.eval-board .card-head {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.eval-board td.best,
+.class-compare td.best {
+  color: var(--ok);
+  font-weight: 700;
+}
+.eval-board tr.selected-row td {
+  background: var(--accent-soft);
+}
+.eval-board .alias-tag {
+  margin-left: 6px;
+}
+.class-compare {
+  margin-top: 12px;
+}
+label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

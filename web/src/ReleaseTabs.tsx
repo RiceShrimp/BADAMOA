@@ -359,10 +359,20 @@ export function ModelsTab({ release }: { release: ReleaseInfo }) {
         <a className="btn primary-link" href={`#/training/new/${release.id}`}>
           이 버전으로 학습
         </a>
+        <a className="link small" href={`#/models/evals/${release.id}`}>
+          이 버전으로 평가한 모델 비교
+        </a>
       </div>
     );
   return (
     <section className="card table-wrap">
+      <div className="card-head">
+        <h3>이 버전으로 학습한 모델</h3>
+        <span className="spacer" />
+        <a className="link small" href={`#/models/evals/${release.id}`} title="이 버전 · 같은 split으로 평가한 모델을 나란히">
+          이 버전으로 평가한 모델 비교 →
+        </a>
+      </div>
       <table className="plain">
         <thead>
           <tr>

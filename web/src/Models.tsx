@@ -1,6 +1,7 @@
 import { LineageGraph } from "./Lineage";
 import { AliasChip, AliasEditor, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
 import { type FormEvent, useEffect, useState } from "react";
+import { EvalBoardPage, EvalView } from "./EvalView";
 import { ModelOps } from "./ModelOps";
 import { ModelsBoard } from "./Boards";
 import { rememberProject } from "./DataBoard";
@@ -38,6 +39,8 @@ export function Models({ modelId, arg, isAdmin }: { modelId?: string; arg?: stri
         }}
       />
     );
+  if (modelId === "eval" && arg) return <EvalView key={arg} opId={arg} />; // #/models/eval/<op>: one evaluation
+  if (modelId === "evals" && arg) return <EvalBoardPage key={arg} releaseId={arg} />; // a version's evaluations side by side
   if (modelId) return <ModelView key={modelId} modelId={modelId} isAdmin={isAdmin} />;
   return <ModelsBoard />;
 }
