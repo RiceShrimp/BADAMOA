@@ -158,9 +158,13 @@ def mistakes_of_classes(db: Session, release: Release, op_id: str, mistake: str,
             select(LabelRevision.id, LabelRevision.boxes).where(LabelRevision.id.in_(ids[start : start + 500]))
         )
         revisions.update({rid: boxes or [] for rid, boxes in found})
+    op = db.get(ModelJob, op_id)
+    job = db.get(Job, op.job_id) if op is not None and op.job_id else None
+    known = {int(c) for c in ((job.params or {}).get("class_ids") or [])} if job is not None else set()
     picked = set()
     for item_id, labels, scores, revision_id in rows:
-        extra, missed = unmatched(labels or [], scores or [], revisions.get(revision_id, []))
+        truth = [b for b in revisions.get(revision_id, []) if not known or (b and int(b[0]) in known)]
+        extra, missed = unmatched(labels or [], scores or [], truth)  # labels of classes it never learned: not its
         if classes & set(extra if mistake == "extra" else missed):
             picked.add(item_id)
     return picked

@@ -44,3 +44,43 @@ def test_models_of_two_projects_compared_and_an_evaluation_deleted(hub, release,
     again = hub.get("/api/models-compare", params={"ids": f"{ours['id']},{theirs['id']}"}).json()
     assert list(again["evaluations"][0]["rows"]) == [theirs["id"]]
     assert all(p["op_id"] != op["id"] for p in hub.get(f"/api/releases/{theirs_release}/prediction-runs").json())
+
+
+def test_a_model_of_other_data_checks_labels_with_a_warning_whatever_its_class_order(hub, release, tmp_path):  # noqa: F811
+    from sample_data import CLASSES
+
+    run, _ = _train(hub, release, {"epochs": 1})
+    model = hub.get(f"/api/runs/{run['id']}").json()["model"]
+    # another project whose data names the same classes in another order (the first two swapped)
+    other = hub.post("/api/projects", json={"name": "다른 순서"}).json()
+    root = make_yolo(tmp_path / "swapped")
+    swap = {"0": "1", "1": "0"}
+    for label in (root / "labels").rglob("*.txt"):
+        lines = [line.split(" ", 1) for line in label.read_text(encoding="utf-8").splitlines() if line.strip()]
+        label.write_text("".join(f"{swap.get(c, c)} {rest}\n" for c, rest in lines), encoding="utf-8")
+    order = [CLASSES[1], CLASSES[0], *CLASSES[2:]]
+    names = "\n".join(f"  {i}: {name}" for i, name in enumerate(order))
+    (root / "data.yaml").write_text(f"path: .\ntrain: images/train\nval: images/val\nnames:\n{names}\n", encoding="utf-8")
+    body = {"node_id": hub.node_id, "path": str(root), "dataset": "swapped", "version": "v1"}
+    theirs = _wait(hub, hub.post(f"/api/projects/{other['id']}/imports", json=body).json()["id"])["result"]["release_id"]
+
+    # ---- 검수 → 모델로 검사하기 offers it, saying what it learned from and warning about it
+    [offered] = [m for m in hub.get(f"/api/releases/{theirs}/eval-models").json()["models"] if m["id"] == model["id"]]
+    assert offered["fits"] is True and offered["relation"] == "other_project"
+    assert offered["trained"]["project"] == "주차장" and "다른 프로젝트의 데이터" in offered["warning"]
+    own = hub.get(f"/api/releases/{release['id']}/eval-models").json()["models"][0]
+    assert own["relation"] == "same_version" and own["warning"] == ""
+
+    # ---- evaluated in the model's class order: the predictions come back in this version's class ids
+    op = hub.post(f"/api/models/{model['id']}/eval", json={"release_id": theirs, "split": "val", "gpus": 0}).json()
+    assert _wait(hub, op["job_id"])["status"] == "succeeded", _logs(hub, op["job_id"])
+    space = {c["name"]: c["id"] for c in hub.get(f"/api/releases/{theirs}").json()["label_space"]["classes"]}
+    assert [space[n] for n in CLASSES] != sorted(space[n] for n in CLASSES)  # the order really differs
+
+
+def test_an_evaluation_exports_classes_in_the_models_order():
+    from badamoa.node.exporter import ExportOptions, _chosen
+
+    assert _chosen([0, 1, 2], ExportOptions(classes=[1, 0, 2], ordered=True)) == [1, 0, 2]
+    assert _chosen([0, 1, 2], ExportOptions(classes=[1, 0])) == [0, 1]  # training: the release's order
+    assert _chosen([0, 1, 2], ExportOptions()) == [0, 1, 2]

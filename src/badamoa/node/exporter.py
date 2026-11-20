@@ -30,6 +30,20 @@ class ExportOptions:
     masks: bool = False  # write outlines (segmentation) instead of boxes where a label has one
     points: bool = False  # write each box with its keypoints (YOLO pose)
     symlinks: bool = True  # False: hard links or copies only (code in a container that cannot follow a link)
+    # ``classes`` in the order given, not the release's: an evaluation numbers them as the model does (a model of
+    # another dataset may know the same classes in another order)
+    ordered: bool = False
+
+
+def _chosen(all_ids: list[int], options: ExportOptions) -> list[int]:
+    """The class ids written, in the order they are numbered 0..n-1."""
+    if not options.classes:
+        return all_ids
+    if options.ordered:
+        present = set(all_ids)
+        return [cid for cid in options.classes if cid in present]
+    wanted = set(options.classes)
+    return [cid for cid in all_ids if cid in wanted]
 
 
 def select_boxes(item: dict[str, Any], keep: dict[int, int], options: ExportOptions) -> tuple[list[list[float]] | None, str]:
@@ -128,7 +142,7 @@ def build(
     class names in training order, and how the val split was obtained.
     """
     all_ids = [int(c["id"]) for c in classes]
-    chosen = [cid for cid in all_ids if cid in set(options.classes)] if options.classes else all_ids
+    chosen = _chosen(all_ids, options)
     if not chosen:
         raise ValueError("학습할 클래스가 없습니다.")
     keep = {cid: i for i, cid in enumerate(chosen)}
@@ -236,7 +250,7 @@ def build_imagefolder(
     held-out share of train.
     """
     all_ids = [int(c["id"]) for c in classes]
-    chosen = [cid for cid in all_ids if cid in set(options.classes)] if options.classes else all_ids
+    chosen = _chosen(all_ids, options)
     if not chosen:
         raise ValueError("학습할 클래스가 없습니다.")
     keep = {cid: i for i, cid in enumerate(chosen)}

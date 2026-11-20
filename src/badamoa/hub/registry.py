@@ -306,6 +306,8 @@ def template_view(
             "declared_image": manifest.environment.image if manifest.environment.requirements else "",
             **environment_status(db, row, manifest),
         },
+        # the library it trains with and the version of it the servers run (or would install)
+        "library": library_versions(db, row, manifest),
         "bytes": row.bytes,
         "models": models,
         "created_at": iso(row.created_at),
@@ -317,6 +319,133 @@ def template_view(
         # the uploader's own check --run of this bundle, without the long package list
         "local_check": {k: v for k, v in (row.report or {}).items() if k not in ("packages", "sources")}
         | ({"packages": len(row.report["packages"])} if (row.report or {}).get("packages") else {}),
+    }
+
+
+# ---- the library a model kind is built on, and the version of it servers have -----------------------
+
+LIBRARIES = ("ultralytics", "torchvision", "timm", "transformers", "mmdet", "detectron2")  # named before the rest
+_newest: dict[str, tuple[float, str]] = {}  # PyPI's newest release per requirement, and when it was asked
+_asking: set[str] = set()
+
+
+def library_of(manifest: TemplateManifest) -> tuple[str, str]:
+    """The library a model kind trains with (its name, and the requirement that names it): a well-known one
+    among its requirements, else the first. Empty for one that brings its own environment (an image)."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    found: list[tuple[str, str]] = []
+    for line in manifest.environment.requirements:
+        try:
+            found.append((canonicalize_name(Requirement(line).name), line))
+        except InvalidRequirement:
+            continue
+    for wanted in LIBRARIES:
+        for name, line in found:
+            if name == wanted:
+                return name, line
+    return found[0] if found else ("", "")
+
+
+def _pypi_newest(requirement: str) -> str:
+    """The newest release on PyPI that ``requirement`` allows, asked in the background (the Hub may have no
+    internet: then nothing, and it asks again later). Kept six hours."""
+    import threading
+    import time
+
+    now = time.time()
+    at, version = _newest.get(requirement, (0.0, ""))
+    if now - at < (6 * 3600 if version else 1800) or requirement in _asking:
+        return version
+
+    def ask() -> None:
+        import httpx
+        from packaging.requirements import Requirement
+        from packaging.version import InvalidVersion, Version
+
+        found = ""
+        try:
+            req = Requirement(requirement)
+            data = httpx.get(f"https://pypi.org/pypi/{req.name}/json", timeout=5).json()
+            versions = []
+            for text, files in (data.get("releases") or {}).items():
+                try:
+                    v = Version(text)
+                except InvalidVersion:
+                    continue
+                if files and not v.is_prerelease and req.specifier.contains(v):
+                    versions.append(v)
+            found = str(max(versions)) if versions else ""
+        except Exception:  # noqa: BLE001 - no internet, no answer: said as "unknown"
+            found = ""
+        finally:
+            _newest[requirement] = (time.time(), found)
+            _asking.discard(requirement)
+
+    _asking.add(requirement)
+    threading.Thread(target=ask, name="pypi-newest", daemon=True).start()
+    return version
+
+
+def library_versions(db: Session, row: Template, manifest: TemplateManifest) -> dict[str, Any] | None:
+    """Which version of its library a model kind runs on: what its recent runs installed, per server (the
+    newest of each), else what its trial installed; and what a server installing it now would get (PyPI's
+    newest that the requirement allows; an in-house wheel's own version)."""
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    name, requirement = library_of(manifest)
+    if not name:
+        return None
+
+    def version_in(packages: list[Any]) -> str:
+        for line in packages or []:
+            pkg, _, version = str(line).partition("==")
+            if version and canonicalize_name(pkg) == name:
+                return version.split("+")[0]
+        return ""
+
+    seen: dict[str, dict[str, Any]] = {}
+    runs = db.execute(
+        select(Run.info, Run.created_at, Job.node_id)
+        .join(Job, Job.id == Run.job_id, isouter=True)
+        .where(func.json_extract(Run.template, "$.name") == row.name, Run.deleted_at.is_(None))
+        .order_by(Run.created_at.desc())
+        .limit(60)
+    ).all()
+    for info, at, node_id in runs:
+        version = version_in((info or {}).get("packages") or [])
+        if version and (node_id or "") not in seen:
+            node = db.get(Node, node_id) if node_id else None
+            seen[node_id or ""] = {"node": node.name if node else "", "version": version, "at": iso(at)}
+    trial = row.trial or {}
+    if not seen and version_in(trial.get("installed") or []):
+        seen["trial"] = {"node": str(trial.get("node") or ""), "version": version_in(trial["installed"]), "trial": True}
+    in_house = db.scalars(select(Package.version).where(Package.name == name)).all()
+    available = ""
+    if in_house:
+        from packaging.requirements import Requirement
+
+        spec = Requirement(requirement).specifier
+        fits = [v for v in in_house if spec.contains(v, prereleases=True)]
+        available = max(fits, key=Version) if fits else ""
+    elif row.builtin or seen:
+        available = _pypi_newest(requirement)
+
+    def key(text: str) -> Any:
+        try:
+            return Version(text)
+        except InvalidVersion:
+            return Version("0")
+
+    installed = sorted(seen.values(), key=lambda s: key(s["version"]), reverse=True)
+    return {
+        "name": name,
+        "requirement": requirement,
+        "installed": installed,  # per server, the newest first
+        "newest": installed[0]["version"] if installed else "",
+        "available": available,  # what installing it now gets
     }
 
 

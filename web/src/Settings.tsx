@@ -197,6 +197,28 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
   );
 }
 
+/**
+ * The library a model kind trains with and its version as the servers have it: built-in kinds are named by it
+ * (Ultralytics 8.4.216 rather than the template's own number), uploaded ones show it under their version.
+ */
+function LibraryLine({ t }: { t: Template }) {
+  const lib = t.library;
+  if (!lib) return null;
+  const others = lib.installed.filter((s) => s.version !== lib.newest);
+  const where = lib.installed.map((s) => `${s.node || "서버"}${s.trial ? " (시험 실행)" : ""}: ${s.version}`).join("\n");
+  const state = lib.newest
+    ? `${lib.installed.length > 1 ? `서버 ${lib.installed.length}곳에 설치됨` : `${lib.installed[0].node || "서버"}에 설치됨`}${others.length ? ` · 다른 버전 ${others.length}곳` : ""}`
+    : lib.available
+      ? "새로 설치하면 이 버전"
+      : `아직 설치 전 · ${lib.requirement}`;
+  const behind = lib.newest && lib.available && lib.available !== lib.newest ? ` · 새로 설치하면 ${lib.available}` : "";
+  return (
+    <div className="muted small" title={where || lib.requirement}>
+      {t.builtin ? `${lib.name} · ${state}${behind} · 템플릿 ${t.version}` : `${lib.name} ${lib.newest || lib.available || "?"}${behind}`}
+    </div>
+  );
+}
+
 // ---- for teams that already run Prometheus and Grafana ---------------------------------
 
 function ExternalMonitoring() {
@@ -1022,9 +1044,10 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
                 </td>
                 <td className="num version-cell">
                   <button type="button" className="link" onClick={() => setVersionsOf(t)} title="버전마다 메모 · 시험 실행 보기">
-                    {t.version}
+                    {t.builtin && t.library ? t.library.newest || t.library.available || t.version : t.version}
                   </button>
                   {t.versions > 1 && <span className="muted small"> 외 {t.versions - 1}개</span>}
+                  <LibraryLine t={t} />
                   {t.memo && <div className="muted small template-about">{t.memo}</div>}
                   {(isAdmin || (t.draft && t.uploaded_by === user.username)) && !t.builtin && t.check && <TrialLine t={t} />}
                 </td>

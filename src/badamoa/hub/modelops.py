@@ -38,6 +38,7 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 # A server evaluates on images it received from another one (laid out from its cache) from this BADAMOA on.
 EVAL_RECEIVED_SINCE = (0, 69, 0)
 SPLITS_SINCE = (0, 71, 0)  # a node evaluates several splits in one job
+ORDERED_SINCE = (0, 81, 0)  # a node exports an evaluation's classes in the model's order
 
 
 def _template_of(db: Session, model: ModelVersion) -> Template:
@@ -217,8 +218,6 @@ def start_eval(
     if missing:
         raise ServiceError(400, f"이 버전에는 모델의 클래스가 없습니다: {', '.join(missing[:5])}")
     class_ids = [ids[name] for name in model.classes or []]
-    if class_ids != sorted(class_ids):
-        raise ServiceError(400, "이 버전의 클래스 순서가 모델과 달라 평가할 수 없습니다.")
     holder = training.data_node(db, release.id)
     node, after = holder, None
     if node_id and node_id != holder.id:
@@ -232,6 +231,9 @@ def start_eval(
     if len(wanted) > 1 and not _since(node, SPLITS_SINCE):  # an older node would evaluate only the first
         need = ".".join(str(n) for n in SPLITS_SINCE)
         raise ServiceError(400, f"{node.name}에서 split 여럿을 한 번에 평가하려면 {need} 이상이어야 합니다.")
+    if class_ids != sorted(class_ids) and not _since(node, ORDERED_SINCE):  # the model numbers them otherwise
+        need = ".".join(str(n) for n in ORDERED_SINCE)
+        raise ServiceError(400, f"클래스 순서가 모델과 다른 버전을 평가하려면 {node.name}이(가) {need} 이상이어야 합니다.")
     gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else gpus
     extra = {"release_id": release.id, "split": wanted[0], "class_ids": class_ids}
     if len(wanted) > 1:
@@ -338,8 +340,9 @@ ALIAS_ORDER = ("production", "champion", "staging", "challenger")
 
 
 def eval_problem(db: Session, model: ModelVersion, release: Release) -> str:
-    """Why the model cannot evaluate (and so check the labels of) this version, or "" when it can:
-    a model of another task, classes the version does not have or has in another order, no eval code."""
+    """Why the model cannot evaluate (and so check the labels of) this version, or "" when it can: a model of
+    another task, classes the version does not have, no eval code. The classes are matched by name, in any
+    order (the evaluation numbers them as the model does)."""
     task = catalog.release_task(db, release)
     if not task_names.same(model.task or "detect", task):
         return f"{task_names.short(model.task)} 모델이라 {task_names.short(task)} 데이터셋에는 쓸 수 없습니다"
@@ -349,17 +352,57 @@ def eval_problem(db: Session, model: ModelVersion, release: Release) -> str:
     if missing:
         more = f" 외 {len(missing) - 3}개" if len(missing) > 3 else ""
         return f"이 버전에 없는 클래스가 있습니다: {', '.join(missing[:3])}{more}"
-    class_ids = [ids[name] for name in model.classes or []]
-    if class_ids != sorted(class_ids):
-        return "클래스 순서가 이 버전과 다릅니다"
     if "eval" not in actions(db, model):
         return "이 모델의 템플릿에는 평가 코드가 없습니다"
     return ""
 
 
+def _trained_on(db: Session, model: ModelVersion, dataset: Dataset, target: Release | None) -> dict[str, Any]:
+    """What the model learned from, against the version being checked: the same version, another version of
+    the same dataset, another dataset of the project, another project; and the word of warning that goes with
+    it (a model of other data counts more mistakes that are its own, not the labels')."""
+    from .catalog_models import Project
+
+    run_release = db.get(Release, model.release_id) if model.release_id else None
+    run_dataset = db.get(Dataset, run_release.dataset_id) if run_release else None
+    project = db.get(Project, run_dataset.project_id) if run_dataset else None
+    where = {
+        "dataset": run_dataset.name if run_dataset else "",
+        "version": run_release.version if run_release else "",
+        "project": project.name if project else "",
+    }
+    if run_release is not None and target is not None and run_release.id == target.id:
+        return {"relation": "same_version", "trained": where, "warning": ""}
+    if run_dataset is not None and run_dataset.id == dataset.id:
+        return {
+            "relation": "same_dataset",
+            "trained": where,
+            "warning": f"이 데이터셋의 다른 버전({where['version']})으로 학습한 모델입니다. 두 버전에 같은 이미지가 있으면 "
+            "모델이 그 라벨을 외웠을 수 있어 틀린 라벨을 덜 찾습니다.",
+        }
+    near = run_dataset is not None and run_dataset.project_id == dataset.project_id
+    other = "다른 데이터셋" if near else "다른 프로젝트의 데이터"
+    named = f"({where['project']} · {where['dataset']} {where['version']})" if run_dataset else ""
+    return {
+        "relation": "same_project" if near else "other_project",
+        "trained": where,
+        "warning": f"{other}{named}로 학습한 모델입니다. 클래스 이름은 같아도 무엇을 그 클래스로 라벨했는지나 "
+        "촬영 환경이 다르면, 모델이 더 찾거나 놓친 것이 라벨의 잘못이 아니라 모델의 잘못일 수 있어 미라벨 · 오라벨이 "
+        "실제보다 많이 나옵니다. 걸린 이미지를 직접 보고 판단하세요.",
+    }
+
+
+RELATION_ORDER = ("same_version", "same_dataset", "same_project", "other_project")
+
+
 def eval_choices(db: Session, release: Release) -> dict[str, Any]:
-    """The project's models for checking this version's labels: the ones that fit first (an alias, then the
-    best), each with why it does not when it does not. A work in progress is evaluated as its base version."""
+    """Models for checking this version's labels: this project's, and those of other projects with the same task
+    and classes (by name). The ones that fit first — trained on this version, on another version of the dataset,
+    on another dataset of the project, in another project — then an alias, then the best; each with why it does
+    not fit when it does not (other projects' are listed only when they fit) and a warning when it learned from
+    other data. A work in progress is evaluated as its base version."""
+    from .catalog_models import Project
+
     dataset = db.get(Dataset, release.dataset_id)
     target = drafts.latest_ready(db, dataset.id) if release.status == "draft" else release
     splits: dict[str, int] = {}
@@ -367,12 +410,19 @@ def eval_choices(db: Session, release: Release) -> dict[str, Any]:
         key = name or "train"  # images without a split are trained on
         splits[key] = splits.get(key, 0) + int(part.get("items") or 0)
     rows = []
+    gone = select(Project.id).where(Project.deleted_at.is_not(None))
+    task = catalog.release_task(db, target or release)
     for model in db.scalars(
         select(ModelVersion)
-        .where(ModelVersion.project_id == dataset.project_id, ModelVersion.deleted_at.is_(None))
+        .where(ModelVersion.deleted_at.is_(None), ModelVersion.project_id.not_in(gone))
         .order_by(ModelVersion.created_at.desc())
     ):
+        here = model.project_id == dataset.project_id
+        if not here and not task_names.same(model.task or "detect", task):
+            continue
         why = eval_problem(db, model, target or release)
+        if why and not here:
+            continue  # another project's model that cannot: not worth a line
         metric = training.PRIMARY_METRIC.get(model.task or "detect", "map50_95")
         value = (model.metrics or {}).get(metric)
         rows.append(
@@ -385,12 +435,16 @@ def eval_choices(db: Session, release: Release) -> dict[str, Any]:
                 "trained_on": model.release_id == (target.id if target else None),  # its train split was learned
                 "fits": not why,
                 "why": why,
+                # what it learned from, and a word of warning when that is not this dataset
+                **_trained_on(db, model, dataset, target),
+                "classes": len(model.classes or []),
             }
         )
 
     def rank(row: dict[str, Any]) -> tuple:
         known = [ALIAS_ORDER.index(a) for a in row["aliases"] if a in ALIAS_ORDER]
-        return (not row["fits"], min(known) if known else len(ALIAS_ORDER), -(row["value"] or -1))
+        near = RELATION_ORDER.index(row["relation"])
+        return (not row["fits"], near, min(known) if known else len(ALIAS_ORDER), -(row["value"] or -1))
 
     rows.sort(key=rank)
     return {

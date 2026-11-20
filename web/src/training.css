@@ -1481,3 +1481,22 @@ label.check {
   border-radius: 3px;
   flex: none;
 }
+
+/* 검수 → 모델로 검사하기: what each model learned from (Review.tsx) */
+.eval-choice .tag.relation-same_version {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.eval-choice .tag.relation-same_dataset {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.eval-choice .tag.relation-same_project,
+.eval-choice .tag.relation-other_project {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.notice.warn {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}

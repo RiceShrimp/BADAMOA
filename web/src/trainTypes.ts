@@ -16,12 +16,22 @@ export interface TemplateParam {
   group: string;
 }
 
+/** The library a model kind trains with, and the version of it the servers run (``registry.library_versions``). */
+export interface TemplateLibrary {
+  name: string; // ultralytics, torchvision, …
+  requirement: string; // as the model kind asks for it, e.g. ultralytics>=8.3,<9
+  installed: { node: string; version: string; at?: string; trial?: boolean }[]; // per server, the newest first
+  newest: string; // the newest any server runs
+  available: string; // what a server installing it now gets (PyPI's newest the requirement allows, or an in-house wheel)
+}
+
 export interface Template {
   id: string;
   name: string;
   title: string;
   version: string;
   versions: number;
+  library?: TemplateLibrary | null;
   /** The task it is shown for (the one asked about, or its first). */
   task: string;
   /** Every task it trains (one model kind can train several: Ultralytics YOLO trains all four). */

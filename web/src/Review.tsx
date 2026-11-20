@@ -44,7 +44,7 @@ interface Summary {
   pending: { id: string; job_id: string; status: string; split: string; model: CheckModel | null; created_at: string }[];
 }
 
-/** A model of the project and whether it can check this version (evaluate on it). */
+/** A model (this project's, or another's with the same task and classes) and whether it can check this version. */
 interface EvalChoice extends CheckModel {
   arch: string;
   metric: string;
@@ -53,7 +53,18 @@ interface EvalChoice extends CheckModel {
   trained_on: boolean; // trained on this version: its train split was learned
   fits: boolean;
   why: string; // why it cannot, when it cannot
+  relation: "same_version" | "same_dataset" | "same_project" | "other_project"; // what it learned from
+  trained: { project: string; dataset: string; version: string };
+  warning: string; // when it learned from other data
+  classes: number; // how many classes it knows
 }
+
+const RELATION: Record<EvalChoice["relation"], string> = {
+  same_version: "이 버전으로 학습",
+  same_dataset: "다른 버전으로 학습",
+  same_project: "다른 데이터셋",
+  other_project: "다른 프로젝트",
+};
 
 interface EvalChoices {
   release_id: string;
@@ -929,8 +940,8 @@ function CheckWithModel({
       <form onSubmit={submit}>
         <p className="muted">
           고른 모델로 이 데이터셋을 평가해, 모델이 찾았는데 라벨이 없는 물체(미라벨일 수 있음)와 라벨은 있는데 모델이 못 찾은 것(오라벨일 수
-          있음)을 셉니다. {taskLabel(choices?.task)} 데이터셋이라 {taskLabel(choices?.task)} 모델 가운데 이 버전의 클래스로 학습한 것만 고를 수
-          있습니다.
+          있음)을 셉니다. {taskLabel(choices?.task)} 모델이고 이 버전에 모델의 클래스가 모두 있으면(이름으로 맞춤), 이 데이터셋의 다른
+          버전이나 다른 데이터셋 · 다른 프로젝트에서 학습한 모델도 고를 수 있습니다.
           {release.status === "draft" && choices?.evaluate && ` 작업 중은 바탕 버전(${choices.evaluate.version})으로 평가합니다.`}
         </p>
         {loadError && <div className="error">{loadError}</div>}
@@ -948,9 +959,13 @@ function CheckWithModel({
               <label key={m.id} className={`eval-choice ${model === m.id ? "active" : ""}`}>
                 <input type="radio" name="model" value={m.id} checked={model === m.id} onChange={() => setModel(m.id)} />
                 <ModelName model={m} />
+                <span className={`tag relation-${m.relation}`}>{RELATION[m.relation]}</span>
                 <span className="muted small">
                   {m.arch ? `${m.arch} · ` : ""}
                   {METRIC_LABEL[m.metric] ?? m.metric} {metric(m.value)} · {timeAgo(m.created_at)}
+                  {m.relation !== "same_version" && m.trained.dataset
+                    ? ` · 학습: ${m.relation === "other_project" ? `${m.trained.project} · ` : ""}${m.trained.dataset} ${m.trained.version}`
+                    : ""}
                 </span>
               </label>
             ))}
@@ -984,6 +999,17 @@ function CheckWithModel({
                   : ""}
             </span>
           </fieldset>
+        )}
+        {chosen?.fits && chosen.warning && (
+          <div className={`notice small ${chosen.relation === "same_dataset" ? "" : "warn"}`} role="alert">
+            {chosen.warning}
+          </div>
+        )}
+        {chosen?.fits && chosen.classes > 0 && chosen.classes < release.label_space.classes.length && (
+          <div className="notice small">
+            이 버전의 클래스 {release.label_space.classes.length}개 가운데 모델이 아는 {chosen.classes}개만 검사합니다. 나머지 클래스의 라벨은 이
+            검사에 나오지 않습니다.
+          </div>
         )}
         {chosen?.fits && <PlacePicker places={places} error={placesError} value={nodeId} onChange={setNodeId} />}
         {chosen?.trained_on && chosenSplits.includes("train") && (
