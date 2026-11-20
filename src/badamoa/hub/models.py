@@ -43,6 +43,7 @@ class ApiToken(Base):
     prefix: Mapped[str] = mapped_column(String(16))  # first chars, for display
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ip: Mapped[str] = mapped_column(String(64), default="")  # where it was last used from
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped[User] = relationship()

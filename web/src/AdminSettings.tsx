@@ -9,6 +9,8 @@ interface Account extends User {
   disabled: boolean;
   last_seen_at: string | null;
   api_tokens: number;
+  online?: boolean; // used the Hub in the last three minutes
+  ips?: string[]; // from where, when online
 }
 
 /** A password to hand over once: 14 letters and digits, without look-alikes (0/O, 1/l). */
@@ -114,7 +116,18 @@ export function UsersPanel({ me }: { me: User }) {
                     )}
                   </td>
                   <td>{u.disabled ? <Badge kind="disabled">중지됨</Badge> : <Badge kind="online">사용 중</Badge>}</td>
-                  <td>{u.last_seen_at ? timeAgo(u.last_seen_at) : <span className="muted">아직 없음</span>}</td>
+                  <td>
+                    {u.online ? (
+                      <span title={u.ips?.length ? `접속한 곳: ${u.ips.join(", ")}` : undefined}>
+                        <Badge kind="online">접속 중</Badge>
+                        {u.ips?.length ? <span className="muted small"> {u.ips.join(", ")}</span> : null}
+                      </span>
+                    ) : u.last_seen_at ? (
+                      timeAgo(u.last_seen_at)
+                    ) : (
+                      <span className="muted">아직 없음</span>
+                    )}
+                  </td>
                   <td className="num right">{u.api_tokens}</td>
                   <td>{u.created_at.slice(0, 10)}</td>
                   <td className="right row-buttons">

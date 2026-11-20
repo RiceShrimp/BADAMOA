@@ -160,6 +160,12 @@ def list_users(_: User = Depends(admin_user), db: Session = Depends(db_session))
     return admin.list_users(db)
 
 
+@router.get("/users/online")
+def online_users(_: User = Depends(admin_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
+    """Who uses the Hub now (a token used in the last three minutes), for admins."""
+    return admin.online(db)
+
+
 @router.post("/users")
 def create_user(body: NewUser, who: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
     user = services.create_user(db, body.username, body.password, body.role)

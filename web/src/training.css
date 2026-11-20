@@ -1377,6 +1377,8 @@ label.check {
 
 /* the Docker move dialog's folders (DiskAlerts.tsx) */
 .move-choices {
+  display: grid;
+  gap: 2px;
   margin: 0 0 12px;
   padding: 0;
   border: 0;
@@ -1386,14 +1388,14 @@ label.check {
   padding: 0;
   font-weight: 600;
 }
-.move-choice {
+.move-choices .move-choice {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
   padding: 4px 0;
 }
-.move-choice input:not([type="radio"]) {
+.move-choices .move-choice input:not([type="radio"]) {
   flex: 1 1 220px;
   min-width: 0;
 }

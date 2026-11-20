@@ -11,6 +11,7 @@ import { Review } from "./Review";
 import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
+import { OnlineTray } from "./Online";
 import { GuidesPage } from "./Guides";
 import { ReleasesPage, hasUnseenRelease } from "./ReleaseNotes";
 import { Settings } from "./Settings";
@@ -257,6 +258,7 @@ function Shell({
           </div>
           <div className="topbar-right">
             <ImportTray />
+            {isAdmin && <OnlineTray me={user.id} />}
             <a className={`pill ${online > 0 ? "ok" : ""}`} href="#/nodes">
               <i />
               노드 {online}/{nodes?.length ?? 0} 온라인

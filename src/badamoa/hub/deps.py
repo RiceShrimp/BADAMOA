@@ -36,7 +36,7 @@ def bearer_token(request: Request) -> str:
 
 
 def current_user(request: Request, db: Session = Depends(db_session)) -> User:
-    user = services.authenticate(db, bearer_token(request))
+    user = services.authenticate(db, bearer_token(request), request.client.host if request.client else "")
     if user is None:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
     return user

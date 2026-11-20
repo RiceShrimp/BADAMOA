@@ -41,7 +41,7 @@ const FIX: Record<string, string> = {
   home: "BADAMOA의 설정 · 기록이 있는 곳입니다. 다른 파일을 정리해 공간을 비우세요",
   work: "가상환경 · 작업 폴더 · 받아 둔 가중치를 두는 곳입니다. 아래 저장 공간에서 지우거나 노드 설정에서 작업 폴더를 여유 있는 디스크로 바꾸세요",
   images: "다른 서버에서 받은 이미지를 두는 곳입니다. 아래 '받아 둔 버전'에서 지우거나 노드 설정에서 보관 위치를 바꾸세요",
-  docker: "Docker 이미지가 있는 곳입니다. BADAMOA는 Docker의 설정을 바꾸지 않습니다",
+  docker: "Docker 이미지가 있는 곳입니다. 아래 'Docker 이미지 위치 옮기기'로 다른 디스크로 옮기면 비워집니다",
 };
 
 /** How an admin moves Docker's images to a roomier disk (``data-root``); BADAMOA never does it itself. */

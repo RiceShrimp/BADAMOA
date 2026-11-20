@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 # (table, column, DDL) for columns added after 0.1.0.
 _ADDED_COLUMNS = [
+    ("api_tokens", "last_ip", "VARCHAR(64) DEFAULT ''"),
     ("items", "thumb_bytes", "INTEGER DEFAULT 0"),
     ("items", "thumb_v", "INTEGER DEFAULT 0"),
     ("jobs", "gpu_indices", "JSON DEFAULT '[]'"),

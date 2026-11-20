@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -16,17 +17,50 @@ from .services import ServiceError
 
 # ---- accounts ---------------------------------------------------------------------------------
 
+ONLINE_S = 180  # a token used this recently is someone here now: an open screen asks the Hub every 10 s
+
+
+def online(db: Session) -> list[dict[str, Any]]:
+    """Who uses the Hub now: each person with a token used in the last three minutes, the newest first, with how
+    many browser sessions and API tokens (MCP, scripts) and the addresses they come from."""
+    cutoff = utcnow() - timedelta(seconds=ONLINE_S)
+    rows = db.execute(
+        select(ApiToken, User)
+        .join(User, User.id == ApiToken.user_id)
+        .where(ApiToken.last_used_at >= cutoff, User.disabled_at.is_(None))
+        .order_by(ApiToken.last_used_at.desc())
+    ).all()
+    people: dict[str, dict[str, Any]] = {}
+    for token, user in rows:
+        person = people.setdefault(
+            user.id,
+            {"id": user.id, "username": user.username, "role": user.role, "last_seen_at": iso(token.last_used_at),
+             "web": 0, "api": 0, "ips": []},
+        )  # fmt: skip
+        person["web" if token.kind == "session" else "api"] += 1
+        if token.last_ip and token.last_ip not in person["ips"]:
+            person["ips"].append(token.last_ip)
+    return list(people.values())
+
 
 def list_users(db: Session) -> list[dict[str, Any]]:
-    """Everyone, with when they were last seen (any of their tokens used) and how many API tokens they hold."""
+    """Everyone, with when they were last seen (any of their tokens used), whether they are here now and from
+    where, and how many API tokens they hold."""
     seen = dict(db.execute(select(ApiToken.user_id, func.max(ApiToken.last_used_at)).group_by(ApiToken.user_id)).all())
     tokens = dict(
         db.execute(
             select(ApiToken.user_id, func.count(ApiToken.id)).where(ApiToken.kind == "api").group_by(ApiToken.user_id)
         ).all()
     )
+    here = {p["id"]: p for p in online(db)}
     return [
-        {**services.serialize_user(u), "last_seen_at": iso(seen.get(u.id)), "api_tokens": tokens.get(u.id, 0)}
+        {
+            **services.serialize_user(u),
+            "last_seen_at": iso(seen.get(u.id)),
+            "api_tokens": tokens.get(u.id, 0),
+            "online": u.id in here,
+            "ips": here.get(u.id, {}).get("ips", []),
+        }
         for u in db.scalars(select(User).order_by(User.created_at))
     ]
 

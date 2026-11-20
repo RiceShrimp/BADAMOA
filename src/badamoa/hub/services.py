@@ -107,7 +107,8 @@ def login(db: Session, username: str, password: str, settings: HubSettings) -> t
     return token, user
 
 
-def authenticate(db: Session, token: str) -> User | None:
+def authenticate(db: Session, token: str, ip: str = "") -> User | None:
+    """The token's person; its last use (and where from) is written down at most once a minute."""
     if not token or not token.startswith((SESSION_PREFIX + "_", API_PREFIX + "_")):
         return None
     row = db.scalar(select(ApiToken).where(ApiToken.token_hash == hash_token(token)))
@@ -118,8 +119,10 @@ def authenticate(db: Session, token: str) -> User | None:
         return None
     if row.user.disabled_at is not None:
         return None
-    if row.last_used_at is None or (now - row.last_used_at).total_seconds() > 60:
+    if row.last_used_at is None or (now - row.last_used_at).total_seconds() > 60 or (ip and ip != row.last_ip):
         row.last_used_at = now
+        if ip:
+            row.last_ip = ip[:64]
     return row.user
 
 
