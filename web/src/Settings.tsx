@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { GpuBusyPanel, HubAutostartPanel, MyAccount, UsersPanel } from "./AdminSettings";
+import { DockerRegistry, ImageInRegistry, useRegistryImages } from "./DockerRegistry";
 import { fileSize } from "./Files";
 import { type NodeInfo, type User, api, apiUpload } from "./api";
 import { type Project, announceTrash, taskLabel } from "./catalogTypes";
@@ -179,6 +180,7 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
         ))}
       </nav>
       {part === "templates" && <Templates isAdmin={isAdmin} user={user} />}
+      {part === "environments" && isAdmin && <DockerRegistry />}
       {part === "environments" && <Environments isAdmin={isAdmin} nodes={nodes ?? []} />}
       {part === "environments" && <Packages isAdmin={isAdmin} />}
       {part === "projects" && <ProjectDefaults />}
@@ -867,6 +869,7 @@ function TemplateVersions({ t, isAdmin, onClose, onSaved }: { t: Template; isAdm
 }
 
 function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
+  const { data: registryImages } = useRegistryImages(isAdmin);
   const [watching, setWatching] = useState(false);
   const { data: templates, refresh } = usePolling(() => api<Template[]>("/templates"), watching ? 3000 : 20000, [watching]);
   const preparing = templates?.some((t) => t.environment.preparing.length > 0 || t.check?.state === "checking") ?? false;
@@ -1031,6 +1034,7 @@ function Templates({ isAdmin, user }: { isAdmin: boolean; user: User }) {
                 </td>
                 <td className="env-cell">
                   {t.environment.default || (t.environment.kind === "docker" ? `Docker ${t.environment.image}` : "자동 설치")}
+                  {t.environment.kind === "docker" && t.environment.image && <ImageInRegistry image={t.environment.image} rows={registryImages} />}
                   {t.environment.installs && (
                     <div className="muted small">
                       {t.environment.preparing.length > 0
@@ -1251,6 +1255,7 @@ function nodeDetail(node: EnvironmentNode): string {
 }
 
 function Environments({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo[] }) {
+  const { data: registryImages } = useRegistryImages(isAdmin);
   const [checking, setChecking] = useState(false);
   const { data: environments, refresh } = usePolling(() => api<Environment[]>("/environments"), checking ? 2000 : 20000, [checking]);
   const [editing, setEditing] = useState<Environment | "new" | null>(null);
@@ -1316,6 +1321,7 @@ function Environments({ isAdmin, nodes }: { isAdmin: boolean; nodes: NodeInfo[] 
               )}
             </div>
             {env.kind === "docker" && <div className="mono small">{env.image}</div>}
+            {env.kind === "docker" && env.image && <ImageInRegistry image={env.image} rows={registryImages} />}
             {env.description && <div className="muted small">{env.description}</div>}
             {env.nodes.length === 0 && (
               <div className="muted small">

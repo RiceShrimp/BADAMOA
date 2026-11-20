@@ -23,6 +23,7 @@ def _quiet_nodes(monkeypatch):
 
     monkeypatch.setenv("BADAMOA_NODE_DATA_PORT", "0")
     monkeypatch.setenv("BADAMOA_NODE_DATA_HOST", "127.0.0.1")
+    monkeypatch.setenv("BADAMOA_DOCKER_REGISTRY", "off")  # a test Hub never makes or adopts a registry container
     monkeypatch.setattr(cache, "choose", lambda home: home / "cache")
 
 

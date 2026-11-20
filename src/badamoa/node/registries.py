@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
@@ -118,6 +119,36 @@ def _reload(log: Callable[[str], None]) -> None:
         subprocess.run(["kill", "-HUP", *pids], check=False)
         return
     log("Docker가 설정을 다시 읽게 하지 못했습니다: Docker를 다시 시작하면 적용됩니다.")
+
+
+def own_hosts() -> set[str]:
+    """This machine's names and addresses (lower case)."""
+    import psutil
+
+    names = {"localhost", "127.0.0.1", "::1", socket.gethostname().lower()}
+    try:
+        for addresses in psutil.net_if_addrs().values():
+            for a in addresses:
+                if a.family in (socket.AF_INET, socket.AF_INET6):
+                    names.add(a.address.split("%", 1)[0].lower())
+    except (OSError, RuntimeError):
+        pass
+    return names
+
+
+def local_name(image: str) -> str:
+    """The same image through ``localhost:<port>`` when its registry runs on this machine ("" otherwise).
+
+    Docker always lets ``localhost`` speak plain HTTP, so this machine pulls from (and pushes to) its own registry
+    without any insecure-registries setting: Docker Desktop on the Hub's PC, where nobody edits that file, included.
+    """
+    registry = registry_of(image)
+    if not registry or ":" not in registry:
+        return ""
+    host, port = registry.rsplit(":", 1)
+    if not port.isdigit() or host.lower() in ("localhost", "127.0.0.1") or host.lower() not in own_hosts():
+        return ""
+    return f"localhost:{port}{image[len(registry) :]}"
 
 
 def command(hub_url: str) -> str:

@@ -292,8 +292,13 @@ def _hub_url(home: Path) -> str:
 
 def _pull(command: str, image: str, log: Callable[[str], None]) -> tuple[bool, str]:
     """``docker pull``, its progress logged; whether it worked and its last lines."""
+    return stream([command, "pull", image], log)
+
+
+def stream(args: list[str], log: Callable[[str], None]) -> tuple[bool, str]:
+    """A docker command whose progress goes to the log; whether it worked and its last lines."""
     proc = subprocess.Popen(
-        [command, "pull", image],
+        args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -326,6 +331,13 @@ def ensure(home: Path, image: str, log: Callable[[str], None] = print) -> str:
         log(f"Docker 이미지를 받습니다 (이 서버에서 처음 한 번): {image}")
         ok, said = _pull(command, image, log)
         registry = registries.registry_of(image)
+        nearby = registries.local_name(image) if not ok and registries.refused(said) else ""
+        if nearby:  # the registry runs on this machine: through localhost, which Docker always allows
+            log(f"이 PC의 레지스트리라 {nearby}로 받습니다.")
+            ok, said = _pull(command, nearby, log)
+            if ok:
+                subprocess.run([command, "tag", nearby, image], capture_output=True, check=False)
+                subprocess.run([command, "rmi", nearby], capture_output=True, check=False)  # only that name
         if not ok and registry and registries.refused(said) and registries.can_write():
             registries.trust([registry], log)
             time.sleep(2)  # Docker reads its settings again

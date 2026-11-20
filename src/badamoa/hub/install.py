@@ -131,13 +131,16 @@ def docker_registries(hub: Hub = Depends(get_hub)) -> dict[str, list[str]]:
 
     from badamoa.node.registries import registry_of
 
+    from . import docker_registry
     from .train_models import Environment, Template
 
     with hub.db.session() as db:
         kinds = db.scalars(select(Template.manifest))
         images = [str(((manifest or {}).get("environment") or {}).get("image") or "") for manifest in kinds]
         images += [str(image or "") for image in db.scalars(select(Environment.image))]
-    return {"registries": sorted({registry for image in images if (registry := registry_of(image))})}
+        ours = docker_registry.address_of(db)  # the Hub's own registry, before any image is in it
+    found = {registry for image in images if (registry := registry_of(image))}
+    return {"registries": sorted(found | ({ours} if ours else set()))}
 
 
 @router.get("/node-remove.sh", response_class=PlainTextResponse)

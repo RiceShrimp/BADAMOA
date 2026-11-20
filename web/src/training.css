@@ -1208,3 +1208,66 @@ button.overlay-picture:hover {
   gap: 6px 12px;
   margin: 6px 0;
 }
+
+/* 설정 → 환경: the Hub's Docker registry (DockerRegistry.tsx) */
+.registry-card .card-head {
+  align-items: flex-start;
+}
+.registry-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.registry-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.registry-form input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 340px;
+  margin: 0;
+}
+.registry-images {
+  margin-top: 14px;
+}
+.registry-image {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.registry-image code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.registry-fix {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.registry-fix .copy-block {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .registry-image {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .registry-image > .muted {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}

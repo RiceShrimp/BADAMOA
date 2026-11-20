@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -170,6 +171,35 @@ def env_remove(params: dict[str, Any]) -> dict[str, Any]:
     return envs.remove(Path(home).resolve(), spec)
 
 
+def env_push(params: dict[str, Any]) -> dict[str, Any]:
+    """Push an image this machine has to its registry (the Hub's own node does this for the Hub's registry: ``via``
+    is the same image as ``localhost:<port>/…``, which Docker pushes to without HTTPS)."""
+    from badamoa.node import containers, registries
+
+    image = str(params.get("image") or "")
+    via = str(params.get("via") or image)
+    command = containers.docker()
+    if not command:
+        raise RuntimeError("이 PC에 Docker가 없습니다.")
+    if containers.image_id(image) is None:
+        raise RuntimeError(f"이 PC의 Docker에 이미지가 없습니다: {image}. 이미지를 만든 PC에서 docker push 하세요.")
+    if via != image:
+        tagged = subprocess.run([command, "tag", image, via], capture_output=True, text=True, check=False)
+        if tagged.returncode != 0:
+            raise RuntimeError(f"이미지에 {via} 이름을 붙이지 못했습니다: {tagged.stderr.strip()[-300:]}")
+    print(f"레지스트리에 올립니다: {image}" + (f" (이 PC에서는 {via})" if via != image else ""), flush=True)
+    try:
+        ok, said = containers.stream([command, "push", via], lambda line: print(line, flush=True))
+    finally:
+        if via != image:
+            subprocess.run([command, "rmi", via], capture_output=True, check=False)  # only that extra name
+    if not ok:
+        hint = " 레지스트리가 HTTPS 없이 열려 있으면 이 PC의 Docker가 허용해야 합니다." if registries.refused(said) else ""
+        raise RuntimeError(f"올리지 못했습니다: {said.splitlines()[-1] if said else image}.{hint}")
+    print(f"올렸습니다: {image}", flush=True)
+    return {"image": image, "pushed": True}
+
+
 def node_clean(params: dict[str, Any]) -> dict[str, Any]:
     """Remove what BADAMOA kept here, of one kind: the items named, or all (the Hub checked no job uses them)."""
     from badamoa.node import storage
@@ -200,6 +230,7 @@ HANDLERS = {
     "env.check": env_check,
     "env.prepare": env_prepare,
     "env.remove": env_remove,
+    "env.push": env_push,
     "node.clean": node_clean,
 }
 

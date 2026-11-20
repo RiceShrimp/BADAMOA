@@ -21,6 +21,8 @@ from . import (
     catalog,
     catalog_api,
     cleanup,
+    docker_registry,
+    docker_registry_api,
     exports_api,
     hub_storage,
     install,
@@ -111,6 +113,11 @@ async def _sweeper(hub: Hub) -> None:
                 hub_storage.start_shrinking(hub.db, hub.settings)  # older, larger thumbnails: in a thread of its own
             except Exception:
                 log.exception("storage count failed")
+        if ticks == 2 or ticks % 40 == 0:  # the Docker registry: set up soon after start, then checked every 10 min
+            try:
+                await anyio.to_thread.run_sync(docker_registry.ensure, hub.db, hub.settings)
+            except Exception:
+                log.exception("Docker registry check failed")
         if ticks % 40 == 0:  # about every 10 minutes
             try:
                 await anyio.to_thread.run_sync(prune)
@@ -187,6 +194,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(training_api.agent_router)
     app.include_router(training_api.media_router)
     app.include_router(registry_api.router)
+    app.include_router(docker_registry_api.router)
     app.include_router(registry_api.agent_router)
     app.include_router(registry_api.packages_router)
     app.include_router(registry_api.media_router)

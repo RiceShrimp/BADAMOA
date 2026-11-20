@@ -302,6 +302,7 @@ badamoa template push my-model --hub http://<Hub 주소> --token <관리자 API 
 - 시험 실행을 통과한 버전은 그때 설치된 패키지 버전을 고정해, 다른 서버도 같은 버전으로 설치합니다(PyTorch는 버전만 고정하고 CUDA 빌드는 서버에 맞춤).
 - 환경을 서버에 미리 깔아 두려면 설정 → 모델 종류 → **환경 관리**.
 - **HTTPS 없는 사내 레지스트리**(예: `192.168.0.10:5000`): Docker는 HTTPS가 아닌 레지스트리에서 받지 않습니다. sudo로 설치한 노드는 설치 · 업데이트할 때와 받다 막혔을 때 그 서버 Docker의 `insecure-registries`에 넣고 다시 받습니다. sudo 없이 설치한 노드는 서버 관리자가 한 번 `curl -fsSL <hub>/install/docker-registries.sh | sudo bash`를 실행합니다(학습 로그에 그대로 나옴). Docker Desktop은 Settings → Docker Engine에 같은 값을 넣습니다.
+- **Hub의 레지스트리**: Hub는 자기 PC에 레지스트리를 마련합니다(있던 것을 쓰거나 `badamoa-registry`를 만듦, 설정 → 환경). 이미지를 만들었으면 그 레지스트리 이름으로 태그를 붙여 `docker push` 하세요. 시험 실행은 그 PC의 이미지로 통과해도 다른 서버는 레지스트리에서 받습니다. 설정 → 환경에서 쓰는 이미지가 레지스트리에 있는지 보이고, 없으면 Hub PC에 있는 이미지는 **레지스트리에 올리기**로 올립니다.
 
 ## 11. 버전
 
