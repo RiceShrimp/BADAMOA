@@ -313,6 +313,7 @@ def test_in_house_wheels_and_pinned_versions_reach_the_environment(client, admin
     shutil.copytree(shipped.builtin()["dummy"], folder, ignore=shutil.ignore_patterns("__pycache__"))
     text = (folder / "badamoa.toml").read_text(encoding="utf-8").replace('name = "dummy"', 'name = "needs"')
     (folder / "badamoa.toml").write_text(text.replace("hidden = true", "hidden = false") + extra, encoding="utf-8")
+    (folder / "README.md").write_text("# needs\n", encoding="utf-8")
     data = template_format.bundle(folder)
     view = client.post("/api/templates", content=data, headers=admin).json()
     database = Database(settings.database_url)
@@ -335,7 +336,9 @@ def test_in_house_wheels_and_pinned_versions_reach_the_environment(client, admin
 
     code = client.get(f"/api/templates/{view['id']}", headers=admin).json()["code_url"]
     got, original = zipfile.ZipFile(io.BytesIO(client.get(code).content)), zipfile.ZipFile(io.BytesIO(data))
-    assert all(got.read(name) == original.read(name) for name in original.namelist())
+    kept = [name for name in original.namelist() if name != "README.md"]
+    assert "README.md" in original.namelist() and "README.md" not in got.namelist()  # no read-me in the download
+    assert all(got.read(name) == original.read(name) for name in kept)
     assert set(got.namelist()) - set(original.namelist()) == {
         "requirements.txt", "requirements.lock.txt", "wheels/My_Lib-1.2.0-py3-none-any.whl",
     }  # fmt: skip

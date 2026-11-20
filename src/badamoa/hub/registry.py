@@ -792,7 +792,7 @@ def code_with_environment(db: Session, row: Template, bundle: bytes, storage: St
     ``requirements.txt`` (what the version declares), ``requirements.lock.txt`` (the exact versions its passed
     trial installed, when there is one) and ``wheels/`` (the Hub's in-house wheels the requirements name: a
     custom fork, a package of the team; ``pip install -r requirements.txt --find-links wheels``). A file of the
-    same name the code already has is left as it is."""
+    same name the code already has is left as it is; read-me files (``README*``) are left out."""
     import io
     import zipfile
 
@@ -832,6 +832,8 @@ def code_with_environment(db: Session, row: Template, bundle: bytes, storage: St
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
         for info in source.infolist():
+            if info.filename.rsplit("/", 1)[-1].lower().startswith("readme"):
+                continue  # the code and what installing it takes, not its read-me
             target.writestr(info, source.read(info))
         for name, data in added.items():
             if name not in have:
