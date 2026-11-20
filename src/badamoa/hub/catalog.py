@@ -298,6 +298,59 @@ def update_project(
     return project
 
 
+def rename_dataset(db: Session, user: User, dataset_id: str, name: str) -> Dataset:
+    """Give a dataset (every version of it) another name. Runs, models and records keep pointing at it; names
+    already made from the old one (a run's, a model's) stay as they were. Importing under the old name later starts a
+    new dataset."""
+    dataset = db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise ServiceError(404, "데이터셋을 찾을 수 없습니다.")
+    _may_edit(get_project(db, dataset.project_id), user)
+    name = name.strip()
+    if not 1 <= len(name) <= 128:
+        raise ServiceError(400, "데이터셋 이름은 1~128자여야 합니다.")
+    if name == dataset.name:
+        return dataset
+    taken = db.scalar(
+        select(Dataset.id).where(Dataset.project_id == dataset.project_id, Dataset.name == name, Dataset.id != dataset.id)
+    )
+    if taken:
+        raise ServiceError(409, f"이 프로젝트에 {name} 데이터셋이 이미 있습니다(휴지통에 있는 것 포함). 다른 이름을 쓰세요.")
+    services.audit(db, user.id, "api", "dataset.rename", dataset.id, old=dataset.name, name=name)
+    dataset.name = name
+    return dataset
+
+
+def rename_release(db: Session, user: User, release_id: str, version: str) -> Release:
+    """Give a version another name within its dataset. A work in progress has none until it is made a version."""
+    release = db.get(Release, release_id)
+    if release is None:
+        raise ServiceError(404, "버전을 찾을 수 없습니다.")
+    dataset = db.get(Dataset, release.dataset_id)
+    _may_edit(get_project(db, dataset.project_id), user)
+    if release.status == "draft":
+        raise ServiceError(400, "작업 중에는 이름이 없습니다. 버전으로 확정할 때 이름을 정합니다.")
+    version = version.strip()
+    if not 1 <= len(version) <= 64:
+        raise ServiceError(400, "버전 이름은 1~64자여야 합니다.")
+    if version == drafts.DRAFT:
+        raise ServiceError(400, f"'{version}'은 버전 이름으로 쓸 수 없습니다.")
+    if version == release.version:
+        return release
+    taken = db.scalar(
+        select(Release.id).where(
+            Release.dataset_id == release.dataset_id, Release.version == version, Release.id != release.id
+        )
+    )
+    if taken:
+        raise ServiceError(409, f"{dataset.name} {version} 버전이 이미 있습니다(휴지통에 있는 것 포함). 다른 이름을 쓰세요.")
+    services.audit(
+        db, user.id, "api", "release.rename", release.id, dataset=dataset.name, old=release.version, version=version
+    )
+    release.version = version
+    return release
+
+
 def update_project_settings(db: Session, user: User, project_id: str, settings: dict[str, Any]) -> Project:
     """Per-project defaults an admin sets once so dialogs open already filled in."""
     services.require_admin(user)

@@ -59,6 +59,34 @@ def update_project(
     return next(p for p in catalog.list_projects(db) if p["id"] == project_id)
 
 
+class DatasetPatch(BaseModel):
+    name: str
+
+
+@router.patch("/datasets/{dataset_id}")
+def rename_dataset(
+    dataset_id: str, body: DatasetPatch, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Rename a dataset: every version of it goes by the new name (the project's maker or an admin)."""
+    dataset = catalog.rename_dataset(db, user, dataset_id, body.name)
+    db.commit()
+    return {"id": dataset.id, "name": dataset.name}
+
+
+class ReleasePatch(BaseModel):
+    version: str
+
+
+@router.patch("/releases/{release_id}")
+def rename_release(
+    release_id: str, body: ReleasePatch, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Rename a version within its dataset (not a work in progress, which is named when it is made a version)."""
+    release = catalog.rename_release(db, user, release_id, body.version)
+    db.commit()
+    return {"id": release.id, "version": release.version}
+
+
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
     """To the trash, with its datasets, runs and models; the person who made it or an admin."""

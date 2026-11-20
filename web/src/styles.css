@@ -1231,6 +1231,14 @@ h1.with-badge {
   gap: 10px;
   flex-wrap: wrap;
 }
+h1 .title-edit {
+  color: var(--muted);
+  opacity: 0.7;
+}
+h1 .title-edit:hover {
+  color: var(--text);
+  opacity: 1;
+}
 .stats.five {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }

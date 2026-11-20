@@ -227,6 +227,7 @@ function ReleaseView({
   const [making, setMaking] = useState<"" | "items" | "classes">("");
   const [labelingSet, setLabelingSet] = useState(false); // making a labeling set of the filtered images
   const [exporting, setExporting] = useState(false);
+  const [renaming, setRenaming] = useState(false);
 
   const filterQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -315,6 +316,9 @@ function ReleaseView({
             </span>
             {release.status === "building" && <Badge kind="running">등록 중</Badge>}
             {isDraft && <Badge kind="queued">아직 버전 아님</Badge>}
+            <button className="icon-btn title-edit" onClick={() => setRenaming(true)} title="데이터셋 · 버전 이름 바꾸기" aria-label="이름 바꾸기">
+              <Icon name="edit" size={15} />
+            </button>
           </h1>
           {isDraft ? (
             <DraftLine release={release} />
@@ -681,6 +685,16 @@ function ReleaseView({
       )}
 
       {exporting && <ExportDialog release={release} task={task} onClose={() => setExporting(false)} />}
+      {renaming && (
+        <RenameDialog
+          release={release}
+          onClose={() => setRenaming(false)}
+          onDone={() => {
+            setRenaming(false);
+            void refresh();
+          }}
+        />
+      )}
       {labelingSet && (
         <NewSetDialog
           release={release}
@@ -852,6 +866,67 @@ function CompareCard({ releaseId, otherId, onClose }: { releaseId: string; other
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * Rename the dataset (every version goes by the new name) and this version. A work in progress has no name of its
+ * own: it gets one when it is made a version. Runs and models keep pointing at the version; their own names stay.
+ */
+function RenameDialog({ release, onClose, onDone }: { release: ReleaseInfo; onClose: () => void; onDone: () => void }) {
+  const isDraft = release.status === "draft";
+  const [name, setName] = useState(release.dataset.name);
+  const [version, setVersion] = useState(isDraft ? "" : release.version);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const others = release.siblings.length + (isDraft ? 0 : 1);
+  const changed = name.trim() !== release.dataset.name || (!isDraft && version.trim() !== release.version);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      if (name.trim() !== release.dataset.name) await api(`/datasets/${release.dataset.id}`, { method: "PATCH", body: { name: name.trim() } });
+      if (!isDraft && version.trim() !== release.version) await api(`/releases/${release.id}`, { method: "PATCH", body: { version: version.trim() } });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="이름 바꾸기" onClose={onClose}>
+      <form onSubmit={submit}>
+        <label>
+          데이터셋 이름
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={128} required autoFocus />
+          <span className="muted small">이 데이터셋의 버전 {others}개가 모두 이 이름으로 바뀝니다.</span>
+        </label>
+        {isDraft ? (
+          <p className="muted small">작업 중은 아직 버전 이름이 없습니다. 버전으로 확정할 때 정합니다.</p>
+        ) : (
+          <label>
+            버전 이름
+            <input value={version} onChange={(e) => setVersion(e.target.value)} maxLength={64} required />
+          </label>
+        )}
+        <p className="muted small">
+          학습 · 모델은 이 버전을 그대로 가리킵니다. 그때 붙은 학습 · 모델 이름은 바뀌지 않습니다. 같은 이름의 데이터셋 · 버전이 있으면 바꿀
+          수 없습니다.
+        </p>
+        {error && <div className="error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>
+            취소
+          </button>
+          <button className="primary" disabled={busy || !changed || !name.trim() || (!isDraft && !version.trim())}>
+            바꾸기
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
