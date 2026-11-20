@@ -68,3 +68,12 @@ button.digest:hover {
     grid-row: 2;
   }
 }
+
+/* the folder a copy (or the original) is in */
+.copy-path {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

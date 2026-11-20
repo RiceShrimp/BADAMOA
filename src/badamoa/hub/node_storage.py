@@ -197,6 +197,12 @@ def _free(report: dict[str, Any], path: str) -> int | None:
     return disk.get("free")
 
 
+def _mount(report: dict[str, Any], path: str) -> str:
+    """The disk (mount point) a folder is on, as the node measured it ("" from nodes before 0.67.0)."""
+    disk = (report.get("disks") or {}).get(path) or {}
+    return str(disk.get("mount") or "")
+
+
 def view(db: Session, node: Node) -> dict[str, Any]:
     """The node's last report, kind by kind, with what each item is and whether a job may use it."""
     report = dict(node.storage or {})
@@ -232,10 +238,14 @@ def view(db: Session, node: Node) -> dict[str, Any]:
                 item["in_use"] = _user_of(kind, item, uses)
             items.sort(key=lambda i: -(int(i.get("bytes") or 0)))
             entry.update(items=items, bytes=sum(int(i.get("bytes") or 0) for i in items), count=len(items))
-        if kind == "containers":
-            entry["free"] = None  # Docker keeps images on its own disk
+        if kind == "containers":  # Docker's own folder (Docker Desktop: inside its virtual disk)
+            entry["desktop"] = bool(data.get("desktop"))
+            entry["free"] = None if entry["desktop"] else _free(report, entry["path"])
         else:
-            entry["free"] = _free(report, entry["path"]) if kind in ("images", "uv") else _free(report, home)
+            entry["free"] = _free(report, entry["path"]) if _free(report, entry["path"]) is not None else _free(report, home)
+        entry["mount"] = "" if entry.get("desktop") else (_mount(report, entry["path"]) or _mount(report, home))
+        if kind == "images":  # picked by the node (the disk with the most room) or set by an admin
+            entry["auto"] = not (node.cache_dir or "").strip()
         kinds.append(entry)
     measured = report.get("measured_at")
     stale = False
@@ -250,6 +260,7 @@ def view(db: Session, node: Node) -> dict[str, Any]:
         "took_s": report.get("took_s"),
         "stale": stale,
         "home": home,
+        "home_mount": _mount(report, home),
         "free": _free(report, home),
         "bytes": sum(k["bytes"] for k in kinds),
         "kinds": kinds,

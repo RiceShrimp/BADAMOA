@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import services
-from .catalog_models import Dataset, Item, Project, Release, ReleaseItem
+from .catalog_models import Dataset, Item, Project, Release, ReleaseItem, StorageLocation
 from .db import iso, utcnow
 from .models import Job, Node, NodeRelease, User
 from .services import ServiceError
@@ -118,9 +118,11 @@ def _copy(db: Session, settings: Any, row: NodeRelease, node: Node | None, usage
         why = f"{', '.join(using)}이(가) 쓰는 중"
     elif node is not None and not _knows_check(node):
         why = f"{'.'.join(str(n) for n in CHECK_SINCE)} 이상으로 업데이트해야 지울 수 있음"
+    cache = ((node.metrics or {}).get("cache") or {}) if node else {}
     return {
         "node_id": row.node_id,
         "node_name": node.name if node else "삭제된 노드",
+        "dir": str(cache.get("dir") or ""),  # the folder the node keeps received images in
         "node_status": services.node_status(node, settings) if node else "offline",
         "items": row.items,
         "bytes": row.bytes,
@@ -143,7 +145,21 @@ def release_copies(db: Session, settings: Any, release: Release) -> dict[str, An
 
     try:
         node = training.data_node(db, release.id)
-        origin = {"node_id": node.id, "node_name": node.name, "node_status": services.node_status(node, settings)}
+        # the folders the version's images were registered from, in place (never copied)
+        roots = db.scalars(
+            select(StorageLocation.root)
+            .join(Item, Item.location_id == StorageLocation.id)
+            .join(ReleaseItem, ReleaseItem.item_id == Item.id)
+            .where(ReleaseItem.release_id == release.id)
+            .distinct()
+            .limit(5)
+        ).all()
+        origin = {
+            "node_id": node.id,
+            "node_name": node.name,
+            "node_status": services.node_status(node, settings),
+            "roots": sorted(roots),
+        }
     except ServiceError:
         origin = None
     rows = db.scalars(select(NodeRelease).where(NodeRelease.release_id == release.id)).all()

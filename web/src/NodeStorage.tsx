@@ -33,6 +33,9 @@ interface StorageKind {
   files?: number | null;
   shared?: number | null;
   in_use?: string;
+  mount?: string; // the disk (mount point) the folder is on
+  auto?: boolean; // received images: the node picked the folder (the disk with the most room), not an admin
+  desktop?: boolean; // Docker images: inside Docker Desktop's virtual disk
 }
 
 interface StorageInfo {
@@ -52,6 +55,7 @@ interface StorageInfo {
   took_s?: number;
   stale?: boolean;
   home?: string;
+  home_mount?: string;
   free?: number | null;
   bytes?: number;
   kinds: StorageKind[];
@@ -130,6 +134,31 @@ function itemNote(kind: Kind, item: StorageItem): string {
   return parts.join(" · ");
 }
 
+/** Who decided where a kind is kept, and the disk it is on with its room. */
+function placeNote(k: StorageKind): string {
+  const who: Record<Kind, string> = {
+    images: k.auto ? "노드가 고른 곳: 남은 공간이 가장 많은 디스크 (노드 설정에서 바꿈)" : "관리자가 정한 곳 (노드 설정)",
+    envs: "BADAMOA 폴더 안",
+    containers: k.desktop ? "Docker Desktop의 가상 디스크 안 (Docker Desktop 설정 → Resources)" : "Docker가 정한 곳 (Docker의 data-root)",
+    models: "BADAMOA 폴더 안",
+    templates: "BADAMOA 폴더 안",
+    template_data: "BADAMOA 폴더 안",
+    runs: "BADAMOA 폴더 안",
+    uv: "uv가 정한 곳 (이 계정의 uv 캐시)",
+  };
+  const parts = [who[k.kind]];
+  if (k.mount) parts.push(`디스크 ${k.mount}`);
+  if (k.free != null) parts.push(`남은 ${bytesLabel(k.free)}`);
+  return parts.join(" · ");
+}
+
+/** An item's own folder or file under its kind's folder (Docker images go by name instead). */
+function itemPath(k: StorageKind, item: StorageItem): string {
+  if (k.kind === "containers" || !k.path) return "";
+  const sep = k.path.includes("\\") ? "\\" : "/";
+  return `${k.path.replace(/[\\/]$/, "")}${sep}${item.id}`;
+}
+
 /** What BADAMOA keeps on a server, by kind, with sizes against the disk's free space; admins remove items. */
 export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: boolean }) {
   const { data, refresh } = usePolling(() => api<StorageInfo>(`/nodes/${nodeId}/storage`), 15000, [nodeId]);
@@ -199,6 +228,13 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
         )}
       </div>
 
+      {data.home && (
+        <p className="muted small storage-home">
+          BADAMOA 폴더 <code className="mono">{data.home}</code>
+          {data.home_mount ? ` · 디스크 ${data.home_mount}` : ""}
+          {data.free != null ? ` · 남은 ${bytesLabel(data.free)}` : ""}
+        </p>
+      )}
       {!data.measured_at ? (
         <p className="muted small storage-note">
           {data.can_clean
@@ -243,7 +279,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                       <span>{KIND[k.kind].name}</span>
                       {expandable && <span className="muted">{items.length}개</span>}
                     </button>
-                    <span className="muted small storage-about" title={k.path}>
+                    <span className="muted small storage-about" title={KIND[k.kind].about}>
                       {KIND[k.kind].about}
                     </span>
                     <strong className="storage-size">{bytesLabel(k.bytes)}</strong>
@@ -268,6 +304,14 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                     ) : (
                       <span />
                     )}
+                    {k.path && (
+                      <div className="storage-path small">
+                        <code className="mono" title={k.path}>
+                          {k.path}
+                        </code>
+                        <span className="muted">{placeNote(k)}</span>
+                      </div>
+                    )}
                   </div>
                   {shown && (
                     <ul className="storage-items">
@@ -289,6 +333,11 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                             </button>
                           ) : (
                             <span />
+                          )}
+                          {itemPath(k, item) && (
+                            <code className="mono storage-item-path" title={itemPath(k, item)}>
+                              {itemPath(k, item)}
+                            </code>
                           )}
                         </li>
                       ))}

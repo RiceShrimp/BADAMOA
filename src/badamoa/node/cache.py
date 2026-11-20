@@ -43,7 +43,7 @@ def has(root: Path, sha256: str, ext: str, size: int) -> bool:
         return False
 
 
-def _mount_of(path: Path, disks: list[dict[str, Any]]) -> str:
+def mount_of(path: Path, disks: list[dict[str, Any]]) -> str:
     """The mount point a path lies on (the longest one that contains it)."""
     text = str(path.resolve()).lower()
     best = ""
@@ -61,7 +61,7 @@ def choose(home: Path) -> Path:
     if not disks:
         return fallback
     best = max(disks, key=lambda d: d.get("free_gb") or 0)
-    if best.get("mount") == _mount_of(home, disks):
+    if best.get("mount") == mount_of(home, disks):
         return fallback
     return Path(str(best["mount"])) / FOLDER  # made when the first images arrive
 

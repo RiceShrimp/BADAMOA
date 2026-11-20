@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from badamoa.core import sysinfo
 from badamoa.node import cache, containers, envs
 
 KINDS = ("images", "envs", "containers", "models", "templates", "template_data", "runs", "uv")
@@ -114,6 +115,9 @@ def measure(home: Path, cache_root: Path) -> dict[str, Any]:
     for entry in containers.listing(home):
         images.append({**entry, **containers.details(home, entry["image"])})
     kinds["containers"] = {"items": images}
+    docker_root = containers.storage_root() if images else None
+    if docker_root:  # Docker's own folder: Docker, not BADAMOA, decides where images go
+        kinds["containers"].update(path=docker_root["path"], desktop=docker_root["desktop"])
 
     models = []
     for path in sorted((home / "cache" / "models").glob("*")) if (home / "cache" / "models").is_dir() else []:
@@ -134,13 +138,16 @@ def measure(home: Path, cache_root: Path) -> dict[str, Any]:
         size, files, shared = _size(uv)
         kinds["uv"] = {"path": str(uv), "bytes": size, "files": files, "shared": shared}
 
+    # each folder's disk: the mount it is on and the room left there
+    mounts = sysinfo.MetricsSampler._disks()
     disks: dict[str, Any] = {}
-    for where in (home, cache_root, uv):
-        if where is None:
+    places = [home, cache_root, uv, *(Path(k["path"]) for k in kinds.values() if k.get("path") and not k.get("desktop"))]
+    for where in places:
+        if where is None or str(where) in disks:
             continue
         free = _free(Path(where))
         anchor = Path(where).anchor or str(where)
-        disks[str(where)] = {"free": free, "anchor": anchor}
+        disks[str(where)] = {"free": free, "anchor": anchor, "mount": cache.mount_of(Path(where), mounts) or anchor}
     return {
         "measured_at": _iso(time.time()),
         "took_s": round(time.monotonic() - started, 1),

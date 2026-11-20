@@ -64,6 +64,8 @@ def test_a_node_measures_what_it_keeps_and_removes_items(tmp_path, no_uv_no_dock
     assert sorted(r["id"] for r in kinds["runs"]["items"]) == ["job-now", "job-old"]
     assert "uv" not in kinds and kinds["containers"]["items"] == []
     assert all(d["free"] for d in report["disks"].values())
+    # every folder's disk: the mount point it is on (shown with the folder on the node page)
+    assert str(home / "envs") in report["disks"] and all(d["mount"] for d in report["disks"].values())
 
     # an environment being built stays; a running job's folder stays; a name is never a path
     (home / "envs" / "env-b.lock").mkdir()
@@ -111,6 +113,9 @@ def test_the_hub_shows_what_jobs_use_and_never_removes_it(client, admin, setting
     view = client.get(f"/api/nodes/{node_id}/storage", headers=admin).json()
     assert view["measured_at"] and view["can_clean"] is True and view["bytes"] > 0
     kinds = {k["kind"]: k for k in view["kinds"]}
+    # where each kind is kept: its folder and disk; received images in a folder the node picked (no admin setting)
+    assert kinds["envs"]["path"].endswith("envs") and kinds["envs"]["mount"] and view["home_mount"]
+    assert kinds["images"]["auto"] is True
     used = {k: {(i.get("image") or i["id"]): i["in_use"] for i in kinds[k]["items"]} for k in kinds if "items" in kinds[k]}
     assert used["envs"] == {"env-a": queued, "env-b": ""}
     assert used["models"] == {"blob1.pt": queued, "blob2.pt": ""}
@@ -197,3 +202,4 @@ def test_a_real_node_reports_and_cleans(live_hub, tmp_path, monkeypatch, no_uv_n
             assert until(remeasured)
         finally:
             runner.stop()
+

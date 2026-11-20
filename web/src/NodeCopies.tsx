@@ -21,6 +21,7 @@ export interface Copy {
   in_use: string[];
   removable: boolean;
   why_not: string;
+  dir?: string; // the folder the server keeps received images in
   release?: {
     id: string;
     version: string;
@@ -35,7 +36,7 @@ export interface Copy {
 interface ReleaseCopiesInfo {
   release_id: string;
   digest: string;
-  origin: { node_id: string; node_name: string; node_status: string } | null;
+  origin: { node_id: string; node_name: string; node_status: string; roots?: string[] } | null; // roots: registered from
   copies: Copy[];
 }
 
@@ -94,7 +95,7 @@ export function ReleaseCopies({ releaseId }: { releaseId: string }) {
   const { data, refresh } = usePolling(() => api<ReleaseCopiesInfo>(`/releases/${releaseId}/copies`), 15000, [releaseId]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState<string | null>(null);
-  if (!data || data.copies.length === 0) return null;
+  if (!data || (!data.origin && data.copies.length === 0)) return null;
   const remove = async (c: Copy) => {
     const ok = window.confirm(
       `${c.node_name}에 받아 둔 이 버전의 이미지(${bytesLabel(c.bytes)})를 지울까요? 원본은 그대로이고, 다시 학습하면 다시 받습니다.`,
@@ -115,7 +116,7 @@ export function ReleaseCopies({ releaseId }: { releaseId: string }) {
     <section className="card copies">
       <div className="card-head">
         <h3>이 버전이 있는 서버</h3>
-        <span className="muted small">학습하려고 다른 서버로 보낸 이미지</span>
+        <span className="muted small">등록한 원본(복사하지 않고 그 자리)과, 학습하려고 다른 서버로 보낸 사본</span>
       </div>
       <ul className="copy-list">
         {data.origin && (
@@ -124,7 +125,14 @@ export function ReleaseCopies({ releaseId }: { releaseId: string }) {
               <i className={`dot ${data.origin.node_status}`} />
               {data.origin.node_name}
             </span>
-            <span className="muted small">원본 · 등록한 곳</span>
+            <span className="muted small">
+              원본 · 등록한 곳
+              {(data.origin.roots ?? []).map((root) => (
+                <code key={root} className="mono copy-path" title={root}>
+                  {root}
+                </code>
+              ))}
+            </span>
             <span />
             <span />
           </li>
@@ -137,6 +145,11 @@ export function ReleaseCopies({ releaseId }: { releaseId: string }) {
             </span>
             <span className="muted small">
               {amount(c)} · 받은 때 {timeAgo(c.received_at)} · {used(c)}
+              {c.dir && (
+                <code className="mono copy-path" title={`받은 이미지를 두는 폴더: ${c.dir}`}>
+                  {c.dir}
+                </code>
+              )}
             </span>
             <Badge kind={STATE[c.state][1]}>{STATE[c.state][0]}</Badge>
             <button

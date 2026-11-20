@@ -71,6 +71,30 @@ def capability() -> dict[str, Any] | None:
     }
 
 
+def storage_root() -> dict[str, Any] | None:
+    """Where Docker keeps its images: its data folder, and whether that is inside Docker Desktop's virtual disk
+    (a folder of the Linux VM, not one of this machine's)."""
+    command = docker()
+    if not command:
+        return None
+    try:
+        done = subprocess.run(
+            [command, "info", "--format", "{{.DockerRootDir}}|{{.OperatingSystem}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    root, _, system = done.stdout.strip().partition("|")
+    if done.returncode != 0 or not root:
+        return None
+    return {"path": root, "desktop": "docker desktop" in system.lower()}
+
+
 # ---- paths ------------------------------------------------------------------------------------
 
 
