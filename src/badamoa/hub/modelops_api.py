@@ -37,15 +37,18 @@ class EvalRequest(BaseModel):
     release_id: str
     split: str = "val"
     gpus: int | None = None  # empty: one GPU when the server has any
+    node_id: str = ""  # empty: the server holding the version's images
 
 
 class ExportRequest(BaseModel):
     format: str = "onnx"
+    node_id: str = ""  # empty: the server that trained the model (or another that is up)
 
 
 class PredictRequest(BaseModel):
     images: list[dict[str, Any]] = Field(default_factory=list)  # [{"name", "blob"}] from /api/uploads
     conf: float = 0.25
+    node_id: str = ""
 
 
 @router.post("/uploads")
@@ -80,9 +83,22 @@ def start_eval(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    op = modelops.start_eval(db, user, model_id, body.release_id, body.split, body.gpus, via="ui")
+    op = modelops.start_eval(db, user, model_id, body.release_id, body.split, body.gpus, via="ui", node_id=body.node_id)
     db.commit()
     return modelops.op_view(db, hub.settings, op)
+
+
+@router.get("/models/{model_id}/places")
+def model_places(
+    model_id: str,
+    kind: str,
+    release_id: str = "",
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """The servers a model's evaluation (on ``release_id``), export or test can run on, and the default one."""
+    return modelops.places(db, hub.settings, model_id, kind, release_id)
 
 
 @router.get("/releases/{release_id}/eval-models")
@@ -99,7 +115,7 @@ def start_export(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    op = modelops.start_export(db, user, model_id, body.format, via="ui")
+    op = modelops.start_export(db, user, model_id, body.format, via="ui", node_id=body.node_id, settings=hub.settings)
     db.commit()
     return modelops.op_view(db, hub.settings, op)
 
@@ -112,7 +128,9 @@ def start_predict(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    op = modelops.start_predict(db, user, model_id, body.images, _storage(hub), body.conf, via="ui")
+    op = modelops.start_predict(
+        db, user, model_id, body.images, _storage(hub), body.conf, via="ui", node_id=body.node_id, settings=hub.settings
+    )
     db.commit()
     return modelops.op_view(db, hub.settings, op)
 

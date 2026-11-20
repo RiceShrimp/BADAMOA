@@ -241,6 +241,89 @@ interface DialogProps {
   onStarted: () => void;
 }
 
+/** A server a model's evaluation, export or test can run on, as the Hub sees it. */
+interface Place {
+  id: string;
+  name: string;
+  status: string;
+  gpus: number;
+  fits: boolean;
+  why: string; // why it cannot, when it cannot
+  transfer: boolean; // an evaluation there receives the version's images first
+  trained_here: boolean;
+  holds_images: boolean;
+}
+
+interface Places {
+  kind: string;
+  default: string;
+  nodes: Place[];
+}
+
+function usePlaces(modelId: string, kind: "eval" | "export" | "predict", releaseId = "") {
+  const ready = kind !== "eval" || !!releaseId;
+  const query = `kind=${kind}${releaseId ? `&release_id=${releaseId}` : ""}`;
+  return usePolling(() => (ready ? api<Places>(`/models/${modelId}/places?${query}`) : Promise.resolve(null)), 0, [modelId, query]);
+}
+
+/**
+ * Where it runs: the default (evaluation: the server holding the version's images; export and test: the server that
+ * trained the model) or another one; the servers that cannot say why. "" stands for the default.
+ */
+function PlacePicker({
+  places,
+  error,
+  value,
+  onChange,
+}: {
+  places: Places | null | undefined;
+  error?: string | null;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  if (error) return <div className="error small">{error}</div>;
+  if (!places) return <p className="muted small">실행할 서버를 찾는 중…</p>;
+  const current = value || places.default;
+  const chosen = places.nodes.find((n) => n.id === current);
+  const label = (n: Place) => {
+    const notes = [n.gpus ? `GPU ${n.gpus}` : "CPU"];
+    if (n.holds_images) notes.push("이미지 있음");
+    if (n.transfer) notes.push("이미지 받아 옴");
+    if (n.trained_here) notes.push("학습한 서버");
+    if (n.id === places.default) notes.push("기본");
+    return `${n.name} · ${notes.join(" · ")}${n.fits ? "" : ` — ${n.why}`}`;
+  };
+  if (!places.nodes.some((n) => n.fits)) {
+    return (
+      <div className="notice small">
+        실행할 수 있는 서버가 없습니다. {places.nodes.map((n) => `${n.name}: ${n.why}`).join(" / ")}
+      </div>
+    );
+  }
+  return (
+    <label>
+      실행할 서버
+      <select value={current} onChange={(e) => onChange(e.target.value === places.default ? "" : e.target.value)}>
+        {places.nodes.map((n) => (
+          <option key={n.id} value={n.id} disabled={!n.fits}>
+            {label(n)}
+          </option>
+        ))}
+      </select>
+      {chosen?.transfer && (
+        <span className="muted small">
+          이 서버에는 이 버전의 이미지가 없어 평가 전에 먼저 받습니다. 받은 이미지는 그 서버에 남고, 노드 상세의 받아 둔 버전에서 지울 수
+          있습니다.
+        </span>
+      )}
+      {chosen && !chosen.fits && <span className="bad-text small">{chosen.why}</span>}
+    </label>
+  );
+}
+
+const placeReady = (places: Places | null | undefined, value: string) =>
+  !!places && !!places.nodes.find((n) => n.id === (value || places.default) && n.fits);
+
 function useSubmit(onStarted: () => void) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -263,6 +346,8 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
   const [release, setRelease] = useState(model.release?.id ?? "");
   const [split, setSplit] = useState("val");
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [node, setNode] = useState("");
+  const { data: places, error: placesError } = usePlaces(model.id, "eval", release);
   const { error, busy, submit } = useSubmit(onStarted);
 
   // Offer only the parts this release has, with how many images each holds.
@@ -292,7 +377,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    void submit(() => api(`/models/${model.id}/eval`, { body: { release_id: release, split } }));
+    void submit(() => api(`/models/${model.id}/eval`, { body: { release_id: release, split, node_id: node } }));
   };
 
   return (
@@ -339,6 +424,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
           </p>
         )}
         {fitting.length === 0 && tree && <div className="notice">이 프로젝트에는 이 모델로 평가할 {taskLabel(model.task)} 데이터셋이 없습니다.</div>}
+        {release && <PlacePicker places={places} error={placesError} value={node} onChange={setNode} />}
         {split === "train" && release === model.release?.id && (
           <div className="notice">이 모델이 학습에 쓴 이미지가 들어 있습니다. 지표가 실제보다 높게 나옵니다.</div>
         )}
@@ -347,7 +433,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
           <button type="button" onClick={onClose}>
             취소
           </button>
-          <button className="primary" disabled={busy || !release}>
+          <button className="primary" disabled={busy || !release || !placeReady(places, node)}>
             평가 시작
           </button>
         </div>
@@ -358,10 +444,12 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
 
 function ExportDialog({ model, onClose, onStarted }: DialogProps) {
   const [format, setFormat] = useState("onnx");
+  const [node, setNode] = useState("");
+  const { data: places, error: placesError } = usePlaces(model.id, "export");
   const { error, busy, submit } = useSubmit(onStarted);
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    void submit(() => api(`/models/${model.id}/export`, { body: { format } }));
+    void submit(() => api(`/models/${model.id}/export`, { body: { format, node_id: node } }));
   };
   return (
     <Modal title="모델 내보내기" onClose={onClose}>
@@ -374,6 +462,7 @@ function ExportDialog({ model, onClose, onStarted }: DialogProps) {
             <option value="torchscript">TorchScript — PyTorch(C++ 포함)에서 사용</option>
           </select>
         </label>
+        <PlacePicker places={places} error={placesError} value={node} onChange={setNode} />
         {model.template.name === "yolo" && (
           <p className="muted small">Ultralytics YOLO는 AGPL-3.0 라이선스입니다. 제품에 탑재하기 전에 라이선스를 확인하세요.</p>
         )}
@@ -382,7 +471,7 @@ function ExportDialog({ model, onClose, onStarted }: DialogProps) {
           <button type="button" onClick={onClose}>
             취소
           </button>
-          <button className="primary" disabled={busy}>
+          <button className="primary" disabled={busy || !placeReady(places, node)}>
             내보내기
           </button>
         </div>
@@ -394,6 +483,8 @@ function ExportDialog({ model, onClose, onStarted }: DialogProps) {
 function TestDialog({ model, onClose, onStarted }: DialogProps) {
   const [files, setFiles] = useState<File[]>([]);
   const [conf, setConf] = useState("0.25");
+  const [node, setNode] = useState("");
+  const { data: places, error: placesError } = usePlaces(model.id, "predict");
   const { error, busy, submit } = useSubmit(onStarted);
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -402,7 +493,7 @@ function TestDialog({ model, onClose, onStarted }: DialogProps) {
       for (const file of files) {
         images.push(await apiUpload<{ name: string; blob: string }>(`/uploads?name=${encodeURIComponent(file.name)}`, file, file.type));
       }
-      await api(`/models/${model.id}/predict`, { body: { images, conf: Number(conf) } });
+      await api(`/models/${model.id}/predict`, { body: { images, conf: Number(conf), node_id: node } });
     });
   };
   return (
@@ -425,12 +516,13 @@ function TestDialog({ model, onClose, onStarted }: DialogProps) {
             <input type="number" min={0} max={1} step={0.05} value={conf} onChange={(e) => setConf(e.target.value)} />
           </label>
         )}
+        <PlacePicker places={places} error={placesError} value={node} onChange={setNode} />
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>
             취소
           </button>
-          <button className="primary" disabled={busy || files.length === 0}>
+          <button className="primary" disabled={busy || files.length === 0 || !placeReady(places, node)}>
             {busy ? "올리는 중…" : `테스트 (${files.length}장)`}
           </button>
         </div>

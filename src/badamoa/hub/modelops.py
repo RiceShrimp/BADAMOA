@@ -20,7 +20,7 @@ from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
 from badamoa.core.templates import reads_weights
 
-from . import catalog, checks, drafts, registry, services, training
+from . import catalog, checks, drafts, registry, services, training, transfers
 from .catalog_models import Dataset, LabelSpace, Release
 from .config import HubSettings
 from .db import iso
@@ -35,6 +35,8 @@ EXPORT_FORMATS = ("onnx", "torchscript")
 MAX_TEST_IMAGES = 20
 MAX_RESULT_ITEMS = 200
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+# A server evaluates on images it received from another one (laid out from its cache) from this BADAMOA on.
+EVAL_RECEIVED_SINCE = (0, 69, 0)
 
 
 def _template_of(db: Session, model: ModelVersion) -> Template:
@@ -110,6 +112,7 @@ def _start(
     extra: dict[str, Any] | None = None,
     gpus: int = 0,
     via: str = "api",
+    after: str | None = None,
 ) -> ModelJob:
     own = _template_of(db, model)
     row = code_for(db, model, kind)
@@ -167,6 +170,7 @@ def _start(
         via=via,
         gpus=gpus,
         role=role,
+        after=after,
     )
     op.job_id = job.id
     services.audit(db, user.id, via, f"model.{kind}", model.id, name=model.name, version=model.version, code=row.version)
@@ -174,12 +178,19 @@ def _start(
 
 
 def start_eval(
-    db: Session, user: User, model_id: str, release_id: str, split: str = "val", gpus: int | None = None, via: str = "api"
+    db: Session,
+    user: User,
+    model_id: str,
+    release_id: str,
+    split: str = "val",
+    gpus: int | None = None,
+    via: str = "api",
+    node_id: str = "",
 ) -> ModelJob:
     """Measure a model on a release: the way to compare models trained on different data.
 
-    Like training, it runs where the release's images are and takes a GPU when that server has one
-    (``gpus=0`` forces the CPU).
+    Like training, it runs where the release's images are (or on ``node_id``, which receives them first when it has
+    none) and takes a GPU when that server has one (``gpus=0`` forces the CPU).
     """
     model = training.get_model(db, model_id)
     release = catalog.get_release(db, release_id)
@@ -203,10 +214,113 @@ def start_eval(
     class_ids = [ids[name] for name in model.classes or []]
     if class_ids != sorted(class_ids):
         raise ServiceError(400, "이 버전의 클래스 순서가 모델과 달라 평가할 수 없습니다.")
-    node = training.data_node(db, release.id)
-    gpus = (1 if node.info.get("gpus") else 0) if gpus is None else gpus
+    holder = training.data_node(db, release.id)
+    node, after = holder, None
+    if node_id and node_id != holder.id:
+        node = _picked(db, node_id)
+        if node.id not in transfers.holders(db, release.id):  # the images come to it first
+            if not _since(node, EVAL_RECEIVED_SINCE):
+                need = ".".join(str(n) for n in EVAL_RECEIVED_SINCE)
+                raise ServiceError(400, f"{node.name}에서 다른 서버의 이미지로 평가하려면 {need} 이상이어야 합니다.")
+            transfers.check_route(holder, node)
+            after = transfers.sync_job(db, user, release.id, node, via).id
+    gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else gpus
     extra = {"release_id": release.id, "split": split, "class_ids": class_ids}
-    return _start(db, user, model, "eval", node, {"split": split}, release_id=release.id, extra=extra, gpus=gpus, via=via)
+    return _start(
+        db, user, model, "eval", node, {"split": split}, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after
+    )
+
+
+def _picked(db: Session, node_id: str) -> Node:
+    node = db.get(Node, node_id)
+    if node is None:
+        raise ServiceError(404, "고른 서버를 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 고르세요.")
+    if not node.enabled:
+        raise ServiceError(400, f"{node.name}은(는) 작업을 받지 않도록 되어 있습니다.")
+    return node
+
+
+def _since(node: Node, version: tuple[int, ...]) -> bool:
+    found = training._version(node.agent_version or "")
+    return found is not None and found >= version
+
+
+def _default_node(db: Session, settings: HubSettings, model: ModelVersion, kind: str) -> Node | None:
+    """Export and test: the server that trained the model (its environment is there), else one that is up."""
+    trained = _training_node(db, model)
+    if trained is not None and services.node_status(trained, settings) == "online":
+        return trained
+    for place in places(db, settings, model.id, kind)["nodes"]:
+        if place["fits"]:
+            return db.get(Node, place["id"])
+    return trained
+
+
+def places(db: Session, settings: HubSettings, model_id: str, kind: str, release_id: str = "") -> dict[str, Any]:
+    """The servers a model's evaluation, export or test can run on: each with whether it can and why not, the one
+    it runs on unless another is picked, and for an evaluation whether the version's images must be sent there first."""
+    if kind not in ACTIONS:
+        raise ServiceError(400, f"작업은 {', '.join(ACTIONS)} 중 하나여야 합니다.")
+    model = training.get_model(db, model_id)
+    row = code_for(db, model, kind)
+    if row is None:
+        own = _template_of(db, model)
+        raise ServiceError(400, f"{own.title} {own.version}에는 {ACTIONS[kind]} 코드가 없습니다.")
+    manifest = registry.manifest_of(row, model.task or "")
+    run = db.get(Run, model.run_id) if model.run_id else None
+    wanted = (run.environment or {}) if run else {}
+    same = wanted.get("id") or {"auto": "auto", "docker": registry.DECLARED_IMAGE}.get(wanted.get("kind", ""), "")
+    if same == registry.DECLARED_IMAGE and not manifest.environment.image:
+        same = ""
+    trained = _training_node(db, model)
+    holder = holders = None
+    if kind == "eval":
+        release = catalog.get_release(db, release_id)
+        holder = training.data_node(db, release.id)
+        holders = transfers.holders(db, release.id)
+    nodes = list(db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)))
+    found = []
+    for node in nodes:
+        why: list[str] = []
+        status = services.node_status(node, settings)
+        if status != "online":
+            why.append("응답 없음")
+        gpus = 1 if kind == "eval" and (node.info or {}).get("gpus") else 0
+        try:
+            env = registry.environment_for_run(db, manifest, same, node, row)
+            why += training.fitting([node], env, gpus, registry.TRAINS)[1]
+        except ServiceError as e:
+            why.append(e.message)
+        transfer = kind == "eval" and holders is not None and node.id not in holders
+        if transfer and holder is not None:
+            if not _since(node, EVAL_RECEIVED_SINCE):
+                need = ".".join(str(n) for n in EVAL_RECEIVED_SINCE)
+                why.append(f"다른 서버의 이미지로 평가하려면 {need} 이상이어야 합니다")
+            else:
+                try:
+                    transfers.check_route(holder, node)
+                except ServiceError as e:
+                    why.append(e.message)
+        found.append(
+            {
+                "id": node.id,
+                "name": node.name,
+                "status": status,
+                "gpus": len((node.info or {}).get("gpus") or []),
+                "fits": not why,
+                "why": " · ".join(dict.fromkeys(why)),
+                "transfer": transfer,  # the version's images are sent there first
+                "trained_here": trained is not None and node.id == trained.id,
+                "holds_images": kind == "eval" and not transfer,
+            }
+        )
+    if kind == "eval":
+        default = holder.id if holder is not None else ""
+    else:
+        default = trained.id if trained is not None and any(f["id"] == trained.id and f["fits"] for f in found) else ""
+        default = default or next((f["id"] for f in found if f["fits"]), "")
+    found.sort(key=lambda f: (f["id"] != default, not f["fits"], f["name"]))
+    return {"kind": kind, "default": default, "nodes": found}
 
 
 ALIAS_ORDER = ("production", "champion", "staging", "challenger")
@@ -278,11 +392,25 @@ def eval_choices(db: Session, release: Release) -> dict[str, Any]:
     }
 
 
-def start_export(db: Session, user: User, model_id: str, fmt: str = "onnx", via: str = "api") -> ModelJob:
+def start_export(
+    db: Session,
+    user: User,
+    model_id: str,
+    fmt: str = "onnx",
+    via: str = "api",
+    node_id: str = "",
+    settings: HubSettings | None = None,
+) -> ModelJob:
+    """Export a model: on ``node_id``, else the server that trained it (or another that is up)."""
     model = training.get_model(db, model_id)
     if fmt not in EXPORT_FORMATS:
         raise ServiceError(400, f"형식은 {', '.join(EXPORT_FORMATS)} 중 하나여야 합니다.")
-    return _start(db, user, model, "export", _training_node(db, model), {"format": fmt}, via=via)
+    node = _picked(db, node_id) if node_id else _place(db, settings, model, "export")
+    return _start(db, user, model, "export", node, {"format": fmt}, via=via)
+
+
+def _place(db: Session, settings: HubSettings | None, model: ModelVersion, kind: str) -> Node | None:
+    return _default_node(db, settings, model, kind) if settings is not None else _training_node(db, model)
 
 
 def start_predict(
@@ -293,8 +421,10 @@ def start_predict(
     storage: Storage,
     conf: float = 0.25,
     via: str = "api",
+    node_id: str = "",
+    settings: HubSettings | None = None,
 ) -> ModelJob:
-    """Run the model on a few uploaded images and keep what it found."""
+    """Run the model on a few uploaded images and keep what it found (on ``node_id``, else as ``start_export``)."""
     model = training.get_model(db, model_id)
     if not 1 <= len(images) <= MAX_TEST_IMAGES:
         raise ServiceError(400, f"이미지는 1~{MAX_TEST_IMAGES}장을 올려 주세요.")
@@ -306,7 +436,8 @@ def start_predict(
         inputs.append({"name": f"{n:02d}_{name}", "blob": blob})
     if not 0 <= conf <= 1:
         raise ServiceError(400, "conf는 0~1이어야 합니다.")
-    return _start(db, user, model, "predict", _training_node(db, model), {"conf": conf, "images": inputs}, via=via)
+    node = _picked(db, node_id) if node_id else _place(db, settings, model, "predict")
+    return _start(db, user, model, "predict", node, {"conf": conf, "images": inputs}, via=via)
 
 
 # ---- node protocol -----------------------------------------------------------------

@@ -158,3 +158,39 @@ def test_a_node_too_old_to_receive_is_refused_up_front(two_nodes, tmp_path, monk
     assert refused.status_code == 400 and "99.0.0 이상" in refused.json()["detail"]
     assert not [j for j in hub.get("/api/jobs?limit=20").json() if j["type"] == "data.sync"]
     assert not hub.get(f"/api/releases/{release}/nodes").json()["nodes"][1]["can_receive"]
+
+
+def test_a_model_is_evaluated_and_exported_on_a_server_picked(two_nodes, tmp_path):
+    hub = two_nodes
+    data, train = hub.data.config.node_id, hub.train.config.node_id
+    project = hub.post("/api/projects", json={"name": "어디서 평가"}).json()
+    body = {"node_id": data, "path": str(make_yolo(tmp_path / "ds")), "dataset": "street", "version": "v1"}
+    job = _wait(hub, hub.post(f"/api/projects/{project['id']}/imports", json=body).json()["id"])
+    release = job["result"]["release_id"]
+    run = hub.post("/api/runs", json={"release_id": release, "template": "dummy", "params": {"epochs": 1}, "gpus": 0}).json()
+    assert _wait(hub, run["job_id"])["status"] == "succeeded", _logs(hub, run["job_id"])
+    model = hub.get(f"/api/runs/{run['id']}").json()["model"]
+
+    # ---- where an evaluation can run: where the images are (the default), or the other server, which receives them
+    places = hub.get(f"/api/models/{model['id']}/places", params={"kind": "eval", "release_id": release}).json()
+    assert places["default"] == data
+    by = {p["id"]: p for p in places["nodes"]}
+    assert by[data]["holds_images"] and not by[data]["transfer"] and by[data]["fits"]
+    assert by[train]["transfer"] and by[train]["fits"], by[train]["why"]
+    op = hub.post(
+        f"/api/models/{model['id']}/eval", json={"release_id": release, "split": "val", "gpus": 0, "node_id": train}
+    ).json()
+    done = _wait(hub, op["job_id"])
+    assert done["status"] == "succeeded", _logs(hub, op["job_id"])
+    assert hub.get(f"/api/jobs/{op['job_id']}").json()["node_id"] == train
+    syncs = [j for j in hub.get("/api/jobs?limit=20").json() if j["type"] == "data.sync"]
+    assert len(syncs) == 1 and syncs[0]["status"] == "succeeded"
+
+    # ---- export and test: the server that trained it by default, another one when picked
+    places = hub.get(f"/api/models/{model['id']}/places", params={"kind": "export"}).json()
+    assert places["default"] == data and {p["id"] for p in places["nodes"] if p["fits"]} == {data, train}
+    assert next(p for p in places["nodes"] if p["id"] == data)["trained_here"]
+    op = hub.post(f"/api/models/{model['id']}/export", json={"format": "onnx", "node_id": train}).json()
+    assert _wait(hub, op["job_id"])["status"] == "succeeded", _logs(hub, op["job_id"])
+    assert hub.get(f"/api/jobs/{op['job_id']}").json()["node_id"] == train
+    assert hub.post(f"/api/models/{model['id']}/export", json={"format": "onnx", "node_id": "nope"}).status_code == 404

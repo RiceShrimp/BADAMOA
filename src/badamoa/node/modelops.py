@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from . import cache as image_cache
 from . import exporter, trainer
 
 
@@ -71,8 +72,21 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         in_container = spec.get("kind") == "docker"
         roots: list[str] = []  # the images' own folders (a container needs them mounted to follow the export's links)
         if action == "eval":
-            header, items = trainer.manifest_stream(client, base)
-            roots = [root for root in header["locations"].values() if root]
+            header, listed = trainer.manifest_stream(client, base)
+            # images registered on another server were received into this one's cache before the job (``data.sync``)
+            received = Path(os.environ.get("BADAMOA_CACHE_DIR") or node_home / "cache")
+            local = set(header["locations"])
+            locations = {**header["locations"], "cache": str(received)}
+
+            def placed(stream: Any) -> Any:
+                for item in stream:
+                    if str(item.get("location_id")) not in local:
+                        ext = Path(item["rel_path"]).suffix
+                        item = {**item, "location_id": "cache", "rel_path": image_cache.rel_of(item["sha256"], ext)}
+                    yield item
+
+            items = placed(listed)
+            roots = [root for root in locations.values() if root]
             build = exporter.BUILDERS.get(template.get("data_format", "yolo"))
             if build is None:
                 raise RuntimeError("이 노드의 BADAMOA는 이 데이터 형식을 지원하지 않습니다. 노드를 업데이트하세요.")
@@ -81,7 +95,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 keep_splits=True,
                 symlinks=not (in_container and os.name == "nt"),
             )
-            summary = build(items, header["classes"], header["locations"], work / "data", options)
+            summary = build(items, header["classes"], locations, work / "data", options)
             split = params.get("split") or "val"
             if not summary["items"].get(split):
                 raise RuntimeError(f"이 버전에는 {split} split의 이미지가 없습니다.")
