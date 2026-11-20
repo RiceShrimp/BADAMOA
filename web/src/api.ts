@@ -1,3 +1,5 @@
+import type { DiskAlert } from "./DiskAlerts";
+
 const TOKEN_KEY = "badamoa.token";
 
 export function getToken(): string | null {
@@ -195,6 +197,8 @@ export interface NodeInfo {
 export interface NodeDetailInfo extends NodeInfo {
   disk_forecast: DiskForecast[];
   recent_jobs: Job[];
+  disk_alerts?: DiskAlert[]; // disks BADAMOA writes to there that are nearly full
+  docker_target?: string; // where Docker's data-root could go, when Docker's disk is nearly full
 }
 
 export interface Job {

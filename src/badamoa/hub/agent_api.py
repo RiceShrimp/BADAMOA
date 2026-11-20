@@ -63,7 +63,11 @@ def heartbeat(
     db.commit()
     days = cleanup.get_policy(db)["workdir_days"]
     return HeartbeatResponse(
-        cancel_job_ids=cancel_ids, hub_version=services.HUB_VERSION, workdir_days=days, cache_dir=node.cache_dir or ""
+        cancel_job_ids=cancel_ids,
+        hub_version=services.HUB_VERSION,
+        workdir_days=days,
+        cache_dir=node.cache_dir or "",
+        work_dir=node.work_dir or "",
     )
 
 

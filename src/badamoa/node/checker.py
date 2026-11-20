@@ -33,7 +33,7 @@ import httpx
 from badamoa.core import tasks as task_names
 from badamoa.core.templates import CONTRACT
 
-from . import containers, exporter, samples, trainer
+from . import containers, exporter, places, samples, trainer
 
 STEP_NAMES = {
     "data": "시험 데이터",
@@ -210,10 +210,12 @@ def _trial(
         found["python"] = python
         facts.update(extra)
         facts["packages"] = installed
-        cached = (node_home / "cache").resolve().as_posix().lower()
+        # code the node fetched itself (in its work folder, or its home before) is the Hub's: not a server folder
+        cached = [(base / "cache").resolve().as_posix().lower() for base in places.of(node_home).roots()]
         built = spec.get("kind") == "auto"  # a registered Python belongs to its server anyway
         for name, source in (extra.get("sources") or {}).items() if built else []:
-            if source.get("kind") in ("local", "editable") and cached not in str(source.get("url") or "").lower():
+            url = str(source.get("url") or "").lower()
+            if source.get("kind") in ("local", "editable") and not any(c in url for c in cached):
                 notes.append(
                     f"이 환경은 다른 서버에서 똑같이 만들 수 없습니다: {name} (이 서버의 폴더에서 설치). "
                     "wheel로 만들어 Hub의 사내 패키지에 올리세요."
@@ -230,9 +232,8 @@ def _trial(
 
     # 3. the entry points, against one clock (preparing the environment does not count)
     deadline = time.monotonic() + int(check.get("timeout_min") or 15) * 60
-    cache = node_home / "cache" / "template-data" / str(template["name"])
+    cache = places.of(node_home).find("cache", "template-data", str(template["name"]))
     cache.mkdir(parents=True, exist_ok=True)
-    (node_home / "cache" / "ultralytics").mkdir(parents=True, exist_ok=True)
     # the GPU the Hub gave this trial, if it gave one; on a developer's PC (no Hub) only when the code needs one
     given = [g for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g.strip()]
     on_gpu = bool(given) or (client is None and bool(check.get("gpu")))
@@ -253,7 +254,7 @@ def _trial(
             config_path=work / f"config-{name}.json",
             code=code,
             work=work,
-            mounts=[(node_home / "cache" / "models", True)],
+            mounts=[(places.of(node_home).models, True)],
         )
         if not on_gpu and not in_container:
             env = {**env, "CUDA_VISIBLE_DEVICES": ""}  # a trial on the CPU leaves the GPUs to the trainings
@@ -393,7 +394,7 @@ def attempt(
 ) -> dict[str, Any]:
     """The whole trial and its verdict. Without a ``client`` it runs on this machine alone: the code comes
     from ``params["code"]`` and nothing goes to a Hub (``badamoa template check --run``)."""
-    work = node_home / "runs" / job_id
+    work = places.of(node_home).runs / job_id
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     template = params["template"]

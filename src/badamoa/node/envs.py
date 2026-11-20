@@ -13,6 +13,10 @@ The same versions on every server: when a template version passed its trial, the
 versions installed then (``pinned``) and the install keeps to them (PyTorch's version only: its
 build still follows the server's driver). In-house wheels come from the Hub's package list
 (``wheels``): the node fetches them into ``cache/wheels`` and uv looks there first.
+
+Environments are built in the node's work folder (``places``); one built before in another folder (the
+node's home) is used where it is. uv links packages from its cache into an environment, so the cache is
+kept on the work folder's disk (``uv_env``).
 """
 
 from __future__ import annotations
@@ -25,8 +29,11 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from badamoa.node import places
 
 LOCK_STALE_S = 3600.0
 LOCK_WAIT_S = 3600.0
@@ -77,13 +84,46 @@ def find_uv() -> str:
     return found
 
 
+@lru_cache(maxsize=1)
+def _uv_own_cache() -> Path | None:
+    """uv's cache as uv picks it for this account (``uv cache dir``), None when uv cannot say."""
+    try:
+        done = subprocess.run(
+            [find_uv(), "cache", "dir"], capture_output=True, text=True, timeout=30, check=False, env=code_env()
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return None
+    text = done.stdout.strip()
+    return Path(text) if done.returncode == 0 and text else None
+
+
+def uv_cache(where: places.Places) -> Path | None:
+    """The uv cache the node uses, when it is not uv's own: uv hard-links packages from its cache into an
+    environment, so on another disk than the work folder every environment would be a full copy. None:
+    uv's own cache (on the work folder's disk already, or the server set ``UV_CACHE_DIR`` itself)."""
+    if os.environ.get("UV_CACHE_DIR"):
+        return None
+    if places.same(where.work, where.home):
+        return None  # as before the work folder: uv's own cache
+    own = _uv_own_cache()
+    if own is not None and places.same_disk(own, where.work):
+        return None
+    return where.work / "uv-cache"
+
+
+def uv_env(where: places.Places) -> dict[str, str]:
+    """What the uv the node runs needs in its environment to use the node's uv cache."""
+    folder = uv_cache(where)
+    return {"UV_CACHE_DIR": str(folder)} if folder is not None else {}
+
+
 def torch_backend() -> str:
     return os.environ.get("BADAMOA_TORCH_BACKEND", "").strip() or "auto"
 
 
 def fetch_wheels(home: Path, wheels: list[dict[str, Any]], get: Callable[[str], bytes]) -> Path:
     """The Hub's in-house wheels in this node's ``cache/wheels``, each checked against its hash."""
-    folder = home / "cache" / "wheels"
+    folder = places.of(home).wheels
     folder.mkdir(parents=True, exist_ok=True)
     for wheel in wheels:
         name = Path(str(wheel.get("filename") or "")).name
@@ -102,17 +142,28 @@ def fetch_wheels(home: Path, wheels: list[dict[str, Any]], get: Callable[[str], 
     return folder
 
 
-def env_dir(home: Path, requirements: list[str], python: str, torch: bool) -> Path:
-    """The directory changes whenever anything that defines the environment does."""
+def env_name(requirements: list[str], python: str, torch: bool) -> str:
+    """The folder's name changes whenever anything that defines the environment does."""
     identity = [python, sorted(requirements), torch_backend() if torch else ""]
-    return home / "envs" / hashlib.sha1(json.dumps(identity).encode()).hexdigest()[:12]
+    return hashlib.sha1(json.dumps(identity).encode()).hexdigest()[:12]
+
+
+def env_dir(home: Path, requirements: list[str], python: str, torch: bool) -> Path:
+    """The environment's folder: where it is ready (the work folder, or one the node used before), else where
+    it is built (the work folder)."""
+    where = places.of(home)
+    name = env_name(requirements, python, torch)
+    for base in where.roots():
+        if (base / "envs" / name / "badamoa-env.json").is_file():
+            return base / "envs" / name
+    return where.envs / name
 
 
 def python_of(env: Path) -> Path:
     return env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def _run(command: list[str], log: Callable[[str], None]) -> None:
+def _run(command: list[str], log: Callable[[str], None], extra: dict[str, str] | None = None) -> None:
     # A package built from source runs its own code while installing: it gets no credentials either.
     proc = subprocess.Popen(
         command,
@@ -121,7 +172,7 @@ def _run(command: list[str], log: Callable[[str], None]) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=code_env(),
+        env=code_env(extra),
     )
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -179,7 +230,10 @@ def ensure(
         started = time.monotonic()
         log(f"학습 환경을 처음 만듭니다 (이 서버에서 한 번만 필요, 몇 분 걸릴 수 있습니다): {env}")
         shutil.rmtree(env, ignore_errors=True)  # leftovers of an interrupted build
-        _run([uv, "venv", "--color", "never", "--python", python, str(env)], log)
+        cached = uv_env(places.of(home))
+        if cached:
+            log(f"uv 캐시: {cached['UV_CACHE_DIR']} (작업 폴더와 같은 디스크)")
+        _run([uv, "venv", "--color", "never", "--python", python, str(env)], log, cached)
         install = [uv, "pip", "install", "--color", "never", "--python", str(python_of(env))]
         if torch:
             install += ["--torch-backend", torch_backend()]
@@ -190,14 +244,14 @@ def ensure(
             constraints = env / "badamoa-pinned.txt"
             constraints.write_text("\n".join(pinned) + "\n", encoding="utf-8")
             try:
-                _run(install + ["-c", str(constraints)] + requirements, log)
+                _run(install + ["-c", str(constraints)] + requirements, log, cached)
                 kept = len(pinned)
                 log(f"시험 실행 때의 버전으로 설치했습니다 (고정 {kept}개).")
             except RuntimeError as e:
                 log(f"시험 실행 때의 버전으로는 이 서버에 설치하지 못해 고정 없이 설치합니다: {str(e)[-200:]}")
-                _run(install + requirements, log)
+                _run(install + requirements, log, cached)
         else:
-            _run(install + requirements, log)
+            _run(install + requirements, log, cached)
         marker = {"requirements": requirements, "python": python, "torch": torch, "pinned": kept}
         ready.write_text(json.dumps(marker), encoding="utf-8")
         log(f"환경 준비 완료 ({time.monotonic() - started:.0f}초)")
@@ -213,10 +267,20 @@ def _touch(env: Path) -> None:
         pass
 
 
+def markers(home: Path) -> list[Path]:
+    """The ready environments' markers in every folder the node keeps environments in, each name once (the work
+    folder's first)."""
+    found: dict[str, Path] = {}
+    for base in places.of(home).roots():
+        for marker in sorted((base / "envs").glob("*/badamoa-env.json")):
+            found.setdefault(marker.parent.name, marker)
+    return [found[name] for name in sorted(found)]
+
+
 def listing(home: Path) -> list[dict[str, Any]]:
     """The automatically installed environments ready on this node: what defines each, and its folder's name."""
     found = []
-    for marker in sorted((home / "envs").glob("*/badamoa-env.json")):
+    for marker in markers(home):
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -234,21 +298,27 @@ def listing(home: Path) -> list[dict[str, Any]]:
 
 
 def remove(home: Path, spec: dict[str, Any], log: Callable[[str], None] = print) -> dict[str, Any]:
-    """Take an automatically installed environment off this node: its folder. Refused while it is being built."""
-    env = env_dir(home, list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")))
-    if (env.parent / f"{env.name}.lock").exists():
+    """Take an automatically installed environment off this node: its folder (in every folder the node keeps
+    environments in). Refused while it is being built."""
+    name = env_name(list(spec.get("requirements") or []), spec.get("python") or "3.12", bool(spec.get("torch")))
+    where = places.of(home)
+    if (where.envs / f"{name}.lock").exists():
         raise RuntimeError("이 환경을 만드는 작업이 있습니다. 끝난 뒤에 지우세요.")
-    if not env.exists():
+    folders = where.everywhere("envs", name)
+    if not folders:
         log("이 서버에는 이 환경이 없습니다.")
         return {"removed": False}
-    size = sum(p.stat().st_size for p in env.rglob("*") if p.is_file() and not p.is_symlink())
-    marker = env / "badamoa-env.json"
-    marker.unlink(missing_ok=True)  # no longer ready, even if a file below is in use and stays
-    try:
-        shutil.rmtree(env)
-    except OSError as e:
-        raise RuntimeError(f"환경 폴더를 다 지우지 못했습니다 (쓰는 프로그램이 있을 수 있음): {e}") from e
-    log(f"가상환경을 지웠습니다: {env} ({size / 1024**2:,.0f} MB)")
+    size = 0
+    for env in folders:
+        here = sum(p.stat().st_size for p in env.rglob("*") if p.is_file() and not p.is_symlink())
+        marker = env / "badamoa-env.json"
+        marker.unlink(missing_ok=True)  # no longer ready, even if a file below is in use and stays
+        try:
+            shutil.rmtree(env)
+        except OSError as e:
+            raise RuntimeError(f"환경 폴더를 다 지우지 못했습니다 (쓰는 프로그램이 있을 수 있음): {e}") from e
+        log(f"가상환경을 지웠습니다: {env} ({here / 1024**2:,.0f} MB)")
+        size += here
     return {"removed": True, "bytes": size}
 
 

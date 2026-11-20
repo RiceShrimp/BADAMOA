@@ -20,6 +20,8 @@ interface StorageItem {
   job_status?: string;
   gone?: boolean; // what it belonged to is no longer on the Hub
   in_use: string; // the job that may use it ("" when none)
+  path?: string; // still where the node kept it before its work folder (its home): its own path
+  mount?: string; // that path's disk
 }
 
 interface StorageKind {
@@ -34,7 +36,8 @@ interface StorageKind {
   shared?: number | null;
   in_use?: string;
   mount?: string; // the disk (mount point) the folder is on
-  auto?: boolean; // received images: the node picked the folder (the disk with the most room), not an admin
+  auto?: boolean; // the node picked the folder (the disk with the most room), not an admin
+  work?: boolean; // in the node's work folder (nodes from 0.74.0)
   desktop?: boolean; // Docker images: inside Docker Desktop's virtual disk
 }
 
@@ -56,6 +59,9 @@ interface StorageInfo {
   stale?: boolean;
   home?: string;
   home_mount?: string;
+  work?: string; // the node's work folder (nodes from 0.74.0)
+  work_mount?: string;
+  work_free?: number | null;
   free?: number | null;
   bytes?: number;
   kinds: StorageKind[];
@@ -131,20 +137,22 @@ function itemNote(kind: Kind, item: StorageItem): string {
   if (kind === "templates" || kind === "template_data") parts.push(item.id.length > 24 ? item.id.slice(0, 12) : item.id);
   if (kind === "runs" && item.job_status) parts.push(STATUS[item.job_status] ?? item.job_status);
   parts.push(item.last_used ? `마지막 사용 ${timeAgo(item.last_used)}` : "쓴 적 없음");
+  if (item.path) parts.push(`예전 위치${item.mount ? ` (디스크 ${item.mount})` : ""}`);
   return parts.join(" · ");
 }
 
 /** Who decided where a kind is kept, and the disk it is on with its room. */
 function placeNote(k: StorageKind): string {
+  const work = k.auto ? "작업 폴더: 노드가 고른 곳(남은 공간이 가장 많은 디스크, 노드 설정에서 바꿈)" : "작업 폴더: 관리자가 정한 곳 (노드 설정)";
   const who: Record<Kind, string> = {
     images: k.auto ? "노드가 고른 곳: 남은 공간이 가장 많은 디스크 (노드 설정에서 바꿈)" : "관리자가 정한 곳 (노드 설정)",
-    envs: "BADAMOA 폴더 안",
+    envs: k.work ? work : "BADAMOA 폴더 안",
     containers: k.desktop ? "Docker Desktop의 가상 디스크 안 (Docker Desktop 설정 → Resources)" : "Docker가 정한 곳 (Docker의 data-root)",
-    models: "BADAMOA 폴더 안",
-    templates: "BADAMOA 폴더 안",
-    template_data: "BADAMOA 폴더 안",
-    runs: "BADAMOA 폴더 안",
-    uv: "uv가 정한 곳 (이 계정의 uv 캐시)",
+    models: k.work ? work : "BADAMOA 폴더 안",
+    templates: k.work ? work : "BADAMOA 폴더 안",
+    template_data: k.work ? work : "BADAMOA 폴더 안",
+    runs: k.work ? work : "BADAMOA 폴더 안",
+    uv: k.work ? "작업 폴더 안 (uv의 기본 캐시가 다른 디스크라 가상환경과 같은 디스크에 둠)" : "uv가 정한 곳 (이 계정의 uv 캐시)",
   };
   const parts = [who[k.kind]];
   if (k.mount) parts.push(`디스크 ${k.mount}`);
@@ -154,6 +162,7 @@ function placeNote(k: StorageKind): string {
 
 /** An item's own folder or file under its kind's folder (Docker images go by name instead). */
 function itemPath(k: StorageKind, item: StorageItem): string {
+  if (item.path) return item.path; // still in the folder the node used before
   if (k.kind === "containers" || !k.path) return "";
   const sep = k.path.includes("\\") ? "\\" : "/";
   return `${k.path.replace(/[\\/]$/, "")}${sep}${item.id}`;
@@ -233,6 +242,14 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
           BADAMOA 폴더 <code className="mono">{data.home}</code>
           {data.home_mount ? ` · 디스크 ${data.home_mount}` : ""}
           {data.free != null ? ` · 남은 ${bytesLabel(data.free)}` : ""}
+          {data.work && data.work !== data.home && (
+            <>
+              <br />
+              작업 폴더 <code className="mono">{data.work}</code>
+              {data.work_mount ? ` · 디스크 ${data.work_mount}` : ""}
+              {data.work_free != null ? ` · 남은 ${bytesLabel(data.work_free)}` : ""}
+            </>
+          )}
         </p>
       )}
       {!data.measured_at ? (

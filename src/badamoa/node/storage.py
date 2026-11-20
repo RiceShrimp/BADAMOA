@@ -7,7 +7,11 @@
     templates      template code fetched from the Hub (``cache/templates/<sha256>``)
     template_data  what template code keeps between runs, mostly pretrained weights (``cache/template-data/<name>``)
     runs           work folders of jobs (a finished run leaves nothing; a stopped or failed one stays for continuing)
-    uv             uv's download cache, which builds the virtual environments (the server user's, shared)
+    uv             uv's download cache, which builds the virtual environments (the server user's, shared;
+                   the node's own in the work folder when uv's is on another disk)
+
+Everything but images, Docker images and uv's own cache is in the node's work folder (``places``); what is
+still in a folder the node used before (its home) is listed too, with its own ``path``.
 
 The node sends the report with a heartbeat after measuring; the Hub adds what each item belongs to
 and whether a job uses it now, and asks the node to remove items (``clean``).
@@ -24,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from badamoa.core import sysinfo
-from badamoa.node import cache, containers, envs
+from badamoa.node import cache, containers, envs, places
 
 KINDS = ("images", "envs", "containers", "models", "templates", "template_data", "runs", "uv")
 
@@ -68,48 +72,78 @@ def _free(path: Path) -> int | None:
         return None
 
 
-def uv_cache_dir() -> Path | None:
+def uv_cache_dir(where: places.Places | None = None) -> Path | None:
+    """The uv cache the node's environments are built from: the node's own (``envs.uv_cache``) or uv's."""
+    own = envs.uv_cache(where) if where is not None else None
+    if own is not None:
+        return own
     try:
-        done = subprocess.run([envs.find_uv(), "cache", "dir"], capture_output=True, text=True, timeout=30, check=False)
+        done = subprocess.run(
+            [envs.find_uv(), "cache", "dir"], capture_output=True, text=True, timeout=30, check=False, env=envs.code_env()
+        )
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
         return None
     text = done.stdout.strip()
     return Path(text) if done.returncode == 0 and text else None
 
 
-def _folders(parent: Path) -> list[Path]:
-    try:
-        return sorted(p for p in parent.iterdir() if p.is_dir() and not p.name.endswith((".part", ".lock")))
-    except OSError:
-        return []
+FOLDERS = {
+    "envs": ("envs",),
+    "models": ("cache", "models"),
+    "templates": ("cache", "templates"),
+    "template_data": ("cache", "template-data"),
+    "runs": ("runs",),
+}
+
+
+def _in_every_root(where: places.Places, kind: str, files: bool = False) -> list[tuple[Path, bool]]:
+    """A kind's items in every folder the node keeps them in (the work folder's first, each name once), and
+    whether each is in the work folder."""
+    found: dict[str, tuple[Path, bool]] = {}
+    for base in where.roots():
+        parent = base.joinpath(*FOLDERS[kind])
+        try:
+            entries = sorted(parent.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.endswith((".part", ".lock", ".moving")):
+                continue
+            if entry.is_file() if files else entry.is_dir():
+                found.setdefault(entry.name, (entry, base is where.work))
+    return [found[name] for name in sorted(found)]
+
+
+def _placed(item: dict[str, Any], path: Path, in_work: bool) -> dict[str, Any]:
+    return item if in_work else {**item, "path": str(path)}  # still where the node kept it before
 
 
 def measure(home: Path, cache_root: Path) -> dict[str, Any]:
     """The report: per kind its items (with sizes) or its total, and the free space of the disks involved."""
     started = time.monotonic()
+    where = places.of(home)
     kinds: dict[str, Any] = {}
     images_bytes, images_files = cache.usage(cache_root)
     kinds["images"] = {"path": str(cache_root), "bytes": images_bytes, "files": images_files}
 
     environments = []
-    for folder in _folders(home / "envs"):
+    described = {e["id"]: e for e in envs.listing(home)}
+    for folder, in_work in _in_every_root(where, "envs"):
         marker = folder / "badamoa-env.json"
         if not marker.is_file():
             continue
-        entry = next((e for e in envs.listing(home) if e["id"] == folder.name), None)
         size, files, shared = _size(folder)
         used = folder / envs.USED
-        environments.append(
-            {
-                "id": folder.name,
-                **(entry or {}),
-                "bytes": size,
-                "files": files,
-                "shared": shared,
-                "last_used": _iso(used.stat().st_mtime if used.is_file() else marker.stat().st_mtime),
-            }
-        )
-    kinds["envs"] = {"path": str(home / "envs"), "items": environments}
+        item = {
+            "id": folder.name,
+            **described.get(folder.name, {}),
+            "bytes": size,
+            "files": files,
+            "shared": shared,
+            "last_used": _iso(used.stat().st_mtime if used.is_file() else marker.stat().st_mtime),
+        }
+        environments.append(_placed(item, folder, in_work))
+    kinds["envs"] = {"path": str(where.envs), "items": environments}
 
     images = []
     for entry in containers.listing(home):
@@ -120,38 +154,42 @@ def measure(home: Path, cache_root: Path) -> dict[str, Any]:
         kinds["containers"].update(path=docker_root["path"], desktop=docker_root["desktop"])
 
     models = []
-    for path in sorted((home / "cache" / "models").glob("*")) if (home / "cache" / "models").is_dir() else []:
-        if path.is_file() and not path.name.endswith(".part"):
-            stat = path.stat()
-            models.append({"id": path.name, "blob": path.stem, "bytes": stat.st_size, "last_used": _iso(stat.st_atime)})
-    kinds["models"] = {"path": str(home / "cache" / "models"), "items": models}
+    for path, in_work in _in_every_root(where, "models", files=True):
+        stat = path.stat()
+        item = {"id": path.name, "blob": path.stem, "bytes": stat.st_size, "last_used": _iso(stat.st_atime)}
+        models.append(_placed(item, path, in_work))
+    kinds["models"] = {"path": str(where.models), "items": models}
 
-    for kind, folder in (
-        ("templates", home / "cache" / "templates"),
-        ("template_data", home / "cache" / "template-data"),
-        ("runs", home / "runs"),
-    ):
-        items = [{"id": f.name, "bytes": _size(f)[0], "last_used": _iso(_newest(f))} for f in _folders(folder)]
+    for kind, folder in (("templates", where.templates), ("template_data", where.template_data), ("runs", where.runs)):
+        items = [
+            _placed({"id": f.name, "bytes": _size(f)[0], "last_used": _iso(_newest(f))}, f, in_work)
+            for f, in_work in _in_every_root(where, kind)
+        ]
         kinds[kind] = {"path": str(folder), "items": items}
-    uv = uv_cache_dir()
+    uv = uv_cache_dir(where)
     if uv is not None and uv.is_dir():  # no uv here (yet): nothing to show
         size, files, shared = _size(uv)
         kinds["uv"] = {"path": str(uv), "bytes": size, "files": files, "shared": shared}
+        if envs.uv_cache(where) is not None:  # the node's own, beside its environments
+            kinds["uv"]["work"] = True
 
-    # each folder's disk: the mount it is on and the room left there
+    # each folder's disk: the mount it is on and the room left there (and of every item kept elsewhere)
     mounts = sysinfo.MetricsSampler._disks()
     disks: dict[str, Any] = {}
-    places = [home, cache_root, uv, *(Path(k["path"]) for k in kinds.values() if k.get("path") and not k.get("desktop"))]
-    for where in places:
-        if where is None or str(where) in disks:
+    elsewhere = [Path(i["path"]) for k in kinds.values() for i in k.get("items") or [] if i.get("path")]
+    kept = [Path(k["path"]) for k in kinds.values() if k.get("path") and not k.get("desktop")]
+    folders = [home, where.work, cache_root, uv, *kept]
+    for folder in [*folders, *elsewhere]:
+        if folder is None or str(folder) in disks:
             continue
-        free = _free(Path(where))
-        anchor = Path(where).anchor or str(where)
-        disks[str(where)] = {"free": free, "anchor": anchor, "mount": cache.mount_of(Path(where), mounts) or anchor}
+        free = _free(Path(folder))
+        anchor = Path(folder).anchor or str(folder)
+        disks[str(folder)] = {"free": free, "anchor": anchor, "mount": cache.mount_of(Path(folder), mounts) or anchor}
     return {
         "measured_at": _iso(time.time()),
         "took_s": round(time.monotonic() - started, 1),
         "home": str(home),
+        "work": str(where.work),
         "disks": disks,
         "kinds": kinds,
     }
@@ -184,15 +222,18 @@ def clean(
     """
     running = running or set()
     freed = removed = 0
+    there = places.of(home)
     if kind == "uv":
         # uv's cache is the server user's, shared with whatever else runs uv there: only what nothing
         # needs any more goes (``uv cache prune``), never the whole of it
         uv = envs.find_uv()
-        if any((home / "envs").glob("*.lock")):
+        if any(any(base.joinpath("envs").glob("*.lock")) for base in there.roots()):
             raise RuntimeError("가상환경을 만드는 작업이 있어 uv 캐시를 정리하지 않았습니다. 끝난 뒤에 다시 하세요.")
-        where = uv_cache_dir()
+        where = uv_cache_dir(there)
         before = _size(where)[0] if where and where.is_dir() else 0
-        done = subprocess.run([uv, "cache", "prune"], capture_output=True, text=True, check=False)
+        done = subprocess.run(
+            [uv, "cache", "prune"], capture_output=True, text=True, check=False, env=envs.code_env(envs.uv_env(there))
+        )
         if done.returncode != 0:
             raise RuntimeError(f"uv 캐시를 정리하지 못했습니다: {(done.stderr or done.stdout).strip()[-300:]}")
         after = _size(where)[0] if where and where.is_dir() else 0
@@ -207,33 +248,32 @@ def clean(
             removed += 1 if result.get("removed") or result.get("forgotten") else 0
             freed += size if result.get("removed") else 0
         return {"removed": removed, "bytes": freed}
-    folders = {
-        "envs": home / "envs",
-        "models": home / "cache" / "models",
-        "templates": home / "cache" / "templates",
-        "template_data": home / "cache" / "template-data",
-        "runs": home / "runs",
-    }
-    if kind not in folders:
+    if kind not in FOLDERS:
         raise RuntimeError(f"지울 수 없는 종류입니다: {kind}")
-    parent = folders[kind]
-    if not parent.is_dir():
+    parents = there.everywhere(*FOLDERS[kind])  # the work folder's, and one the node used before
+    if not parents:
         return {"removed": 0, "bytes": 0}
-    names = items or ([p.name for p in parent.iterdir() if not p.name.endswith(".lock")] if everything else [])
+    names = items or (
+        sorted({p.name for parent in parents for p in parent.iterdir() if not p.name.endswith(".lock")})
+        if everything
+        else []
+    )
     for name in names:
-        target = parent / Path(name).name  # a bare name: never a path out of the folder
-        if not target.exists():
+        name = Path(name).name  # a bare name: never a path out of the folder
+        if kind == "envs" and any((parent / f"{name}.lock").exists() for parent in parents):
+            log(f"만드는 중이라 건너뜀: {name}")
             continue
-        if kind == "envs" and (parent / f"{target.name}.lock").exists():
-            log(f"만드는 중이라 건너뜀: {target.name}")
+        if kind == "runs" and name in running:
+            log(f"실행 중인 작업의 폴더라 건너뜀: {name}")
             continue
-        if kind == "runs" and target.name in running:
-            log(f"실행 중인 작업의 폴더라 건너뜀: {target.name}")
+        targets = [parent / name for parent in parents if (parent / name).exists() and name]
+        if not targets:
             continue
         try:
-            freed += _remove_tree(target)
+            for target in targets:
+                freed += _remove_tree(target)
             removed += 1
         except OSError as e:
-            log(f"지우지 못했습니다 ({target.name}): {e}")
+            log(f"지우지 못했습니다 ({name}): {e}")
     log(f"{removed:,}개를 지웠습니다 ({freed / 1024**2:,.0f} MB).")
     return {"removed": removed, "bytes": freed}

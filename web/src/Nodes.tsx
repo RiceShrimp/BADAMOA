@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import "./nodes.css";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
+import { DiskAlertLine, type DiskAlert } from "./DiskAlerts";
 import { type HubAddress, type JoinToken, api } from "./api";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
@@ -56,6 +57,10 @@ export interface BoardNode {
   disks?: { mount: string; total_gb: number; free_gb: number; pct: number }[];
   cache_dir?: string; // as an admin set it ("" = the node picks)
   cache?: { dir: string; auto: boolean; free_gb: number | null; bytes: number | null; files: number | null } | null;
+  work_dir?: string; // as an admin set it ("" = the node picks)
+  // environments, work folders and fetched files: the folder in use (nodes from 0.74.0)
+  work?: { dir: string; auto: boolean; free_gb: number | null; error?: string; moving?: boolean } | null;
+  disk_alerts?: DiskAlert[]; // disks BADAMOA writes to there that are nearly full
   serve?: { port: number; addresses?: string[]; error?: string } | null;
   os?: string;
   account?: { name: string; admin: boolean } | null; // the account the node runs as (admin: installed with sudo)
@@ -303,6 +308,7 @@ function ServerRow({
           </div>
         )}
         {sys.length > 0 && <SysBars bars={sys} />}
+        {online && <DiskAlertLine alerts={node.disk_alerts} />}
         {!online && (
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>
         )}
@@ -502,19 +508,88 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
 }
 
 /** "/data" → "/data/badamoa-cache", "D:\\" → "D:\\badamoa-cache" */
-function cacheIn(mount: string): string {
+function folderIn(mount: string, name: string): string {
   const windows = /^[A-Za-z]:/.test(mount);
   const sep = windows ? "\\" : "/";
-  return mount.endsWith("/") || mount.endsWith("\\") ? `${mount}badamoa-cache` : `${mount}${sep}badamoa-cache`;
+  return mount.endsWith("/") || mount.endsWith("\\") ? `${mount}${name}` : `${mount}${sep}${name}`;
+}
+
+/** A folder on the node: one on each disk, a typed one, or the node's own pick (the disk with the most room). */
+function FolderPick({
+  node,
+  title,
+  folder,
+  current,
+  value,
+  onChange,
+}: {
+  node: BoardNode;
+  title: string;
+  folder: string; // the folder's name on a disk ("badamoa-cache")
+  current?: { dir: string; auto: boolean } | null; // the folder in use now
+  value: string;
+  onChange: (dir: string) => void;
+}) {
+  const disks = (node.disks ?? []).filter((d) => d.total_gb >= 2);
+  const options = disks.map((d) => ({ dir: folderIn(d.mount, folder), disk: d }));
+  const [typing, setTyping] = useState(value !== "" && !options.some((o) => o.dir === value));
+  const choice = typing ? "\u0000typed" : value;
+  return (
+    <div className={typing ? "pick-or-type two" : "pick-or-type"}>
+      <select
+        value={choice}
+        onChange={(e) => {
+          const v = e.target.value;
+          setTyping(v === "\u0000typed");
+          onChange(v === "\u0000typed" ? "" : v);
+        }}
+        aria-label={title}
+      >
+        <option value="">
+          자동 — 남은 공간이 가장 많은 디스크{current?.auto && current.dir ? ` (지금: ${current.dir})` : ""}
+        </option>
+        {options.map((o) => (
+          <option key={o.dir} value={o.dir}>
+            {o.dir} · 남은 {Math.round(o.disk.free_gb).toLocaleString()} / {Math.round(o.disk.total_gb).toLocaleString()} GB
+          </option>
+        ))}
+        <option value={"\u0000typed"}>직접 입력…</option>
+      </select>
+      {typing && (
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={`/data/${folder}`} aria-label={`${title} 폴더`} autoFocus />
+      )}
+    </div>
+  );
+}
+
+/** Where environments, work folders of jobs and fetched weights and code go on the node. */
+function WorkPlace({ node, value, onChange }: { node: BoardNode; value: string; onChange: (dir: string) => void }) {
+  const work = node.work;
+  return (
+    <>
+      <div className="field-label">작업 폴더 위치</div>
+      <p className="muted small">
+        가상환경 · 학습이 쓰는 폴더 · 받아 둔 가중치와 코드를 두는 곳입니다. 수십 GB가 될 수 있으니 여유 있는 디스크를 고르세요. 바꾸면 그동안의
+        것은 작업이 없을 때 옮기고, 이미 만든 가상환경은 있던 곳에서 계속 씁니다.
+      </p>
+      <FolderPick node={node} title="작업 폴더 위치" folder="badamoa-work" current={work} value={value} onChange={onChange} />
+      {work ? (
+        <div className="muted small">
+          지금 {work.dir}
+          {work.free_gb != null ? ` · 그 디스크 남은 공간 ${work.free_gb.toLocaleString()} GB` : ""}
+          {work.moving ? " · 옮기는 중" : ""}
+        </div>
+      ) : (
+        <div className="muted small">이 노드의 BADAMOA는 0.74.0부터 작업 폴더를 따로 둡니다(지금은 노드 폴더 안).</div>
+      )}
+      {work?.error && <div className="small bad-text">{work.error}</div>}
+    </>
+  );
 }
 
 /** Where images received from other nodes are kept on this one: a disk, a typed folder, or the node's own pick. */
 function CachePlace({ node, value, onChange }: { node: BoardNode; value: string; onChange: (dir: string) => void }) {
-  const disks = (node.disks ?? []).filter((d) => d.total_gb >= 2);
-  const options = disks.map((d) => ({ dir: cacheIn(d.mount), disk: d }));
-  const [typing, setTyping] = useState(value !== "" && !options.some((o) => o.dir === value));
   const cache = node.cache;
-  const choice = typing ? "\u0000typed" : value;
   return (
     <>
       <div className="field-label">받은 이미지 보관 위치</div>
@@ -522,30 +597,7 @@ function CachePlace({ node, value, onChange }: { node: BoardNode; value: string;
         다른 노드에 있는 이미지로 이 노드에서 학습할 때, 그 이미지를 받아 두는 곳입니다(같은 이미지는 한 번만). 수백 GB가 될 수 있으니
         여유 있는 디스크를 고르세요.
       </p>
-      <div className={typing ? "pick-or-type two" : "pick-or-type"}>
-        <select
-          value={choice}
-          onChange={(e) => {
-            const v = e.target.value;
-            setTyping(v === "\u0000typed");
-            onChange(v === "\u0000typed" ? "" : v);
-          }}
-          aria-label="받은 이미지 보관 위치"
-        >
-          <option value="">
-            자동 — 남은 공간이 가장 많은 디스크{cache?.auto && cache.dir ? ` (지금: ${cache.dir})` : ""}
-          </option>
-          {options.map((o) => (
-            <option key={o.dir} value={o.dir}>
-              {o.dir} · 남은 {Math.round(o.disk.free_gb).toLocaleString()} / {Math.round(o.disk.total_gb).toLocaleString()} GB
-            </option>
-          ))}
-          <option value={"\u0000typed"}>직접 입력…</option>
-        </select>
-        {typing && (
-          <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="/data/badamoa-cache" aria-label="보관 폴더" autoFocus />
-        )}
-      </div>
+      <FolderPick node={node} title="받은 이미지 보관 위치" folder="badamoa-cache" current={cache} value={value} onChange={onChange} />
       <div className="muted small">
         {cache?.files ? `받아 둔 이미지 ${cache.files.toLocaleString()}장 · ${fileSizeGb(cache.bytes ?? 0)}` : "아직 받아 둔 이미지가 없습니다"}
         {cache?.free_gb != null ? ` · 그 디스크 남은 공간 ${cache.free_gb.toLocaleString()} GB` : ""}
@@ -843,6 +895,7 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
   const [enabled, setEnabled] = useState(node.enabled);
   const [kept, setKept] = useState<number[]>(node.gpus.filter((g) => g.reserved).map((g) => g.index));
   const [cacheDir, setCacheDir] = useState(node.cache_dir ?? "");
+  const [workDir, setWorkDir] = useState(node.work_dir ?? "");
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -891,6 +944,7 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
         </>
       )}
       <CachePlace node={node} value={cacheDir} onChange={setCacheDir} />
+      <WorkPlace node={node} value={workDir} onChange={setWorkDir} />
       {node.is_local && <p className="muted small">Hub가 있는 이 PC의 노드는 삭제할 수 없습니다. 쓰지 않으려면 비활성화하세요.</p>}
       {error && <div className="error">{error}</div>}
       <div className="modal-actions">
@@ -906,7 +960,10 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
           disabled={roles.length === 0}
           onClick={() =>
             run(() =>
-              api(`/nodes/${node.id}`, { method: "PATCH", body: { name, roles, enabled, reserved_gpus: kept, cache_dir: cacheDir.trim() } }),
+              api(`/nodes/${node.id}`, {
+                method: "PATCH",
+                body: { name, roles, enabled, reserved_gpus: kept, cache_dir: cacheDir.trim(), work_dir: workDir.trim() },
+              }),
             )
           }
         >

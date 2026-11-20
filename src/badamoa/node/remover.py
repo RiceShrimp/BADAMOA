@@ -1,6 +1,8 @@
 """A node takes BADAMOA off its machine when the Hub deletes it: the service, the program, its settings.
 
-Data folders (the images and labels datasets were registered from) are never touched. The work
+Data folders (the images and labels datasets were registered from) are never touched; the node's work
+folders (``places``: environments, work folders of jobs, fetched files) go with its home when BADAMOA
+made them (``badamoa-work``; a folder an admin named otherwise stays). The work
 runs in a helper outside the node's own service, because stopping the service stops everything in
 it: ``systemd-run`` on Linux, a WMI-started script on Windows. A node not put in by the install
 scripts (run from a source checkout) only forgets its registration.
@@ -17,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from badamoa.node import updater
+from badamoa.node import places, updater
 
 log = logging.getLogger("badamoa.node.remover")
 
@@ -40,12 +42,13 @@ def remove(home: Path) -> str:
     root = where["root"].resolve()
     if not _ours(root, "badamoa") or not _ours(home, "node"):
         raise RuntimeError(f"지울 폴더가 예상과 다릅니다: {root}, {home}")
+    work = [p for p in [places.of(home).work, *places.used_before(home)] if _ours(p, places.FOLDER) and p.is_dir()]
     if sys.platform == "win32":
-        return _windows(root, home)
-    return _linux(root, home)
+        return _windows(root, home, work)
+    return _linux(root, home, work)
 
 
-def _linux(root: Path, home: Path) -> str:
+def _linux(root: Path, home: Path, work: list[Path] | None = None) -> str:
     link = Path("/usr/local/bin/badamoa")
     steps = [
         "sleep 2",  # the node answers the Hub first
@@ -53,6 +56,7 @@ def _linux(root: Path, home: Path) -> str:
         f"rm -f /etc/systemd/system/{UNIT}.service",
         "systemctl daemon-reload",
         f"rm -rf {shlex.quote(str(root))} {shlex.quote(str(home))}",
+        *(f"rm -rf {shlex.quote(str(folder))}" for folder in work or []),
         f"[ -L {link} ] && rm -f {link}",
         f"rmdir {shlex.quote(str(home.parent))} 2>/dev/null",
         "true",
@@ -64,10 +68,10 @@ def _linux(root: Path, home: Path) -> str:
         )
     else:
         subprocess.Popen(["/bin/sh", "-c", script], start_new_session=True)
-    return f"서비스 {UNIT}, {root}, {home}"
+    return ", ".join([f"서비스 {UNIT}", str(root), str(home), *map(str, work or [])])
 
 
-def _windows(root: Path, home: Path) -> str:
+def _windows(root: Path, home: Path, work: list[Path] | None = None) -> str:
     folder = Path(tempfile.mkdtemp(prefix="badamoa-remove-"))
     lines = [
         "@echo off",
@@ -76,6 +80,7 @@ def _windows(root: Path, home: Path) -> str:
         f'schtasks /Delete /F /TN "{TASK}" >nul 2>&1',
         f'rmdir /s /q "{root}"',
         f'rmdir /s /q "{home}"',
+        *(f'rmdir /s /q "{folder}"' for folder in work or []),
         f'rmdir "{home.parent}" >nul 2>&1',
         "exit /b 0",
     ]
@@ -83,4 +88,4 @@ def _windows(root: Path, home: Path) -> str:
     script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\r\n")
     if not updater.start_outside(script):
         raise RuntimeError("정리 도우미를 시작하지 못했습니다.")
-    return f'예약 작업 "{TASK}", {root}, {home}'
+    return ", ".join([f'예약 작업 "{TASK}"', str(root), str(home), *map(str, work or [])])

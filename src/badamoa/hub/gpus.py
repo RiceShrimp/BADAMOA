@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.jobs import BUILTIN_JOB_TYPES
 
-from . import resources, services
+from . import disk_space, resources, services
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import GpuSpan, Job, Node
@@ -144,6 +144,11 @@ def board(db: Session, settings: HubSettings) -> dict[str, Any]:
                 # Images taken from other nodes: where they are kept (as set, and in use), and this node's data port.
                 "cache_dir": node.cache_dir or "",
                 "cache": metrics.get("cache") or None,
+                # environments, work folders and fetched files: where (as set, and in use)
+                "work_dir": node.work_dir or "",
+                "work": metrics.get("work") or None,
+                # disks BADAMOA writes to there that are nearly full (an away node's numbers are old)
+                "disk_alerts": disk_space.alerts(metrics, node.storage) if status == "online" else [],
                 "serve": metrics.get("serve") or None,
                 # the account the node runs as: one without root (installed without sudo) is marked on the board
                 "os": node.os,

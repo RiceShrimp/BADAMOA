@@ -79,6 +79,9 @@ class Node(Base):
     reserved_gpus: Mapped[list[int]] = mapped_column(JSON, default=list)
     # Where images copied from other nodes are kept ("" = the node picks the disk with the most room).
     cache_dir: Mapped[str] = mapped_column(String(512), default="")
+    # Where environments, work folders of jobs and fetched weights and code go ("" = the node picks the disk
+    # with the most room, like ``cache_dir``).
+    work_dir: Mapped[str] = mapped_column(String(512), default="")
     # The last check of its received copies against the Hub's records (``node_data``): when, what it
     # found that no version needs, what it removed, or why it failed.
     data_check: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

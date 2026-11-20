@@ -26,7 +26,7 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home, is_elevated
-from badamoa.node import browse, cache, containers, dataserver, envs, remover, storage, updater, workdirs
+from badamoa.node import browse, cache, containers, dataserver, envs, places, remover, storage, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
 
@@ -35,6 +35,8 @@ CLAIM_WAIT_S = 20.0
 LOG_FLUSH_INTERVAL_S = 1.0
 LOG_BATCH_MAX = 500
 CACHE_USAGE_EVERY_S = 1800.0  # how often what BADAMOA keeps here is measured again (and after jobs that change it)
+WORK_CHECK_EVERY_S = 3600.0  # how often the work folder is checked again (an admin's folder may become writable)
+MOVE_RETRY_S = 3600.0  # after a move into the work folder that left something behind
 
 
 def data_port() -> int:
@@ -180,6 +182,15 @@ class NodeAgent:
         # Images other nodes take from here, and where images taken from other nodes are kept.
         self._data = dataserver.DataServer(config.hub_url, config.node_token, config.node_id, data_port())
         self._cache_setting = ""  # the admin's choice, from the Hub ("" = the node picks)
+        # Where environments, work folders and fetched files go (``places``): resolved once the Hub said
+        # whether an admin set a folder
+        self._work_setting = ""
+        self._work: Path | None = None
+        self._work_error = ""  # the admin's folder could not be used: why
+        self._work_checked = float("-inf")
+        self._moving = False  # moving what was kept elsewhere into the work folder: no new jobs meanwhile
+        self._move_tried = float("-inf")
+        self._docker_root: dict[str, Any] | None = None  # Docker's data folder (measured with the storage report)
         self._cache_usage: tuple[int, int] | None = None
         self._storage_report: dict[str, Any] | None = None  # measured, not yet delivered to the Hub
         self._recount = threading.Event()
@@ -199,6 +210,64 @@ class NodeAgent:
 
     def cache_root(self) -> Path:
         return cache.root(self.home, self._cache_setting)
+
+    def work_root(self) -> Path:
+        """The work folder (``places``): environments, work folders of jobs, fetched weights and code."""
+        return self._work or places.of(self.home).work
+
+    def _resolve_work(self, setting: str) -> None:
+        """The admin's folder (the Hub's ``work_dir``), else the node's own pick; things kept elsewhere move later."""
+        work, error = places.root(self.home, setting)
+        changed = self._work is None or not places.same(work, self._work)
+        self._work, self._work_setting, self._work_error = work, setting, error
+        self._work_checked = time.monotonic()
+        places.use(self.home, work)
+        if error:
+            log.warning(error)
+        if changed:
+            log.info("작업 폴더(가상환경 · 작업 폴더 · 받아 둔 가중치와 코드): %s", work)
+            self._move_tried = float("-inf")
+            self._envs_changed.set()  # environments are looked up there now: tell the Hub again
+            self._recount.set()
+
+    def _places(self, disks: list[dict[str, Any]], images: Path, work: Path) -> list[dict[str, Any]]:
+        """The disks BADAMOA writes to here and their room: the Hub warns when one is nearly full."""
+        found = [
+            {"kind": "home", **places.disk_of(self.home, disks)},
+            {"kind": "work", **places.disk_of(work, disks)},
+            {"kind": "images", **places.disk_of(images, disks)},
+        ]
+        docker = self._docker_root
+        if docker and docker.get("desktop"):  # inside Docker Desktop's virtual disk: not one of this machine's
+            found.append({"kind": "docker", "path": docker["path"], "desktop": True})
+        elif docker:
+            found.append({"kind": "docker", **places.disk_of(Path(docker["path"]), disks)})
+        return found
+
+    def _maybe_move(self) -> None:
+        """At a moment no job runs, move what is kept outside the work folder (work folders, weights, code,
+        template caches) into it. Environments stay where they are and are used there."""
+        if self._moving or time.monotonic() - self._move_tried < MOVE_RETRY_S:
+            return
+        where = places.Places(self.home, self.work_root())
+        if not places.pending(where):
+            return
+        with self._lock:
+            if self._running or self._updating:
+                return
+            self._moving = True
+        self._move_tried = time.monotonic()
+        threading.Thread(target=self._move, args=(where,), name="move", daemon=True).start()
+
+    def _move(self, where: places.Places) -> None:
+        try:
+            log.info("작업 폴더 밖에 둔 것을 %s(으)로 옮깁니다. 그동안 새 작업은 기다립니다.", where.work)
+            places.move_old(where, log.info)
+        except Exception:  # noqa: BLE001 - what stayed behind is still found where it is
+            log.exception("작업 폴더로 옮기지 못했습니다")
+        finally:
+            self._moving = False
+            self._recount.set()
 
     def run_forever(self) -> None:
         log.info("node %s → %s", self.config.node_id, self.config.hub_url)
@@ -236,7 +305,7 @@ class NodeAgent:
 
     def _slots_free(self) -> int:
         with self._lock:
-            return 0 if self._updating else self.max_jobs - len(self._running)
+            return 0 if self._updating or self._moving else self.max_jobs - len(self._running)
 
     # ---- heartbeat -------------------------------------------------------------
 
@@ -250,9 +319,11 @@ class NodeAgent:
                 with self._lock:
                     running = list(self._running)
                 root = self.cache_root()
+                work = self.work_root()
                 usage = self._cache_usage
+                sample = self._sampler.sample()
                 metrics = {
-                    **self._sampler.sample(),
+                    **sample,
                     "serve": self._data.info(),
                     "cache": {
                         "dir": str(root),
@@ -261,6 +332,14 @@ class NodeAgent:
                         "bytes": usage[0] if usage else None,
                         "files": usage[1] if usage else None,
                     },
+                    "work": {
+                        "dir": str(work),
+                        "auto": not self._work_setting,
+                        "error": self._work_error,
+                        "free_gb": cache.free_gb(work),
+                        "moving": self._moving,
+                    },
+                    "places": self._places(sample.get("disks") or [], root, work),
                 }
                 body: dict[str, Any] = {"agent_version": __version__, "metrics": metrics, "running_job_ids": running}
                 report = self._storage_report
@@ -285,6 +364,11 @@ class NodeAgent:
                     if setting != self._cache_setting:
                         self._cache_setting = setting
                         self._recount.set()
+                    setting = str(reply.get("work_dir") or "")
+                    stale = time.monotonic() - self._work_checked > WORK_CHECK_EVERY_S
+                    if self._work is None or setting != self._work_setting or stale:
+                        self._resolve_work(setting)
+                    self._maybe_move()  # before the first job is taken
                     self._first_beat.set()
                     self._maybe_sweep(int(reply.get("workdir_days") or 0))
                     self._maybe_update(str(reply.get("hub_version") or ""))
@@ -294,7 +378,12 @@ class NodeAgent:
 
     def _count_cache(self) -> None:
         """Now and then (and after a job that adds or removes something), what BADAMOA keeps here and how much."""
+        self._first_beat.wait(15)  # the work folder is known then
         while not self.stop_event.is_set():
+            try:
+                self._docker_root = containers.storage_root()
+            except Exception:  # noqa: BLE001 - only the Docker disk warning goes without it
+                self._docker_root = None
             try:
                 report = storage.measure(self.home, self.cache_root())
                 images = report["kinds"]["images"]
@@ -459,12 +548,19 @@ class NodeAgent:
                 with buffer_lock:  # keep the lines and retry on the next flush
                     buffer[:0] = batch
 
+        if self._moving:
+            emit("작업 폴더로 옮기는 중입니다. 끝나면 시작합니다.", "system")
+        while self._moving and not cancel.is_set() and not self.stop_event.is_set():
+            flush()
+            time.sleep(1)
         try:
             with tempfile.TemporaryDirectory(prefix="badamoa-job-") as tmp:
                 params_path = Path(tmp) / "params.json"
                 result_path = Path(tmp) / "result.json"
                 params_path.write_text(json.dumps(job.get("params") or {}), encoding="utf-8")
                 env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+                # environments, the job's work folder, fetched weights and code: the node's work folder
+                env[places.ENV] = str(self.work_root())
                 if job.get("gpu_indices"):
                     # The job sees only the GPUs the Hub reserved for it.
                     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in job["gpu_indices"])
@@ -549,7 +645,8 @@ class NodeAgent:
         """
         from badamoa.node import trainer
 
-        base, job_dir = f"/api/agent/jobs/{job_id}/train", self.home / "runs" / job_id
+        base = f"/api/agent/jobs/{job_id}/train"
+        job_dir = places.Places(self.home, self.work_root()).find("runs", job_id)
         try:
             if trainer.upload_checkpoint(self._client, base, job_dir):
                 emit("마지막 체크포인트를 Hub에 보관했습니다. 이어서 실행할 수 있습니다.", "system")

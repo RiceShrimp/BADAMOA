@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 from . import cache as image_cache
-from . import exporter, trainer
+from . import exporter, places, trainer
 
 
 def _fetch(client: httpx.Client, url: str, target: Path, params: dict[str, Any] | None = None) -> Path:
@@ -42,7 +42,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     if not (hub and token and job_id and home):
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     node_home = Path(home).resolve()
-    work = node_home / "runs" / job_id
+    where = places.of(node_home)
+    work = where.runs / job_id
     base = f"/api/agent/jobs/{job_id}/model"
     template, action = params["template"], params["action"]
     shutil.rmtree(work, ignore_errors=True)
@@ -50,11 +51,10 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
 
     with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:
         weights_info = params["weights"]
-        cached = node_home / "cache" / "models" / f"{weights_info['blob']}{Path(weights_info['file_name']).suffix}"
+        cached = where.find("cache", "models", f"{weights_info['blob']}{Path(weights_info['file_name']).suffix}")
         weights = _fetch(client, f"{base}/blob/weights", cached)
-        cache = node_home / "cache" / "template-data" / template["name"]
+        cache = where.find("cache", "template-data", template["name"])
         cache.mkdir(parents=True, exist_ok=True)
-        (node_home / "cache" / "ultralytics").mkdir(parents=True, exist_ok=True)
         config: dict[str, Any] = {
             "action": action,
             "weights": str(weights),
@@ -151,7 +151,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 config_path=work / "config.json",
                 code=code,
                 work=work,
-                mounts=[*mounts, (node_home / "cache" / "models", True)],
+                mounts=[*mounts, (weights.parent, True)],
             )
             try:
                 proc = subprocess.Popen(

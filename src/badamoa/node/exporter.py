@@ -487,7 +487,7 @@ def run_download(params: dict[str, Any]) -> dict[str, Any]:
     """The ``data.export`` job: the release as a zip, uploaded to the Hub for downloading."""
     import httpx
 
-    from badamoa.node import trainer
+    from badamoa.node import places, trainer
 
     hub, token, job_id, home = (
         os.environ.get(k) for k in ("BADAMOA_HUB_URL", "BADAMOA_NODE_TOKEN", "BADAMOA_JOB_ID", "BADAMOA_NODE_HOME")
@@ -495,7 +495,7 @@ def run_download(params: dict[str, Any]) -> dict[str, Any]:
     if not (hub and token and job_id and home):
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     fmt, images, task = params.get("format", "yolo"), bool(params.get("images", True)), params.get("task", "detect")
-    work = Path(home).resolve() / "runs" / job_id
+    work = places.of(Path(home).resolve()).runs / job_id
     shutil.rmtree(work, ignore_errors=True)
     base = f"/api/agent/jobs/{job_id}/export"
     with httpx.Client(base_url=hub, headers={"Authorization": f"Bearer {token}"}, timeout=120) as client:

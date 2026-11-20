@@ -35,7 +35,7 @@ from badamoa import templates as shipped
 from badamoa.core import templates as template_format
 
 from . import cache as image_cache
-from . import containers, envs, exporter, sync
+from . import containers, envs, exporter, places, sync
 
 EVENT_PREFIX = "@@badamoa "
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # colours and cursor moves; the job log is plain text
@@ -191,9 +191,12 @@ def template_dir(client: httpx.Client, base: str, node_home: Path, template: dic
             raise RuntimeError(f"이 노드의 BADAMOA에는 내장 템플릿 {template['name']}이 없습니다. 노드를 업데이트하세요.")
         return folder
     digest = template["sha256"]
-    folder = node_home / "cache" / "templates" / digest
-    if (folder / template_format.MANIFEST).is_file():
-        return folder
+    where = places.of(node_home)
+    found = where.find("cache", "templates", digest)  # fetched before, maybe into the node's home
+    if (found / template_format.MANIFEST).is_file():
+        return found
+    folder = where.templates / digest
+    folder.parent.mkdir(parents=True, exist_ok=True)
     resp = client.get(f"{base}/template", timeout=300)
     if resp.status_code != 200:
         raise RuntimeError(f"템플릿을 받지 못했습니다 ({resp.status_code}): {resp.text[:300]}")
@@ -274,7 +277,9 @@ def launch(
     credentials), and how to turn a path the code reports into a path on this node.
     """
     plain = {"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "NO_COLOR": "1"}
-    ultralytics = home / "cache" / "ultralytics"  # Ultralytics keeps its settings here, not in the user's own
+    where = places.of(home)
+    ultralytics = where.ultralytics  # Ultralytics keeps its settings here, not in the user's own
+    ultralytics.mkdir(parents=True, exist_ok=True)
     if spec.get("kind") != "docker":
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         env = envs.code_env(
@@ -292,7 +297,7 @@ def launch(
 
         return command_for(entrypoint, python or Path(sys.executable), config_path), env, here
 
-    folders = [work, home, *(folder for folder, _ in mounts)]
+    folders = [work, *where.roots(), *(folder for folder, _ in mounts)]
     config_path.write_text(json.dumps(containers.translate(config, folders), ensure_ascii=False), encoding="utf-8")
     if config.get("data"):
         containers.rewrite_data_yaml(Path(str(config["data"])))
@@ -330,7 +335,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     if not (hub and token and job_id and home):
         raise RuntimeError("이 작업은 Node Agent가 실행해야 합니다.")
     node_home = Path(home).resolve()
-    work = node_home / "runs" / job_id
+    where = places.of(node_home)
+    work = where.runs / job_id
     base = f"/api/agent/jobs/{job_id}/train"
     template = params["template"]
 
@@ -404,9 +410,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         post("/report", {"event": "info", "data": {**record, "contract": template_format.CONTRACT}})
 
         # 4. train
-        cache = node_home / "cache" / "template-data" / template["name"]
+        cache = where.find("cache", "template-data", template["name"])
         cache.mkdir(parents=True, exist_ok=True)
-        (node_home / "cache" / "ultralytics").mkdir(parents=True, exist_ok=True)
         config = {
             "data": summary["data_yaml"],
             "data_dir": str(work / "data"),
@@ -420,7 +425,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             config["task"] = template["task"]
         if params.get("init_weights"):  # continue from a registered model instead of pretrained weights
             start = params["init_weights"]
-            cached = node_home / "cache" / "models" / f"{start['blob']}{Path(start['file_name']).suffix}"
+            cached = where.find("cache", "models", f"{start['blob']}{Path(start['file_name']).suffix}")
             if not cached.is_file():
                 resp = client.get(f"{base}/init-weights", timeout=3600)
                 if resp.status_code != 200:
@@ -430,7 +435,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             config["init_weights"] = str(cached)
             print(f"등록된 모델의 가중치에서 시작합니다: {cached.name}")
         resume = params.get("resume") or {}
-        previous = node_home / "runs" / str(resume.get("job_id") or "-")
+        previous = where.find("runs", str(resume.get("job_id") or "-"))
         if resume:
             local = last_checkpoint(previous)
             if local is not None:  # the interrupted run was on this server and its folder is still here
@@ -448,7 +453,8 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         config_path = work / "config.json"
         # In a container the images' own folders are mounted too (the export links to them), read-only.
         mounts = [(Path(root), True) for root in locations.values() if root] if os.name != "nt" else []
-        mounts += [(node_home / "cache" / "models", True), (previous, True)]
+        weights = Path(str(config["init_weights"])).parent if config.get("init_weights") else where.models
+        mounts += [(weights, True), (previous, True)]
         # The node's environment without its credentials: the template's code never acts on the Hub itself.
         command, env, where = launch(
             job_id=job_id,

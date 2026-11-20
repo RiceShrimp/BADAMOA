@@ -20,6 +20,13 @@ Start-Sleep -Seconds 2
 Get-NetFirewallRule -DisplayName "BADAMOA node data" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 
 Write-Host "==> removing the program and its settings"
+# the node's work folders BADAMOA made on other disks (named badamoa-work; an admin's other folder stays)
+$Used = Join-Path $Home_ "work-dirs.json"
+if (Test-Path $Used) {
+    foreach ($dir in (Get-Content $Used -Raw | ConvertFrom-Json)) {
+        if ((Split-Path $dir -Leaf) -eq "badamoa-work" -and (Test-Path $dir)) { Remove-Item $dir -Recurse -Force }
+    }
+}
 foreach ($dir in @($Root, $Home_)) {
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { CrosshairProvider, LineChart, type Series } from "./Chart";
+import { DiskAlertBox } from "./DiskAlerts";
 import { GpuTimeline } from "./GpuTimeline";
 import { NodeCopies } from "./NodeCopies";
 import { NodeStorage } from "./NodeStorage";
@@ -185,6 +186,8 @@ export function NodeDetail({ nodeId, isAdmin }: { nodeId: string; isAdmin: boole
             </span>
           ))}
       </div>
+
+      <DiskAlertBox alerts={node.disk_alerts} dockerTarget={node.docker_target} isAdmin={isAdmin} />
 
       <CrosshairProvider>
       <GpuTimeline nodeId={nodeId} refreshMs={chosen} reloadKey={timelineTick} />

@@ -44,7 +44,7 @@ def _home(tmp_path):
 
 @pytest.fixture
 def no_uv_no_docker(monkeypatch):
-    monkeypatch.setattr(storage, "uv_cache_dir", lambda: None)
+    monkeypatch.setattr(storage, "uv_cache_dir", lambda *_: None)
     monkeypatch.setattr(containers, "docker", lambda: None)
 
 

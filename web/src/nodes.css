@@ -622,3 +622,33 @@ details.node-more > summary {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* disks BADAMOA writes to that are nearly full (node page) */
+.disk-alerts {
+  margin-bottom: 14px;
+  border-left: 3px solid var(--warn);
+}
+.disk-alerts.full {
+  border-left-color: var(--bad);
+}
+.disk-alerts h3 {
+  margin: 0 0 8px;
+}
+.disk-alert + .disk-alert {
+  margin-top: 10px;
+}
+.disk-alert ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.disk-alert .mono {
+  word-break: break-all;
+}
+.docker-move {
+  margin-top: 6px;
+}
+.docker-move > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+}

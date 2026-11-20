@@ -18,13 +18,16 @@ ADMIN = {"username": "admin", "password": "badamoa-test-pw"}
 @pytest.fixture(autouse=True)
 def _quiet_nodes(monkeypatch):
     """Node agents in tests: their image port on loopback, any free port (no firewall prompt, no clashes),
-    and images received kept in the node's own folder, never on a real disk the machine has."""
-    from badamoa.node import cache
+    and images received and the work folder kept in the node's own folder, never on a real disk the machine has."""
+    from badamoa.node import cache, places
 
     monkeypatch.setenv("BADAMOA_NODE_DATA_PORT", "0")
     monkeypatch.setenv("BADAMOA_NODE_DATA_HOST", "127.0.0.1")
     monkeypatch.setenv("BADAMOA_DOCKER_REGISTRY", "off")  # a test Hub never makes or adopts a registry container
+    monkeypatch.delenv(places.ENV, raising=False)
     monkeypatch.setattr(cache, "choose", lambda home: home / "cache")
+    monkeypatch.setattr(places, "choose", lambda home: home)
+    monkeypatch.setattr(places, "_chosen", {})
 
 
 @pytest.fixture

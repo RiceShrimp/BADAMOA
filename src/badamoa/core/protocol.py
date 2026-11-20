@@ -56,6 +56,8 @@ class HeartbeatResponse(BaseModel):
     workdir_days: int = 0
     # Where to keep images copied from other nodes, as an admin set it ("" = the node chooses).
     cache_dir: str = ""
+    # Where to keep environments, work folders and fetched files, as an admin set it ("" = the node chooses).
+    work_dir: str = ""
 
 
 class ClaimRequest(BaseModel):

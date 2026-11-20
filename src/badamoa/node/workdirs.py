@@ -1,9 +1,10 @@
 """Work folders jobs leave on a node, and removing the old ones.
 
-Every job works in ``<node home>/runs/<job id>``. A finished run removes its folder (everything it
-produced is on the Hub by then); a failed or stopped one leaves it, so "continue" can pick up the
-local checkpoint. The Hub keeps the latest checkpoint as well (0.13.0), so a folder nobody came
-back to for ``days`` days only takes disk space: the node removes it, never while a job runs.
+Every job works in ``<work folder>/runs/<job id>`` (``places``; before 0.74.0 the node's home). A
+finished run removes its folder (everything it produced is on the Hub by then); a failed or stopped
+one leaves it, so "continue" can pick up the local checkpoint. The Hub keeps the latest checkpoint as
+well (0.13.0), so a folder nobody came back to for ``days`` days only takes disk space: the node
+removes it, never while a job runs.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import os
 import shutil
 import time
 from pathlib import Path
+
+from badamoa.node import places
 
 log = logging.getLogger("badamoa.node.workdirs")
 
@@ -46,12 +49,12 @@ def _size(folder: Path) -> int:
 
 def sweep(home: Path, days: int, running: set[str], now: float | None = None) -> tuple[int, int]:
     """Remove work folders untouched for ``days`` days that no running job owns. Returns (folders, bytes)."""
-    root = Path(home) / "runs"
-    if days <= 0 or not root.is_dir():
+    roots = places.of(Path(home)).everywhere("runs")  # the work folder's, and one the node used before
+    if days <= 0 or not roots:
         return 0, 0
     cutoff = (now if now is not None else time.time()) - days * 86400
     removed = freed = 0
-    for folder in root.iterdir():
+    for folder in [f for root in roots for f in root.iterdir()]:
         if not folder.is_dir() or folder.name in running:
             continue
         try:

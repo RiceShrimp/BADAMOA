@@ -26,7 +26,7 @@ from badamoa.core.protocol import (
     RegisterRequest,
 )
 
-from . import resources
+from . import disk_space, resources
 from .config import HubSettings
 from .db import iso, utcnow
 from .models import ApiToken, AuditLog, Job, JobLog, JoinToken, Node, User
@@ -296,10 +296,11 @@ def serialize_node(
     node: Node, settings: HubSettings, assigned: dict[int, str] | None = None
 ) -> dict[str, Any]:
     info = node.info or {}
+    status = node_status(node, settings)
     return {
         "id": node.id,
         "name": node.name,
-        "status": node_status(node, settings),
+        "status": status,
         "os": node.os,
         "roles": node.roles,
         "labels": node.labels,
@@ -325,8 +326,21 @@ def serialize_node(
         "metrics": node.metrics or {},
         "reserved_gpus": node.reserved_gpus or [],
         "cache_dir": node.cache_dir or "",  # as an admin set it; metrics.cache has the folder in use
+        "work_dir": node.work_dir or "",  # as an admin set it; metrics.work has the folder in use
+        # disks BADAMOA writes to there that are nearly full (none while the node is away: its numbers are old)
+        "disk_alerts": disk_space.alerts(node.metrics or {}, node.storage) if status == "online" else [],
+        "docker_target": _docker_target(node),
         "gpu_states": resources.gpu_states(node, settings, assigned),
     }
+
+
+def _docker_target(node: Node) -> str:
+    """Where to suggest moving Docker's data-root, when Docker's disk is nearly full."""
+    metrics = node.metrics or {}
+    docker = next((p for p in disk_space.places(metrics) if p.get("kind") == "docker"), None)
+    if docker is None or not disk_space.level(docker.get("free_gb"), docker.get("total_gb")):
+        return ""
+    return disk_space.docker_target(metrics, str(docker.get("path") or ""))
 
 
 def list_nodes(db: Session, settings: HubSettings) -> list[dict[str, Any]]:
@@ -357,16 +371,14 @@ def update_node(
     labels: dict[str, Any] | None = None,
     reserved_gpus: list[int] | None = None,
     cache_dir: str | None = None,
+    work_dir: str | None = None,
 ) -> Node:
     require_admin(user)
     node = get_node(db, node_id)
     if cache_dir is not None:
-        cache_dir = cache_dir.strip()
-        absolute = cache_dir.startswith(("/", "\\")) or (len(cache_dir) > 2 and cache_dir[1:3] in (":\\", ":/"))
-        if cache_dir and not absolute:
-            example = "/data/badamoa-cache, D:\\badamoa-cache"
-            raise ServiceError(400, f"받은 이미지 보관 위치는 절대 경로로 적으세요 (예: {example}).")
-        node.cache_dir = cache_dir[:512]
+        node.cache_dir = _folder(cache_dir, "받은 이미지 보관 위치", "badamoa-cache")
+    if work_dir is not None:
+        node.work_dir = _folder(work_dir, "작업 폴더 위치", "badamoa-work")
     if reserved_gpus is not None:
         known = {g.get("index") for g in (node.info or {}).get("gpus") or []}
         node.reserved_gpus = sorted({int(i) for i in reserved_gpus if int(i) in known})
@@ -380,9 +392,18 @@ def update_node(
         node.labels = labels
     audit(
         db, user.id, "api", "node.update", node.id,
-        name=name, roles=roles, enabled=enabled, reserved=reserved_gpus, cache_dir=cache_dir,
+        name=name, roles=roles, enabled=enabled, reserved=reserved_gpus, cache_dir=cache_dir, work_dir=work_dir,
     )  # fmt: skip
     return node
+
+
+def _folder(text: str, what: str, example: str) -> str:
+    """A folder on the node as an admin typed it: absolute, or "" for the node's own pick."""
+    text = text.strip()
+    absolute = text.startswith(("/", "\\")) or (len(text) > 2 and text[1:3] in (":\\", ":/"))
+    if text and not absolute:
+        raise ServiceError(400, f"{what}는 절대 경로로 적으세요 (예: /data/{example}, D:\\{example}).")
+    return text[:512]
 
 
 def delete_node(db: Session, user: User, node_id: str) -> None:

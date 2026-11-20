@@ -26,6 +26,7 @@ CLEAN_SINCE = (0, 50, 0)
 ACTIVE = ("queued", "running")
 KINDS = ("images", "envs", "containers", "models", "templates", "template_data", "runs", "uv")
 REMOVABLE = ("envs", "containers", "models", "templates", "template_data", "runs", "uv")
+WORK_KINDS = ("envs", "models", "templates", "template_data", "runs")  # in the node's work folder
 STALE_AFTER = timedelta(hours=2)  # the node measures at least every 30 minutes while it is on
 
 
@@ -246,6 +247,13 @@ def view(db: Session, node: Node) -> dict[str, Any]:
         entry["mount"] = "" if entry.get("desktop") else (_mount(report, entry["path"]) or _mount(report, home))
         if kind == "images":  # picked by the node (the disk with the most room) or set by an admin
             entry["auto"] = not (node.cache_dir or "").strip()
+        # in the node's work folder (0.74.0): picked like the images' folder, or set by an admin
+        if report.get("work") and (kind in WORK_KINDS or (kind == "uv" and data.get("work"))):
+            entry["work"] = True
+            entry["auto"] = not (node.work_dir or "").strip()
+        for item in entry.get("items") or []:  # still where the node kept it before: its own disk
+            if item.get("path"):
+                item["mount"] = _mount(report, item["path"])
         kinds.append(entry)
     measured = report.get("measured_at")
     stale = False
@@ -261,6 +269,9 @@ def view(db: Session, node: Node) -> dict[str, Any]:
         "stale": stale,
         "home": home,
         "home_mount": _mount(report, home),
+        "work": str(report.get("work") or ""),
+        "work_mount": _mount(report, str(report.get("work") or "")),
+        "work_free": _free(report, str(report.get("work") or "")),
         "free": _free(report, home),
         "bytes": sum(k["bytes"] for k in kinds),
         "kinds": kinds,

@@ -30,6 +30,7 @@ _ADDED_COLUMNS = [
     ("users", "orders", "JSON DEFAULT '{}'"),
     ("datasets", "task", "VARCHAR(32) DEFAULT ''"),
     ("nodes", "cache_dir", "VARCHAR(512) DEFAULT ''"),
+    ("nodes", "work_dir", "VARCHAR(512) DEFAULT ''"),
     ("label_revisions", "parent_id", "INTEGER"),
     ("label_revisions", "created_by", "VARCHAR(32)"),
     ("releases", "digest", "VARCHAR(64) DEFAULT ''"),
