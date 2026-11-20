@@ -47,6 +47,9 @@ def data_port() -> int:
         return dataserver.DEFAULT_PORT
 
 
+# Jobs that run alone on a node: nothing else starts while they run (they refuse when something else runs).
+EXCLUSIVE = ("node.docker_move",)
+
 @dataclass
 class NodeConfig:
     hub_url: str
@@ -189,6 +192,7 @@ class NodeAgent:
         self._work_error = ""  # the admin's folder could not be used: why
         self._work_checked = float("-inf")
         self._moving = False  # moving what was kept elsewhere into the work folder: no new jobs meanwhile
+        self._exclusive = ""  # a job that must run alone (moving Docker's images): no new jobs meanwhile
         self._move_tried = float("-inf")
         self._docker_root: dict[str, Any] | None = None  # Docker's data folder (measured with the storage report)
         self._cache_usage: tuple[int, int] | None = None
@@ -305,7 +309,9 @@ class NodeAgent:
 
     def _slots_free(self) -> int:
         with self._lock:
-            return 0 if self._updating or self._moving else self.max_jobs - len(self._running)
+            if self._updating or self._moving or self._exclusive:
+                return 0
+            return self.max_jobs - len(self._running)
 
     # ---- heartbeat -------------------------------------------------------------
 
@@ -521,6 +527,8 @@ class NodeAgent:
         cancel = threading.Event()
         with self._lock:
             self._running[job["id"]] = cancel
+            if job["type"] in EXCLUSIVE:
+                self._exclusive = job["id"]
         threading.Thread(target=self._run_job, args=(job, cancel), name=f"job-{job['id'][:8]}", daemon=True).start()
 
     def _run_job(self, job: dict[str, Any], cancel: threading.Event) -> None:
@@ -572,7 +580,7 @@ class NodeAgent:
                     env["BADAMOA_JOB_ID"] = job_id
                     env["BADAMOA_NODE_HOME"] = str(self.home)
                     env["BADAMOA_CACHE_DIR"] = str(self.cache_root())
-                if job["type"] == "node.clean":  # removes what BADAMOA keeps here, never what runs now
+                if job["type"] in ("node.clean", *EXCLUSIVE):  # never touches what runs now, or refuses
                     env["BADAMOA_NODE_HOME"] = str(self.home)
                     with self._lock:
                         env["BADAMOA_RUNNING"] = ",".join(j for j in self._running if j != job_id)
@@ -632,8 +640,12 @@ class NodeAgent:
                 self._envs_changed.set()  # tell the Hub which environments are here now
             if changes or job["type"] in ("data.sync", "data.check"):
                 self._recount.set()  # measure again what is kept here
+            if job["type"] in EXCLUSIVE:
+                self._recount.set()  # Docker's folder (and the disk warning) as it is now
             with self._lock:
                 self._running.pop(job_id, None)
+                if self._exclusive == job_id:
+                    self._exclusive = ""
             log.info("job %s %s", job_id, status)
 
     def _keep_checkpoint(self, job_id: str, emit: Any) -> None:

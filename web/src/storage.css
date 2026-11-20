@@ -187,3 +187,11 @@
   color: var(--muted);
   font-size: 11.5px;
 }
+
+/* the reason a disabled 비우기 shows on hover (a disabled button itself takes no hover) */
+.storage-kind > .btn-wrap {
+  justify-self: end;
+}
+.btn-wrap button:disabled {
+  pointer-events: none;
+}

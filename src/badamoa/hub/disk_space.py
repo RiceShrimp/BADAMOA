@@ -96,6 +96,36 @@ def alerts(metrics: dict[str, Any], storage: dict[str, Any] | None = None) -> li
     return sorted(found, key=lambda e: (e["level"] != "full", e.get("free_gb") or 0))
 
 
+DOCKER_MOVE_SINCE = (0, 75, 0)  # a node moves Docker's images itself (``node.docker_move``) from this BADAMOA on
+ACTIVE = ("queued", "running")
+
+
+def docker_move_state(node: Any, busy: int = 0) -> dict[str, Any]:
+    """Whether BADAMOA can move this node's Docker images for an admin, and if not why; where they are and where
+    they could go. ``busy``: BADAMOA jobs queued or running on the node."""
+    metrics = node.metrics or {}
+    docker = next((p for p in places(metrics) if p.get("kind") == "docker"), None)
+    path = str((docker or {}).get("path") or "")
+    found = {"path": path, "suggest": docker_target(metrics, path) if path else "", "possible": False, "why": ""}
+    version = tuple(int(n) for n in (node.agent_version or "0").split(".")[:3] if n.isdigit())
+    account = (node.info or {}).get("account") or {}
+    if docker is None:
+        found["why"] = "이 서버의 Docker 이미지 위치를 아직 모릅니다(Docker가 없거나 노드가 알려 오지 않음)."
+    elif docker.get("desktop"):
+        found["why"] = "Docker Desktop은 그 앱의 설정(Resources → Disk image location)에서 옮깁니다."
+    elif node.os != "linux" or not account.get("admin"):
+        found["why"] = (
+            "sudo로 설치한 Linux 노드만 Docker 설정을 바꿀 수 있습니다. 노드 추가의 sudo 명령으로 다시 설치하면 됩니다."
+        )
+    elif version < DOCKER_MOVE_SINCE:
+        found["why"] = f"노드를 {'.'.join(str(n) for n in DOCKER_MOVE_SINCE)} 이상으로 업데이트해야 합니다."
+    elif busy:
+        found["why"] = f"이 서버에 BADAMOA 작업 {busy}개가 있습니다. 끝난 뒤에 옮기세요."
+    else:
+        found["possible"] = True
+    return found
+
+
 def docker_target(metrics: dict[str, Any], current: str) -> str:
     """A folder to suggest for Docker's data-root: ``docker`` on the disk with the most room (not the current one)."""
     disks = [d for d in metrics.get("disks") or [] if (d.get("total_gb") or 0) >= 2]

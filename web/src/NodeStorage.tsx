@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "./api";
 import { bytesLabel } from "./catalogTypes";
 import "./storage.css";
+import { DockerMoveDialog } from "./DiskAlerts";
 import { Badge, timeAgo, usePolling } from "./ui";
 
 /** One thing BADAMOA keeps on a server: an environment, an image, a weights file, a folder. */
@@ -168,10 +169,23 @@ function itemPath(k: StorageKind, item: StorageItem): string {
   return `${k.path.replace(/[\\/]$/, "")}${sep}${item.id}`;
 }
 
+/** Why "비우기" is off, said on hover: what uses the kind now, or what has to happen first. */
+function whyNotEmpty(k: StorageKind, notUsed: number, canClean: boolean, cleaning: boolean): string | undefined {
+  if (!canClean) return "이 서버의 BADAMOA가 오래되어 비울 수 없습니다. 노드를 업데이트하세요";
+  if (cleaning) return "지우는 중입니다. 끝난 뒤에 다시 하세요";
+  if (k.in_use || (k.items && k.items.length > 0 && notUsed === 0)) {
+    const what = k.kind === "containers" ? "Docker 이미지" : KIND[k.kind].name;
+    return `작업이 쓰는 중인 ${what}라 지금은 비울 수 없습니다. 쓰는 작업이 끝나면 비울 수 있습니다`;
+  }
+  if (k.items && notUsed < k.items.length) return "작업이 쓰는 것은 남기고 나머지만 비웁니다";
+  return undefined;
+}
+
 /** What BADAMOA keeps on a server, by kind, with sizes against the disk's free space; admins remove items. */
 export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: boolean }) {
   const { data, refresh } = usePolling(() => api<StorageInfo>(`/nodes/${nodeId}/storage`), 15000, [nodeId]);
   const [open, setOpen] = useState<Kind | null>(null);
+  const [dockerMove, setDockerMove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!data) return null;
@@ -309,15 +323,17 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                         버전 보기
                       </button>
                     ) : isAdmin && k.removable ? (
+                      // a disabled button shows no tooltip: the reason sits on what holds it
+                      <span className="btn-wrap" title={whyNotEmpty(k, free_.length, data.can_clean, cleaning)}>
                       <button
                         type="button"
                         className="small"
                         disabled={!canEmpty || busy || cleaning}
-                        title={k.in_use ? "작업이 쓰는 중이라 지금은 비울 수 없습니다" : undefined}
                         onClick={() => empty(k)}
                       >
                         {k.kind === "uv" ? "정리" : "비우기"}
                       </button>
+                      </span>
                     ) : (
                       <span />
                     )}
@@ -327,6 +343,11 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                           {k.path}
                         </code>
                         <span className="muted">{placeNote(k)}</span>
+                        {k.kind === "containers" && !k.desktop && isAdmin && (
+                          <button type="button" className="link small" onClick={() => setDockerMove(true)}>
+                            다른 디스크로 옮기기
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -385,6 +406,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
           {error && <span className="bad-text"> {error}</span>}
         </p>
       ) : null}
+      {dockerMove && <DockerMoveDialog nodeId={nodeId} suggest="" onClose={() => setDockerMove(false)} />}
     </section>
   );
 }

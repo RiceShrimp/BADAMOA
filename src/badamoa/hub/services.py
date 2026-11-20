@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from badamoa import __version__ as core_version
@@ -332,6 +332,45 @@ def serialize_node(
         "docker_target": _docker_target(node),
         "gpu_states": resources.gpu_states(node, settings, assigned),
     }
+
+
+def node_busy(db: Session, node: Node) -> int:
+    """BADAMOA jobs queued for or running on a node."""
+    return int(
+        db.scalar(
+            select(func.count(Job.id)).where(
+                Job.status.in_(("queued", "running")), or_(Job.node_id == node.id, Job.target_node_id == node.id)
+            )
+        )
+        or 0
+    )
+
+
+def start_docker_move(
+    db: Session, user: User, node_id: str, target: str, remove_old: bool = True, stop_containers: bool = False,
+    via: str = "api",
+) -> Job:
+    """An admin moves a node's Docker images to another disk (``node.docker_move``): the node stops Docker, copies,
+    points Docker at the new folder, checks, and puts everything back if any of it fails."""
+    require_admin(user)
+    node = get_node(db, node_id)
+    state = disk_space.docker_move_state(node, node_busy(db, node))
+    if not state["possible"]:
+        raise ServiceError(400, state["why"])
+    target = (target or "").strip()
+    if not target.startswith("/"):
+        raise ServiceError(400, "옮길 폴더를 절대 경로로 적으세요 (예: /home4/docker).")
+    job = create_job(
+        db,
+        user,
+        "node.docker_move",
+        {"target": target, "remove_old": bool(remove_old), "stop_containers": bool(stop_containers)},
+        node.id,
+        via=via,
+        gpus=0,
+    )
+    audit(db, user.id, via, "node.docker_move", node.id, target=target, current=state["path"], remove_old=remove_old)
+    return job
 
 
 def _docker_target(node: Node) -> str:

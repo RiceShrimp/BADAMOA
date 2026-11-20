@@ -216,6 +216,19 @@ def node_clean(params: dict[str, Any]) -> dict[str, Any]:
     return storage.clean(Path(home).resolve(), kind, items, bool(params.get("all")), running=running)
 
 
+def node_docker_move(params: dict[str, Any]) -> dict[str, Any]:
+    """Move Docker's images to another disk (an admin asked; ``docker_root``). No other job runs meanwhile."""
+    from badamoa.node import docker_root
+
+    running = [j for j in os.environ.get("BADAMOA_RUNNING", "").split(",") if j]
+    return docker_root.move(
+        str(params.get("target") or ""),
+        remove_old=bool(params.get("remove_old", True)),
+        stop_containers=bool(params.get("stop_containers", False)),
+        running_jobs=running,
+    )
+
+
 HANDLERS = {
     "system.info": system_info,
     "system.gpu": system_gpu,
@@ -232,6 +245,7 @@ HANDLERS = {
     "env.remove": env_remove,
     "env.push": env_push,
     "node.clean": node_clean,
+    "node.docker_move": node_docker_move,
 }
 
 

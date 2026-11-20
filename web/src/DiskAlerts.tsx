@@ -1,4 +1,7 @@
-import { CopyBlock } from "./ui";
+import { useState } from "react";
+import { LogTail } from "./Training";
+import { type Job, api } from "./api";
+import { Badge, CopyBlock, Modal, STATUS_LABEL, usePolling } from "./ui";
 
 /** A disk BADAMOA writes to on a server that is nearly full (the Hub's ``disk_space``). */
 export interface DiskAlert {
@@ -66,7 +69,18 @@ function dockerMove(current: string, target: string): string {
 }
 
 /** On the server's page: each nearly full disk, what BADAMOA keeps there and what to do; for Docker, how to move it. */
-export function DiskAlertBox({ alerts, dockerTarget, isAdmin }: { alerts?: DiskAlert[]; dockerTarget?: string; isAdmin: boolean }) {
+export function DiskAlertBox({
+  alerts,
+  dockerTarget,
+  isAdmin,
+  nodeId,
+}: {
+  alerts?: DiskAlert[];
+  dockerTarget?: string;
+  isAdmin: boolean;
+  nodeId: string;
+}) {
+  const [moving, setMoving] = useState(false);
   if (!alerts || alerts.length === 0) return null;
   return (
     <section className={`card disk-alerts ${alerts.some((a) => a.level === "full") ? "full" : ""}`}>
@@ -87,6 +101,12 @@ export function DiskAlertBox({ alerts, dockerTarget, isAdmin }: { alerts?: DiskA
             ))}
           </ul>
           {a.docker && isAdmin && (
+            <div className="docker-move-actions">
+              <button onClick={() => setMoving(true)}>Docker 이미지 위치 옮기기</button>
+              <span className="muted small">BADAMOA가 이 서버에서 멈춤 → 복사 → 설정 → 시작 → 확인까지 하고, 실패하면 되돌립니다.</span>
+            </div>
+          )}
+          {a.docker && isAdmin && (
             <details className="docker-move">
               <summary>Docker 이미지 폴더를 여유 있는 디스크로 옮기는 법</summary>
               <p className="muted small">
@@ -98,6 +118,99 @@ export function DiskAlertBox({ alerts, dockerTarget, isAdmin }: { alerts?: DiskA
           )}
         </div>
       ))}
+      {moving && <DockerMoveDialog nodeId={nodeId} suggest={dockerTarget ?? ""} onClose={() => setMoving(false)} />}
     </section>
+  );
+}
+
+interface DockerMoveState {
+  path: string; // Docker's data-root now
+  suggest: string; // a folder on the disk with the most room
+  possible: boolean;
+  why: string;
+}
+
+/**
+ * Move a server's Docker images to another disk (admins): the node stops Docker, copies its folder, points Docker
+ * at the new one, checks every image is there, and only then removes the old folder; any failure puts it back.
+ */
+export function DockerMoveDialog({ nodeId, suggest, onClose }: { nodeId: string; suggest: string; onClose: () => void }) {
+  const { data: state, error: loadError } = usePolling(() => api<DockerMoveState>(`/nodes/${nodeId}/docker-move`), 0, [nodeId]);
+  const [target, setTarget] = useState<string | null>(null);
+  const [removeOld, setRemoveOld] = useState(true);
+  const [stopContainers, setStopContainers] = useState(false);
+  const [jobId, setJobId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { data: job } = usePolling(() => (jobId ? api<Job>(`/jobs/${jobId}`) : Promise.resolve(null)), jobId ? 2000 : 0, [jobId]);
+  const to = target ?? (state?.suggest || suggest);
+  const running = !!job && ["queued", "running"].includes(job.status);
+
+  const start = async () => {
+    if (!window.confirm(`이 서버의 Docker를 멈추고 이미지를 ${to}(으)로 옮길까요?\n멈춘 동안 이 서버의 컨테이너가 모두 멈춥니다.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const made = await api<{ job_id: string }>(`/nodes/${nodeId}/docker-move`, {
+        body: { target: to.trim(), remove_old: removeOld, stop_containers: stopContainers },
+      });
+      setJobId(made.job_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Docker 이미지 위치 옮기기" onClose={onClose}>
+      {loadError && <div className="error">{loadError}</div>}
+      {!state && !loadError && <p className="muted">확인하는 중…</p>}
+      {state && !jobId && (
+        <>
+          <p className="muted">
+            Docker는 이 서버의 이미지를 모두 한 폴더(<code>data-root</code>)에 둡니다. 지금 <code>{state.path || "?"}</code>입니다. 옮기려면
+            Docker를 멈춰야 해서, <strong>그동안 이 서버의 컨테이너가 모두 멈춥니다</strong>(BADAMOA 것이든 다른 사람 것이든). 이미지 양에
+            따라 몇 분에서 수십 분 걸립니다. 하나라도 잘못되면 설정을 되돌리고 원래 폴더로 Docker를 다시 켭니다.
+          </p>
+          {!state.possible && <div className="notice">{state.why}</div>}
+          <label>
+            옮길 폴더 (다른 디스크의 빈 폴더)
+            <input value={to} onChange={(e) => setTarget(e.target.value)} placeholder="/home4/docker" disabled={!state.possible} />
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={removeOld} onChange={(e) => setRemoveOld(e.target.checked)} disabled={!state.possible} />
+            새 위치로 잘 켜지고 이미지가 모두 보이면 예전 폴더를 지워 공간을 비움
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={stopContainers} onChange={(e) => setStopContainers(e.target.checked)} disabled={!state.possible} />
+            돌고 있는 컨테이너가 있어도 멈추고 옮김 (끄면 컨테이너가 있을 때 아무것도 하지 않고 그 목록을 알려 줌)
+          </label>
+          {error && <div className="error">{error}</div>}
+          <div className="modal-actions">
+            <button type="button" onClick={onClose}>
+              취소
+            </button>
+            <button className="danger" disabled={busy || !state.possible || !to.trim().startsWith("/")} onClick={() => void start()}>
+              옮기기
+            </button>
+          </div>
+        </>
+      )}
+      {jobId && (
+        <>
+          <p>
+            {job ? <Badge kind={job.status}>{STATUS_LABEL[job.status] ?? job.status}</Badge> : null}{" "}
+            {running ? "옮기는 중입니다. 이 창을 닫아도 서버에서 계속합니다." : job?.status === "succeeded" ? "옮겼습니다." : job?.error ?? ""}
+          </p>
+          <LogTail jobId={jobId} live={running || job?.status === "failed"} />
+          <div className="modal-actions">
+            <button type="button" onClick={onClose}>
+              닫기
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }

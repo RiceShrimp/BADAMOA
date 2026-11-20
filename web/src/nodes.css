@@ -652,3 +652,12 @@ details.node-more > summary {
   color: var(--accent);
   font-size: 13px;
 }
+
+/* moving a server's Docker images (DiskAlerts.tsx) */
+.docker-move-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 6px 0;
+}

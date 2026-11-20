@@ -187,7 +187,7 @@ export function NodeDetail({ nodeId, isAdmin }: { nodeId: string; isAdmin: boole
           ))}
       </div>
 
-      <DiskAlertBox alerts={node.disk_alerts} dockerTarget={node.docker_target} isAdmin={isAdmin} />
+      <DiskAlertBox alerts={node.disk_alerts} dockerTarget={node.docker_target} isAdmin={isAdmin} nodeId={node.id} />
 
       <CrosshairProvider>
       <GpuTimeline nodeId={nodeId} refreshMs={chosen} reloadKey={timelineTick} />

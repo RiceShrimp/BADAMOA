@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import address, admin, asks, autostart, gpus, guides, node_storage, prometheus, resources, services
+from . import address, admin, asks, autostart, disk_space, gpus, guides, node_storage, prometheus, resources, services
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands, node_wheel
@@ -266,6 +266,30 @@ def node_storage_clean(
         job = node_storage.measure(db, user, node_id, via="ui")
     db.commit()
     return {"job_id": job.id, **node_storage.view(db, services.get_node(db, node_id))}
+
+
+@router.get("/nodes/{node_id}/docker-move")
+def docker_move_state(node_id: str, _: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """Whether BADAMOA can move this server's Docker images now (and why not), where they are, where they could go."""
+    node = services.get_node(db, node_id)
+    return disk_space.docker_move_state(node, services.node_busy(db, node))
+
+
+class DockerMove(BaseModel):
+    target: str
+    remove_old: bool = True  # the old folder goes once Docker runs from the new one with every image
+    stop_containers: bool = False  # go on even though containers run (they stop while Docker is down)
+
+
+@router.post("/nodes/{node_id}/docker-move")
+def docker_move(
+    node_id: str, body: DockerMove, user: User = Depends(admin_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Move this server's Docker images to another disk: Docker stops for the copy, so every container of the server
+    stops meanwhile. Admins only, on a Linux node installed with sudo, while it runs no BADAMOA job."""
+    job = services.start_docker_move(db, user, node_id, body.target, body.remove_old, body.stop_containers, via="ui")
+    db.commit()
+    return {"job_id": job.id}
 
 
 @router.get("/nodes/{node_id}/browse")
