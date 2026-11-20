@@ -2,6 +2,7 @@ import { LineageGraph } from "./Lineage";
 import { AliasChip, AliasEditor, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
 import { type FormEvent, useEffect, useState } from "react";
 import { EvalBoardPage, EvalView } from "./EvalView";
+import { ModelCompare } from "./ModelCompare";
 import { ModelOps } from "./ModelOps";
 import { ModelsBoard } from "./Boards";
 import { rememberProject } from "./DataBoard";
@@ -40,6 +41,7 @@ export function Models({ modelId, arg, isAdmin }: { modelId?: string; arg?: stri
       />
     );
   if (modelId === "eval" && arg) return <EvalView key={arg} opId={arg} />; // #/models/eval/<op>: one evaluation
+  if (modelId === "compare") return <ModelCompare ids={(arg ?? "").split(",").filter(Boolean)} />; // any projects' models
   if (modelId === "evals" && arg) return <EvalBoardPage key={arg} releaseId={arg} />; // a version's evaluations side by side
   if (modelId) return <ModelView key={modelId} modelId={modelId} isAdmin={isAdmin} />;
   return <ModelsBoard />;
@@ -81,7 +83,7 @@ function ModelList({
     setTyped("");
   }, [projectId]);
 
-  const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].slice(-2));
+  const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].slice(-6));
   const families = new Set(models?.map((m) => m.name)).size;
   const best = [...(models ?? [])].sort((a, b) => (b.metrics[primary] ?? 0) - (a.metrics[primary] ?? 0))[0];
   const champion = models?.find((m) => m.aliases.includes("champion"));
@@ -97,7 +99,8 @@ function ModelList({
         <div>
           <h1>모델</h1>
           <p className="muted">
-            학습이 끝나면 가중치가 여기에 버전으로 등록됩니다. 두 버전을 체크하면 지표를 나란히 비교합니다.
+            학습이 끝나면 가중치가 여기에 버전으로 등록됩니다. 두 버전을 체크하면 지표를 나란히 비교하고, "비교 화면"에서 다른 프로젝트의
+            모델까지 더해 6개까지 비교합니다.
           </p>
         </div>
         <div className="head-actions">
@@ -121,6 +124,17 @@ function ModelList({
         />
       </div>
 
+      {picked.length >= 1 && (
+        <div className="compare-bar">
+          <span className="muted small">{picked.length}개 골랐습니다</span>
+          <a className="btn" href={`#/models/compare/${picked.join(",")}`}>
+            비교 화면에서 보기 (다른 프로젝트 모델도 더함)
+          </a>
+          <button className="link small" onClick={() => setPicked([])}>
+            고른 것 지우기
+          </button>
+        </div>
+      )}
       {picked.length === 2 && <CompareModels ids={picked} onClose={() => setPicked([])} />}
 
       {(filtered || (models?.length ?? 0) > 5 || (projectTags?.models.length ?? 0) > 0) && (
@@ -455,6 +469,9 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
           </p>
         </div>
         <div className="head-actions">
+          <a className="btn" href={`#/models/compare/${model.id}`} title="다른 프로젝트 · 다른 모델과 나란히">
+            다른 모델과 비교
+          </a>
           <a className="btn" href={model.download_url} download>
             가중치 받기 ({bytesLabel(model.bytes)})
           </a>

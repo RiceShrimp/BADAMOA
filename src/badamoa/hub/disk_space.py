@@ -106,7 +106,8 @@ def docker_move_state(node: Any, busy: int = 0) -> dict[str, Any]:
     metrics = node.metrics or {}
     docker = next((p for p in places(metrics) if p.get("kind") == "docker"), None)
     path = str((docker or {}).get("path") or "")
-    found = {"path": path, "suggest": docker_target(metrics, path) if path else "", "possible": False, "why": ""}
+    linux_docker = bool(path) and not (docker or {}).get("desktop") and path.startswith("/")
+    found = {"path": path, "suggest": docker_target(metrics, path) if linux_docker else "", "possible": False, "why": ""}
     version = tuple(int(n) for n in (node.agent_version or "0").split(".")[:3] if n.isdigit())
     account = (node.info or {}).get("account") or {}
     if docker is None:

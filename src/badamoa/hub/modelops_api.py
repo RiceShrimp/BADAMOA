@@ -112,6 +112,28 @@ def op_detail(
     return modelops.op_detail(db, hub.settings, op_id)
 
 
+@router.delete("/model-ops/{op_id}")
+def delete_op(op_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """Remove an evaluation (export, test) with its numbers, files and per-image predictions."""
+    modelops.delete_op(db, user, op_id, via="ui")
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/models-find")
+def find_models(q: str = "", limit: int = 30, _: User = Depends(current_user), db: Session = Depends(db_session)) -> list:
+    """Models of every project, for picking ones to compare."""
+    return modelops.find_models(db, q, max(1, min(limit, 100)))
+
+
+@router.get("/models-compare")
+def compare_models(
+    ids: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Models from any project (``ids`` comma separated, up to six) on their own validation and shared evaluations."""
+    return modelops.compare(db, hub.settings, [i for i in ids.split(",") if i])
+
+
 class RerunRequest(BaseModel):
     node_id: str = ""  # empty: the server it ran on (or the default when that one is gone)
 

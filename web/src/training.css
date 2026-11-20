@@ -1298,3 +1298,79 @@ label.check {
   align-items: center;
   gap: 6px;
 }
+
+/* models from any project side by side (ModelCompare.tsx) */
+.compare-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.compare-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.model-finder {
+  position: relative;
+  min-width: 260px;
+}
+.model-finder input {
+  width: 100%;
+}
+.model-finder-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.model-finder-list button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.model-finder-list button:hover {
+  background: var(--surface-2);
+}
+.model-finder-list .num {
+  margin-left: auto;
+}
+.compare-group + .compare-group {
+  margin-top: 14px;
+}
+.compare-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+}
+.op-delete {
+  margin-left: 8px;
+}
+.class-compare td.best,
+.compare-group td.best {
+  color: var(--ok);
+  font-weight: 700;
+}

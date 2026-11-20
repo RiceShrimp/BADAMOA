@@ -199,8 +199,8 @@ def start_eval(
     release = catalog.get_release(db, release_id)
     catalog.require_ready(release)
     dataset = db.get(Dataset, release.dataset_id)
-    if dataset.project_id != model.project_id:
-        raise ServiceError(400, "다른 프로젝트의 버전으로는 평가할 수 없습니다.")
+    # another project's version too: what counts is the task and the classes (checked below), so models of
+    # different projects can be measured on the same data
     wanted = list(dict.fromkeys(splits or [split]))
     if not wanted or any(s not in ("val", "test", "train") for s in wanted):
         raise ServiceError(400, "split은 val, test, train 중에서 고르세요.")
@@ -666,6 +666,128 @@ def rerun(db: Session, user: User, settings: HubSettings, op_id: str, node_id: s
         conf = float(params.get("conf", 0.25))
         return start_predict(db, user, op.model_id, images, storage, conf, via=via, node_id=node_id, settings=settings)
     raise ServiceError(400, "이 작업은 여기서 다시 실행할 수 없습니다.")
+
+
+def delete_op(db: Session, user: User, op_id: str, via: str = "api") -> None:
+    """Remove an evaluation (export, test) and what it kept: its numbers, files and per-image predictions (the 검수
+    basis and grid overlays made of it go with it; a 검수 record already kept with a version stays). Its starter or an
+    admin; not while it runs."""
+    from sqlalchemy import delete
+
+    from .catalog_models import ItemPrediction
+
+    op = get_op(db, op_id)
+    if op.kind not in ACTIONS:
+        raise ServiceError(400, "오토라벨 기록은 라벨링 묶음에서 다룹니다.")
+    if user.role != "admin" and op.created_by != user.id:
+        raise ServiceError(403, "실행한 사람이나 관리자만 지울 수 있습니다.")
+    job = db.get(Job, op.job_id) if op.job_id else None
+    if job is not None and job.status in ("queued", "running"):
+        raise ServiceError(409, "돌고 있습니다. 중단한 뒤에 지우세요.")
+    model = db.get(ModelVersion, op.model_id)
+    db.execute(delete(ItemPrediction).where(ItemPrediction.op_id == op.id))
+    services.audit(
+        db, user.id, via, f"model.{op.kind}.delete", op.id, model=f"{model.name} v{model.version}" if model else "",
+        release=op.release_id or "",
+    )
+    db.delete(op)  # its files' blobs go with the next storage cleanup, as nothing names them any more
+
+
+def find_models(db: Session, q: str = "", limit: int = 30) -> list[dict[str, Any]]:
+    """Models of every project (not in the trash), newest first, for picking ones to compare: by model or project name."""
+    from .catalog_models import Project
+
+    query = (
+        select(ModelVersion, Project)
+        .join(Project, Project.id == ModelVersion.project_id)
+        .where(ModelVersion.deleted_at.is_(None), Project.deleted_at.is_(None))
+        .order_by(ModelVersion.created_at.desc())
+    )
+    needle = q.strip().lower()
+    found = []
+    for model, project in db.execute(query):
+        if needle and needle not in f"{model.name} v{model.version} {project.name}".lower():
+            continue
+        metric = training.PRIMARY_METRIC.get(model.task or "detect", "map50_95")
+        found.append(
+            {
+                **_model_ref(model),
+                "project": {"id": project.id, "name": project.name},
+                "metric": metric,
+                "value": (model.metrics or {}).get(metric),
+            }
+        )
+        if len(found) >= limit:
+            break
+    return found
+
+
+def compare(db: Session, settings: HubSettings, ids: list[str]) -> dict[str, Any]:
+    """Models from any project side by side: each one's own validation (on the data it was trained with, which may
+    differ), and every version · split two or more of them were evaluated on (the same data: a fair comparison)."""
+    from .catalog_models import Project
+
+    models = [training.get_model(db, model_id) for model_id in list(dict.fromkeys(ids))[:6]]
+    projects = {p.id: p.name for p in db.scalars(select(Project).where(Project.id.in_({m.project_id for m in models})))}
+    listed = []
+    for model in models:
+        view = training.model_view(db, settings, model)
+        listed.append(
+            {
+                **_model_ref(model),
+                "project": {"id": model.project_id, "name": projects.get(model.project_id, "")},
+                "metrics": model.metrics or {},
+                "class_metrics": model.class_metrics or [],
+                "release": view.get("release"),  # the version it was trained and validated on
+            }
+        )
+    ops = db.scalars(
+        select(ModelJob)
+        .where(ModelJob.kind == "eval", ModelJob.model_id.in_([m.id for m in models]), ModelJob.release_id.is_not(None))
+        .order_by(ModelJob.created_at.desc())
+    ).all()
+    jobs = {j.id: j for j in db.scalars(select(Job).where(Job.id.in_([op.job_id for op in ops if op.job_id])))}
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for op in ops:
+        job = jobs.get(op.job_id or "")
+        result = op.result or {}
+        if job is None or job.status != "succeeded" or not result.get("metrics"):
+            continue
+        splits = _splits_of(op)
+        for n, each in enumerate(splits):
+            numbers = (result.get("splits") or {}).get(each) if len(splits) > 1 else result.get("metrics")
+            if not numbers:
+                continue
+            group = groups.setdefault((op.release_id, each), {"release_id": op.release_id, "split": each, "rows": {}})
+            if op.model_id in group["rows"]:
+                continue  # each model's newest on this data
+            group["rows"][op.model_id] = {
+                "op_id": op.id,
+                "metrics": numbers,
+                "class_metrics": (result.get("classes") or []) if n == 0 else [],
+                "created_at": iso(op.created_at),
+            }
+    shown = []
+    for group in groups.values():
+        release = db.get(Release, group["release_id"])
+        dataset = db.get(Dataset, release.dataset_id) if release else None
+        if release is None or dataset is None:
+            continue
+        shown.append(
+            {
+                "release": {
+                    "id": release.id,
+                    "dataset": dataset.name,
+                    "version": release.version,
+                    "project": {"id": dataset.project_id, "name": db.get(Project, dataset.project_id).name},
+                    "deleted": release.deleted_at is not None,
+                },
+                "split": group["split"],
+                "rows": group["rows"],
+            }
+        )
+    shown.sort(key=lambda g: (-len(g["rows"]), g["release"]["project"]["name"], g["release"]["dataset"], g["split"]))
+    return {"models": listed, "evaluations": shown}
 
 
 def release_evaluations(db: Session, settings: HubSettings, release_id: str, split: str = "") -> dict[str, Any]:

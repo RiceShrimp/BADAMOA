@@ -65,6 +65,17 @@ export function EvalView({ opId }: { opId: string }) {
   const [again, setAgain] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  const remove = async () => {
+    if (!op) return;
+    const what = op.kind === "eval" ? "평가" : op.kind === "export" ? "내보낸 파일" : "테스트";
+    if (!window.confirm(`이 ${what} 기록을 지울까요? 지표 · 결과 파일 · 이미지별 예측(검수의 모델 기준, 이미지 위 예측 표시)이 함께 지워지고 되돌릴 수 없습니다.`)) return;
+    try {
+      await api(`/model-ops/${op.id}`, { method: "DELETE" });
+      window.location.hash = op.model ? `#/models/${op.model.id}` : "#/models";
+    } catch (err) {
+      setFailed(err instanceof Error ? err.message : String(err));
+    }
+  };
   if (error && !op) return <div className="error">{error}</div>;
   if (!op) return <div className="muted">불러오는 중…</div>;
   const active = ACTIVE.includes(op.status);
@@ -120,9 +131,14 @@ export function EvalView({ opId }: { opId: string }) {
               중단
             </button>
           ) : (
-            <button onClick={() => setAgain(true)} title="같은 모델 · 버전 · split · 설정으로 다시 실행합니다">
-              다시 실행
-            </button>
+            <>
+              <button onClick={() => setAgain(true)} title="같은 모델 · 버전 · split · 설정으로 다시 실행합니다">
+                다시 실행
+              </button>
+              <button className="danger" onClick={() => void remove()} title="실행한 사람이나 관리자만 지웁니다">
+                삭제
+              </button>
+            </>
           )}
         </div>
       </div>

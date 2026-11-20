@@ -84,6 +84,20 @@ export function ModelOps({ model }: { model: ModelDetail }) {
                             {op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 버전"} ·{" "}
                             {SPLIT_LABEL[String(op.params.split)] ?? String(op.params.split)}
                           </a>
+                          {!ACTIVE.includes(op.status) && (
+                            <button
+                              className="link small op-delete"
+                              title="이 평가 기록 지우기 (실행한 사람이나 관리자)"
+                              onClick={() => {
+                                if (!window.confirm("이 평가 기록을 지울까요? 지표 · 결과 파일 · 이미지별 예측이 함께 지워지고 되돌릴 수 없습니다.")) return;
+                                void api(`/model-ops/${op.id}`, { method: "DELETE" })
+                                  .then(() => refresh())
+                                  .catch((err) => window.alert(err instanceof Error ? err.message : String(err)));
+                              }}
+                            >
+                              삭제
+                            </button>
+                          )}
                         </td>
                         {metricKeys.map((k) => (
                           <td key={k} className="num right">
@@ -353,6 +367,8 @@ function useSubmit(onStarted: () => void) {
 
 function EvalDialog({ model, onClose, onStarted }: DialogProps) {
   const [tree, setTree] = useState<TreeDataset[] | null>(null);
+  const [projectId, setProjectId] = useState(model.project_id); // another project's version of the same task too
+  const { data: projects } = usePolling(() => api<{ id: string; name: string }[]>("/projects"), 0);
   const [release, setRelease] = useState(model.release?.id ?? "");
   const [split, setSplit] = useState("val");
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -375,12 +391,12 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
   }, [release]);
 
   useEffect(() => {
-    void api<TreeDataset[]>(`/projects/${model.project_id}/datasets`).then((data) => {
+    void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
       setTree(data);
       const ready = data.filter((d) => sameTask(d.task, model.task)).flatMap((d) => d.releases).filter((r) => r.status === "ready");
       setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
     });
-  }, [model.project_id, model.task]);
+  }, [projectId, model.task]);
   // Only the datasets of the model's task: a Seg model says nothing useful about a Det dataset.
   const fitting = tree?.filter((d) => sameTask(d.task, model.task)) ?? [];
   const hidden = (tree?.length ?? 0) - fitting.length;
@@ -397,6 +413,22 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
           고른 버전으로 이 모델의 지표를 잽니다. 서로 다른 데이터로 학습한 모델도 같은 버전으로 평가하면 공정하게 비교할 수
           있습니다.
         </p>
+        {(projects?.length ?? 0) > 1 && (
+          <label>
+            프로젝트
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              {projects?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.id === model.project_id ? " (이 모델의 프로젝트)" : ""}
+                </option>
+              ))}
+            </select>
+            {projectId !== model.project_id && (
+              <span className="muted small">다른 프로젝트의 버전으로 평가합니다. 같은 태스크이고 모델의 클래스가 그 버전에 있어야 합니다.</span>
+            )}
+          </label>
+        )}
         <div className="form-row" hidden={!!tree && fitting.length === 0}>
           <label>
             버전
