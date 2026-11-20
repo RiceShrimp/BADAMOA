@@ -1,6 +1,6 @@
 import { LineageGraph } from "./Lineage";
 import { AliasChip, AliasEditor, Annotations, ListFilter, TagList, useDebounced } from "./Annotate";
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { ModelOps } from "./ModelOps";
 import { ModelsBoard } from "./Boards";
 import { rememberProject } from "./DataBoard";
@@ -19,7 +19,7 @@ import {
   keyMetrics,
   metric,
 } from "./trainTypes";
-import { Stat, timeAgo, usePolling } from "./ui";
+import { Icon, Modal, Stat, timeAgo, usePolling } from "./ui";
 
 export function Models({ modelId, arg, isAdmin }: { modelId?: string; arg?: string; isAdmin: boolean }) {
   const { projects, choose } = useProject();
@@ -402,6 +402,7 @@ function sign(now: number | undefined, before: number | undefined): string {
 function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) {
   const { data: model, error, refresh } = usePolling(() => api<ModelDetail>(`/models/${modelId}`), 30000, [modelId]);
   const [failure, setFailure] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
   const projectOf = model?.project_id ?? "";
   const { data: projectTags } = usePolling(
     () => (projectOf ? api<ProjectTags>(`/projects/${projectOf}/tags`) : Promise.resolve({ runs: [], models: [] })),
@@ -442,6 +443,9 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
         <div>
           <h1 className="with-badge">
             {model.name} <span className="version">v{model.version}</span>
+            <button className="icon-btn title-edit" onClick={() => setRenaming(true)} title="모델 이름 · 버전 바꾸기" aria-label="이름 바꾸기">
+              <Icon name="edit" size={15} />
+            </button>
           </h1>
           <p className="muted">
             {model.arch} · {taskLabel(model.task)} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
@@ -458,6 +462,16 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
           )}
         </div>
       </div>
+      {renaming && (
+        <RenameModel
+          model={model}
+          onClose={() => setRenaming(false)}
+          onDone={() => {
+            setRenaming(false);
+            void refresh();
+          }}
+        />
+      )}
       <div className="model-marks">
         <AliasEditor
           aliases={model.aliases}
@@ -511,5 +525,64 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
         </details>
       )}
     </>
+  );
+}
+
+/**
+ * Rename the model (every version of it goes by the new name) or give this version another number. Lineage, runs,
+ * evaluations and 검수 show the new name; the records that kept a copy of it follow.
+ */
+function RenameModel({ model, onClose, onDone }: { model: ModelDetail; onClose: () => void; onDone: () => void }) {
+  const [name, setName] = useState(model.name);
+  const [version, setVersion] = useState(String(model.version));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const number = Number(version);
+  const valid = name.trim() !== "" && Number.isInteger(number) && number >= 1;
+  const changed = name.trim() !== model.name || number !== model.version;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const body: { name?: string; version?: number } = {};
+      if (name.trim() !== model.name) body.name = name.trim();
+      if (number !== model.version) body.version = number;
+      await api(`/models/${model.id}`, { method: "PATCH", body });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="모델 이름 바꾸기" onClose={onClose}>
+      <form onSubmit={submit}>
+        <label>
+          모델 이름
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={128} required autoFocus />
+          <span className="muted small">이 이름의 모든 버전(v1, v2 …)이 함께 바뀝니다. 띄어쓰기와 기호는 -로 바뀝니다(학습이 붙이는 이름과 같은 규칙). 다시 실행하거나 이어 학습해도 새 이름으로 등록됩니다.</span>
+        </label>
+        <label>
+          이 버전의 번호
+          <input type="number" min={1} step={1} value={version} onChange={(e) => setVersion(e.target.value)} required />
+        </label>
+        <p className="muted small">
+          계보 · 학습 · 평가 · 검수 화면은 새 이름으로 보입니다. 같은 프로젝트에 같은 이름의 모델(같은 모델에 같은 번호)이 있으면 바꿀 수
+          없습니다(휴지통 포함). 별칭(champion 등)은 그대로 따라갑니다.
+        </p>
+        {error && <div className="error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>
+            취소
+          </button>
+          <button className="primary" disabled={busy || !changed || !valid}>
+            바꾸기
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

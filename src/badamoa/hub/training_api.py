@@ -315,6 +315,8 @@ class AliasRequest(BaseModel):
 class ModelUpdate(BaseModel):
     note: str | None = None
     tags: list[str] | None = None
+    name: str | None = None  # the model's name: every version of it
+    version: int | None = None  # this version's number
 
 
 @router.get("/projects/{project_id}/models")
@@ -381,9 +383,12 @@ def update_model(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    model = training.update_model(db, user, model_id, **body.model_dump(), via="ui")
+    if body.name is not None or body.version is not None:
+        training.rename_model(db, user, model_id, name=body.name, version=body.version, via="ui")
+    if body.note is not None or body.tags is not None:
+        training.update_model(db, user, model_id, note=body.note, tags=body.tags, via="ui")
     db.commit()
-    return training.model_view(db, hub.settings, model, detail=True)
+    return training.model_view(db, hub.settings, training.get_model(db, model_id), detail=True)
 
 
 @router.delete("/models/{model_id}")

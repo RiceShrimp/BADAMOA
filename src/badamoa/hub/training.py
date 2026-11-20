@@ -1258,6 +1258,100 @@ def update_model(
     return model
 
 
+MAX_MODEL_VERSION = 1_000_000
+
+
+def rename_model(
+    db: Session, user: User, model_id: str, *, name: str | None = None, version: int | None = None, via: str = "api"
+) -> ModelVersion:
+    """Rename a model (``name``: every version of its family, in the trash too) or give this version another number.
+
+    Names are shown from the model itself everywhere (lineage, runs, evaluations, 검수 …); the few records that keep a
+    copy of a name follow here: a run continued from a model, a labeling set's 오토라벨, a version's 검수 record, the
+    labels 오토라벨 wrote (their source). A run of the family registers its next version under the new name."""
+    model = get_model(db, model_id)
+    catalog._may_edit(catalog.get_project(db, model.project_id), user)
+    changes: dict[str, tuple[str, int, str, int]] = {}  # model id → (old name, old version, new name, new version)
+    old_name = model.name
+    if name is not None:  # the rule names made by runs follow (spaces and signs become -): reruns keep the family
+        name = _slug(name)[:128]
+        if not name:
+            raise ServiceError(400, "모델 이름을 적으세요.")
+    if name is not None and name != model.name:
+        taken = select(ModelVersion.id).where(ModelVersion.project_id == model.project_id, ModelVersion.name == name)
+        if db.scalar(taken.limit(1)):
+            raise ServiceError(409, f"이 프로젝트에 {name} 모델이 이미 있습니다(휴지통에 있는 것 포함). 다른 이름을 쓰세요.")
+        family = db.scalars(
+            select(ModelVersion).where(ModelVersion.project_id == model.project_id, ModelVersion.name == old_name)
+        ).all()
+        for row in family:
+            changes[row.id] = (row.name, row.version, name, row.version)
+            row.name = name
+        # its runs register their next version (a rerun, a continued run) under the new name
+        for run in db.scalars(select(Run).where(Run.id.in_([row.run_id for row in family if row.run_id]))):
+            run.config = {**(run.config or {}), "model_name": name}
+    if version is not None and int(version) != model.version:
+        version = int(version)
+        if not 1 <= version <= MAX_MODEL_VERSION:
+            raise ServiceError(400, "버전은 1 이상의 정수여야 합니다.")
+        taken = select(ModelVersion.id).where(
+            ModelVersion.project_id == model.project_id,
+            ModelVersion.name == model.name,
+            ModelVersion.version == version,
+            ModelVersion.id != model.id,
+        )
+        if db.scalar(taken.limit(1)):
+            why = f"{model.name} v{version}이(가) 이미 있습니다(휴지통에 있는 것 포함). 다른 번호를 쓰세요."
+            raise ServiceError(409, why)
+        before = changes.get(model.id, (model.name, model.version, model.name, model.version))
+        changes[model.id] = (before[0], before[1], model.name, version)
+        model.version = version
+    if not changes:
+        return model
+    _follow_rename(db, changes)
+    old = changes[model.id]
+    services.audit(
+        db, user.id, via, "model.rename", model.id, old=f"{old[0]} v{old[1]}", name=model.name, version=model.version,
+        versions=len(changes),
+    )
+    return model
+
+
+def _follow_rename(db: Session, changes: dict[str, tuple[str, int, str, int]]) -> None:
+    """The records that keep a copy of a model's name and version take the new ones."""
+    from sqlalchemy import case, update
+
+    from .catalog_models import LabelRevision, LabelSet
+
+    def renamed(copy: Any) -> Any:
+        if isinstance(copy, dict) and copy.get("id") in changes:
+            _, _, name, number = changes[copy["id"]]
+            return {**copy, "name": name, "version": number}
+        return copy
+
+    for run in db.scalars(select(Run)):  # a run continued from a model
+        base = (run.config or {}).get("base_model")
+        if isinstance(base, dict) and base.get("id") in changes:
+            run.config = {**run.config, "base_model": renamed(base)}
+    for found in db.scalars(select(LabelSet)):  # a labeling set's 오토라벨
+        info = found.autolabel or {}
+        if isinstance(info.get("model"), dict) and info["model"].get("id") in changes:
+            found.autolabel = {**info, "model": renamed(info["model"])}
+    for release in db.scalars(select(Release)):  # 검수 kept with a version: the model it went by
+        record = release.review or {}
+        basis = record.get("model") if isinstance(record, dict) else None
+        if isinstance(basis, dict) and isinstance(basis.get("model"), dict) and basis["model"].get("id") in changes:
+            release.review = {**record, "model": {**basis, "model": renamed(basis["model"])}}
+    # the labels 오토라벨 wrote name the model they came from: one pass over the labels for every renamed version
+    sources = {f"model:{a} v{b}": f"model:{c} v{d}" for a, b, c, d in changes.values() if (a, b) != (c, d)}
+    if sources:
+        db.execute(
+            update(LabelRevision)
+            .where(LabelRevision.source.in_(list(sources)))
+            .values(source=case(sources, value=LabelRevision.source))
+        )
+
+
 def set_alias(db: Session, user: User, model_id: str, alias: str, via: str = "api", remove: bool = False) -> ModelVersion:
     """Point an alias at this version (MLflow model aliases), or take it off with ``remove``.
 
