@@ -27,6 +27,7 @@ from . import (
     hub_storage,
     install,
     labeling_api,
+    migration,
     modelops_api,
     overview,
     qa,
@@ -154,6 +155,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         template_checks.mark_legacy(session)
         admin.load_gpu_busy(session, settings)
         address.load(session, settings)
+        migration.load(session)
     mcp, mcp_endpoint = build_mcp(hub)
 
     @asynccontextmanager
@@ -177,6 +179,19 @@ def create_app(settings: HubSettings) -> FastAPI:
     @app.exception_handler(services.ServiceError)
     async def _service_error(_: Request, exc: services.ServiceError) -> JSONResponse:
         return JSONResponse({"detail": exc.message}, status_code=exc.status)
+
+    @app.middleware("http")
+    async def _read_only(request: Request, call_next):  # noqa: ANN202 - a Starlette middleware
+        """While the Hub is being moved (exported, or handed over) nothing changes here: what changed would not
+        reach the new Hub. Signing in, nodes and the moving itself still work."""
+        if (
+            migration.read_only(hub)
+            and request.method in ("POST", "PUT", "PATCH", "DELETE")
+            and request.url.path.startswith("/api/")
+            and not request.url.path.startswith(("/api/agent/", "/api/auth/", "/api/migration"))
+        ):
+            return JSONResponse({"detail": migration.READ_ONLY}, status_code=409)
+        return await call_next(request)
 
     app.include_router(api.router)
     app.include_router(api.public_router)

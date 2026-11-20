@@ -27,6 +27,7 @@ from . import (
     asks,
     catalog,
     cleanup,
+    migration,
     node_data,
     node_storage,
     originals,
@@ -68,6 +69,7 @@ def heartbeat(
         workdir_days=days,
         cache_dir=node.cache_dir or "",
         work_dir=node.work_dir or "",
+        hub_url=migration.moved_to(db),
     )
 
 
@@ -165,6 +167,9 @@ def _claim_once(hub: Hub, token: str) -> dict[str, Any] | None | bool:
         if node is None:
             return False
         node.last_seen_at = utcnow()
+        if migration.read_only(hub):  # being moved: a job's results would not reach the new Hub
+            db.commit()
+            return None
         job = services.try_claim(db, node, hub.settings)
         db.commit()
         if job is None:

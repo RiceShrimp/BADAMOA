@@ -161,20 +161,69 @@ def hub_run(
 
 def _start_local_node(application, settings) -> None:
     from badamoa.core import sysinfo
-    from badamoa.hub import services
+    from badamoa.hub import migration, services
     from badamoa.node.agent import NodeAgent, NodeConfig
 
     hub = application.state.hub
-    with hub.db.session() as db:
-        node, token = services.ensure_local_node(db, sysinfo.static_info(), __version__)
-        if token is None:  # existing local node: issue a fresh token for this process
-            token = services.rotate_node_token(db, node)
-        node_id = node.id
     home = settings.local_node_home
     home.mkdir(parents=True, exist_ok=True)
-    config = NodeConfig(hub_url=f"http://127.0.0.1:{settings.port}", node_id=node_id, node_token=token)
+    if migration.read_only(hub) and NodeConfig.path(home).is_file():
+        # Being moved (or moved): this PC's node keeps the identity the export carried, and once handed over it
+        # is an ordinary node of the new Hub (node.json holds that address)
+        config = NodeConfig.load(home)
+    else:
+        with hub.db.session() as db:
+            node, token = services.ensure_local_node(db, sysinfo.static_info(), __version__)
+            if token is None:  # existing local node: issue a fresh token for this process
+                token = services.rotate_node_token(db, node)
+            node_id = node.id
+        config = NodeConfig(hub_url=f"http://127.0.0.1:{settings.port}", node_id=node_id, node_token=token)
     agent = NodeAgent(config, home)
+    application.state.local_agent = agent
     threading.Thread(target=agent.run_forever, name="local-node", daemon=True).start()
+
+
+@hub_app.command("export")
+def hub_export(
+    out: Annotated[Path, typer.Argument(help="내보낸 파일을 둘 폴더")],
+    home: HomeOpt = None,
+) -> None:
+    """이 Hub를 파일 하나로 내보냅니다 (새 PC로 옮길 때). Hub를 끈 채로 하세요. 켜져 있으면 화면의 설정 → Hub 옮기기."""
+    from datetime import datetime
+
+    from badamoa.hub import migration
+    from badamoa.hub.config import HubSettings
+
+    settings = HubSettings(home=component_home("hub", home))
+    folder = out.expanduser().resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"badamoa-hub-{datetime.now().strftime('%Y%m%d-%H%M')}.tar"
+    typer.echo(f"내보냅니다: {settings.home} → {path}")
+    done = migration.export(settings, path)
+    typer.echo(f"다 됐습니다: {path} ({done['bytes'] / 1024**3:.1f} GB, 파일 {done['files']:,}개)")
+    typer.echo(f"새 PC에서: badamoa hub import {path.name}  (그 PC의 Hub를 끈 채로)")
+    typer.echo("이 Hub를 다시 켜서 바꾼 것은 새 Hub에 가지 않습니다. 켜 둔 채 옮기려면 화면의 설정 → Hub 옮기기를 쓰세요.")
+
+
+@hub_app.command("import")
+def hub_import(
+    file: Annotated[Path, typer.Argument(help="다른 PC의 Hub에서 내보낸 파일 (badamoa-hub-….tar)")],
+    home: HomeOpt = None,
+    force: Annotated[bool, typer.Option(help="이미 쓰던 Hub가 있어도 (지금 것은 옆 폴더로 옮겨 둠)")] = False,
+) -> None:
+    """다른 PC에서 내보낸 Hub를 이 PC로 가져옵니다. 이 PC의 Hub를 끈 채로 하고, 다 되면 Hub를 켭니다."""
+    from badamoa.hub import migration
+    from badamoa.hub.services import ServiceError
+
+    target = component_home("hub", home)
+    try:
+        done = migration.import_file(file.expanduser().resolve(), target, force=force, log_line=typer.echo)
+    except ServiceError as e:
+        typer.secho(e.message, fg="red")
+        raise typer.Exit(1) from e
+    made = done["manifest"]
+    typer.echo(f"가져왔습니다: {made.get('exported_at')}에 BADAMOA {made.get('version')}에서 내보낸 Hub → {target}")
+    typer.echo("이제 Hub를 켜고(badamoa hub run), 예전 Hub의 설정 → Hub 옮기기에서 이 Hub 주소를 적으면 노드가 넘어옵니다.")
 
 
 @hub_app.command("publish-wheel")

@@ -5,12 +5,25 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import address, admin, asks, autostart, disk_space, gpus, guides, node_storage, prometheus, resources, services
+from . import (
+    address,
+    admin,
+    asks,
+    autostart,
+    disk_space,
+    gpus,
+    guides,
+    migration,
+    node_storage,
+    prometheus,
+    resources,
+    services,
+)
 from .db import iso
 from .deps import Hub, admin_user, bearer_token, current_user, db_session, get_hub
 from .install import join_commands, node_wheel
@@ -26,7 +39,13 @@ public_router = APIRouter()  # outside /api: /metrics, where scrapers look for i
 
 @router.get("/health")
 def health(db: Session = Depends(db_session)) -> dict[str, Any]:
-    return {"status": "ok", "version": services.HUB_VERSION, "needs_setup": services.needs_setup(db)}
+    # hub_id: the same on a Hub imported from this one, so a Hub being moved can tell its new place answers
+    return {
+        "status": "ok",
+        "version": services.HUB_VERSION,
+        "needs_setup": services.needs_setup(db),
+        "hub_id": migration.hub_id(db),
+    }
 
 
 class Credentials(BaseModel):
@@ -36,7 +55,64 @@ class Credentials(BaseModel):
 
 @router.get("/setup/status")
 def setup_status(db: Session = Depends(db_session)) -> dict[str, Any]:
-    return {"needs_setup": services.needs_setup(db), "version": services.HUB_VERSION}
+    return {"needs_setup": services.needs_setup(db), "version": services.HUB_VERSION, "migration": migration.view(db)}
+
+
+# ---- moving the Hub to another PC (admin) ----------------------------------------------------
+
+
+class ExportRequest(BaseModel):
+    folder: str
+
+
+class HandOver(BaseModel):
+    url: str
+
+
+@router.get("/migration")
+def migration_overview(
+    _: User = Depends(admin_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """How big an export is, where it could go, what blocks it and what stays on this PC; the state."""
+    return migration.overview(db, hub.settings)
+
+
+@router.post("/migration/export")
+def migration_export(
+    body: ExportRequest, request: Request, who: User = Depends(admin_user), db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:  # fmt: skip
+    """Make this Hub read-only and pack it into one file in a folder of this PC."""
+    agent = getattr(request.app.state, "local_agent", None)
+    return migration.start_export(db, who, hub.settings, body.folder, agent)
+
+
+@router.post("/migration/cancel")
+def migration_cancel(who: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """This Hub writable again."""
+    done = migration.cancel(db, who)
+    db.commit()
+    return done
+
+
+@router.post("/migration/hand-over")
+def migration_hand_over(body: HandOver, who: User = Depends(admin_user), db: Session = Depends(db_session)) -> dict:
+    """Send nodes and browsers to the new Hub (it must answer as this Hub's import)."""
+    done = migration.hand_over(db, who, body.url)
+    db.commit()
+    return done
+
+
+@public_router.get("/media/hub-export/{name}")
+def migration_file(name: str, exp: int, sig: str, hub: Hub = Depends(get_hub)) -> FileResponse:
+    """The exported file by a signed link from the moving screen, to fetch from the new PC's browser (ranges are
+    served, so a broken download resumes)."""
+    from .catalog import verify_media
+
+    path = migration.exported_file(hub)
+    if not verify_media(hub.settings, "hub-export", name, exp, sig) or path is None or path.name != name:
+        raise HTTPException(status_code=404, detail="내보낸 파일이 없거나 링크가 지났습니다. 화면에서 링크를 다시 받으세요.")
+    return FileResponse(path, filename=path.name, media_type="application/x-tar")
 
 
 @router.post("/setup")

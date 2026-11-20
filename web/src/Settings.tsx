@@ -1,3 +1,4 @@
+import { MigrationPanel } from "./Migration";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { GpuBusyPanel, HubAutostartPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { DockerRegistry, ImageInRegistry, useRegistryImages } from "./DockerRegistry";
@@ -148,6 +149,7 @@ const SECTIONS: { id: string; label: string; admin?: boolean }[] = [
   { id: "storage", label: "Hub 저장 공간" },
   { id: "users", label: "사용자", admin: true },
   { id: "hub", label: "Hub 실행", admin: true },
+  { id: "migrate", label: "Hub 옮기기", admin: true },
   { id: "account", label: "내 계정" },
   { id: "monitoring", label: "외부 모니터링" },
 ];
@@ -188,6 +190,7 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
       {part === "storage" && <StorageUsage isAdmin={isAdmin} />}
       {part === "users" && <UsersPanel me={user} />}
       {part === "hub" && <HubAutostartPanel />}
+      {part === "migrate" && <MigrationPanel />}
       {part === "account" && <MyAccount me={user} />}
       {part === "monitoring" && <ExternalMonitoring />}
     </>

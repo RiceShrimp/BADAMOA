@@ -211,11 +211,45 @@ class NodeAgent:
         self._storage_report: dict[str, Any] | None = None  # measured, not yet delivered to the Hub
         self._recount = threading.Event()
         self._first_beat = threading.Event()  # the Hub's settings (where to keep images) are known
-        self._client = httpx.Client(
-            base_url=config.hub_url,
-            headers={"Authorization": f"Bearer {config.node_token}"},
+        self._follow_tried = float("-inf")  # the Hub said it moved: when switching there was last tried
+        self._client = self._hub_client(config.hub_url)
+
+    def _hub_client(self, url: str) -> httpx.Client:
+        return httpx.Client(
+            base_url=url,
+            headers={"Authorization": f"Bearer {self.config.node_token}"},
             timeout=httpx.Timeout(30.0, read=CLAIM_WAIT_S + 15.0),
         )
+
+    def _follow(self, url: str) -> None:
+        """The Hub moved to another PC (its heartbeat reply names the new address): switch there once the new Hub
+        knows this node, and keep the address in node.json. Until then, and if it does not, nothing changes."""
+        url = url.strip().rstrip("/")
+        if not url or url == self.config.hub_url.rstrip("/") or time.monotonic() - self._follow_tried < 60:
+            return
+        self._follow_tried = time.monotonic()
+        client = self._hub_client(url)
+        try:
+            probe = client.post(
+                "/api/agent/heartbeat", json={"agent_version": __version__, "metrics": {}, "running_job_ids": []}
+            )
+        except httpx.HTTPError as e:
+            log.warning("Hub가 %s로 옮겼다고 하지만 닿지 않습니다: %s (1분 뒤 다시)", url, e)
+            client.close()
+            return
+        if probe.status_code != 200:
+            log.warning("Hub가 %s로 옮겼다고 하지만 그 Hub가 이 노드를 모릅니다 (%s)", url, probe.status_code)
+            client.close()
+            return
+        self.config.hub_url = url
+        try:
+            self.home.mkdir(parents=True, exist_ok=True)
+            self.config.save(self.home)
+        except OSError as e:
+            log.warning("node.json에 새 Hub 주소를 쓰지 못했습니다: %s", e)
+        self._client = client  # the old one is left to finish a request it may be in
+        self._data.follow(url)
+        log.info("Hub가 옮겼습니다: 이제 %s", url)
 
     # ---- lifecycle -------------------------------------------------------------
 
@@ -409,6 +443,7 @@ class NodeAgent:
                     self._first_beat.set()
                     self._maybe_sweep(int(reply.get("workdir_days") or 0))
                     self._maybe_update(str(reply.get("hub_version") or ""))
+                    self._follow(str(reply.get("hub_url") or ""))
             except httpx.HTTPError as e:
                 log.debug("heartbeat failed: %s", e)
             self.stop_event.wait(HEARTBEAT_INTERVAL_S)

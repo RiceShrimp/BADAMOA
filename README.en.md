@@ -77,6 +77,18 @@ To have the Hub come back when the PC restarts, turn on "재부팅 시 자동 �
 > [!TIP]
 > For data to try, `uv run python scripts/fetch_coco128.py` (COCO128, about 7 MB) and `uv run python scripts/fetch_mnist160.py` (MNIST160, about 70 KB). Both unpack under `.badamoa/data/`.
 
+### Move the Hub to another PC
+
+In **Settings → Hub 옮기기** (admins) the Hub is exported into one file (`badamoa-hub-<date>.tar`): accounts, projects, dataset records, training, models, evaluations, thumbnails and result files. Dataset originals and received copies stay on the nodes. From the moment of export the old Hub only reads (cancel to write again).
+
+On the new PC prepare the Hub as above and, before starting it, import the file (`--home` as when running the Hub).
+
+```bash
+uv run badamoa hub import badamoa-hub-20261120-1500.tar --home .badamoa/hub
+```
+
+Start the new Hub and enter its address on the old Hub's same screen: each node checks the new Hub knows it and switches, and people opening the old address are sent to the new one. To export a stopped Hub use `uv run badamoa hub export <folder> --home .badamoa/hub`.
+
 ### Add training and data servers
 
 In the web app, **Nodes** (노드) → **Add node** (노드 추가) asks which roles the server takes (training 학습용 · auto-labeling 오토라벨용 · inference 추론용 · data server 데이터 서버용), then shows a one-line command for Ubuntu and one for Windows. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows): it registers to start automatically and shows up on the node board shortly after. It comes back and reconnects after a reboot, and from then on the node updates itself to follow the Hub's version.

@@ -104,11 +104,13 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  const [movedTo, setMovedTo] = useState(""); // the Hub moved to another PC: shown on the sign-in screen
   useEffect(() => {
     void (async () => {
       try {
-        const status = await api<{ needs_setup: boolean; version: string }>("/setup/status");
+        const status = await api<{ needs_setup: boolean; version: string; migration?: Moving }>("/setup/status");
         setVersion(status.version);
+        setMovedTo(status.migration?.url ?? "");
         if (status.needs_setup) return setState("setup");
         if (!getToken()) return setState("login");
         setUser(await api<User>("/auth/me"));
@@ -125,6 +127,7 @@ export function App() {
     return (
       <AuthForm
         mode={state === "setup" ? "setup" : "login"}
+        movedTo={movedTo}
         onAuthed={(token, u) => {
           setToken(token);
           setUser(u);
@@ -142,6 +145,13 @@ export function App() {
 
   const [, , sub, arg] = hash.split("/"); // #/<page>/<id>/<extra>
   return <Shell user={user} version={version} page={page} sub={sub || undefined} arg={arg || undefined} onLogout={logout} />;
+}
+
+/** The Hub being moved to another PC (``/setup/status``'s ``migration``). */
+interface Moving {
+  phase: string;
+  read_only: boolean;
+  url: string;
 }
 
 function Shell({
@@ -168,7 +178,10 @@ function Shell({
     return () => window.removeEventListener(TRASH_EVENT, again);
   }, [recount]);
   // The Hub was updated while this page stayed open: its screens are the old ones until reloaded.
-  const { data: running, refresh: recheck } = usePolling(() => api<{ version: string }>("/setup/status"), 60000);
+  const { data: running, refresh: recheck } = usePolling(
+    () => api<{ version: string; migration?: Moving }>("/setup/status"),
+    60000,
+  );
   useEffect(() => {
     const back = () => document.visibilityState === "visible" && void recheck(); // coming back to the tab
     document.addEventListener("visibilitychange", back);
@@ -286,6 +299,27 @@ function Shell({
             </button>
           </div>
         </header>
+        {running?.migration?.read_only && (
+          <div className="update-bar moving" role="status">
+            {running.migration.phase === "moved" ? (
+              <>
+                이 Hub는 새 PC로 옮겼습니다. 여기서는 읽기만 됩니다.
+                <a className="btn small primary" href={running.migration.url}>
+                  새 Hub로 가기
+                </a>
+              </>
+            ) : (
+              <>
+                이 Hub는 새 PC로 옮기는 중이라 읽기만 됩니다.
+                {isAdmin && (
+                  <a className="small" href="#/settings/migrate">
+                    Hub 옮기기
+                  </a>
+                )}
+              </>
+            )}
+          </div>
+        )}
         {updated && (
           <div className="update-bar" role="status">
             BADAMOA가 업데이트되었습니다(v{updated}). 새로고침하면 바뀐 화면을 씁니다.
@@ -314,7 +348,15 @@ function Shell({
   );
 }
 
-function AuthForm({ mode, onAuthed }: { mode: "setup" | "login"; onAuthed: (token: string, user: User) => void }) {
+function AuthForm({
+  mode,
+  movedTo,
+  onAuthed,
+}: {
+  mode: "setup" | "login";
+  movedTo: string;
+  onAuthed: (token: string, user: User) => void;
+}) {
   const [username, setUsername] = useState(mode === "setup" ? "admin" : "");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -349,7 +391,19 @@ function AuthForm({ mode, onAuthed }: { mode: "setup" | "login"; onAuthed: (toke
           </span>
         </div>
         <h1>{mode === "setup" ? "관리자 계정 만들기" : "로그인"}</h1>
+        {movedTo && (
+          <div className="notice">
+            이 Hub는 새 PC로 옮겼습니다. <a href={movedTo}>{movedTo}</a>에서 같은 계정으로 로그인하세요.
+          </div>
+        )}
         {mode === "setup" && <p className="muted">처음 실행하셨네요. 이 Hub를 관리할 계정을 만들어 주세요.</p>}
+        {mode === "setup" && (
+          <details className="muted small">
+            <summary>다른 PC의 Hub를 옮겨 오나요?</summary>
+            예전 Hub의 설정 → Hub 옮기기에서 내보낸 파일을 이 PC로 가져와, 이 Hub를 끈 채로 <code>uv run badamoa hub import 파일 --home .badamoa/hub</code>
+            (Hub를 띄울 때와 같은 --home)를 실행한 뒤 다시 켜면 계정과 기록이 모두 옵니다. 그때는 여기서 계정을 만들지 마세요.
+          </details>
+        )}
         <label>
           아이디
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />

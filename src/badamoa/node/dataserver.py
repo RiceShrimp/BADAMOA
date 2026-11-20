@@ -161,9 +161,16 @@ class DataServer:
     def __init__(self, hub_url: str, node_token: str, node_id: str, port: int = DEFAULT_PORT) -> None:
         self.port = port
         self._hub = httpx.Client(base_url=hub_url, headers={"Authorization": f"Bearer {node_token}"}, timeout=60)
+        self._token = node_token
         self._node_id = node_id
         self._server: _Server | None = None
         self.error = ""
+
+    def follow(self, hub_url: str) -> None:
+        """The Hub moved: ask the new one who may take images from here."""
+        self._hub = httpx.Client(base_url=hub_url, headers={"Authorization": f"Bearer {self._token}"}, timeout=60)
+        if self._server is not None:
+            self._server.hub = self._hub
 
     def start(self) -> int:
         """Listen; returns the port (0 when it could not, with the reason in ``error``)."""

@@ -58,6 +58,8 @@ class HeartbeatResponse(BaseModel):
     cache_dir: str = ""
     # Where to keep environments, work folders and fetched files, as an admin set it ("" = the node chooses).
     work_dir: str = ""
+    # The Hub moved to another PC: the node switches there once that Hub knows it ("" = stay).
+    hub_url: str = ""
 
 
 class ClaimRequest(BaseModel):

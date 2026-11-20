@@ -74,6 +74,18 @@ PC를 다시 켰을 때 Hub도 저절로 켜지게 하려면 **설정 → Hub �
 > [!TIP]
 > 시험해 볼 데이터는 `uv run python scripts/fetch_coco128.py`(COCO128, 약 7 MB)와 `uv run python scripts/fetch_mnist160.py`(MNIST160, 약 70 KB)로 받습니다. `.badamoa/data/` 아래에 풀립니다.
 
+### Hub를 다른 PC로 옮기기
+
+**설정 → Hub 옮기기**(관리자)에서 이 Hub를 파일 하나(`badamoa-hub-<날짜>.tar`)로 내보냅니다. 계정 · 프로젝트 · 데이터셋 기록 · 학습 · 모델 · 평가 · 썸네일 · 결과 파일이 들어가고, 데이터셋 원본과 받아 둔 이미지는 노드에 있어 그대로 둡니다. 내보내기를 누른 때부터 예전 Hub는 읽기만 됩니다(취소하면 다시 씀).
+
+새 PC에서는 위처럼 Hub를 띄울 준비만 하고, 켜기 전에 파일을 가져옵니다(`--home`은 Hub를 띄울 때와 같게).
+
+```bash
+uv run badamoa hub import badamoa-hub-20261120-1500.tar --home .badamoa/hub
+```
+
+새 Hub를 켠 뒤 예전 Hub의 같은 화면에 새 Hub 주소를 적으면, 노드는 새 Hub가 자기를 아는지 확인하고 넘어가고 예전 주소로 접속한 사람은 새 Hub로 안내됩니다. 예전 Hub를 끈 채로 내보내려면 `uv run badamoa hub export <폴더> --home .badamoa/hub`를 씁니다.
+
 ### 학습 · 데이터 서버 붙이기
 
 웹 화면의 **노드 → 노드 추가**에서 서버가 맡을 역할(학습용 · 오토라벨용 · 추론용 · 데이터 서버용)을 고르면 Ubuntu용과 Windows용 명령이 한 줄씩 나옵니다. 붙일 서버에서 그 명령을 실행하면(Ubuntu는 `sudo`, Windows는 관리자 PowerShell) 자동 시작으로 등록되고, 잠시 뒤 노드 화면에 나타납니다. 재부팅해도 다시 켜져 Hub에 붙고, 이후 업데이트는 Hub 버전을 따라 노드가 스스로 합니다.

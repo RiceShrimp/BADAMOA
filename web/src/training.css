@@ -1399,3 +1399,38 @@ label.check {
   flex: 1 1 220px;
   min-width: 0;
 }
+
+/* settings → Hub 옮기기 (Migration.tsx) */
+.migration h4 {
+  margin: 18px 0 6px;
+}
+.migration progress {
+  width: 100%;
+  max-width: 520px;
+}
+.migration .row-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.migration .row-inline input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.migration table {
+  max-width: 520px;
+  margin-bottom: 10px;
+}
+.update-bar.moving {
+  border-color: var(--warn);
+}
+.migration-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.migration-steps li > div {
+  margin-top: 6px;
+}
