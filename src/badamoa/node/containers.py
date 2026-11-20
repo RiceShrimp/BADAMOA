@@ -231,6 +231,27 @@ def image_id(image: str) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
+def pull_failure(image: str, output: str) -> str:
+    """Why ``docker pull`` failed, in words a person can act on."""
+    head = image.split("/", 1)[0] if "/" in image else ""
+    registry = head if any(c in head for c in ".:") else ""
+    failed = f"Docker 이미지를 받지 못했습니다: {image}."
+    if "HTTP response to HTTPS client" in output and registry:
+        # A registry without TLS (``docker run registry``): each Docker that pulls from it has to be told it may.
+        return (
+            f"{failed} 레지스트리 {registry}는 HTTPS 없이(HTTP로) 열려 있는데, "
+            "이 서버의 Docker는 HTTP 레지스트리를 허용하지 않습니다. "
+            f'이 서버의 /etc/docker/daemon.json에 "insecure-registries": ["{registry}"]를 넣고 '
+            "sudo systemctl reload docker를 하세요(돌고 있는 컨테이너는 멈추지 않음). "
+            "Windows · Mac의 Docker Desktop은 Settings → Docker Engine에서 같은 값을 넣습니다."
+        )
+    if "unauthorized" in output or "authentication required" in output or "pull access denied" in output:
+        return f"{failed} 레지스트리에 로그인이 필요합니다(이 서버에서 docker login {registry})."
+    if "manifest unknown" in output or "repository does not exist" in output:
+        return f"{failed} 레지스트리에 그 이름 · 태그의 이미지가 없습니다."
+    return f"{failed} 이미지 이름과 레지스트리 로그인을 확인하세요."
+
+
 def ensure(home: Path, image: str, log: Callable[[str], None] = print) -> str:
     """Have the image on this node (pulled from its registry the first time). Returns its id."""
     command = docker()
@@ -250,13 +271,15 @@ def ensure(home: Path, image: str, log: Callable[[str], None] = print) -> str:
         )
         assert proc.stdout is not None
         last = ""
+        said: list[str] = []
         for line in proc.stdout:
             line = line.rstrip()
             if line and line != last:  # layer progress repeats itself
                 log(line)
                 last = line
+                said = [*said[-20:], line]
         if proc.wait() != 0:
-            raise RuntimeError(f"Docker 이미지를 받지 못했습니다: {image}. 이미지 이름과 레지스트리 로그인을 확인하세요.")
+            raise RuntimeError(pull_failure(image, "\n".join(said)))
         found = image_id(image)
         if found is None:
             raise RuntimeError(f"받은 Docker 이미지를 찾을 수 없습니다: {image}")

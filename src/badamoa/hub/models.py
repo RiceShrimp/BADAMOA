@@ -26,6 +26,8 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     # A stopped account cannot sign in and its tokens stop working; nothing it made is removed.
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The order this person dragged cards and lists into, per screen: {"review.projects": [id, …], …}
+    orders: Mapped[dict[str, list[str]]] = mapped_column(JSON, default=dict)
 
 
 class ApiToken(Base):

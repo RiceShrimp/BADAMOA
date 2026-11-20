@@ -233,3 +233,13 @@ def test_an_image_prepared_ahead_and_removed_keeps_an_image_that_was_there_befor
     while time.monotonic() < deadline and state() == "ready":
         time.sleep(0.3)
     assert state() == ""
+
+
+def test_a_failed_pull_says_why():
+    image = "192.168.106.2:5000/wrapper/mlops_yolo_curriculum:v4-cu128"
+    http = 'Get "https://192.168.106.2:5000/v2/": http: server gave HTTP response to HTTPS client'
+    said = containers.pull_failure(image, http)
+    assert '"insecure-registries": ["192.168.106.2:5000"]' in said and "systemctl reload docker" in said
+    assert "로그인" in containers.pull_failure(image, "Error response from daemon: unauthorized: authentication required")
+    assert "이미지가 없습니다" in containers.pull_failure(image, "manifest for x not found: manifest unknown")
+    assert "이미지 이름과 레지스트리 로그인" in containers.pull_failure("ultralytics/ultralytics:latest", "timeout")

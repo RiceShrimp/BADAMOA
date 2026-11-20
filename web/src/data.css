@@ -1333,3 +1333,26 @@ tr.clickable:hover td {
     opacity: 0.35;
   }
 }
+
+/* cards and rows dragged into a person's own order (Order.tsx) */
+.sort-item {
+  display: flex;
+  min-width: 0;
+}
+.sort-item > * {
+  flex: 1;
+  min-width: 0;
+}
+.sort-item.dragging {
+  position: relative;
+  z-index: 5;
+  cursor: grabbing;
+}
+.sort-item.dragging > * {
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.sort-list > .sort-item > * {
+  background: var(--surface);
+}

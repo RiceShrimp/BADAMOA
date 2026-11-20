@@ -13,6 +13,7 @@ import {
   taskLabel,
 } from "./catalogTypes";
 import { ImportProgress, useImports } from "./Imports";
+import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
 // ---- what the Hub sends ---------------------------------------------------------------
@@ -223,6 +224,13 @@ const SORTS = [
   { id: "name", label: "이름순" },
   { id: "items", label: "이미지 많은 순" },
 ];
+const MINE = { id: "mine", label: "내가 끌어 놓은 순서" }; // once this person has dragged the cards
+const BY: Record<string, (a: ProjectCardInfo, b: ProjectCardInfo) => number> = {
+  updated: (a, b) => b.updated_at.localeCompare(a.updated_at),
+  name: (a, b) => a.name.localeCompare(b.name, "ko"),
+  items: (a, b) => b.items - a.items,
+};
+const cardId = (c: { id: string }) => c.id;
 
 // ---- a project's folder: one there is, none, or a new one typed in --------------------------
 
@@ -372,7 +380,9 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   const [task, setTask] = useState(""); // "": every task
   const [wanted, setWanted] = useState<string[]>([]); // class names a project must all have (any case)
   const [filtering, setFiltering] = useState(false);
-  const [sort, setSort] = useState("updated");
+  const order = useOrder("datasets.projects", cards, cardId);
+  const [sortChoice, setSort] = useState<string | null>(null); // null: the dragged order if there is one, else the newest
+  const sort = sortChoice ?? (order.custom ? MINE.id : "updated");
   const [editing, setEditing] = useState<ProjectCardInfo | null>(null);
   const [makingFolder, setMakingFolder] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -429,20 +439,20 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   };
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    const list = (cards ?? []).filter(
+    const list = (sort === MINE.id ? order.ordered : (cards ?? [])).filter(
       (c) =>
         (folder === null || c.folder === folder) &&
         (!task || c.tasks.includes(task)) &&
         hasAll(c, wanted) &&
         (!needle || `${c.name} ${c.description} ${c.folder}`.toLowerCase().includes(needle)),
     );
-    const by: Record<string, (a: ProjectCardInfo, b: ProjectCardInfo) => number> = {
-      updated: (a, b) => b.updated_at.localeCompare(a.updated_at),
-      name: (a, b) => a.name.localeCompare(b.name, "ko"),
-      items: (a, b) => b.items - a.items,
-    };
-    return [...list].sort(by[sort]);
-  }, [cards, folder, task, wanted, q, sort]);
+    return sort === MINE.id ? list : [...list].sort(BY[sort]);
+  }, [cards, folder, task, wanted, q, sort, order.ordered]);
+  // Dragging while sorted another way starts from the order on show: every project, as sorted now.
+  const moved = (ids: string[]) => {
+    order.move(ids, sort === MINE.id ? undefined : [...(cards ?? [])].sort(BY[sort]).map(cardId));
+    setSort(MINE.id);
+  };
   const clearFilters = () => {
     setTask("");
     setWanted([]);
@@ -513,12 +523,13 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
             )}
           </div>
           <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="정렬">
-            {SORTS.map((s) => (
+            {(order.custom ? [MINE, ...SORTS] : SORTS).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.label}
               </option>
             ))}
           </select>
+          {sort === MINE.id && <OrderReset order={order} onReset={() => setSort(null)} />}
           {!picking.on && shown.length > 0 && (
             <button className="ghost-btn" onClick={picking.start} title="여러 프로젝트를 골라 한 번에 휴지통으로">
               <Icon name="check" size={13} />
@@ -609,22 +620,25 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
       {cards && folder && shown.length === 0 && !q.trim() && filters === 0 && (
         <p className="muted">빈 폴더입니다. 여기서 새 프로젝트를 만들거나, 다른 프로젝트의 설정(톱니바퀴)에서 이 폴더로 옮기세요.</p>
       )}
-      <div className="card-grid">
-        {shown.map((c) => (
-          <ProjectCard
-            key={c.id}
-            card={c}
-            onEdit={() => setEditing(c)}
-            highlight={wanted}
-            picking={picking.on ? { selected: picking.ids.includes(c.id), onToggle: () => picking.toggle(c.id) } : undefined}
-          />
-        ))}
-        {cards && (cards.length > 0 || names.length > 0) && !picking.on && (
-          <button className="add-tile" onClick={() => onNewProject(folder ?? "")}>
-            <Icon name="plus" size={18} />새 프로젝트{folder ? ` (${folder})` : ""}
-          </button>
-        )}
-      </div>
+      <Sortable ids={shown.map(cardId)} onMove={moved} disabled={picking.on}>
+        <div className="card-grid">
+          {shown.map((c) => (
+            <SortItem key={c.id} id={c.id}>
+              <ProjectCard
+                card={c}
+                onEdit={() => setEditing(c)}
+                highlight={wanted}
+                picking={picking.on ? { selected: picking.ids.includes(c.id), onToggle: () => picking.toggle(c.id) } : undefined}
+              />
+            </SortItem>
+          ))}
+          {cards && (cards.length > 0 || names.length > 0) && !picking.on && (
+            <button className="add-tile" onClick={() => onNewProject(folder ?? "")}>
+              <Icon name="plus" size={18} />새 프로젝트{folder ? ` (${folder})` : ""}
+            </button>
+          )}
+        </div>
+      </Sortable>
 
       {editing && (
         <EditProject
@@ -1067,6 +1081,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
   const importing = useImports().filter(
     (i) => i.project.id === projectId && (i.status === "queued" || i.status === "running"),
   );
+  const order = useOrder(`datasets.datasets.${projectId}`, page?.dataset_cards, cardId);
   if (error && !page) return <div className="error">{error}</div>;
   if (!page) return <div className="muted">불러오는 중…</div>;
   const colorOf = (cards: DatasetCardInfo) => (id: number) =>
@@ -1113,6 +1128,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
               고르기
             </button>
           )}
+          <OrderReset order={order} />
           <a className="btn" href={`#/training/project/${page.id}`} onClick={() => rememberProject(page.id)}>
             학습
           </a>
@@ -1139,81 +1155,87 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
         </PickBar>
       )}
       <div className="project-layout">
-        <div className="card-grid">
-          {importing.map((i) => (
-            <a key={i.job_id} className="data-card data-card-link importing" href={i.release_id ? `#/datasets/${i.release_id}` : undefined}>
-              <div className="collage importing-face">
-                <span className="spinner" />
-              </div>
-              <div className="data-card-body">
-                <div className="data-card-title">
-                  <strong>{i.dataset}</strong>
-                  <span className="tag">{i.version}</span>
+        <Sortable ids={order.ordered.map(cardId)} onMove={order.move} disabled={picking.on}>
+          <div className="card-grid">
+            {importing.map((i) => (
+              <a key={i.job_id} className="data-card data-card-link importing" href={i.release_id ? `#/datasets/${i.release_id}` : undefined}>
+                <div className="collage importing-face">
+                  <span className="spinner" />
                 </div>
-                <div className="muted small">
-                  {i.node ? `${i.node}에서 ` : ""}
-                  {i.status === "queued" ? "등록 대기" : "등록 중"} · 다른 화면에서 일해도 됩니다
+                <div className="data-card-body">
+                  <div className="data-card-title">
+                    <strong>{i.dataset}</strong>
+                    <span className="tag">{i.version}</span>
+                  </div>
+                  <div className="muted small">
+                    {i.node ? `${i.node}에서 ` : ""}
+                    {i.status === "queued" ? "등록 대기" : "등록 중"} · 다른 화면에서 일해도 됩니다
+                  </div>
+                  <ImportProgress info={i} compact />
                 </div>
-                <ImportProgress info={i} compact />
-              </div>
-            </a>
-          ))}
-          {page.dataset_cards.map((d) => {
-            const pick = picking.on ? { selected: picking.ids.includes(d.id), onToggle: () => picking.toggle(d.id) } : null;
-            const body = (
-              <>
-              <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />
-              <div className="data-card-body">
-                <div className="data-card-title">
-                  <strong>{d.name}</strong>
-                  <span className="title-tags">
-                    <span className="tag task-tag" title={TASK_HINT_TEXT(d.task)}>
-                      {taskLabel(d.task)}
-                    </span>
-                    <span className="tag">{d.release.version}</span>
-                    {d.draft && d.draft.edited > 0 && (
-                      <span className="tag accent" title="라벨을 고쳤지만 아직 버전으로 확정하지 않은 이미지">
-                        작업 중 {d.draft.edited.toLocaleString()}
-                      </span>
-                    )}
-                  </span>
-                </div>
-                <div className="muted small">
-                  버전 {d.releases} · 클래스 {d.classes} · 이미지 {d.items.toLocaleString()} · {bytesLabel(d.bytes)} ·{" "}
-                  {timeAgo(d.release.created_at)}
-                </div>
-                <div className="card-classes">
-                  {d.top_classes.map((c) => (
-                    <span key={c.id}>
-                      <i style={{ background: c.color ?? classColor(c.id) }} />
-                      {c.name}
-                    </span>
-                  ))}
-                  {d.classes > d.top_classes.length && <em>+{d.classes - d.top_classes.length}</em>}
-                </div>
-                <SplitBar splits={d.splits} />
-              </div>
-              </>
-            );
-            return pick ? (
-              <div key={d.id} className={`data-card data-card-link picking${pick.selected ? " selected" : ""}`} {...pickProps(pick, d.name)}>
-                <CardCheck selected={pick.selected} />
-                {body}
-              </div>
-            ) : (
-              <a key={d.id} className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
-                {body}
               </a>
-            );
-          })}
-          {!picking.on && (
-          <button className="add-tile" onClick={onImport}>
-            <Icon name="plus" size={18} />
-            데이터셋 가져오기
-            <span className="muted small">노드의 폴더를 복사 없이 등록 · Det · Seg · Kpt · Cls</span>
-          </button>
-          )}
-        </div>
+            ))}
+            {order.ordered.map((d) => {
+              const pick = picking.on ? { selected: picking.ids.includes(d.id), onToggle: () => picking.toggle(d.id) } : null;
+              const body = (
+                <>
+                <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />
+                <div className="data-card-body">
+                  <div className="data-card-title">
+                    <strong>{d.name}</strong>
+                    <span className="title-tags">
+                      <span className="tag task-tag" title={TASK_HINT_TEXT(d.task)}>
+                        {taskLabel(d.task)}
+                      </span>
+                      <span className="tag">{d.release.version}</span>
+                      {d.draft && d.draft.edited > 0 && (
+                        <span className="tag accent" title="라벨을 고쳤지만 아직 버전으로 확정하지 않은 이미지">
+                          작업 중 {d.draft.edited.toLocaleString()}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="muted small">
+                    버전 {d.releases} · 클래스 {d.classes} · 이미지 {d.items.toLocaleString()} · {bytesLabel(d.bytes)} ·{" "}
+                    {timeAgo(d.release.created_at)}
+                  </div>
+                  <div className="card-classes">
+                    {d.top_classes.map((c) => (
+                      <span key={c.id}>
+                        <i style={{ background: c.color ?? classColor(c.id) }} />
+                        {c.name}
+                      </span>
+                    ))}
+                    {d.classes > d.top_classes.length && <em>+{d.classes - d.top_classes.length}</em>}
+                  </div>
+                  <SplitBar splits={d.splits} />
+                </div>
+                </>
+              );
+              return (
+                <SortItem key={d.id} id={d.id}>
+                  {pick ? (
+                    <div className={`data-card data-card-link picking${pick.selected ? " selected" : ""}`} {...pickProps(pick, d.name)}>
+                      <CardCheck selected={pick.selected} />
+                      {body}
+                    </div>
+                  ) : (
+                    <a className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
+                      {body}
+                    </a>
+                  )}
+                </SortItem>
+              );
+            })}
+            {!picking.on && (
+            <button className="add-tile" onClick={onImport}>
+              <Icon name="plus" size={18} />
+              데이터셋 가져오기
+              <span className="muted small">노드의 폴더를 복사 없이 등록 · Det · Seg · Kpt · Cls</span>
+            </button>
+            )}
+          </div>
+        </Sortable>
 
         <aside className="card project-models">
           <h3>이 프로젝트의 모델</h3>

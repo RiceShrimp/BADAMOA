@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { type BoardProject, useBoardFilter } from "./Boards";
 import { Collage, type Shot } from "./DataBoard";
 import { ItemViewer, type LabelingMode } from "./ItemViewer";
+import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
 import type { ItemFilter } from "./ReleaseMaker";
 import { colorFor } from "./ReleaseTabs";
 import { api } from "./api";
@@ -84,12 +85,66 @@ interface LabelingBoardInfo {
   totals: { sets: number; items: number; todo: number; review: number; done: number };
 }
 
-const projectOfGroup = (g: LabelingBoardInfo["projects"][number]) => g.project;
+type SetGroup = LabelingBoardInfo["projects"][number];
+const projectOfGroup = (g: SetGroup) => g.project;
+const groupId = (g: SetGroup) => g.project.id;
+const setId = (s: SetCard) => s.id;
+
+/** One project's labeling sets on the board, in the order this person dragged them into. */
+function SetGroupCards({ group: g }: { group: SetGroup }) {
+  const order = useOrder(`labeling.sets.${g.project.id}`, g.sets, setId);
+  return (
+    <div className="board-group">
+      <h3>
+        <a href={`#/datasets/project/${g.project.id}`}>{g.project.name}</a>
+        <span className="muted small">
+          {g.project.folder ? `${g.project.folder} · ` : ""}묶음 {g.sets.length} · {timeAgo(g.updated_at)} 작업
+        </span>
+        <OrderReset order={order} />
+      </h3>
+      <Sortable ids={order.ordered.map(setId)} onMove={order.move}>
+        <div className="card-grid set-grid">
+          {order.ordered.map((s) => (
+            <SortItem key={s.id} id={s.id}>
+              <a className="data-card data-card-link set-card" href={`#/labeling/${s.id}`}>
+                <Collage shots={s.collage} colorOf={classColor} more={s.items} />
+                <div className="data-card-body">
+                  <div className="data-card-title">
+                    <strong>{s.name}</strong>
+                    {s.mine > 0 && <span className="tag accent">내 일감 {s.mine}</span>}
+                    {["queued", "running"].includes(s.autolabel?.status ?? "") && <span className="tag">오토라벨 중</span>}
+                  </div>
+                  <div className="muted small">
+                    {s.dataset?.name} {s.release?.version} · 이미지 {s.items.toLocaleString()} · 일감 {s.parts}
+                    {s.review ? " · 검수함" : " · 검수 없음"}
+                  </div>
+                  <Progress states={s.states} size={s.items} />
+                  <StateCounts states={s.states} />
+                  <div className="set-columns small">
+                    {COLUMNS.filter((c) => s.review || c.id !== "review").map((c) => (
+                      <span key={c.id} className={s.columns[c.id] ? "" : "muted"}>
+                        {c.label} {s.columns[c.id]}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="muted small">
+                    {s.created_by ?? "?"} · {timeAgo(s.updated_at)} 작업
+                  </div>
+                </div>
+              </a>
+            </SortItem>
+          ))}
+        </div>
+      </Sortable>
+    </div>
+  );
+}
 
 /** 라벨링's first screen: my parts and what is left in them, then every project's sets. */
 function LabelingBoard() {
   const { data: board, error } = usePolling(() => api<LabelingBoardInfo>("/boards/labeling"), 15000);
-  const { shown, tools } = useBoardFilter(board?.projects, projectOfGroup);
+  const order = useOrder("labeling.projects", board?.projects, groupId);
+  const { shown, tools } = useBoardFilter(board ? order.ordered : null, projectOfGroup);
   if (error && !board) return <div className="error">{error}</div>;
   const t = board?.totals;
   return (
@@ -154,53 +209,24 @@ function LabelingBoard() {
       </section>
 
       <section className="board-section">
-        <h2>프로젝트별 라벨링 묶음</h2>
+        <h2>
+          프로젝트별 라벨링 묶음 <span className="muted small">프로젝트와 묶음은 끌어서 순서를 바꿉니다</span>
+          <span className="spacer" />
+          <OrderReset order={order} />
+        </h2>
         {board && board.projects.length === 0 && (
           <div className="card empty">
             아직 라벨링 묶음이 없습니다. 데이터셋의 최신 버전에서 이미지를 거른 뒤(예: 라벨 상태 "아직 안 함") "라벨링 묶음 만들기"를 누르세요.
           </div>
         )}
         {tools}
-        {shown.map((g) => (
-          <div key={g.project.id} className="board-group">
-            <h3>
-              <a href={`#/datasets/project/${g.project.id}`}>{g.project.name}</a>
-              <span className="muted small">
-                {g.project.folder ? `${g.project.folder} · ` : ""}묶음 {g.sets.length} · {timeAgo(g.updated_at)} 작업
-              </span>
-            </h3>
-            <div className="card-grid set-grid">
-              {g.sets.map((s) => (
-                <a key={s.id} className="data-card data-card-link set-card" href={`#/labeling/${s.id}`}>
-                  <Collage shots={s.collage} colorOf={classColor} more={s.items} />
-                  <div className="data-card-body">
-                    <div className="data-card-title">
-                      <strong>{s.name}</strong>
-                      {s.mine > 0 && <span className="tag accent">내 일감 {s.mine}</span>}
-                      {["queued", "running"].includes(s.autolabel?.status ?? "") && <span className="tag">오토라벨 중</span>}
-                    </div>
-                    <div className="muted small">
-                      {s.dataset?.name} {s.release?.version} · 이미지 {s.items.toLocaleString()} · 일감 {s.parts}
-                      {s.review ? " · 검수함" : " · 검수 없음"}
-                    </div>
-                    <Progress states={s.states} size={s.items} />
-                    <StateCounts states={s.states} />
-                    <div className="set-columns small">
-                      {COLUMNS.filter((c) => s.review || c.id !== "review").map((c) => (
-                        <span key={c.id} className={s.columns[c.id] ? "" : "muted"}>
-                          {c.label} {s.columns[c.id]}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="muted small">
-                      {s.created_by ?? "?"} · {timeAgo(s.updated_at)} 작업
-                    </div>
-                  </div>
-                </a>
-              ))}
-            </div>
-          </div>
-        ))}
+        <Sortable ids={shown.map(groupId)} onMove={order.move} list>
+          {shown.map((g) => (
+            <SortItem key={g.project.id} id={g.project.id}>
+              <SetGroupCards group={g} />
+            </SortItem>
+          ))}
+        </Sortable>
         {board && board.without.length > 0 && (
           <p className="muted small">
             묶음이 없는 프로젝트:{" "}

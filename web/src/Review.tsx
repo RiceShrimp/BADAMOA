@@ -3,6 +3,7 @@ import { type BoardProject, useBoardFilter } from "./Boards";
 import { Collage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
+import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
 import { useProject } from "./ProjectPicker";
 import { colorFor } from "./ReleaseTabs";
 import { api } from "./api";
@@ -134,6 +135,8 @@ function totalsOf(cards: ReviewCard[]): Totals {
 }
 
 const projectOfGroup = (p: ReviewProject) => p.project;
+const groupId = (p: ReviewProject) => p.project.id;
+const datasetId = (c: ReviewCard) => c.dataset.id;
 const LINES = 5; // datasets listed on a project's card; the rest are a click away
 const versionName = (c: ReviewCard) => (c.release.draft ? "작업 중" : c.release.version);
 
@@ -176,7 +179,8 @@ function ReviewCounts({ groups }: { groups: Record<Rule["group"], number> }) {
 function ReviewBoard() {
   const { data: board, error } = useReviewBoard();
   const projects = useMemo(() => byProject(board?.datasets ?? []), [board]);
-  const { shown, tools } = useBoardFilter(board ? projects : null, projectOfGroup);
+  const order = useOrder("review.projects", projects, groupId);
+  const { shown, tools } = useBoardFilter(board ? order.ordered : null, projectOfGroup);
   if (error && !board) return <div className="error">{error}</div>;
   return (
     <>
@@ -185,19 +189,27 @@ function ReviewBoard() {
           <h1>검수</h1>
           <p className="muted">
             데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)에서 라벨이 빠졌거나(미라벨) 틀렸을(오라벨) 이미지 수를 프로젝트별로 봅니다. 문제가
-            많은 프로젝트가 먼저 나오고, 프로젝트를 누르면 데이터셋별로, 데이터셋을 누르면 그 이미지를 보며 고치거나 라벨링 묶음으로 맡깁니다.
+            많은 프로젝트가 먼저 나오고(끌어서 순서를 바꿀 수 있음), 프로젝트를 누르면 데이터셋별로, 데이터셋을 누르면 그 이미지를 보며 고치거나
+            라벨링 묶음으로 맡깁니다.
           </p>
+        </div>
+        <div className="head-actions">
+          <OrderReset order={order} />
         </div>
       </div>
       <ReviewStats totals={board?.totals} />
       {tools}
       {!board && <p className="muted">불러오는 중…</p>}
       {board && projects.length === 0 && <div className="card empty">검사할 데이터셋 버전이 없습니다.</div>}
-      <div className="card-grid review-grid">
-        {shown.map((p) => (
-          <ProjectReviewCard key={p.project.id} group={p} />
-        ))}
-      </div>
+      <Sortable ids={shown.map(groupId)} onMove={order.move}>
+        <div className="card-grid review-grid">
+          {shown.map((p) => (
+            <SortItem key={p.project.id} id={p.project.id}>
+              <ProjectReviewCard group={p} />
+            </SortItem>
+          ))}
+        </div>
+      </Sortable>
     </>
   );
 }
@@ -208,6 +220,7 @@ function ProjectReviewCard({ group }: { group: ReviewProject }) {
   const t = totalsOf(datasets);
   const waiting = t.datasets - t.checked;
   const images = datasets.reduce((n, c) => n + c.items, 0);
+  const lines = useOrder(`review.datasets.${project.id}`, datasets, datasetId).ordered; // as on the project's own screen
   return (
     <div className="data-card review-card">
       <a className="data-card-link" href={`#/review/project/${project.id}`} onClick={() => rememberProject(project.id)}>
@@ -231,7 +244,7 @@ function ProjectReviewCard({ group }: { group: ReviewProject }) {
         </div>
       </a>
       <div className="board-lines">
-        {datasets.slice(0, LINES).map((c) => (
+        {lines.slice(0, LINES).map((c) => (
           <a key={c.dataset.id} href={`#/review/${c.release.id}`} className="board-line" onClick={() => rememberProject(project.id)}>
             <Icon name="database" size={12} />
             <span className="ellipsis">
@@ -253,8 +266,10 @@ function ReviewProjectPage({ projectId }: { projectId: string }) {
   const { data: board, error } = useReviewBoard();
   const { projects } = useProject();
   useEffect(() => rememberProject(projectId), [projectId]);
+  const mine = useMemo(() => (board?.datasets ?? []).filter((c) => c.project.id === projectId), [board, projectId]);
+  const order = useOrder(`review.datasets.${projectId}`, mine, datasetId);
   if (error && !board) return <div className="error">{error}</div>;
-  const datasets = (board?.datasets ?? []).filter((c) => c.project.id === projectId);
+  const datasets = order.ordered;
   const project = datasets[0]?.project ?? projects?.find((p) => p.id === projectId);
   return (
     <>
@@ -267,19 +282,26 @@ function ReviewProjectPage({ projectId }: { projectId: string }) {
         <div>
           <h1>{project?.name ?? "검수"}</h1>
           <p className="muted">
-            이 프로젝트의 데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)의 문제 수입니다. 문제가 많은 데이터셋이 먼저 나오고, 누르면 그 버전의
-            검수 화면이 열립니다. 다른 버전은 거기서 고릅니다.
+            이 프로젝트의 데이터셋마다 최신 라벨(작업 중이 있으면 작업 중)의 문제 수입니다. 문제가 많은 데이터셋이 먼저 나오고(끌어서 순서를 바꿀
+            수 있음), 누르면 그 버전의 검수 화면이 열립니다. 다른 버전은 거기서 고릅니다.
           </p>
+        </div>
+        <div className="head-actions">
+          <OrderReset order={order} />
         </div>
       </div>
       <ReviewStats totals={board ? totalsOf(datasets) : undefined} />
       {!board && <p className="muted">불러오는 중…</p>}
       {board && datasets.length === 0 && <div className="card empty">이 프로젝트에는 검사할 데이터셋 버전이 없습니다.</div>}
-      <div className="card-grid review-grid">
-        {datasets.map((c) => (
-          <DatasetReviewCard key={c.dataset.id} card={c} />
-        ))}
-      </div>
+      <Sortable ids={datasets.map(datasetId)} onMove={order.move}>
+        <div className="card-grid review-grid">
+          {datasets.map((c) => (
+            <SortItem key={c.dataset.id} id={c.dataset.id}>
+              <DatasetReviewCard card={c} />
+            </SortItem>
+          ))}
+        </div>
+      </Sortable>
     </>
   );
 }

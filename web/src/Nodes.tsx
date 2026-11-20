@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import "./nodes.css";
+import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
 import { type HubAddress, type JoinToken, api } from "./api";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
@@ -83,6 +84,8 @@ function left(seconds: number): string {
   return hours < 24 ? `${hours.toFixed(hours < 10 ? 1 : 0)}시간 남음` : `${Math.round(hours / 24)}일 남음`;
 }
 
+const nodeId = (node: { id: string }) => node.id;
+
 /**
  * Every GPU of every server on one board: what holds it (a BADAMOA run, a person, nobody, kept for
  * people) and how full its memory is, the height of the fill. Above it, the jobs waiting for a GPU.
@@ -90,6 +93,7 @@ function left(seconds: number): string {
 export function Nodes({ isAdmin }: { isAdmin: boolean }) {
   const { data: board, error, refresh } = usePolling(() => api<Board>("/gpu-board"), 5000);
   const updated = useUpdatedAt(board);
+  const order = useOrder("nodes", board?.nodes, nodeId);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BoardNode | null>(null);
   const [updating, setUpdating] = useState<BoardNode | null>(null);
@@ -107,6 +111,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
           </p>
         </div>
         <div className="head-actions">
+          <OrderReset order={order} />
           <RefreshButton onRefresh={refresh} updated={updated} />
           {isAdmin && (
             <button className="primary" onClick={() => setAdding(true)}>
@@ -166,18 +171,21 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
       {error && <div className="error">{error}</div>}
       {board && board.nodes.length === 0 && <div className="card empty">연결된 노드가 없습니다.</div>}
       {board && board.nodes.length > 0 && (
-        <section className="card board">
-          {board.nodes.map((node) => (
-            <ServerRow
-              key={node.id}
-              node={node}
-              hubVersion={board.hub_version}
-              isAdmin={isAdmin}
-              onEdit={() => setEditing(node)}
-              onUpdate={() => setUpdating(node)}
-              onChanged={() => void refresh()}
-            />
-          ))}
+        <section className="card board sort-list">
+          <Sortable ids={order.ordered.map(nodeId)} onMove={order.move} list>
+            {order.ordered.map((node) => (
+              <SortItem key={node.id} id={node.id}>
+                <ServerRow
+                  node={node}
+                  hubVersion={board.hub_version}
+                  isAdmin={isAdmin}
+                  onEdit={() => setEditing(node)}
+                  onUpdate={() => setUpdating(node)}
+                  onChanged={() => void refresh()}
+                />
+              </SortItem>
+            ))}
+          </Sortable>
           {isAdmin && (
             <button className="board-add" onClick={() => setAdding(true)}>
               <Icon name="plus" size={14} />

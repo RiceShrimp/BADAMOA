@@ -65,6 +65,40 @@ def me(user: User = Depends(current_user)) -> dict[str, Any]:
     return services.serialize_user(user)
 
 
+# ---- each person's order of cards and lists ----------------------------------------------
+
+ORDER_KEYS = 200  # screens one person can have an order for (a project's datasets is one per project)
+ORDER_IDS = 5000
+
+
+class Order(BaseModel):
+    ids: list[str] = Field(max_length=ORDER_IDS)  # first to last; empty: back to the screen's own order
+
+
+@router.get("/me/orders")
+def my_orders(user: User = Depends(current_user)) -> dict[str, list[str]]:
+    """The order this person dragged each screen's cards or rows into (screens not dragged are not listed)."""
+    return dict(user.orders or {})
+
+
+@router.put("/me/orders/{key}")
+def set_my_order(
+    key: str, body: Order, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, list[str]]:
+    """Keep the order of one screen's cards (``key`` names the screen, e.g. ``review.projects``)."""
+    if not 0 < len(key) <= 128:
+        raise services.ServiceError(400, "화면 이름이 너무 깁니다")
+    orders = dict(user.orders or {})
+    orders.pop(key, None)  # a screen dragged again goes last: the oldest are let go first
+    if body.ids:
+        orders[key] = [str(i)[:64] for i in dict.fromkeys(body.ids)]
+    while len(orders) > ORDER_KEYS:
+        orders.pop(next(iter(orders)))
+    user.orders = orders  # a new dict: a JSON column changed in place is not saved
+    db.commit()
+    return orders
+
+
 class NewToken(BaseModel):
     name: str = Field(min_length=1, max_length=128)
 

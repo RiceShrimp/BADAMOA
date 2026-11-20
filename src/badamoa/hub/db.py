@@ -27,6 +27,7 @@ _ADDED_COLUMNS = [
     ("run_files", "caption", "VARCHAR(255) DEFAULT ''"),
     ("nodes", "reserved_gpus", "JSON DEFAULT '[]'"),
     ("users", "disabled_at", "DATETIME"),
+    ("users", "orders", "JSON DEFAULT '{}'"),
     ("datasets", "task", "VARCHAR(32) DEFAULT ''"),
     ("nodes", "cache_dir", "VARCHAR(512) DEFAULT ''"),
     ("label_revisions", "parent_id", "INTEGER"),
