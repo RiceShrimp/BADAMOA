@@ -70,7 +70,7 @@ npm --prefix web run build
 uv run badamoa hub run --home .badamoa/hub
 ```
 
-When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account. Other servers find the Hub through that address, so use it rather than `localhost`.
+When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account. The "샘플 (COCO8)" project then holds detection, segmentation and keypoint datasets and a 검수 example with labels made wrong on purpose (delete it if not needed). Other servers find the Hub through that address, so use it rather than `localhost`.
 
 To have the Hub come back when the PC restarts, turn on "재부팅 시 자동 실행" under **Settings → Hub 실행** (설정 → Hub 실행). It starts with the same data folder, port and address, and nodes reconnect on their own once it is up. On Ubuntu it starts at boot from systemd when the Hub runs as root, else from that account's crontab. On Windows a Hub started without administrator rights comes up when that account logs on; the command shown there, run once in an administrator PowerShell, makes it start at boot without anyone logging on.
 

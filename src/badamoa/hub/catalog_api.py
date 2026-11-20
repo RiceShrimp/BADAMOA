@@ -324,10 +324,12 @@ def list_items(
     offset: int = 0,
     limit: int = 60,
     pred: str = "",
+    classes: str = "",  # 검수: class ids, comma separated (the findings of these classes)
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
+    picked = [int(c) for c in classes.split(",") if c.strip().lstrip("-").isdigit()]
     return catalog.list_items(
         db,
         hub.settings,
@@ -348,6 +350,7 @@ def list_items(
         let_be=let_be,
         offset=offset,
         limit=limit,
+        classes=picked,
         pred=pred,
     )
 

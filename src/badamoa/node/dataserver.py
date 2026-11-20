@@ -192,8 +192,8 @@ class DataServer:
         return {"port": self.port, "addresses": local_addresses()}
 
     def stop(self) -> None:
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
+        server, self._server = self._server, None  # stopped from two threads at once: one of them closes it
+        if server is not None:
+            server.shutdown()
+            server.server_close()
         self._hub.close()

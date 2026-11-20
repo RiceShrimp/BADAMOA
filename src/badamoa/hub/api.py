@@ -22,6 +22,7 @@ from . import (
     node_storage,
     prometheus,
     resources,
+    samples,
     services,
 )
 from .db import iso
@@ -123,7 +124,9 @@ def setup(body: Credentials, db: Session = Depends(db_session), hub: Hub = Depen
     token, _ = services.login(db, body.username, body.password, hub.settings)
     services.audit(db, user.id, "ui", "setup.admin_created", user.id)
     db.commit()
-    return {"token": token, "user": services.serialize_user(user)}
+    made = samples.safely(db, user, hub.settings)  # COCO8 for Det · Seg · Kpt and a 검수 example
+    db.commit()
+    return {"token": token, "user": services.serialize_user(user), "samples": made}
 
 
 # ---- auth ---------------------------------------------------------------------

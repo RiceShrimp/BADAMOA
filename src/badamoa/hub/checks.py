@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import and_, delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
@@ -106,6 +106,64 @@ def _offered(db: Session, release: Release, kinds: tuple[str, ...] = ("eval",)) 
 
 
 MISTAKES = ("extra", "missed")  # what an evaluation finds, judged like a rule check's finding
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    ax0, ay0, ax1, ay1 = a[0] - a[2] / 2, a[1] - a[3] / 2, a[0] + a[2] / 2, a[1] + a[3] / 2
+    bx0, by0, bx1, by1 = b[0] - b[2] / 2, b[1] - b[3] / 2, b[0] + b[2] / 2, b[1] + b[3] / 2
+    inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def unmatched(predicted: list[list[float]], scores: list[float], truth: list[list[float]]) -> tuple[list[int], list[int]]:
+    """The classes of an image's mistakes as an evaluation counts them: predictions no label backs (extra) and
+    labels no prediction found (missed). A prediction finds a label of its class it overlaps by half (IoU 0.5),
+    the surest first; classification (no box): the class given against the image's own."""
+    if any(len(b) < 5 for b in [*predicted, *truth]):
+        given = {int(p[0]) for p in predicted if p}
+        real = {int(t[0]) for t in truth if t}
+        return sorted(given - real), sorted(real - given)
+    left = list(range(len(truth)))
+    extra: list[int] = []
+    order = sorted(range(len(predicted)), key=lambda i: -(scores[i] if i < len(scores) else 0.0))
+    for i in order:
+        box = predicted[i]
+        best, at = 0.5, None
+        for j in left:
+            if int(truth[j][0]) == int(box[0]) and (overlap := _iou(box[1:5], truth[j][1:5])) >= best:
+                best, at = overlap, j
+        if at is None:
+            extra.append(int(box[0]))
+        else:
+            left.remove(at)
+    return extra, [int(truth[j][0]) for j in left]
+
+
+def mistakes_of_classes(db: Session, release: Release, op_id: str, mistake: str, classes: set[int]) -> set[int]:
+    """The images an evaluation found ``mistake`` (extra or missed) on for one of ``classes``: its predictions
+    against each image's labels in this release."""
+    from .catalog_models import LabelRevision, ReleaseItem
+
+    column = getattr(ItemPrediction, mistake)
+    rows = db.execute(
+        select(ItemPrediction.item_id, ItemPrediction.labels, ItemPrediction.scores, ReleaseItem.revision_id)
+        .join(ReleaseItem, and_(ReleaseItem.release_id == release.id, ReleaseItem.item_id == ItemPrediction.item_id))
+        .where(ItemPrediction.op_id == op_id, column > 0)
+    ).all()
+    revisions: dict[str, list[list[float]]] = {}
+    ids = list({rid for *_, rid in rows if rid})
+    for start in range(0, len(ids), 500):
+        found = db.execute(
+            select(LabelRevision.id, LabelRevision.boxes).where(LabelRevision.id.in_(ids[start : start + 500]))
+        )
+        revisions.update({rid: boxes or [] for rid, boxes in found})
+    picked = set()
+    for item_id, labels, scores, revision_id in rows:
+        extra, missed = unmatched(labels or [], scores or [], revisions.get(revision_id, []))
+        if classes & set(extra if mistake == "extra" else missed):
+            picked.add(item_id)
+    return picked
 
 
 def let_be(check: Any, item_id: Any, revision_id: Any) -> Any:
@@ -211,9 +269,7 @@ def release_checks(db: Session, release: Release) -> list[dict[str, Any]]:
     for op in _offered(db, release):
         mine = (ItemPrediction.op_id == op.id, ReleaseItem.release_id == release.id)
         base = (
-            select(func.count())
-            .select_from(ItemPrediction)
-            .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
+            select(func.count()).select_from(ItemPrediction).join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
         )
         images = db.scalar(base.where(*mine)) or 0
         if not images:
@@ -241,9 +297,7 @@ def newest(db: Session, release: Release) -> dict[str, Any] | None:
     for op in _offered(db, release):
         mine = (ItemPrediction.op_id == op.id, ReleaseItem.release_id == release.id)
         base = (
-            select(func.count())
-            .select_from(ItemPrediction)
-            .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
+            select(func.count()).select_from(ItemPrediction).join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
         )
         images = db.scalar(base.where(*mine)) or 0
         if not images:

@@ -126,7 +126,9 @@ def template_code(
         raise HTTPException(status_code=404, detail="템플릿 묶음이 저장소에 없습니다.")
     name = f"{row.name}-{row.version}.zip"
     headers = {"Content-Disposition": f'attachment; filename="{name}"'}
-    return Response(storage.get_blob(row.blob), media_type="application/zip", headers=headers)
+    # with requirements.txt, the trial's exact versions and the in-house wheels it names (ENVIRONMENT.md says how)
+    data = registry.code_with_environment(db, row, storage.get_blob(row.blob), storage)
+    return Response(data, media_type="application/zip", headers=headers)
 
 
 # ---- in-house packages -----------------------------------------------------------------------

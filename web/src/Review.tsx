@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { type BoardProject, useBoardFilter } from "./Boards";
 import { Collage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
@@ -765,14 +765,11 @@ function ReviewFilters({
           </option>
         ))}
       </select>
-      <select value={filter.class_id ?? ""} onChange={(e) => onChange("class_id", e.target.value)} aria-label="클래스">
-        <option value="">모든 클래스</option>
-        {release.label_space.classes.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
-        ))}
-      </select>
+      <ClassFilter
+        classes={release.label_space.classes}
+        picked={(filter.classes ?? "").split(",").filter(Boolean).map(Number)}
+        onChange={(ids) => onChange("classes", ids.join(","))}
+      />
       {(stats.sites?.length ?? 0) > 0 && (
         <select value={filter.site ?? ""} onChange={(e) => onChange("site", e.target.value)} aria-label="사이트">
           <option value="">모든 사이트</option>
@@ -790,6 +787,67 @@ function ReviewFilters({
         <button className="link small" onClick={onClear}>
           필터 지우기
         </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 검수's class filter: several classes at once, and what it narrows is the findings of those classes (a flagged
+ * label of one of them, the model's missed or extra object of one of them), not the images that hold them.
+ */
+function ClassFilter({
+  classes,
+  picked,
+  onChange,
+}: {
+  classes: { id: number; name: string }[];
+  picked: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [find, setFind] = useState("");
+  const box = useRef<HTMLDivElement>(null);
+  const colorOf = colorFor(classes);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => box.current && !box.current.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  const names = classes.filter((c) => picked.includes(c.id)).map((c) => c.name);
+  const label = names.length === 0 ? "모든 클래스" : names.length <= 2 ? names.join(", ") : `${names.slice(0, 2).join(", ")} 외 ${names.length - 2}`;
+  const shown = classes.filter((c) => !find.trim() || c.name.toLowerCase().includes(find.trim().toLowerCase()));
+  const toggle = (id: number) => onChange(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  return (
+    <div className="class-filter" ref={box}>
+      <button type="button" className={`class-filter-button ${picked.length ? "on" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open}>
+        클래스: {label} ▾
+      </button>
+      {open && (
+        <div className="class-filter-panel" role="listbox" aria-multiselectable="true">
+          <div className="muted small">고른 클래스의 라벨이 걸린 것만 보입니다(그 클래스가 들어 있는 이미지 전부가 아니라).</div>
+          {classes.length > 12 && <input value={find} onChange={(e) => setFind(e.target.value)} placeholder="클래스 찾기…" autoFocus />}
+          <div className="class-filter-list">
+            {shown.map((c) => (
+              <label key={c.id} className="check">
+                <input type="checkbox" checked={picked.includes(c.id)} onChange={() => toggle(c.id)} />
+                <i className="class-dot" style={{ background: colorOf(c.id) }} />
+                {c.name}
+              </label>
+            ))}
+          </div>
+          {picked.length > 0 && (
+            <button type="button" className="link small" onClick={() => onChange([])}>
+              모두 해제
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

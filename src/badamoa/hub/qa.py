@@ -274,6 +274,37 @@ def summary(db: Session, release: Release) -> dict[str, Any]:
     }
 
 
+def _revision_boxes(db: Session, revision_ids: set[str]) -> dict[str, list[list[float]]]:
+    from .catalog_models import LabelRevision
+
+    found: dict[str, list[list[float]]] = {}
+    ids = list(revision_ids)
+    for start in range(0, len(ids), 500):
+        rows = db.execute(
+            select(LabelRevision.id, LabelRevision.boxes).where(LabelRevision.id.in_(ids[start : start + 500]))
+        )
+        found.update({rid: boxes or [] for rid, boxes in rows})
+    return found
+
+
+def of_classes(db: Session, release_id: str, check: str, classes: set[int]) -> dict[int, list[int]]:
+    """The images a rule check flagged for a label of one of ``classes``, each with those labels (indices). An
+    image flagged with no label (nobody labelled it) has no class, so it is never one of them."""
+    rows = db.execute(
+        select(QaResult.item_id, QaResult.boxes, ReleaseItem.revision_id)
+        .join(ReleaseItem, and_(ReleaseItem.release_id == QaResult.release_id, ReleaseItem.item_id == QaResult.item_id))
+        .where(QaResult.release_id == release_id, QaResult.check == check)
+    ).all()
+    revisions = _revision_boxes(db, {rid for _, _, rid in rows if rid})
+    found: dict[int, list[int]] = {}
+    for item_id, flagged_boxes, revision_id in rows:
+        boxes = revisions.get(revision_id, [])
+        mine = [i for i in flagged_boxes or [] if 0 <= i < len(boxes) and boxes[i] and int(boxes[i][0]) in classes]
+        if mine:
+            found[item_id] = mine
+    return found
+
+
 def flagged(db: Session, release_id: str, check: str, item_ids: list[int]) -> dict[int, dict[str, Any]]:
     """For a page of images: which labels the check flagged and its note."""
     if not item_ids:

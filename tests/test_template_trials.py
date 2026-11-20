@@ -328,9 +328,20 @@ def test_in_house_wheels_and_pinned_versions_reach_the_environment(client, admin
     assert client.get(f"/api/templates/{view['id']}", headers=admin).json()["check"]["pinned"] == 2
     assert view["check"]["state"] == "pending"
 
-    # admins get the version's code as uploaded, by a signed link
+    # admins get the version's code as uploaded, by a signed link, with what installing it takes: requirements.txt,
+    # the versions its trial installed, and the in-house wheels the requirements name (no extra read-me)
+    import io
+    import zipfile
+
     code = client.get(f"/api/templates/{view['id']}", headers=admin).json()["code_url"]
-    assert client.get(code).content == data
+    got, original = zipfile.ZipFile(io.BytesIO(client.get(code).content)), zipfile.ZipFile(io.BytesIO(data))
+    assert all(got.read(name) == original.read(name) for name in original.namelist())
+    assert set(got.namelist()) - set(original.namelist()) == {
+        "requirements.txt", "requirements.lock.txt", "wheels/My_Lib-1.2.0-py3-none-any.whl",
+    }  # fmt: skip
+    assert got.read("requirements.txt").decode().splitlines() == ["my-lib", "numpy"]
+    assert got.read("requirements.lock.txt").decode().splitlines()[1:] == ["my-lib==1.2.0", "numpy==2.1.0"]
+    assert got.read("wheels/My_Lib-1.2.0-py3-none-any.whl") == wheel
     assert client.get(code.replace("sig=", "sig=0")).status_code == 403
     assert client.delete(f"/api/packages/{up.json()['id']}", headers=admin).status_code == 200
     assert client.get("/api/packages", headers=admin).json() == []

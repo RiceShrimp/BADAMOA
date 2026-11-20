@@ -1174,6 +1174,7 @@ def list_items(
     offset: int = 0,
     limit: int = 60,
     pred: str = "",
+    classes: list[int] | None = None,
 ) -> dict[str, Any]:
     """A page of a release's items. ``pred``: a model run's id (``checks.prediction_runs``): each image also carries
     what that run predicted for it, to lay over the thumbnail.
@@ -1183,6 +1184,9 @@ def list_items(
     ``check``: a label check's id (``qa.CHECKS``): only the images it flagged. ``mistake`` with ``suspect``:
     ``extra`` (objects the model found that no label has) or ``missed`` (labels it did not find).
     ``changed``: with ``edited``, only the images the work in progress changed that way (``drafts.KINDS``).
+    ``classes`` (검수): with ``check``, only what it flagged on a label of these classes (an image of other classes
+    flagged is not one, though it holds one of them); with ``suspect`` and ``mistake``, only the images where the
+    model's extra or missed objects are of these classes; otherwise the images holding any of them.
     With ``check`` (or ``suspect`` and ``mistake``), what someone judged right ("문제 없음") is left out;
     ``let_be`` lists only that instead."""
     release = get_release(db, release_id)
@@ -1208,12 +1212,22 @@ def list_items(
             column = getattr(ItemPrediction, mistake)
             query = query.where(column > 0)
             order = [column.desc(), ReleaseItem.item_id]
+    picked = {int(c) for c in classes or []}
+    of_class: dict[int, list[int]] = {}
     if check:
         if check not in qa.CHECKS:
             raise ServiceError(400, "그런 검사가 없습니다.")
         qa.run(db, release)
         joined = and_(QaResult.release_id == release.id, QaResult.check == check, QaResult.item_id == ReleaseItem.item_id)
         query = query.join(QaResult, joined)
+        if picked:
+            of_class = qa.of_classes(db, release.id, check, picked)
+            query = query.where(ReleaseItem.item_id.in_(list(of_class)))
+    elif picked and suspect and mistake in checks.MISTAKES:
+        query = query.where(ReleaseItem.item_id.in_(list(checks.mistakes_of_classes(db, release, suspect, mistake, picked))))
+    elif picked:
+        holding = select(RevisionClass.revision_id).where(RevisionClass.class_id.in_(picked))
+        query = query.where(ReleaseItem.revision_id.in_(holding))
     judged = check or (mistake if suspect and mistake in checks.MISTAKES else "")  # whose "문제 없음" counts
     if judged:
         kept = checks.let_be(judged, ReleaseItem.item_id, ReleaseItem.revision_id)
@@ -1243,6 +1257,9 @@ def list_items(
     change = drafts.change_counts(db, draft, list(fixed)) if fixed else {}
     in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
     found = qa.flagged(db, release.id, check, [item.id for _, item in rows]) if check else {}
+    for item_id, mine in of_class.items():  # only the labels of the chosen classes are marked
+        if item_id in found:
+            found[item_id] = {**found[item_id], "boxes": mine}
     kept_as = qa.judgements(db, release.id, judged, [item.id for _, item in rows]) if judged and let_be else {}
     revisions = {
         rev.id: rev.boxes or []

@@ -787,6 +787,58 @@ def _environment_spec(db: Session, manifest: TemplateManifest, wanted: str, node
     return {"kind": env.kind, "id": env.id, "name": env.name, "path": entry["path"]}
 
 
+def code_with_environment(db: Session, row: Template, bundle: bytes, storage: Storage) -> bytes:
+    """A version's code as uploaded, plus what installing it takes, so it runs outside BADAMOA the same way:
+    ``requirements.txt`` (what the version declares), ``requirements.lock.txt`` (the exact versions its passed
+    trial installed, when there is one) and ``wheels/`` (the Hub's in-house wheels the requirements name: a
+    custom fork, a package of the team; ``pip install -r requirements.txt --find-links wheels``). A file of the
+    same name the code already has is left as it is."""
+    import io
+    import zipfile
+
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    env = manifest_of(row).environment
+    wanted: dict[str, Any] = {}
+    for line in env.requirements:
+        try:
+            req = Requirement(line)
+        except InvalidRequirement:
+            continue
+        wanted[canonicalize_name(req.name)] = req.specifier
+    wheels: list[Package] = []
+    for package in db.scalars(select(Package).order_by(Package.created_at.desc())):
+        name = canonicalize_name(package.name)
+        spec = wanted.get(name)
+        if spec is None or any(canonicalize_name(w.name) == name for w in wheels):
+            continue  # not named, or a newer matching wheel of it is in already
+        if spec and not spec.contains(package.version, prereleases=True):
+            continue
+        wheels.append(package)
+    added: dict[str, bytes] = {}
+    if env.requirements:
+        added["requirements.txt"] = ("\n".join(env.requirements) + "\n").encode("utf-8")
+    pinned = pinned_for(row)
+    if pinned:
+        head = f"# {row.name} {row.version}: what its trial on the Hub installed (torch: the server's driver picks)\n"
+        added["requirements.lock.txt"] = (head + "\n".join(pinned) + "\n").encode("utf-8")
+    for package in wheels:
+        if storage.has_blob(package.blob):
+            added[f"wheels/{package.filename}"] = storage.get_blob(package.blob)
+
+    source = zipfile.ZipFile(io.BytesIO(bundle))
+    have = set(source.namelist())
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            target.writestr(info, source.read(info))
+        for name, data in added.items():
+            if name not in have:
+                target.writestr(name, data, zipfile.ZIP_STORED if name.endswith(".whl") else zipfile.ZIP_DEFLATED)
+    return out.getvalue()
+
+
 # ---- in-house packages (wheels the servers install from the Hub) ------------------------------------
 
 

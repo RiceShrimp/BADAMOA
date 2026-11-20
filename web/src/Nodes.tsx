@@ -442,7 +442,9 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
   const level = gpu.memory_total_mb ? Math.min(100, (used / gpu.memory_total_mb) * 100) : 0;
   const o = gpu.occupant;
   const kind = gpu.state === "job" ? "job" : gpu.state === "busy" ? "busy" : gpu.state === "reserved" ? "reserved" : gpu.state === "offline" ? "offline" : "free";
-  const hot = (gpu.temperature_c ?? 0) >= 83;
+  const temp = gpu.temperature_c;
+  // always shown; amber from 75 °C, red from 83 °C (where GPUs start slowing themselves down)
+  const heat = temp == null ? "" : temp >= 83 ? "bad-text" : temp >= 75 ? "warn-text" : "";
   // how hard it computes, and how much of its memory is taken: two different things, both as numbers
   const util = gpu.utilization_pct != null ? `${Math.round(gpu.utilization_pct)}%` : null;
   const vram = gpu.memory_total_mb ? `${(used / 1024).toFixed(1)} / ${Math.round(gpu.memory_total_mb / 1024)} GB` : null;
@@ -460,7 +462,11 @@ function GpuTile({ gpu }: { gpu: BoardGpu }) {
       <div className="gpu-body">
         <div className="gpu-head">
           <span>{gpu.index}</span>
-          {hot && <span className="bad-text">{gpu.temperature_c}°C</span>}
+          {temp != null && kind !== "offline" && (
+            <span className={`gpu-temp ${heat}`} title="GPU 온도">
+              {temp}°C
+            </span>
+          )}
         </div>
         {kind === "job" && o && (
           <>

@@ -114,3 +114,41 @@ def test_let_be_follows_the_labels_and_versions_keep_their_review(hub, tmp_path)
     # ---- taken back: counted again where it was let be
     assert hub.delete(f"/api/releases/{v1}/items/{twice}/let-be", params={"check": "duplicate"}).status_code == 200
     assert (check(v1, "duplicate")["images"], check(v1, "duplicate")["let_be"]) == (1, 0)
+
+
+def test_the_class_filter_narrows_findings_by_their_own_class(hub, tmp_path):  # noqa: F811
+    root = make_yolo(tmp_path / "ds")
+    labels = {
+        "train_0000": "0 0.5 0.5 0.005 0.2\n2 0.3 0.3 0.2 0.2\n",  # a tiny person beside a dog of a normal size
+        "train_0001": "1 0.5 0.5 0.005 0.2\n",  # a tiny car
+        "train_0003": "2 0.6 0.6 0.2 0.2\n",
+    }
+    for name, text in labels.items():
+        (root / "labels" / name.split("_")[0] / f"{name}.txt").write_text(text, encoding="utf-8")
+    project = hub.post("/api/projects", json={"name": "검수 클래스"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+
+    def tiny(classes: str):
+        found = hub.get(f"/api/releases/{v1}/items", params={"check": "tiny", "classes": classes}).json()
+        return sorted((i["file_name"], tuple(i["qa"]["boxes"])) for i in found["items"])
+
+    assert tiny("") == [("train_0000.jpg", (0,)), ("train_0001.jpg", (0,))]
+    assert tiny("2") == []  # train_0000 holds a dog, but its tiny box is a person
+    assert tiny("0") == [("train_0000.jpg", (0,))]
+    assert tiny("0,1") == [("train_0000.jpg", (0,)), ("train_0001.jpg", (0,))]
+    # outside a check: the images holding any of them, as the dataset screen
+    def names(**params):
+        return {i["file_name"] for i in hub.get(f"/api/releases/{v1}/items", params={**params, "limit": 200}).json()["items"]}
+
+    assert names(classes="1,2") == names(class_id=1) | names(class_id=2)
+    assert {"train_0000.jpg", "train_0001.jpg", "train_0003.jpg"} <= names(classes="1,2")
+
+
+def test_a_models_mistakes_have_the_classes_of_what_it_missed_or_added():
+    from badamoa.hub.checks import unmatched
+
+    truth = [[0, 0.5, 0.5, 0.2, 0.2], [1, 0.2, 0.2, 0.1, 0.1]]
+    assert unmatched([[0, 0.5, 0.5, 0.2, 0.2]], [0.9], truth) == ([], [1])
+    assert unmatched([[0, 0.5, 0.5, 0.2, 0.2], [2, 0.8, 0.8, 0.1, 0.1]], [0.9, 0.4], truth) == ([2], [1])
+    assert unmatched([[1, 0.5, 0.5, 0.2, 0.2]], [0.9], truth[:1]) == ([1], [0])  # the right box, the wrong class
+    assert unmatched([[3]], [0.8], [[1]]) == ([3], [1])  # classification

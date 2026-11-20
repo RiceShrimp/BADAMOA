@@ -9,6 +9,7 @@ export interface ItemFilter {
   split?: string;
   state?: string;
   class_id?: string;
+  classes?: string; // 검수: class ids, comma separated (the findings of these classes)
   site?: string;
   camera?: string;
   q?: string;
