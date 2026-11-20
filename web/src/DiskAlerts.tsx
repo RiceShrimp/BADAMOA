@@ -123,12 +123,23 @@ export function DiskAlertBox({
   );
 }
 
+interface DockerMoveChoice {
+  folder: string; // <mount>/docker
+  mount: string;
+  free_gb: number | null;
+  total_gb: number | null;
+}
+
 interface DockerMoveState {
   path: string; // Docker's data-root now
   suggest: string; // a folder on the disk with the most room
+  choices?: DockerMoveChoice[]; // each other disk's docker folder, the roomiest first
+  here?: { mount: string; free_gb: number | null; total_gb: number | null } | null; // the disk it is on now
   possible: boolean;
   why: string;
 }
+
+const TYPED = "\u0000typed"; // the "직접 입력" choice
 
 /**
  * Move a server's Docker images to another disk (admins): the node stops Docker, copies its folder, points Docker
@@ -136,14 +147,17 @@ interface DockerMoveState {
  */
 export function DockerMoveDialog({ nodeId, suggest, onClose }: { nodeId: string; suggest: string; onClose: () => void }) {
   const { data: state, error: loadError } = usePolling(() => api<DockerMoveState>(`/nodes/${nodeId}/docker-move`), 0, [nodeId]);
-  const [target, setTarget] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null); // a choice's folder, or TYPED
+  const [typed, setTyped] = useState("");
   const [removeOld, setRemoveOld] = useState(true);
   const [stopContainers, setStopContainers] = useState(false);
   const [jobId, setJobId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { data: job } = usePolling(() => (jobId ? api<Job>(`/jobs/${jobId}`) : Promise.resolve(null)), jobId ? 2000 : 0, [jobId]);
-  const to = target ?? (state?.suggest || suggest);
+  const options = state?.choices ?? [];
+  const chosen = picked ?? (options[0]?.folder || TYPED);
+  const to = chosen === TYPED ? typed : chosen;
   const running = !!job && ["queued", "running"].includes(job.status);
 
   const start = async () => {
@@ -174,10 +188,39 @@ export function DockerMoveDialog({ nodeId, suggest, onClose }: { nodeId: string;
             따라 몇 분에서 수십 분 걸립니다. 하나라도 잘못되면 설정을 되돌리고 원래 폴더로 Docker를 다시 켭니다.
           </p>
           {!state.possible && <div className="notice">{state.why}</div>}
-          <label>
-            옮길 폴더 (다른 디스크의 빈 폴더)
-            <input value={to} onChange={(e) => setTarget(e.target.value)} placeholder="/home4/docker" disabled={!state.possible} />
-          </label>
+          <fieldset className="move-choices" disabled={!state.possible}>
+            <legend>
+              옮길 폴더 (다른 디스크의 빈 폴더)
+              {state.here && (
+                <span className="muted small">
+                  {" "}
+                  · 지금 디스크 {state.here.mount}: {room(state.here.free_gb)} 남음
+                </span>
+              )}
+            </legend>
+            {options.map((c, n) => (
+              <label key={c.folder} className="check move-choice">
+                <input type="radio" name="docker-target" checked={chosen === c.folder} onChange={() => setPicked(c.folder)} />
+                <code>{c.folder}</code>
+                <span className="muted small">
+                  디스크 {c.mount} · {room(c.free_gb)} 남음{c.total_gb != null ? ` / ${room(c.total_gb)}` : ""}
+                  {n === 0 ? " · 가장 여유" : ""}
+                </span>
+              </label>
+            ))}
+            <label className="check move-choice">
+              <input type="radio" name="docker-target" checked={chosen === TYPED} onChange={() => setPicked(TYPED)} />
+              직접 입력
+              {chosen === TYPED && (
+                <input
+                  autoFocus
+                  value={typed}
+                  onChange={(e) => setTyped(e.target.value)}
+                  placeholder={state.suggest || suggest || "/home4/docker"}
+                />
+              )}
+            </label>
+          </fieldset>
           <label className="check">
             <input type="checkbox" checked={removeOld} onChange={(e) => setRemoveOld(e.target.checked)} disabled={!state.possible} />
             새 위치로 잘 켜지고 이미지가 모두 보이면 예전 폴더를 지워 공간을 비움

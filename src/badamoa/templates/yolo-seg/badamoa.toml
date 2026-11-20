@@ -1,6 +1,6 @@
 name = "yolo-seg"
 title = "Ultralytics YOLO 분할"
-version = "7"
+version = "8"
 description = "0.59.0부터 Ultralytics YOLO(yolo)가 분할도 합니다. 이 종류로 학습한 모델의 평가 · 내보내기 · 테스트 · 오토라벨에만 쓰입니다."
 task = "segment"
 # Merged into ``yolo``: new runs on segmentation data use it; models trained with this kind keep this code.

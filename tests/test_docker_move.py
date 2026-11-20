@@ -29,7 +29,14 @@ def _node(**over):
 
 def test_the_hub_offers_the_move_only_where_it_can_be_done():
     state = disk_space.docker_move_state(_node())
-    assert state == {"path": "/var/lib/docker", "suggest": "/home4/docker", "possible": True, "why": ""}
+    assert state == {
+        "path": "/var/lib/docker",
+        "suggest": "/home4/docker",
+        "choices": [{"folder": "/home4/docker", "mount": "/home4", "free_gb": 2000.0, "total_gb": 4000.0}],
+        "here": {"mount": "/", "free_gb": 2.0, "total_gb": 100.0},
+        "possible": True,
+        "why": "",
+    }
     assert "끝난 뒤" in disk_space.docker_move_state(_node(), busy=1)["why"]
     user_install = _node(info={"account": {"name": "jhan", "admin": False}})
     assert "sudo로 설치한 Linux" in disk_space.docker_move_state(user_install)["why"]

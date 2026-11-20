@@ -1,6 +1,6 @@
 name = "yolo"
 title = "Ultralytics YOLO"
-version = "11"
+version = "12"
 description = "Ultralytics YOLO11 · YOLO26: 객체 검출 · 인스턴스 분할 · 분류 · 키포인트. 데이터셋의 태스크에 맞춰 학습합니다."
 # One library, one environment: the task of each run is its dataset's (the code reads it from its config).
 tasks = ["detect", "segment", "classify", "pose"]

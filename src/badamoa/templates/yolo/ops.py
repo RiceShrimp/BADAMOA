@@ -23,6 +23,23 @@ from train import (
 
 FAILURES = 48  # images with the most mistakes, kept as pictures with their boxes
 COLUMNS = ["image", "truth", "predicted", "found", "missed", "extra"]
+PREDICT_BATCH = 8
+
+
+def predict_each(model, images: list[Path], **settings):
+    """Each image with its result, a few at a time. Ultralytics reads a list of paths into memory and predicts it
+    as one batch (a split of thousands ran the GPU out of memory): the paths go in a list file it reads as it goes,
+    ``PREDICT_BATCH`` images per pass."""
+    import tempfile
+
+    by_path = {os.path.normcase(os.path.abspath(p)): p for p in images}
+    with tempfile.TemporaryDirectory(prefix="badamoa-predict-") as tmp:
+        listed = Path(tmp) / "images.txt"
+        listed.write_text("\n".join(str(Path(p).absolute()) for p in images), encoding="utf-8")
+        for result in model.predict(str(listed), stream=True, batch=PREDICT_BATCH, verbose=False, **settings):
+            image = by_path.get(os.path.normcase(os.path.abspath(result.path)))
+            if image is not None:
+                yield image, result
 
 
 def as_labels(result) -> dict:
@@ -62,9 +79,7 @@ def per_class_image(run, model) -> None:
         registered = {}
     print(f"이미지별 결과: {len(images):,}장을 분류합니다")
     rows, predicted = [], []
-    results = model.predict([str(p) for p in images], stream=True, imgsz=run.train_params.get("imgsz", 224),
-                            device=run.device, verbose=False)  # fmt: skip
-    for image, result in zip(images, results, strict=True):
+    for image, result in predict_each(model, images, imgsz=run.train_params.get("imgsz", 224), device=run.device):
         truth, guess, score = class_folder_index(image), int(result.probs.top1), float(result.probs.top1conf)
         wrong = int(guess != truth)
         predicted.append({"image": image.stem, "labels": [[guess]], "scores": [round(score, 4)],
@@ -98,15 +113,8 @@ def per_image(run, model) -> None:
         registered = {}
     print(f"이미지별 결과: {len(images):,}장을 확신도 {SAMPLE_CONF} 이상으로 예측합니다")
     rows, scored, predicted = [], [], []
-    results = model.predict(
-        [str(p) for p in images],
-        stream=True,
-        conf=SAMPLE_CONF,
-        imgsz=run.train_params.get("imgsz", 640),
-        device=run.device,
-        verbose=False,
-    )
-    for image, result in zip(images, results, strict=True):
+    settings = {"conf": SAMPLE_CONF, "imgsz": run.train_params.get("imgsz", 640), "device": run.device}
+    for image, result in predict_each(model, images, **settings):
         truth, true_outlines = truth_of(image, task)
         boxes, outlines = [], []
         if result.boxes is not None and len(result.boxes):
@@ -243,15 +251,8 @@ def autolabel(run, model) -> None:
     conf = float(run.config.get("conf", 0.25))
     print(f"오토라벨: {len(images):,}장을 확신도 {conf} 이상으로 예측합니다", flush=True)
     predicted = []
-    results = model.predict(
-        [str(p) for p in images],
-        stream=True,
-        conf=conf,
-        imgsz=run.train_params.get("imgsz", 640),
-        device=run.device,
-        verbose=False,
-    )
-    for n, (image, result) in enumerate(zip(images, results, strict=True), 1):
+    settings = {"conf": conf, "imgsz": run.train_params.get("imgsz", 640), "device": run.device}
+    for n, (image, result) in enumerate(predict_each(model, images, **settings), 1):
         predicted.append({"image": image.stem, **as_labels(result)})
         if n % 200 == 0 or n == len(images):
             print(f"{n:,}/{len(images):,}장", flush=True)

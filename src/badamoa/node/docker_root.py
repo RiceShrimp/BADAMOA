@@ -1,10 +1,11 @@
-"""Moving Docker's images (its ``data-root``) to a disk with room, on an admin's word (node 상세 → 디스크 공간 부족).
+"""Moving Docker's images (its ``data-root``) to a disk with room: on an admin's word (node 상세 → 디스크 공간
+부족), or by a job about to pull an image its disk cannot take (``containers.make_room``).
 
 Docker keeps every image of a server in one folder (``/var/lib/docker`` unless ``data-root`` in
 ``/etc/docker/daemon.json`` says otherwise); BADAMOA cannot place an image elsewhere. Moving that folder means
-stopping Docker, so every container of the server stops for a while, BADAMOA's or anyone's: it happens only
-when an admin asks, only on a Linux node running as root (installed with sudo), only while the node runs no
-other job, and by default only when no container runs at all.
+stopping Docker, so every container of the server stops for a while, BADAMOA's or anyone's: it happens only on
+a Linux node running as root (installed with sudo), only while the node runs no other job, and only when no
+container runs at all (an admin may choose to stop them; a job never does).
 
     1. Docker's folder, its images and its size; the new folder must be empty, on another disk, with room
     2. stop Docker (``docker.socket`` too, so a call does not wake it), copy everything (``rsync -aHAX``)
@@ -24,13 +25,67 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 DAEMON_JSON = Path("/etc/docker/daemon.json")
 START_WAIT_S = 90
+HOLD = "docker-moving"  # in the node's home while a job moves Docker: the agent starts no new job meanwhile
+RUNNING = "running.json"  # the agent's running jobs, for a job that has to know whether it is alone
+SETTLE_S = 3.0
 Run = Callable[..., subprocess.CompletedProcess]
+
+
+def choices(current: str, disks: list[dict[str, Any]] | None = None) -> list[str]:
+    """Folders Docker's images could move to: ``docker`` on each other local disk, the one with the most room first
+    (a folder already holding something is skipped: the move needs an empty one)."""
+    if disks is None:
+        from badamoa.core import sysinfo
+
+        disks = sysinfo.MetricsSampler._disks()
+    disks = [d for d in disks if (d.get("total_gb") or 0) >= 2]
+    real = os.path.realpath(current) if current and sys.platform.startswith("linux") else current
+    inside = [
+        str(d.get("mount") or "")
+        for d in disks
+        if real == d.get("mount") or real.startswith(str(d.get("mount") or "").rstrip("/") + "/")
+    ]
+    here = max(inside, key=len, default="")
+    found = []
+    for disk in sorted(disks, key=lambda d: -(d.get("free_gb") or 0)):
+        mount = str(disk.get("mount") or "")
+        if mount == here or not mount.startswith("/") or mount.startswith(("/boot", "/snap")):
+            continue
+        folder = mount.rstrip("/") + "/docker"
+        if os.path.exists(folder) and (not os.path.isdir(folder) or os.listdir(folder)):
+            continue
+        found.append(folder)
+    return found
+
+
+def running_jobs(home: Path) -> list[str]:
+    """The jobs the node's agent runs now (it writes them down as they start and end)."""
+    try:
+        return [str(j) for j in json.loads((home / RUNNING).read_text(encoding="utf-8"))]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+@contextmanager
+def alone(home: Path, job_id: str, settle_s: float | None = None) -> Iterator[list[str]]:
+    """Keep new jobs off this node while the block runs (the agent starts none while the hold file names a job it
+    runs) and say which other jobs run: an empty list means this job is alone until the block ends."""
+    hold = home / HOLD
+    hold.write_text(job_id, encoding="utf-8")
+    try:
+        time.sleep(
+            SETTLE_S if settle_s is None else settle_s
+        )  # a job the agent was starting as the hold appeared has written itself down by now
+        yield [j for j in running_jobs(home) if j != job_id]
+    finally:
+        hold.unlink(missing_ok=True)
 
 
 def _run(command: list[str], runner: Run, check: bool = False) -> subprocess.CompletedProcess:
@@ -101,8 +156,11 @@ def _start(runner: Run, log: Callable[[str], None]) -> bool:
     return False
 
 
-def check(target: str, running_jobs: list[str], stop_containers: bool, runner: Run = subprocess.run) -> dict[str, Any]:
-    """What moving would do, or why it cannot: nothing is changed here."""
+def check(
+    target: str, running_jobs: list[str], stop_containers: bool, runner: Run = subprocess.run, extra: int = 0
+) -> dict[str, Any]:
+    """What moving would do, or why it cannot: nothing is changed here. ``extra``: room the new disk must still
+    have after the copy (an image about to be pulled there)."""
     if not sys.platform.startswith("linux") or not hasattr(os, "geteuid") or os.geteuid() != 0:
         raise RuntimeError("Docker 이미지 위치는 sudo로 설치한 Linux 노드에서만 옮길 수 있습니다.")
     if not shutil.which("docker") or not shutil.which("systemctl"):
@@ -127,9 +185,10 @@ def check(target: str, running_jobs: list[str], stop_containers: bool, runner: R
         raise RuntimeError(f"{new}은(는) 지금 Docker 폴더와 같은 디스크라 옮겨도 공간이 비지 않습니다.")
     size = _size(source, runner)
     free = shutil.disk_usage(_existing(new)).free
-    if free < size * 1.05 + 1024**3:
-        room, need = free / 1024**3, size / 1024**3
-        raise RuntimeError(f"{new}의 디스크에 {room:.0f} GB 남아 Docker 폴더({need:.0f} GB)를 옮길 수 없습니다.")
+    if free < size * 1.05 + 1024**3 + extra:
+        room, need = free / 1024**3, (size + extra) / 1024**3
+        what = f"Docker 폴더와 받을 이미지({need:.0f} GB)" if extra else f"Docker 폴더({need:.0f} GB)"
+        raise RuntimeError(f"{new}의 디스크에 {room:.0f} GB 남아 {what}를 둘 수 없습니다.")
     containers = [n for n in _run(["docker", "ps", "--format", "{{.Names}}"], runner, check=True).stdout.split() if n]
     if containers and not stop_containers:
         listed = ", ".join(containers[:8]) + (f" 외 {len(containers) - 8}개" if len(containers) > 8 else "")
@@ -146,12 +205,13 @@ def move(
     remove_old: bool = True,
     stop_containers: bool = False,
     running_jobs: list[str] | None = None,
+    extra: int = 0,
     daemon: Path = DAEMON_JSON,
     runner: Run = subprocess.run,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Move Docker's data-root to ``target`` (see the module's notes). Returns what was done."""
-    plan = check(target, running_jobs or [], stop_containers, runner)
+    plan = check(target, running_jobs or [], stop_containers, runner, extra)
     source, new = Path(plan["from"]), Path(plan["to"])
     before = _images(runner)
     log(f"Docker 이미지 {len(before)}개 · {plan['bytes'] / 1024**3:.1f} GB를 {source}에서 {new}로 옮깁니다.")

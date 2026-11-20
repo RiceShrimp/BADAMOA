@@ -6,8 +6,9 @@ storage report and ``metrics.cache``. A disk is short of room below 10 GB, or be
 that is less than 50 GB (a big disk with hundreds of GB left is fine); it is full below 3 GB, where jobs
 start failing. A disk several of them share is said once, with all of them.
 
-BADAMOA moves its own folders (the work folder and received images go to the disk with the most room);
-Docker's images it never moves: for Docker the warning says how an admin moves Docker's data-root.
+BADAMOA moves its own folders (the work folder and received images go to the disk with the most room).
+Docker's images stay in Docker's data-root: an admin moves it from the warning, and a job about to pull an image
+that disk cannot take moves it itself when the node may and nothing runs (``node.containers.make_room``).
 """
 
 from __future__ import annotations
@@ -107,7 +108,16 @@ def docker_move_state(node: Any, busy: int = 0) -> dict[str, Any]:
     docker = next((p for p in places(metrics) if p.get("kind") == "docker"), None)
     path = str((docker or {}).get("path") or "")
     linux_docker = bool(path) and not (docker or {}).get("desktop") and path.startswith("/")
-    found = {"path": path, "suggest": docker_target(metrics, path) if linux_docker else "", "possible": False, "why": ""}
+    options = docker_choices(metrics, path) if linux_docker else []
+    here = _mount_of(path, metrics.get("disks") or []) if linux_docker else None
+    found = {
+        "path": path,
+        "suggest": options[0]["folder"] if options else "",
+        "choices": options,  # each other disk's docker folder, the roomiest first
+        "here": {k: here.get(k) for k in ("mount", "free_gb", "total_gb")} if here else None,
+        "possible": False,
+        "why": "",
+    }
     version = tuple(int(n) for n in (node.agent_version or "0").split(".")[:3] if n.isdigit())
     account = (node.info or {}).get("account") or {}
     if docker is None:
@@ -127,15 +137,27 @@ def docker_move_state(node: Any, busy: int = 0) -> dict[str, Any]:
     return found
 
 
-def docker_target(metrics: dict[str, Any], current: str) -> str:
-    """A folder to suggest for Docker's data-root: ``docker`` on the disk with the most room (not the current one)."""
+def docker_choices(metrics: dict[str, Any], current: str) -> list[dict[str, Any]]:
+    """Folders Docker's data-root could move to: ``docker`` on each other disk, the one with the most room first."""
     disks = [d for d in metrics.get("disks") or [] if (d.get("total_gb") or 0) >= 2]
     here = _mount_of(current, disks)
-    others = [d for d in disks if d is not here]
-    if not others:
-        return ""
-    best = max(others, key=lambda d: d.get("free_gb") or 0)
-    mount = str(best.get("mount") or "")
-    if not mount or mount.startswith(("/boot", "/snap")):
-        return ""
-    return mount.rstrip("/") + "/docker"
+    found = []
+    for disk in sorted(disks, key=lambda d: -(d.get("free_gb") or 0)):
+        mount = str(disk.get("mount") or "")
+        if disk is here or not mount.startswith("/") or mount.startswith(("/boot", "/snap")):
+            continue
+        found.append(
+            {
+                "folder": mount.rstrip("/") + "/docker",
+                "mount": mount,
+                "free_gb": disk.get("free_gb"),
+                "total_gb": disk.get("total_gb"),
+            }
+        )
+    return found
+
+
+def docker_target(metrics: dict[str, Any], current: str) -> str:
+    """A folder to suggest for Docker's data-root: ``docker`` on the disk with the most room (not the current one)."""
+    options = docker_choices(metrics, current)
+    return options[0]["folder"] if options else ""

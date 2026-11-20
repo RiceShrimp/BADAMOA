@@ -26,7 +26,19 @@ import psutil
 from badamoa import __version__
 from badamoa.core import sysinfo
 from badamoa.core.paths import component_home, is_elevated
-from badamoa.node import browse, cache, containers, dataserver, envs, places, remover, storage, updater, workdirs
+from badamoa.node import (
+    browse,
+    cache,
+    containers,
+    dataserver,
+    docker_root,
+    envs,
+    places,
+    remover,
+    storage,
+    updater,
+    workdirs,
+)
 
 log = logging.getLogger("badamoa.node")
 
@@ -309,9 +321,28 @@ class NodeAgent:
 
     def _slots_free(self) -> int:
         with self._lock:
-            if self._updating or self._moving or self._exclusive:
+            if self._updating or self._moving or self._exclusive or self._held():
                 return 0
             return self.max_jobs - len(self._running)
+
+    def _held(self) -> bool:
+        """A job moving Docker's images before its pull asked that nothing new starts (the hold file names it)."""
+        hold = self.home / docker_root.HOLD
+        try:
+            holder = hold.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if holder in self._running:
+            return True
+        hold.unlink(missing_ok=True)  # left behind by a job that ended
+        return False
+
+    def _write_running(self) -> None:
+        """The running jobs, for a job that has to know whether it runs alone (``docker_root.alone``)."""
+        try:
+            (self.home / docker_root.RUNNING).write_text(json.dumps(list(self._running)), encoding="utf-8")
+        except OSError:
+            pass
 
     # ---- heartbeat -------------------------------------------------------------
 
@@ -527,6 +558,7 @@ class NodeAgent:
         cancel = threading.Event()
         with self._lock:
             self._running[job["id"]] = cancel
+            self._write_running()
             if job["type"] in EXCLUSIVE:
                 self._exclusive = job["id"]
         threading.Thread(target=self._run_job, args=(job, cancel), name=f"job-{job['id'][:8]}", daemon=True).start()
@@ -644,6 +676,7 @@ class NodeAgent:
                 self._recount.set()  # Docker's folder (and the disk warning) as it is now
             with self._lock:
                 self._running.pop(job_id, None)
+                self._write_running()
                 if self._exclusive == job_id:
                     self._exclusive = ""
             log.info("job %s %s", job_id, status)
