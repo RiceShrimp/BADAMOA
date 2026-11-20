@@ -186,6 +186,22 @@ def test_a_model_is_evaluated_and_exported_on_a_server_picked(two_nodes, tmp_pat
     syncs = [j for j in hub.get("/api/jobs?limit=20").json() if j["type"] == "data.sync"]
     assert len(syncs) == 1 and syncs[0]["status"] == "succeeded"
 
+    # ---- 검수's model check over train and val together on that server (it has the images now): one basis
+    both = {"release_id": release, "splits": ["train", "val"], "gpus": 0, "node_id": train}
+    started = hub.post(f"/api/models/{model['id']}/eval", json=both)
+    assert started.status_code == 200, started.text
+    evaluated = _wait(hub, started.json()["job_id"])
+    assert evaluated["status"] == "succeeded", _logs(hub, evaluated["id"])
+    assert "--- val 평가 ---" in _logs(hub, evaluated["id"])
+    assert len([j for j in hub.get("/api/jobs?limit=30").json() if j["type"] == "data.sync"]) == 1  # no second copy
+    [check] = [c for c in hub.get(f"/api/releases/{release}/checks").json() if c["id"] == started.json()["id"]]
+    splits = hub.get(f"/api/releases/{release}").json()["stats"]["splits"]
+    assert check["split"] == "train · val" and check["images"] == splits["train"]["items"] + splits["val"]["items"]
+    op_view = next(o for o in hub.get(f"/api/models/{model['id']}/ops").json() if o["id"] == started.json()["id"])
+    assert set(op_view["result"]["splits"]) == {"train", "val"} and op_view["predicted"] == check["images"]
+    bad = hub.post(f"/api/models/{model['id']}/eval", json={**both, "splits": ["train", "dev"]})
+    assert bad.status_code == 400
+
     # ---- export and test: the server that trained it by default, another one when picked
     places = hub.get(f"/api/models/{model['id']}/places", params={"kind": "export"}).json()
     assert places["default"] == data and {p["id"] for p in places["nodes"] if p["fits"]} == {data, train}

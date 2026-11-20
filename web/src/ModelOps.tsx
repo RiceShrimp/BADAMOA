@@ -254,13 +254,13 @@ interface Place {
   holds_images: boolean;
 }
 
-interface Places {
+export interface Places {
   kind: string;
   default: string;
   nodes: Place[];
 }
 
-function usePlaces(modelId: string, kind: "eval" | "export" | "predict", releaseId = "") {
+export function usePlaces(modelId: string, kind: "eval" | "export" | "predict", releaseId = "") {
   const ready = kind !== "eval" || !!releaseId;
   const query = `kind=${kind}${releaseId ? `&release_id=${releaseId}` : ""}`;
   return usePolling(() => (ready ? api<Places>(`/models/${modelId}/places?${query}`) : Promise.resolve(null)), 0, [modelId, query]);
@@ -270,7 +270,7 @@ function usePlaces(modelId: string, kind: "eval" | "export" | "predict", release
  * Where it runs: the default (evaluation: the server holding the version's images; export and test: the server that
  * trained the model) or another one; the servers that cannot say why. "" stands for the default.
  */
-function PlacePicker({
+export function PlacePicker({
   places,
   error,
   value,
@@ -321,7 +321,7 @@ function PlacePicker({
   );
 }
 
-const placeReady = (places: Places | null | undefined, value: string) =>
+export const placeReady = (places: Places | null | undefined, value: string) =>
   !!places && !!places.nodes.find((n) => n.id === (value || places.default) && n.fits);
 
 function useSubmit(onStarted: () => void) {

@@ -1604,3 +1604,30 @@ select.active-select {
 .model-labels .notice {
   margin: 0;
 }
+
+/* 검수 → 모델로 검사하기: the splits ticked */
+.eval-splits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin: 10px 0 4px;
+  padding: 0;
+  border: 0;
+}
+.eval-splits legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.eval-splits .check-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 400;
+}
+.eval-splits .check-line input {
+  width: auto;
+  margin: 0;
+}

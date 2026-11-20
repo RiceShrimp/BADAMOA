@@ -42,6 +42,9 @@ def test_rules_flag_duplicates_class_overlaps_tiny_huge_and_rare(hub, tmp_path):
     assert flagged["items"][0]["qa"] == {"check": "duplicate", "boxes": [0, 1], "note": "person 2개 겹침"}
     rare = hub.get(f"/api/releases/{v1}/items", params={"check": "rare_class"}).json()["items"]
     assert [(i["file_name"], i["qa"]["note"]) for i in rare] == [("val_0000.jpg", "dog")]
+    # 검수 narrows what a check found like the dataset screen: by split, by name, by label state
+    by = lambda **f: hub.get(f"/api/releases/{v1}/items", params={"check": "duplicate", **f}).json()["total"]  # noqa: E731
+    assert (by(split="train"), by(split="val"), by(q="train_0000"), by(q="val_"), by(state="background")) == (1, 0, 1, 0, 0)
     # each note names the classes involved, so the list says which labels to look at
     notes = {
         check: hub.get(f"/api/releases/{v1}/items", params={"check": check}).json()["items"][0]["qa"]["note"]

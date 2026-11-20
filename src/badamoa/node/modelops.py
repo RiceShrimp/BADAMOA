@@ -71,6 +71,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         spec = params.get("environment") or {}
         in_container = spec.get("kind") == "docker"
         roots: list[str] = []  # the images' own folders (a container needs them mounted to follow the export's links)
+        splits: list[str | None] = [None]  # an evaluation: each split it measures, one run after the other
         if action == "eval":
             header, listed = trainer.manifest_stream(client, base)
             # images registered on another server were received into this one's cache before the job (``data.sync``)
@@ -96,12 +97,14 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 symlinks=not (in_container and os.name == "nt"),
             )
             summary = build(items, header["classes"], locations, work / "data", options)
-            split = params.get("split") or "val"
-            if not summary["items"].get(split):
-                raise RuntimeError(f"이 버전에는 {split} split의 이미지가 없습니다.")
+            splits = list(params.get("splits") or [params.get("split") or "val"])
+            for split in splits:
+                if not summary["items"].get(split):
+                    raise RuntimeError(f"이 버전에는 {split} split의 이미지가 없습니다.")
             name = f"{header['dataset']} {header['version']}"
-            print(f"{name} 버전의 {split} split {summary['items'][split]:,}장으로 평가합니다.")
-            config.update(data=summary["data_yaml"], data_dir=str(work / "data"), split=split)
+            counts = " · ".join(f"{split} {summary['items'][split]:,}장" for split in splits)
+            print(f"{name} 버전의 {counts}으로 평가합니다.")
+            config.update(data=summary["data_yaml"], data_dir=str(work / "data"), split=splits[0])
         elif action == "predict":
             source = work / "inputs"
             for n, image in enumerate(config["params"].get("images") or []):
@@ -136,68 +139,82 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         code = trainer.template_dir(client, base + "/blob", node_home, template)
         python, _, _ = trainer.ready_environment(node_home, spec, client=client)
         mounts = [(Path(root), True) for root in roots] if os.name != "nt" else []
-        command, env, where = trainer.launch(  # without the node's credentials, as for training
-            job_id=job_id,
-            home=node_home,
-            spec=spec,
-            python=python,
-            entrypoint=template["entrypoint"],
-            config=config,
-            config_path=work / "config.json",
-            code=code,
-            work=work,
-            mounts=[*mounts, (node_home / "cache" / "models", True)],
-        )
-        try:
-            proc = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                cwd=code,
+        def run_once(config: dict[str, Any]) -> dict[str, Any]:
+            """The template's entry point with ``config``; what it reported (``finish``)."""
+            command, env, where = trainer.launch(  # without the node's credentials, as for training
+                job_id=job_id,
+                home=node_home,
+                spec=spec,
+                python=python,
+                entrypoint=template["entrypoint"],
+                config=config,
+                config_path=work / "config.json",
+                code=code,
+                work=work,
+                mounts=[*mounts, (node_home / "cache" / "models", True)],
             )
-        except OSError as e:
-            raise RuntimeError(f"명령을 실행하지 못했습니다 ({command[0]}): {e}") from e
-        assert proc.stdout is not None
-        outcome: dict[str, Any] | None = None
-        last_progress = 0.0
-        for raw in proc.stdout:
-            line = trainer.ANSI.sub("", raw).rstrip()
-            if not line.startswith(trainer.EVENT_PREFIX):
-                if not line.strip():
-                    continue
-                if trainer.PROGRESS.search(line) and "100%" not in line:
-                    if time.monotonic() - last_progress < trainer.PROGRESS_EVERY_S:
-                        continue
-                    last_progress = time.monotonic()
-                print(line, flush=True)
-                continue
             try:
-                event = json.loads(line[len(trainer.EVENT_PREFIX) :])
-            except ValueError:
-                continue
-            kind = event.pop("event", "")
-            if kind == "result":
-                outcome = event
-            elif kind == "artifact":
-                path = where(str(event.get("path", "")))
-                if path.is_file():
-                    query = {"name": str(event.get("name") or path.name)}
-                    fields = ("key", "step", "caption", "media")
-                    query.update({k: event[k] for k in fields if event.get(k) not in (None, "")})
-                    sent = client.put(f"{base}/file", params=query, content=path.read_bytes(), timeout=3600)
-                    if sent.status_code != 200:
-                        raise RuntimeError(f"결과 파일을 올리지 못했습니다 ({path.name}): {sent.text[:200]}")
-                    trainer.note_uploaded(work, path)
-                else:
-                    print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
-        if proc.wait() != 0:
-            raise RuntimeError(f"프로세스가 종료 코드 {proc.returncode}로 끝났습니다.")
-        if outcome is None:
-            raise RuntimeError("코드가 결과를 알리지 않았습니다. 끝날 때 finish를 호출해야 합니다.")
+                proc = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    cwd=code,
+                )
+            except OSError as e:
+                raise RuntimeError(f"명령을 실행하지 못했습니다 ({command[0]}): {e}") from e
+            assert proc.stdout is not None
+            outcome: dict[str, Any] | None = None
+            last_progress = 0.0
+            for raw in proc.stdout:
+                line = trainer.ANSI.sub("", raw).rstrip()
+                if not line.startswith(trainer.EVENT_PREFIX):
+                    if not line.strip():
+                        continue
+                    if trainer.PROGRESS.search(line) and "100%" not in line:
+                        if time.monotonic() - last_progress < trainer.PROGRESS_EVERY_S:
+                            continue
+                        last_progress = time.monotonic()
+                    print(line, flush=True)
+                    continue
+                try:
+                    event = json.loads(line[len(trainer.EVENT_PREFIX) :])
+                except ValueError:
+                    continue
+                kind = event.pop("event", "")
+                if kind == "result":
+                    outcome = event
+                elif kind == "artifact":
+                    path = where(str(event.get("path", "")))
+                    if path.is_file():
+                        query = {"name": str(event.get("name") or path.name)}
+                        fields = ("key", "step", "caption", "media")
+                        query.update({k: event[k] for k in fields if event.get(k) not in (None, "")})
+                        sent = client.put(f"{base}/file", params=query, content=path.read_bytes(), timeout=3600)
+                        if sent.status_code != 200:
+                            raise RuntimeError(f"결과 파일을 올리지 못했습니다 ({path.name}): {sent.text[:200]}")
+                        trainer.note_uploaded(work, path)
+                    else:
+                        print(f"기록할 파일을 찾을 수 없습니다: {path}", flush=True)
+            if proc.wait() != 0:
+                raise RuntimeError(f"프로세스가 종료 코드 {proc.returncode}로 끝났습니다.")
+            if outcome is None:
+                raise RuntimeError("코드가 결과를 알리지 않았습니다. 끝날 때 finish를 호출해야 합니다.")
+            return outcome
+
+        outcomes: dict[str, dict[str, Any]] = {}
+        for split in splits:
+            if split is not None and len(splits) > 1:  # each split its own output folder, one after the other
+                (work / f"out-{split}").mkdir(parents=True, exist_ok=True)
+                config.update(split=split, out=str(work / f"out-{split}"))
+                print(f"--- {split} 평가 ---", flush=True)
+            outcomes[split or ""] = run_once(dict(config))
+        outcome = next(iter(outcomes.values()))
+        if len(outcomes) > 1:  # several splits: the first's numbers in front, each split's beside them
+            outcome = {**outcome, "splits": {s: o.get("metrics") or {} for s, o in outcomes.items()}}
         outcome.pop("weights", None)
 
         def put(path: Path, name: str) -> bool:

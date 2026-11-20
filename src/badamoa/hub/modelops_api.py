@@ -36,6 +36,7 @@ def _storage(hub: Hub):
 class EvalRequest(BaseModel):
     release_id: str
     split: str = "val"
+    splits: list[str] | None = None  # several in one evaluation (train and val …); ``split`` when empty
     gpus: int | None = None  # empty: one GPU when the server has any
     node_id: str = ""  # empty: the server holding the version's images
 
@@ -83,7 +84,9 @@ def start_eval(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    op = modelops.start_eval(db, user, model_id, body.release_id, body.split, body.gpus, via="ui", node_id=body.node_id)
+    op = modelops.start_eval(
+        db, user, model_id, body.release_id, body.split, body.gpus, via="ui", node_id=body.node_id, splits=body.splits
+    )
     db.commit()
     return modelops.op_view(db, hub.settings, op)
 

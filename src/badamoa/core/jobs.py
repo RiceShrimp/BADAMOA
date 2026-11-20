@@ -139,6 +139,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "weights": {"type": "object"},
                     "release_id": {"type": "string"},
                     "split": {"type": "string"},
+                    "splits": {"type": "array"},  # an evaluation of several, one after the other
                     "class_ids": {"type": "array"},
                 },
             },

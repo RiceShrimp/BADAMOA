@@ -51,7 +51,8 @@ def ingest(db: Session, op: ModelJob, raw: bytes) -> int:
     for entry in images:
         if isinstance(entry, dict) and isinstance(entry.get("image"), str):
             by_sha[entry["image"].lower()] = entry
-    db.execute(delete(ItemPrediction).where(ItemPrediction.op_id == op.id))
+    # Each upload replaces the predictions of the images it names: an evaluation of several splits uploads once per
+    # split, and its images add up to one basis.
     shas = list(by_sha)
     matched = 0
     for start in range(0, len(shas), CHUNK):
@@ -59,6 +60,9 @@ def ingest(db: Session, op: ModelJob, raw: bytes) -> int:
         items = db.execute(
             select(Item.id, Item.sha256).where(Item.project_id == dataset.project_id, Item.sha256.in_(chunk))
         ).all()
+        db.execute(
+            delete(ItemPrediction).where(ItemPrediction.op_id == op.id, ItemPrediction.item_id.in_([i for i, _ in items]))
+        )
         rows = []
         for item_id, sha in items:
             entry = by_sha[sha]

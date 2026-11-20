@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
@@ -21,7 +21,7 @@ from badamoa.core.storage import Storage
 from badamoa.core.templates import reads_weights
 
 from . import catalog, checks, drafts, registry, services, training, transfers
-from .catalog_models import Dataset, LabelSpace, Release
+from .catalog_models import Dataset, ItemPrediction, LabelSpace, Release
 from .config import HubSettings
 from .db import iso
 from .models import Job, Node, User
@@ -37,6 +37,7 @@ MAX_RESULT_ITEMS = 200
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 # A server evaluates on images it received from another one (laid out from its cache) from this BADAMOA on.
 EVAL_RECEIVED_SINCE = (0, 69, 0)
+SPLITS_SINCE = (0, 71, 0)  # a node evaluates several splits in one job
 
 
 def _template_of(db: Session, model: ModelVersion) -> Template:
@@ -186,11 +187,13 @@ def start_eval(
     gpus: int | None = None,
     via: str = "api",
     node_id: str = "",
+    splits: list[str] | None = None,
 ) -> ModelJob:
     """Measure a model on a release: the way to compare models trained on different data.
 
     Like training, it runs where the release's images are (or on ``node_id``, which receives them first when it has
-    none) and takes a GPU when that server has one (``gpus=0`` forces the CPU).
+    none) and takes a GPU when that server has one (``gpus=0`` forces the CPU). ``splits``: several in one evaluation,
+    one after the other; their per-image predictions make one basis for 검수.
     """
     model = training.get_model(db, model_id)
     release = catalog.get_release(db, release_id)
@@ -198,14 +201,16 @@ def start_eval(
     dataset = db.get(Dataset, release.dataset_id)
     if dataset.project_id != model.project_id:
         raise ServiceError(400, "다른 프로젝트의 버전으로는 평가할 수 없습니다.")
-    if split not in ("val", "test", "train"):
-        raise ServiceError(400, "split은 val, test, train 중 하나여야 합니다.")
+    wanted = list(dict.fromkeys(splits or [split]))
+    if not wanted or any(s not in ("val", "test", "train") for s in wanted):
+        raise ServiceError(400, "split은 val, test, train 중에서 고르세요.")
     task = catalog.dataset_task(dataset)
     if model.task and not task_names.same(model.task, task):
         short = task_names.short
         raise ServiceError(400, f"이 모델은 {short(model.task)}용이고 이 데이터셋은 {short(task)}입니다.")
-    if not (((release.stats or {}).get("splits") or {}).get(split) or {}).get("items"):
-        raise ServiceError(400, f"이 버전의 {split}에는 이미지가 없습니다. 다른 split이나 버전을 고르세요.")
+    for each in wanted:
+        if not (((release.stats or {}).get("splits") or {}).get(each) or {}).get("items"):
+            raise ServiceError(400, f"이 버전의 {each}에는 이미지가 없습니다. 다른 split이나 버전을 고르세요.")
     space = db.get(LabelSpace, release.label_space_id)
     ids = {str(c["name"]): int(c["id"]) for c in space.classes}
     missing = [name for name in model.classes or [] if name not in ids]
@@ -224,10 +229,16 @@ def start_eval(
                 raise ServiceError(400, f"{node.name}에서 다른 서버의 이미지로 평가하려면 {need} 이상이어야 합니다.")
             transfers.check_route(holder, node)
             after = transfers.sync_job(db, user, release.id, node, via).id
+    if len(wanted) > 1 and not _since(node, SPLITS_SINCE):  # an older node would evaluate only the first
+        need = ".".join(str(n) for n in SPLITS_SINCE)
+        raise ServiceError(400, f"{node.name}에서 split 여럿을 한 번에 평가하려면 {need} 이상이어야 합니다.")
     gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else gpus
-    extra = {"release_id": release.id, "split": split, "class_ids": class_ids}
+    extra = {"release_id": release.id, "split": wanted[0], "class_ids": class_ids}
+    if len(wanted) > 1:
+        extra["splits"] = wanted
+    shown = {"split": " · ".join(wanted), **({"splits": wanted} if len(wanted) > 1 else {})}
     return _start(
-        db, user, model, "eval", node, {"split": split}, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after
+        db, user, model, "eval", node, shown, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after
     )
 
 
@@ -496,6 +507,10 @@ def add_file(
     if media == "predictions":
         kept = op.kind in ("eval", "autolabel")  # per image, by image: a test's few uploads are not
         matched = checks.ingest(db, op, storage.get_blob(blob)) if storage is not None and kept else 0
+        if kept:  # every split's images so far (an evaluation of several uploads once per split)
+            db.flush()
+            total = db.scalar(select(func.count()).select_from(ItemPrediction).where(ItemPrediction.op_id == op.id))
+            matched = max(matched, int(total or 0))
         files = [f for f in (op.files or []) if f.get("kind") != "predictions"]
         entry = {"name": "predictions.json", "blob": blob, "bytes": size, "kind": "predictions", "images": matched}
         op.files = [*files, entry]
