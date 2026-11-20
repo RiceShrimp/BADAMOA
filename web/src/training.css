@@ -767,8 +767,10 @@ th.sortable:hover {
 }
 .column-picker {
   position: relative;
+  margin: 0; /* in line with the buttons beside it (details and summary get a margin elsewhere) */
 }
 .column-picker summary {
+  margin: 0;
   list-style: none;
 }
 .column-picker summary::-webkit-details-marker {

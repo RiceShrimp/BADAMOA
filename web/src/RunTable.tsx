@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { TagList } from "./Annotate";
 import { METRIC_LABEL, type Run, STAGE_LABEL, keyMetrics, metric } from "./trainTypes";
 import { Badge, STATUS_LABEL, duration, timeAgo } from "./ui";
@@ -166,8 +166,26 @@ function ColumnPicker({
   onChange: (keys: string[]) => void;
   onReset: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDetailsElement>(null);
+  // A click anywhere else, or Esc, closes the list (a <details> alone only closes from its own button).
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("pointerdown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
   return (
-    <details className="column-picker">
+    <details ref={box} className="column-picker" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="btn">열 고르기</summary>
       <div className="column-menu">
         {(["지표", "설정", "정보"] as const).map((group) => {
