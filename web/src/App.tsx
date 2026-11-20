@@ -65,7 +65,7 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     ],
   },
   {
-    group: "MOA",
+    group: "Management",
     hint: "운영",
     items: [
       { label: "노드", icon: "server", page: "nodes" },
@@ -210,8 +210,8 @@ function Shell({
         <a className="brand" href="#/home">
           <Logo />
           <span>
-            <strong>BADAMOA</strong>
-            <small>바다모아</small>
+            <strong>MLOps Orchestration</strong>
+            <small>MOA</small>
           </span>
         </a>
         <nav>
@@ -322,7 +322,7 @@ function Shell({
         )}
         {updated && (
           <div className="update-bar" role="status">
-            BADAMOA가 업데이트되었습니다(v{updated}). 새로고침하면 바뀐 화면을 씁니다.
+            MOA가 업데이트되었습니다(v{updated}). 새로고침하면 바뀐 화면을 씁니다.
             <button className="small primary" onClick={() => window.location.reload()}>
               새로고침
             </button>
@@ -386,7 +386,7 @@ function AuthForm({
         <div className="brand">
           <Logo size={36} />
           <span>
-            <strong>BADAMOA</strong>
+            <strong>MLOps Orchestration</strong>
             <small>Build · Annotate · Develop · Automate</small>
           </span>
         </div>

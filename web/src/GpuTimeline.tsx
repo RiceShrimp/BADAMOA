@@ -165,7 +165,7 @@ export function GpuTimeline({
       {data.gpus.length > 0 && (
         <div className="board-legend muted small">
           <span>
-            <i className="swatch job" /> BADAMOA 실행
+            <i className="swatch job" /> MOA 실행
           </span>
           <span>
             <i className="swatch busy" /> 사람

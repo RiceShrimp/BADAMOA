@@ -167,7 +167,7 @@ def check(
         raise RuntimeError("이 서버에 Docker나 systemctl이 없습니다.")
     if running_jobs:
         busy = len(running_jobs)
-        raise RuntimeError(f"이 서버에서 BADAMOA 작업 {busy}개가 돌고 있어 옮기지 않았습니다. 끝난 뒤에 하세요.")
+        raise RuntimeError(f"이 서버에서 MOA 작업 {busy}개가 돌고 있어 옮기지 않았습니다. 끝난 뒤에 하세요.")
     old = _root(runner)
     if not old:
         raise RuntimeError("Docker가 응답하지 않습니다. Docker가 켜져 있을 때 하세요.")

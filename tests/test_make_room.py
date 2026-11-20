@@ -90,7 +90,7 @@ def test_with_another_job_running_it_neither_moves_nor_pulls(docker_disk, tmp_pa
     said = []
     with pytest.raises(RuntimeError, match="받지 않았습니다.*3배.*다른 디스크로 옮기기"):
         containers.make_room(tmp_path, "docker", "reg:5000/x:1", said.append)
-    assert docker_disk["moved"] == [] and any("다른 BADAMOA 작업 1개" in line for line in said)
+    assert docker_disk["moved"] == [] and any("다른 MOA 작업 1개" in line for line in said)
 
 
 def test_without_root_it_does_not_pull_either(docker_disk, tmp_path):

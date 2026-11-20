@@ -90,7 +90,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             roots = [root for root in locations.values() if root]
             build = exporter.BUILDERS.get(template.get("data_format", "yolo"))
             if build is None:
-                raise RuntimeError("이 노드의 BADAMOA는 이 데이터 형식을 지원하지 않습니다. 노드를 업데이트하세요.")
+                raise RuntimeError("이 노드의 MOA는 이 데이터 형식을 지원하지 않습니다. 노드를 업데이트하세요.")
             options = exporter.ExportOptions(
                 classes=[int(c) for c in params.get("class_ids") or []],
                 ordered=True,  # numbered as the model numbers them

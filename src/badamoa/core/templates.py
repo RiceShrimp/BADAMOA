@@ -375,7 +375,7 @@ def parse_manifest(text: str, code: str | None = None) -> TemplateManifest:
             raise TemplateError(f"{kind} 명령에 설정 파일이 들어갈 자리 {{config}}가 없습니다.")
     for name, spec in manifest.params.items():
         if name in RESERVED:
-            raise TemplateError(f"설정 이름 {name}은 BADAMOA가 쓰는 이름이라 사용할 수 없습니다.")
+            raise TemplateError(f"설정 이름 {name}은 MOA가 쓰는 이름이라 사용할 수 없습니다.")
         if spec.type not in PARAM_TYPES:
             raise TemplateError(f"설정 {name}의 type은 {', '.join(PARAM_TYPES)} 중 하나여야 합니다.")
         _check_param_tasks(manifest, name, spec)

@@ -71,7 +71,7 @@ def test_manifest_defaults_and_param_checks():
         (('name = "inhouse-det"', 'name = "In House"'), "name은"),
         (('train = "python train.py --config {config}"', 'train = "python train.py"'), "{config}"),
         (('train = "python train.py --config {config}"', 'serve = "python s.py --config {config}"'), "알 수 없는 진입점"),
-        (("[params.epochs]", "[params.classes]"), "BADAMOA가 쓰는 이름"),
+        (("[params.epochs]", "[params.classes]"), "MOA가 쓰는 이름"),
         (("default = 10", 'default = "many"'), "기본값"),
         (('variant = "backbone"', 'variant = "arch"'), "variant"),
         (('version = "1.0.0"', "version = 1.0"), "형식이 맞지 않습니다"),
@@ -151,7 +151,7 @@ def test_settings_declared_in_code_are_read_without_running_it():
         fmt.params_from_code("import badamoa_sdk as bm\nBASE = 0.1\nhp = bm.params(lr=bm.number(BASE * 2))")
     with pytest.raises(fmt.TemplateError, match="목록이 필요"):
         fmt.params_from_code("hp = bm.params(model=bm.choice([]))")
-    with pytest.raises(fmt.TemplateError, match="BADAMOA가 쓰는 이름"):
+    with pytest.raises(fmt.TemplateError, match="MOA가 쓰는 이름"):
         fmt.parse_manifest(MANIFEST, "hp = bm.params(classes=bm.integer(3))")
 
 

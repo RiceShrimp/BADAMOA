@@ -138,7 +138,8 @@ def test_the_class_filter_narrows_findings_by_their_own_class(hub, tmp_path):  #
     assert tiny("0,1") == [("train_0000.jpg", (0,)), ("train_0001.jpg", (0,))]
     # outside a check: the images holding any of them, as the dataset screen
     def names(**params):
-        return {i["file_name"] for i in hub.get(f"/api/releases/{v1}/items", params={**params, "limit": 200}).json()["items"]}
+        found = hub.get(f"/api/releases/{v1}/items", params={**params, "limit": 200}).json()["items"]
+        return {i["file_name"] for i in found}
 
     assert names(classes="1,2") == names(class_id=1) | names(class_id=2)
     assert {"train_0000.jpg", "train_0001.jpg", "train_0003.jpg"} <= names(classes="1,2")

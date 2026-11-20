@@ -24,7 +24,7 @@ log = logging.getLogger("badamoa.hub")
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 PROJECT = "샘플 (COCO8)"
-NOTE = "BADAMOA 샘플: Ultralytics COCO8 (COCO train2017의 처음 8장)"
+NOTE = "MOA 샘플: Ultralytics COCO8 (COCO train2017의 처음 8장)"
 # (folder, dataset, task)
 SETS = [
     ("coco8", "COCO8 검출", "Det"),

@@ -188,7 +188,7 @@ def template_dir(client: httpx.Client, base: str, node_home: Path, template: dic
     if template.get("builtin"):
         folder = shipped.builtin().get(template["name"])
         if folder is None:
-            raise RuntimeError(f"이 노드의 BADAMOA에는 내장 템플릿 {template['name']}이 없습니다. 노드를 업데이트하세요.")
+            raise RuntimeError(f"이 노드의 MOA에는 내장 템플릿 {template['name']}이 없습니다. 노드를 업데이트하세요.")
         return folder
     digest = template["sha256"]
     where = places.of(node_home)
@@ -381,7 +381,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
         data_format = template.get("data_format", "yolo")
         build = exporter.BUILDERS.get(data_format)
         if build is None:
-            raise RuntimeError(f"이 노드의 BADAMOA는 데이터 형식 {data_format}을 지원하지 않습니다. 노드를 업데이트하세요.")
+            raise RuntimeError(f"이 노드의 MOA는 데이터 형식 {data_format}을 지원하지 않습니다. 노드를 업데이트하세요.")
         summary = build(items, header["classes"], locations, work / "data", options)
         counts, left_out = summary["items"], summary["excluded"]
         print(

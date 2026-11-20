@@ -45,7 +45,7 @@ function size(gbValue?: number | null): string {
 function occupant(state: NodeDetailInfo["gpu_states"][number] | undefined): string {
   if (!state || state.state === "free") return "비어 있음";
   if (state.state === "reserved") return "사람 전용 (비어 있음)";
-  if (state.state === "job") return "BADAMOA 작업";
+  if (state.state === "job") return "MOA 작업";
   return state.users.length ? state.users.join(", ") : "다른 프로세스";
 }
 
@@ -386,7 +386,7 @@ export function NodeDetail({ nodeId, isAdmin }: { nodeId: string; isAdmin: boole
                     <td>
                       <span className={`occupant ${state?.state ?? "free"}`}>
                         <i />
-                        {state?.state === "job" && state.job_id ? "BADAMOA 작업" : occupant(state)}
+                        {state?.state === "job" && state.job_id ? "MOA 작업" : occupant(state)}
                       </span>
                     </td>
                   </tr>

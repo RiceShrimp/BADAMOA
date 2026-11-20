@@ -109,7 +109,7 @@ def _servers(db: Session, settings: HubSettings, manifest: Any, gpu: bool) -> tu
         if _version(node) < since:
             need = ".".join(str(n) for n in since)
             what = "여러 태스크의 시험 실행을" if since == SEVERAL_TASKS_SINCE else "시험 실행을"
-            why = f"학습 서버의 BADAMOA가 {what} 모릅니다. {need} 이상으로 업데이트하세요."
+            why = f"학습 서버의 MOA가 {what} 모릅니다. {need} 이상으로 업데이트하세요."
             continue
         if services.node_status(node, settings) != "online":
             continue
@@ -136,7 +136,7 @@ def start(db: Session, settings: HubSettings, user: User, template_id: str, via:
     services.require_admin(user)
     row = registry.get_template(db, template_id)
     if row.builtin:
-        raise ServiceError(400, "기본 제공 모델 종류는 BADAMOA를 낼 때 확인했습니다.")
+        raise ServiceError(400, "기본 제공 모델 종류는 MOA를 낼 때 확인했습니다.")
     before = state(row)
     if before == "checking":
         raise ServiceError(409, f"{row.title} {row.version}은(는) 이미 시험 실행 중입니다.")

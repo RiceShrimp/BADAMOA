@@ -185,7 +185,7 @@ def _trial(
     def make_data() -> str:
         build = exporter.BUILDERS.get(data_format)
         if build is None:
-            raise Failed("data", f"이 서버의 BADAMOA는 데이터 형식 {data_format}을 쓸 줄 모릅니다. 서버를 업데이트하세요.")
+            raise Failed("data", f"이 서버의 MOA는 데이터 형식 {data_format}을 쓸 줄 모릅니다. 서버를 업데이트하세요.")
         count = samples.class_count(kind, int(classes.get("min") or 0), int(classes.get("max") or 0))
         train = max(8, int(data.get("min_images") or 0))
         points = int(data.get("keypoints") or 0)

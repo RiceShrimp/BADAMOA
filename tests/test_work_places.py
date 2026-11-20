@@ -282,7 +282,7 @@ def test_nearly_full_disks_are_named_with_what_is_on_them():
     }
     (alert,) = disk_space.alerts(metrics)
     assert alert["mount"] == "/" and alert["level"] == "low" and alert["uses"] == ["home", "docker"]
-    assert alert["docker"] == "/var/lib/docker" and alert["label"] == "BADAMOA 홈 · Docker 이미지"
+    assert alert["docker"] == "/var/lib/docker" and alert["label"] == "MOA 홈 · Docker 이미지"
     assert disk_space.docker_target(metrics, "/var/lib/docker") == "/home4/docker"
     # Docker Desktop keeps images in its own virtual disk: nothing to say about this machine's disks
     desktop = {"places": [{"kind": "docker", "path": "/var/lib/docker", "desktop": True}]}

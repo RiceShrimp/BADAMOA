@@ -34,7 +34,7 @@ export function OnlineTray({ me }: { me: string }) {
   if (!people) return null;
   return (
     <div className="import-tray" ref={box}>
-      <button className="pill ok" onClick={() => setOpen(!open)} title="지금 BADAMOA를 쓰는 사람 (최근 3분)">
+      <button className="pill ok" onClick={() => setOpen(!open)} title="지금 MOA를 쓰는 사람 (최근 3분)">
         <i />
         접속 {people.length}명
       </button>

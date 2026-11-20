@@ -451,10 +451,10 @@ def read_manifest(path: Path) -> dict[str, Any]:
     with tarfile.open(path, "r") as tar:
         first = tar.next()
         if first is None or first.name != MANIFEST:
-            raise ServiceError(400, f"{path.name}은(는) BADAMOA Hub를 내보낸 파일이 아닙니다.")
+            raise ServiceError(400, f"{path.name}은(는) MOA Hub를 내보낸 파일이 아닙니다.")
         manifest = json.loads(tar.extractfile(first).read().decode("utf-8"))  # type: ignore[union-attr]
     if manifest.get("format") != FORMAT:
-        raise ServiceError(400, f"이 BADAMOA가 모르는 형식({manifest.get('format')})입니다. BADAMOA를 업데이트하세요.")
+        raise ServiceError(400, f"이 MOA가 모르는 형식({manifest.get('format')})입니다. MOA를 업데이트하세요.")
     return manifest
 
 
@@ -469,8 +469,8 @@ def import_file(path: Path, home: Path, force: bool = False, log_line: Callable[
     if _version(str(manifest.get("version"))) > _version(services.HUB_VERSION):
         raise ServiceError(
             400,
-            f"BADAMOA {manifest.get('version')}에서 내보낸 파일입니다. "
-            f"이 PC의 BADAMOA({services.HUB_VERSION})를 먼저 업데이트하세요.",
+            f"MOA {manifest.get('version')}에서 내보낸 파일입니다. "
+            f"이 PC의 MOA({services.HUB_VERSION})를 먼저 업데이트하세요.",
         )
     home.mkdir(parents=True, exist_ok=True)
     present = [home / p.rstrip("/") for p in PARTS if (home / p.rstrip("/")).exists()]

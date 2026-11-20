@@ -19,7 +19,7 @@ LOW_GB = 10.0
 LOW_PCT = 5.0
 LOW_CAP_GB = 50.0  # 5 % of a 7 TB disk is no shortage
 FULL_GB = 3.0
-WHAT = {"home": "BADAMOA 홈", "work": "작업 폴더", "images": "받은 이미지", "docker": "Docker 이미지"}
+WHAT = {"home": "MOA 홈", "work": "작업 폴더", "images": "받은 이미지", "docker": "Docker 이미지"}
 ORDER = ("home", "work", "images", "docker")
 
 
@@ -131,7 +131,7 @@ def docker_move_state(node: Any, busy: int = 0) -> dict[str, Any]:
     elif version < DOCKER_MOVE_SINCE:
         found["why"] = f"노드를 {'.'.join(str(n) for n in DOCKER_MOVE_SINCE)} 이상으로 업데이트해야 합니다."
     elif busy:
-        found["why"] = f"이 서버에 BADAMOA 작업 {busy}개가 있습니다. 끝난 뒤에 옮기세요."
+        found["why"] = f"이 서버에 MOA 작업 {busy}개가 있습니다. 끝난 뒤에 옮기세요."
     else:
         found["possible"] = True
     return found

@@ -485,7 +485,7 @@ def write_archive(
         bundle.writestr("files.csv", listing.getvalue(), compress_type=zipfile.ZIP_DEFLATED)
         what = "" if images else " (라벨만 — 이미지는 files.csv의 registered_path)"
         readme = [
-            f"{header['dataset']} {header['version']} — BADAMOA에서 내보냄",
+            f"{header['dataset']} {header['version']} — MOA에서 내보냄",
             f"형식: {fmt}{what}",
             "항목: " + ", ".join(f"{s} {counts[s]}" for s in SPLITS if counts.get(s)),
             f"클래스 {len(ordered)}개: " + ", ".join(ordered),

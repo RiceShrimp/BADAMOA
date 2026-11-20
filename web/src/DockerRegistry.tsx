@@ -28,7 +28,7 @@ export interface RegistryImage {
 }
 
 const MODE: Record<RegistryInfo["mode"], string> = {
-  managed: "BADAMOA가 만든 레지스트리",
+  managed: "MOA가 만든 레지스트리",
   adopted: "이 PC에 있던 레지스트리를 씀",
   external: "직접 적은 주소",
   off: "꺼 둠",

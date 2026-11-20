@@ -38,7 +38,7 @@ export function DiskAlertLine({ alerts }: { alerts?: DiskAlert[] }) {
 }
 
 const FIX: Record<string, string> = {
-  home: "BADAMOA의 설정 · 기록이 있는 곳입니다. 다른 파일을 정리해 공간을 비우세요",
+  home: "MOA의 설정 · 기록이 있는 곳입니다. 다른 파일을 정리해 공간을 비우세요",
   work: "가상환경 · 작업 폴더 · 받아 둔 가중치를 두는 곳입니다. 아래 저장 공간에서 지우거나 노드 설정에서 작업 폴더를 여유 있는 디스크로 바꾸세요",
   images: "다른 서버에서 받은 이미지를 두는 곳입니다. 아래 '받아 둔 버전'에서 지우거나 노드 설정에서 보관 위치를 바꾸세요",
   docker: "Docker 이미지가 있는 곳입니다. 아래 'Docker 이미지 위치 옮기기'로 다른 디스크로 옮기면 비워집니다",
@@ -103,7 +103,7 @@ export function DiskAlertBox({
           {a.docker && isAdmin && (
             <div className="docker-move-actions">
               <button onClick={() => setMoving(true)}>Docker 이미지 위치 옮기기</button>
-              <span className="muted small">BADAMOA가 이 서버에서 멈춤 → 복사 → 설정 → 시작 → 확인까지 하고, 실패하면 되돌립니다.</span>
+              <span className="muted small">MOA가 이 서버에서 멈춤 → 복사 → 설정 → 시작 → 확인까지 하고, 실패하면 되돌립니다.</span>
             </div>
           )}
           {a.docker && isAdmin && (
@@ -184,7 +184,7 @@ export function DockerMoveDialog({ nodeId, suggest, onClose }: { nodeId: string;
         <>
           <p className="muted">
             Docker는 이 서버의 이미지를 모두 한 폴더(<code>data-root</code>)에 둡니다. 지금 <code>{state.path || "?"}</code>입니다. 옮기려면
-            Docker를 멈춰야 해서, <strong>그동안 이 서버의 컨테이너가 모두 멈춥니다</strong>(BADAMOA 것이든 다른 사람 것이든). 이미지 양에
+            Docker를 멈춰야 해서, <strong>그동안 이 서버의 컨테이너가 모두 멈춥니다</strong>(MOA 것이든 다른 사람 것이든). 이미지 양에
             따라 몇 분에서 수십 분 걸립니다. 하나라도 잘못되면 설정을 되돌리고 원래 폴더로 Docker를 다시 켭니다.
           </p>
           {!state.possible && <div className="notice">{state.why}</div>}

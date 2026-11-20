@@ -146,7 +146,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
           </span>
           <span className="board-count">
             <i className="swatch job" />
-            BADAMOA {c.job}
+            MOA {c.job}
           </span>
           <span className="board-count">
             <i className="swatch busy" />
@@ -214,7 +214,7 @@ export function Nodes({ isAdmin }: { isAdmin: boolean }) {
       {board && board.nodes.length > 0 && (
         <div className="board-legend muted small">
           <span>
-            <i className="swatch job" /> BADAMOA 실행
+            <i className="swatch job" /> MOA 실행
           </span>
           <span>
             <i className="swatch busy" /> 사람이 쓰는 중 (<a href="#/settings/gpu">기준</a>)
@@ -586,7 +586,7 @@ function WorkPlace({ node, value, onChange }: { node: BoardNode; value: string; 
           {work.moving ? " · 옮기는 중" : ""}
         </div>
       ) : (
-        <div className="muted small">이 노드의 BADAMOA는 0.74.0부터 작업 폴더를 따로 둡니다(지금은 노드 폴더 안).</div>
+        <div className="muted small">이 노드의 MOA는 0.74.0부터 작업 폴더를 따로 둡니다(지금은 노드 폴더 안).</div>
       )}
       {work?.error && <div className="small bad-text">{work.error}</div>}
     </>
@@ -856,7 +856,7 @@ function DeleteNode({ node, onBack, onDone }: { node: BoardNode; onBack: () => v
   if (left) {
     return (
       <Modal title={`${node.name} 삭제됨`} onClose={onDone}>
-        <p>Hub에서 노드를 지웠습니다. {left.reason} 그 서버에서 아래 명령을 실행하면 BADAMOA가 지워집니다(데이터 폴더는 그대로).</p>
+        <p>Hub에서 노드를 지웠습니다. {left.reason} 그 서버에서 아래 명령을 실행하면 MOA가 지워집니다(데이터 폴더는 그대로).</p>
         <CopyBlock label="Ubuntu / Linux" text={left.commands.linux} />
         <CopyBlock label="Ubuntu / Linux — sudo 없이 설치한 노드 (그 계정으로)" text={left.commands.linux_user} />
         <CopyBlock label="Windows (관리자 PowerShell)" text={left.commands.windows} />
@@ -876,7 +876,7 @@ function DeleteNode({ node, onBack, onDone }: { node: BoardNode; onBack: () => v
       </ul>
       <label className="check">
         <input type="checkbox" checked={cleanup} onChange={(e) => setCleanup(e.target.checked)} />
-        서버에서도 BADAMOA 지우기 <span className="muted small">— 서비스 등록 · 프로그램 · 설정. 데이터 폴더는 그대로</span>
+        서버에서도 MOA 지우기 <span className="muted small">— 서비스 등록 · 프로그램 · 설정. 데이터 폴더는 그대로</span>
       </label>
       {cleanup && !online && (
         <p className="muted small">노드가 꺼져 있어 지금은 서버를 정리할 수 없습니다. 삭제한 뒤 그 서버에서 실행할 명령을 알려 드립니다.</p>
@@ -934,7 +934,7 @@ function EditNode({ node, onClose }: { node: BoardNode; onClose: () => void }) {
       {node.gpus.length > 0 && (
         <>
           <div className="field-label">사람 전용 GPU</div>
-          <p className="muted small">고른 GPU에는 BADAMOA가 작업을 보내지 않습니다. 사람이 직접 쓰는 자리로 남겨 둘 때 씁니다.</p>
+          <p className="muted small">고른 GPU에는 MOA가 작업을 보내지 않습니다. 사람이 직접 쓰는 자리로 남겨 둘 때 씁니다.</p>
           <div className="checks">
             {node.gpus.map((g) => (
               <label key={g.index}>

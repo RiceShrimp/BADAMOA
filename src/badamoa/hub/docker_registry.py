@@ -296,7 +296,7 @@ def setup(db: Session, settings: HubSettings) -> dict[str, Any]:
                 if reachable(current["address"], timeout=2):
                     return _save(db, {**current, "ok": True, "error": "", "images": catalog(current["address"])})
                 time.sleep(1)
-        why = "BADAMOA가 만든 레지스트리" if mode == "managed" else f"이 PC의 레지스트리({current.get('container')})"
+        why = "MOA가 만든 레지스트리" if mode == "managed" else f"이 PC의 레지스트리({current.get('container')})"
         return _save(db, {**current, "ok": False, "error": f"{why}가 응답하지 않습니다: {current['address']}"})
 
     try:

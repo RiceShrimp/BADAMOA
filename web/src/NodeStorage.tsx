@@ -83,7 +83,7 @@ const KIND: Record<Kind, { name: string; about: string; empty: string }> = {
   },
   containers: {
     name: "Docker 이미지",
-    about: "학습 환경으로 쓰는 이미지. BADAMOA가 받은 것만 지우고, 전부터 있던 이미지는 목록에서만 뺍니다",
+    about: "학습 환경으로 쓰는 이미지. MOA가 받은 것만 지우고, 전부터 있던 이미지는 목록에서만 뺍니다",
     empty: "모두 지울까요? 필요할 때 다시 받습니다.",
   },
   models: {
@@ -134,7 +134,7 @@ function itemNote(kind: Kind, item: StorageItem): string {
     const users = [...(item.users ?? []), ...(item.environments ?? []).map((e) => `환경 ${e}`)];
     parts.push(users.length ? users.join(", ") : "쓰는 모델 종류 없음");
   }
-  if (kind === "containers") parts.push(item.pulled ? "BADAMOA가 받음" : "전부터 있던 이미지");
+  if (kind === "containers") parts.push(item.pulled ? "MOA가 받음" : "전부터 있던 이미지");
   if (kind === "templates" || kind === "template_data") parts.push(item.id.length > 24 ? item.id.slice(0, 12) : item.id);
   if (kind === "runs" && item.job_status) parts.push(STATUS[item.job_status] ?? item.job_status);
   parts.push(item.last_used ? `마지막 사용 ${timeAgo(item.last_used)}` : "쓴 적 없음");
@@ -147,12 +147,12 @@ function placeNote(k: StorageKind): string {
   const work = k.auto ? "작업 폴더: 노드가 고른 곳(남은 공간이 가장 많은 디스크, 노드 설정에서 바꿈)" : "작업 폴더: 관리자가 정한 곳 (노드 설정)";
   const who: Record<Kind, string> = {
     images: k.auto ? "노드가 고른 곳: 남은 공간이 가장 많은 디스크 (노드 설정에서 바꿈)" : "관리자가 정한 곳 (노드 설정)",
-    envs: k.work ? work : "BADAMOA 폴더 안",
+    envs: k.work ? work : "MOA 폴더 안",
     containers: k.desktop ? "Docker Desktop의 가상 디스크 안 (Docker Desktop 설정 → Resources)" : "Docker가 정한 곳 (Docker의 data-root)",
-    models: k.work ? work : "BADAMOA 폴더 안",
-    templates: k.work ? work : "BADAMOA 폴더 안",
-    template_data: k.work ? work : "BADAMOA 폴더 안",
-    runs: k.work ? work : "BADAMOA 폴더 안",
+    models: k.work ? work : "MOA 폴더 안",
+    templates: k.work ? work : "MOA 폴더 안",
+    template_data: k.work ? work : "MOA 폴더 안",
+    runs: k.work ? work : "MOA 폴더 안",
     uv: k.work ? "작업 폴더 안 (uv의 기본 캐시가 다른 디스크라 가상환경과 같은 디스크에 둠)" : "uv가 정한 곳 (이 계정의 uv 캐시)",
   };
   const parts = [who[k.kind]];
@@ -171,7 +171,7 @@ function itemPath(k: StorageKind, item: StorageItem): string {
 
 /** Why "비우기" is off, said on hover: what uses the kind now, or what has to happen first. */
 function whyNotEmpty(k: StorageKind, notUsed: number, canClean: boolean, cleaning: boolean): string | undefined {
-  if (!canClean) return "이 서버의 BADAMOA가 오래되어 비울 수 없습니다. 노드를 업데이트하세요";
+  if (!canClean) return "이 서버의 MOA가 오래되어 비울 수 없습니다. 노드를 업데이트하세요";
   if (cleaning) return "지우는 중입니다. 끝난 뒤에 다시 하세요";
   if (k.in_use || (k.items && k.items.length > 0 && notUsed === 0)) {
     const what = k.kind === "containers" ? "Docker 이미지" : KIND[k.kind].name;
@@ -232,7 +232,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
       <div className="card-head">
         <h3>저장 공간</h3>
         <span className="muted small">
-          BADAMOA가 이 서버에 둔 것
+          MOA가 이 서버에 둔 것
           {data.measured_at
             ? ` · 합계 ${bytesLabel(total)}${free != null ? ` · 남은 공간 ${bytesLabel(free)}` : ""} · ${timeAgo(data.measured_at)} 잼`
             : ""}
@@ -253,7 +253,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
 
       {data.home && (
         <p className="muted small storage-home">
-          BADAMOA 폴더 <code className="mono">{data.home}</code>
+          MOA 폴더 <code className="mono">{data.home}</code>
           {data.home_mount ? ` · 디스크 ${data.home_mount}` : ""}
           {data.free != null ? ` · 남은 ${bytesLabel(data.free)}` : ""}
           {data.work && data.work !== data.home && (
@@ -270,12 +270,12 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
         <p className="muted small storage-note">
           {data.can_clean
             ? "아직 알려 온 것이 없습니다. 서버가 켜져 있으면 곧 잽니다."
-            : `이 서버의 BADAMOA는 저장한 것을 알려 주지 않습니다. ${data.need} 이상으로 업데이트하면 보입니다.`}
+            : `이 서버의 MOA는 저장한 것을 알려 주지 않습니다. ${data.need} 이상으로 업데이트하면 보입니다.`}
         </p>
       ) : (
         <>
           {whole > 0 && (
-            <div className="storage-bar" title={free != null ? `BADAMOA ${bytesLabel(total)} · 남은 공간 ${bytesLabel(free)}` : ""}>
+            <div className="storage-bar" title={free != null ? `MOA ${bytesLabel(total)} · 남은 공간 ${bytesLabel(free)}` : ""}>
               {data.kinds
                 .filter((k) => k.bytes > 0)
                 .map((k) => (
@@ -387,7 +387,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
           </ul>
           {emptyKinds.length > 0 && (
             <p className="muted small storage-rest">
-              {shownKinds.length === 0 ? "BADAMOA가 이 서버에 둔 것이 없습니다. " : ""}
+              {shownKinds.length === 0 ? "MOA가 이 서버에 둔 것이 없습니다. " : ""}
               비어 있음: {emptyKinds.map((k) => KIND[k.kind].name).join(", ")}
             </p>
           )}

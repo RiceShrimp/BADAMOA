@@ -718,7 +718,7 @@ def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
             if g is None:
                 waiting.append(f"GPU {index} 없음")
             elif g["state"] == "job":
-                waiting.append(f"GPU {index} BADAMOA 작업 중")
+                waiting.append(f"GPU {index} MOA 작업 중")
             elif g["state"] == "busy":
                 waiting.append(f"GPU {index} 사용 중" + (f" ({', '.join(g['users'])})" if g["users"] else ""))
             elif g["state"] == "reserved":
@@ -742,7 +742,7 @@ def explain_wait(db: Session, settings: HubSettings, job: Job) -> str:
             if who:
                 parts.append(f"사용 중: {who}")
             if by_jobs:
-                parts.append(f"BADAMOA 작업 {by_jobs}개")
+                parts.append(f"MOA 작업 {by_jobs}개")
             if kept:
                 parts.append(f"사람 전용 {kept}개")
             details.append(f"{node.name} — {' · '.join(parts)}")

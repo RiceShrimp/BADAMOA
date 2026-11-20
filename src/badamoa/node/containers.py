@@ -221,10 +221,10 @@ def remove(home: Path, image: str, log: Callable[[str], None] = print) -> dict[s
     entry = known.pop(image, None)
     (home / PULLED).write_text(json.dumps(known, ensure_ascii=False), encoding="utf-8")
     if entry is None:
-        log(f"이 서버에서 BADAMOA가 쓰던 이미지가 아닙니다: {image}")
+        log(f"이 서버에서 MOA가 쓰던 이미지가 아닙니다: {image}")
         return {"removed": False}
     if not entry.get("pulled"):
-        log(f"BADAMOA가 받기 전부터 있던 이미지라 지우지 않고 목록에서만 뺐습니다: {image}")
+        log(f"MOA가 받기 전부터 있던 이미지라 지우지 않고 목록에서만 뺐습니다: {image}")
         return {"removed": False, "forgotten": True}
     command = docker()
     done = subprocess.run([command or "docker", "rmi", image], capture_output=True, text=True, check=False)
@@ -423,7 +423,7 @@ def _move_docker(home: Path, current: str, need: int, log: Callable[[str], None]
     log(f"이 서버에서 돌고 있는 것이 없으면 Docker 이미지 위치를 {targets[0]}(으)로 옮긴 뒤 받습니다.")
     with docker_root.alone(home, job) as others:
         if others:
-            log(f"이 서버에서 다른 BADAMOA 작업 {len(others)}개가 돌고 있어 옮기지 않았습니다.")
+            log(f"이 서버에서 다른 MOA 작업 {len(others)}개가 돌고 있어 옮기지 않았습니다.")
             return False
         try:
             docker_root.move(targets[0], extra=need, log=log)

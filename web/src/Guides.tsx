@@ -94,7 +94,7 @@ export function GuidesPage({ name }: { name?: string }) {
     const url = URL.createObjectURL(new Blob([guide.markdown], { type: "text/markdown;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `BADAMOA-${guide.file}`;
+    a.download = `MOA-${guide.file}`;
     a.click();
     URL.revokeObjectURL(url);
   };

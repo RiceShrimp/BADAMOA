@@ -291,7 +291,7 @@ def clean(
         raise ServiceError(400, f"{node.name}은(는) 꺼 둔 서버입니다.")
     if _version(node) < CLEAN_SINCE:
         need = ".".join(str(n) for n in CLEAN_SINCE)
-        raise ServiceError(400, f"{node.name}의 BADAMOA는 저장한 것을 지울 수 없습니다. {need} 이상으로 업데이트하세요.")
+        raise ServiceError(400, f"{node.name}의 MOA는 저장한 것을 지울 수 없습니다. {need} 이상으로 업데이트하세요.")
     if kind == "images":
         raise ServiceError(400, "받아 둔 이미지는 버전별로 지웁니다: 아래의 '받아 둔 버전'에서 지우세요.")
     if kind not in REMOVABLE:
@@ -337,7 +337,7 @@ def measure(db: Session, user: User, node_id: str, via: str = "api") -> Job:
         raise ServiceError(400, f"{node.name}은(는) 꺼 둔 서버입니다.")
     if _version(node) < CLEAN_SINCE:
         need = ".".join(str(n) for n in CLEAN_SINCE)
-        raise ServiceError(400, f"{node.name}의 BADAMOA는 저장한 것을 잴 수 없습니다. {need} 이상으로 업데이트하세요.")
+        raise ServiceError(400, f"{node.name}의 MOA는 저장한 것을 잴 수 없습니다. {need} 이상으로 업데이트하세요.")
     job = services.create_job(db, user, "node.clean", {"kind": "", "items": []}, node.id, via=via, gpus=0)
     services.audit(db, user.id, via, "node.measure", node.id)
     return job

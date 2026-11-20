@@ -539,7 +539,7 @@ class NodeAgent:
         except httpx.HTTPError as e:
             log.debug("answer %s failed: %s", request.get("id"), e)
         if leaving:
-            log.warning("Hub에서 이 노드를 지웠습니다. BADAMOA를 정리하고 끝냅니다: %s", body["result"]["removing"])
+            log.warning("Hub에서 이 노드를 지웠습니다. MOA를 정리하고 끝냅니다: %s", body["result"]["removing"])
             self.stop()
             if hard:
                 os._exit(0)  # the cleanup helper takes it from here

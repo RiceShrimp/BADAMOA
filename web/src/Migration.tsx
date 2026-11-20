@@ -184,7 +184,7 @@ export function MigrationPanel() {
 
           <h4>2. 새 PC에서 가져오기</h4>
           <ol className="migration-steps">
-            <li>새 PC에 BADAMOA를 받고 Hub를 띄울 준비를 합니다(README의 Hub 띄우기: uv sync · 웹 빌드). 아직 Hub는 켜지 않습니다.</li>
+            <li>새 PC에 MOA를 받고 Hub를 띄울 준비를 합니다(README의 Hub 띄우기: uv sync · 웹 빌드). 아직 Hub는 켜지 않습니다.</li>
             <li>
               그 폴더에서 파일을 가져옵니다. <code>--home</code>은 Hub를 띄울 때와 같게 적습니다.
               <CopyBlock text={`uv run badamoa hub import ${fileName || "badamoa-hub-….tar"} --home .badamoa/hub`} />

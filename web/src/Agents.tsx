@@ -40,7 +40,7 @@ export function Agents() {
         <div>
           <h1>에이전트</h1>
           <p className="muted">
-            BADAMOA Hub는 MCP 서버입니다. Claude Code 같은 에이전트를 연결하면 아래 일을 대화로 시킬 수 있습니다.
+            MOA Hub는 MCP 서버입니다. Claude Code 같은 에이전트를 연결하면 아래 일을 대화로 시킬 수 있습니다.
           </p>
         </div>
       </div>
@@ -93,7 +93,7 @@ export function Agents() {
               )}
             />
           </details>
-          <p className="muted small">연결한 뒤 "BADAMOA 노드 상태 점검해줘"라고 요청해 보세요.</p>
+          <p className="muted small">연결한 뒤 "MOA 노드 상태 점검해줘"라고 요청해 보세요.</p>
         </section>
       </div>
 

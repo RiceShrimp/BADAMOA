@@ -176,7 +176,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
         JobTypeSpec(
             type="env.remove",
             title="설치한 환경 지우기",
-            description="모델 종류의 학습 환경(가상환경, 또는 BADAMOA가 받은 Docker 이미지)을 서버에서 지웁니다.",
+            description="모델 종류의 학습 환경(가상환경, 또는 MOA가 받은 Docker 이미지)을 서버에서 지웁니다.",
             hidden=True,
             params_schema={
                 "type": "object",
@@ -203,7 +203,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
         JobTypeSpec(
             type="node.clean",
             title="서버 정리",
-            description="BADAMOA가 서버에 둔 것(가상환경, Docker 이미지, 가중치 · 코드 캐시, 작업 폴더)을 지웁니다.",
+            description="MOA가 서버에 둔 것(가상환경, Docker 이미지, 가중치 · 코드 캐시, 작업 폴더)을 지웁니다.",
             hidden=True,
             params_schema={
                 "type": "object",

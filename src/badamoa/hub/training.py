@@ -163,7 +163,7 @@ def data_checks(
         if since and version and version < since:
             need_v = ".".join(str(n) for n in since)
             problems.append(
-                f"{node.name}의 BADAMOA({node.agent_version})는 이 모델이 받는 데이터 형식을 만들 수 없습니다. "
+                f"{node.name}의 MOA({node.agent_version})는 이 모델이 받는 데이터 형식을 만들 수 없습니다. "
                 f"{need_v} 이상으로 업데이트하세요."
             )
     splits = (release.stats or {}).get("splits") or {}

@@ -145,7 +145,7 @@ def start(
     node: Node = training.data_node(db, release.id)
     if not asks.answers_questions(node.agent_version or "", SINCE):
         need = ".".join(str(n) for n in SINCE)
-        raise ServiceError(409, f"{node.name}의 BADAMOA를 {need} 이상으로 업데이트해야 오토라벨을 돌릴 수 있습니다.")
+        raise ServiceError(409, f"{node.name}의 MOA를 {need} 이상으로 업데이트해야 오토라벨을 돌릴 수 있습니다.")
     # the model numbers its classes 0..n-1: each one's id in this dataset, by name (None: not in it, dropped)
     class_ids = [names.get(name) for name in model.classes or []]
     gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else max(0, min(int(gpus), 1))

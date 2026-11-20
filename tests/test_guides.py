@@ -12,7 +12,7 @@ def test_guides_are_listed_and_read(live_hub):
     listed = {g["name"]: g for g in hub.get("/api/guides").json()}
     assert set(listed) == {"manual", "templates"} and all(g["ready"] for g in listed.values())
     manual = hub.get("/api/guides/manual").json()
-    assert manual["title"] == "사용 설명서" and manual["markdown"].startswith("# BADAMOA 사용 설명서")
+    assert manual["title"] == "사용 설명서" and manual["markdown"].startswith("# MOA 사용 설명서")
     guide = hub.get("/api/guides/templates").json()
     assert "badamoa.toml" in guide["markdown"] and guide["file"] == "TEMPLATE_GUIDE.md"
     assert hub.get("/api/guides/nope").status_code == 404

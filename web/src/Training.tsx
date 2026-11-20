@@ -898,7 +898,7 @@ function RunView({ runId }: { runId: string }) {
                 산출물 <span className="muted">({run.files.length})</span>
               </h3>
               <div className="muted small">
-                이 실행이 남긴 파일 전부입니다. 학습한 서버가 아니라 BADAMOA가 보관합니다 ·{" "}
+                이 실행이 남긴 파일 전부입니다. 학습한 서버가 아니라 MOA가 보관합니다 ·{" "}
                 {fileSize(run.files.reduce((sum, f) => sum + f.bytes, 0))}
               </div>
             </div>

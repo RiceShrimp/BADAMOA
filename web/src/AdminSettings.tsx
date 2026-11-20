@@ -326,7 +326,7 @@ interface GpuBusy {
 
 const STATE_TEXT: Record<string, [string, string]> = {
   free: ["online", "비어 있음"],
-  job: ["running", "BADAMOA 작업"],
+  job: ["running", "MOA 작업"],
   busy: ["failed", "누가 쓰는 중"],
   reserved: ["queued", "사람 전용"],
 };
@@ -379,7 +379,7 @@ export function GpuBusyPanel({ isAdmin }: { isAdmin: boolean }) {
         <div>
           <h3>GPU 배정 기준</h3>
           <div className="muted small">
-            BADAMOA가 내주지 않은 GPU라도 메모리나 사용률이 이 값을 넘으면 누가 직접 쓰는 것으로 보고 작업을 보내지 않습니다. 공유 서버에서
+            MOA가 내주지 않은 GPU라도 메모리나 사용률이 이 값을 넘으면 누가 직접 쓰는 것으로 보고 작업을 보내지 않습니다. 공유 서버에서
             사람의 작업과 부딪히지 않게 하는 기준입니다.
           </div>
         </div>
@@ -432,7 +432,7 @@ export function GpuBusyPanel({ isAdmin }: { isAdmin: boolean }) {
                 else (setMemory(data.launch.memory_pct < OFF ? data.launch.memory_pct : 10), setUtil(data.launch.util_pct < OFF ? data.launch.util_pct : 50));
               }}
             />
-            보지 않음 — 누가 써도 비어 있는 것으로 봄 (BADAMOA만 쓰는 서버)
+            보지 않음 — 누가 써도 비어 있는 것으로 봄 (MOA만 쓰는 서버)
           </label>
           {error && <div className="error">{error}</div>}
           {saved && !dirty && <div className="notice">저장했습니다. 다음 배정부터 이 기준을 씁니다.</div>}

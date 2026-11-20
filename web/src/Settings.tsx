@@ -125,7 +125,7 @@ function TrialLine({ t }: { t: Template }) {
           {t.local_check.python} · {(t.local_check.os ?? "").split("-")[0]}
           {t.local_check.gpus?.length ? ` · ${t.local_check.gpus[0]}` : ""}
           {t.local_check.device && t.local_check.device !== "cpu" ? " (GPU로)" : " (CPU로)"}
-          {t.local_check.sdk ? ` · BADAMOA ${t.local_check.sdk}` : ""}
+          {t.local_check.sdk ? ` · MOA ${t.local_check.sdk}` : ""}
           {t.local_check.at ? ` · ${timeAgo(t.local_check.at)}` : ""}
         </div>
       )}
@@ -244,7 +244,7 @@ function ExternalMonitoring() {
       </div>
       <p className="muted small">
         Hub의 <code>/metrics</code>가 노드 · GPU · 디스크 · 작업 대기열을 Prometheus 형식으로 내줍니다. 가져갈 때만 계산하고 따로
-        저장하지 않으므로 BADAMOA 쪽 부담은 거의 없습니다. 토큰은 <a href="#/agents">에이전트 연결</a>에서 만듭니다.
+        저장하지 않으므로 MOA 쪽 부담은 거의 없습니다. 토큰은 <a href="#/agents">에이전트 연결</a>에서 만듭니다.
       </p>
       <CopyBlock label="prometheus.yml" text={config} />
       <p className="muted small">
@@ -348,7 +348,7 @@ function StorageUsage({ isAdmin }: { isAdmin: boolean }) {
         <div>
           <h3>Hub 저장 공간</h3>
           <div className="muted small">
-            모델과 지표, 로그, 학습 · 평가가 남긴 파일은 모두 BADAMOA가 설치된 이 서버에 보관합니다. 학습 서버에는 캐시만
+            모델과 지표, 로그, 학습 · 평가가 남긴 파일은 모두 MOA가 설치된 이 서버에 보관합니다. 학습 서버에는 캐시만
             남습니다.
           </div>
         </div>
@@ -493,7 +493,7 @@ function Retention({ policy, onChanged }: { policy: Policy; onChanged: () => Pro
       });
       setPreview(null);
       await onChanged();
-      setMessage({ kind: "ok", text: "보관 기간을 저장했습니다. BADAMOA가 몇 시간마다 이 기준으로 정리합니다." });
+      setMessage({ kind: "ok", text: "보관 기간을 저장했습니다. MOA가 몇 시간마다 이 기준으로 정리합니다." });
     });
   const look = () => act(async () => setPreview(await api<CleanupReport>("/storage/cleanup")));
   const clean = () =>
@@ -609,7 +609,7 @@ function PrepareDialog({
       <p className="muted small">
         고른 서버에 이 모델 종류의 학습 환경({what})을 지금 {docker ? "받습니다" : "설치합니다"}. 첫 학습이 기다리지 않습니다.
         학습용 · 오토라벨용 서버만 고를 수 있습니다. 준비된 서버에서는 지울 수 있습니다
-        {docker ? " (BADAMOA가 받기 전부터 있던 이미지는 남김)" : ""}.
+        {docker ? " (MOA가 받기 전부터 있던 이미지는 남김)" : ""}.
       </p>
       <div className="node-pick">
         {servers.map((s) => {
@@ -691,7 +691,7 @@ function TemplateKit() {
         </a>
         <span className="muted small">선언 파일 · 학습 · 평가 · 내보내기 · 오토라벨 코드, SDK 함수, 시험 실행과 허용, 자주 나는 실패</span>
       </div>
-      <CopyBlock label="1. 내 PC에 BADAMOA 설치 (uv)" text={kit.install_uv} />
+      <CopyBlock label="1. 내 PC에 MOA 설치 (uv)" text={kit.install_uv} />
       <CopyBlock label="pip를 쓴다면" text={kit.install_pip} />
       {kit.wheel_url && (
         <p className="muted small">

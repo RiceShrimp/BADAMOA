@@ -788,7 +788,7 @@ def remove_environment(db: Session, user: User, template_id: str, node_id: str, 
     version = tuple(int(p) for p in (node.agent_version or "0").split(".")[:3] if p.isdigit())
     if version < REMOVE_SINCE:
         need = ".".join(str(n) for n in REMOVE_SINCE)
-        raise ServiceError(400, f"{node.name}의 BADAMOA는 설치한 환경을 지울 수 없습니다. {need} 이상으로 업데이트하세요.")
+        raise ServiceError(400, f"{node.name}의 MOA는 설치한 환경을 지울 수 없습니다. {need} 이상으로 업데이트하세요.")
     kinds = ("train.run", "model.run", "env.prepare")
     for job in db.scalars(select(Job).where(Job.type.in_(kinds), Job.status.in_(("queued", "running")))):
         if _runs_here(job, node.id) and _same_env((job.params or {}).get("environment") or {}, spec):
