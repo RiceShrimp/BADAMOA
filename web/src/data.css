@@ -1334,7 +1334,7 @@ tr.clickable:hover td {
   }
 }
 
-/* cards and rows dragged into a person's own order (Order.tsx) */
+/* cards and rows dragged into a person's own order by their grip (Order.tsx) */
 .sort-item {
   display: flex;
   min-width: 0;
@@ -1346,13 +1346,47 @@ tr.clickable:hover td {
 .sort-item.dragging {
   position: relative;
   z-index: 5;
-  cursor: grabbing;
 }
 .sort-item.dragging > * {
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
-.sort-list > .sort-item > * {
+.sort-list > .sort-item > *,
+.sort-list .sort-item.dragging > * {
   background: var(--surface);
+}
+.sort-handle {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 22px;
+  margin-left: -4px;
+  border-radius: 5px;
+  color: var(--muted);
+  fill: currentColor;
+  cursor: grab;
+  touch-action: none; /* a finger on the grip drags instead of scrolling */
+  opacity: 0.55;
+}
+.sort-handle:hover,
+.sort-handle:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+  opacity: 1;
+}
+.sort-handle:focus-visible {
+  outline: 2px solid var(--accent);
+}
+.sort-item.dragging .sort-handle {
+  cursor: grabbing;
+  color: var(--accent);
+  opacity: 1;
+}
+.with-grip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }

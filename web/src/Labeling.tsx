@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { type BoardProject, useBoardFilter } from "./Boards";
 import { Collage, type Shot } from "./DataBoard";
 import { ItemViewer, type LabelingMode } from "./ItemViewer";
-import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
+import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import type { ItemFilter } from "./ReleaseMaker";
 import { colorFor } from "./ReleaseTabs";
 import { api } from "./api";
@@ -96,7 +96,7 @@ function SetGroupCards({ group: g }: { group: SetGroup }) {
   return (
     <div className="board-group">
       <h3>
-        <a href={`#/datasets/project/${g.project.id}`}>{g.project.name}</a>
+        <span className="with-grip"><SortHandle /><a href={`#/datasets/project/${g.project.id}`}>{g.project.name}</a></span>
         <span className="muted small">
           {g.project.folder ? `${g.project.folder} · ` : ""}묶음 {g.sets.length} · {timeAgo(g.updated_at)} 작업
         </span>
@@ -110,7 +110,7 @@ function SetGroupCards({ group: g }: { group: SetGroup }) {
                 <Collage shots={s.collage} colorOf={classColor} more={s.items} />
                 <div className="data-card-body">
                   <div className="data-card-title">
-                    <strong>{s.name}</strong>
+                    <span className="with-grip"><SortHandle /><strong>{s.name}</strong></span>
                     {s.mine > 0 && <span className="tag accent">내 일감 {s.mine}</span>}
                     {["queued", "running"].includes(s.autolabel?.status ?? "") && <span className="tag">오토라벨 중</span>}
                   </div>

@@ -1,7 +1,14 @@
-import { DndContext, type DragEndEvent, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
-import { SortableContext, arrayMove, rectSortingStrategy, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { DndContext, type DragEndEvent, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { type MouseEvent as ReactMouseEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useMemo, useSyncExternalStore } from "react";
+import { type ReactNode, createContext, useContext, useMemo, useSyncExternalStore } from "react";
 import { api, getToken } from "./api";
 
 /*
@@ -112,9 +119,9 @@ export function OrderReset({ order, onReset }: { order: { custom: boolean; reset
   );
 }
 
-// ---- dragging ----------------------------------------------------------------------------
+// ---- dragging, by the grip ------------------------------------------------------------------
 
-// A drag that ends over a link must not also open it: the click that follows the release is dropped.
+// A drop over a link must not also open it: the click that follows the release is dropped.
 let dragging = false;
 let releasedAt = 0;
 const grabbed = () => {
@@ -137,31 +144,14 @@ if (typeof window !== "undefined") {
   );
 }
 
-// Typing, picking and the like in a card are not the start of a drag.
-const NOT_A_HANDLE = "input, textarea, select, [contenteditable], [data-no-drag]";
-const handle = (target: EventTarget | null) => !(target instanceof Element && target.closest(NOT_A_HANDLE));
-
-class CardMouse extends MouseSensor {
-  static activators = [
-    {
-      eventName: "onMouseDown" as const,
-      handler: ({ nativeEvent: e }: ReactMouseEvent) => e.button === 0 && handle(e.target),
-    },
-  ];
-}
-
-class CardTouch extends TouchSensor {
-  static activators = [
-    {
-      eventName: "onTouchStart" as const,
-      handler: ({ nativeEvent: e }: ReactTouchEvent) => handle(e.target),
-    },
-  ];
-}
+type Grip = Pick<ReturnType<typeof useSortable>, "attributes" | "listeners" | "setActivatorNodeRef">;
+const GripContext = createContext<Grip | null>(null);
+const OffContext = createContext(false);
 
 /**
- * Cards (or rows, with ``list``) that are dragged with the mouse to another place: moved some way with the button down,
- * so a plain click still opens a card; on a touch screen, held a moment first, so the page still scrolls.
+ * Cards (or rows, with ``list``) that move to another place by their grip (``SortHandle``): dragged with the mouse or a
+ * finger, or picked up with Space on the focused grip and moved with the arrow keys. The rest of a card stays a card:
+ * a click opens it and its text can be selected.
  */
 export function Sortable({
   ids,
@@ -177,8 +167,8 @@ export function Sortable({
   children: ReactNode;
 }) {
   const sensors = useSensors(
-    useSensor(CardMouse, { activationConstraint: { distance: 6 } }),
-    useSensor(CardTouch, { activationConstraint: { delay: 250, tolerance: 8 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 3 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const end = ({ active, over }: DragEndEvent) => {
     released();
@@ -188,26 +178,58 @@ export function Sortable({
     if (from >= 0 && to >= 0) onMove(arrayMove(ids, from, to));
   };
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={grabbed} onDragEnd={end} onDragCancel={released}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={grabbed}
+      onDragEnd={end}
+      onDragCancel={released}
+      accessibility={{ screenReaderInstructions: { draggable: SCREEN_READER } }}
+    >
       <SortableContext items={ids} strategy={list ? verticalListSortingStrategy : rectSortingStrategy} disabled={disabled}>
-        {children}
+        <OffContext.Provider value={disabled}>{children}</OffContext.Provider>
       </SortableContext>
     </DndContext>
   );
 }
 
-/** One card or row of a ``Sortable``: the whole of it is what is dragged. */
+const SCREEN_READER = "순서를 바꾸려면 스페이스로 집고 화살표로 옮긴 뒤 스페이스로 놓습니다. 그만두려면 Esc.";
+
+/** One card or row of a ``Sortable``: it moves when its ``SortHandle`` is dragged. */
 export function SortItem({ id, children }: { id: string; children: ReactNode }) {
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const off = useContext(OffContext);
   return (
-    <div
-      ref={setNodeRef}
-      className={`sort-item${isDragging ? " dragging" : ""}`}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      {...listeners}
-      onDragStart={(e) => e.preventDefault()} // not the browser's own dragging of a link or a picture
-    >
-      {children}
+    <div ref={setNodeRef} className={`sort-item${isDragging ? " dragging" : ""}`} style={{ transform: CSS.Translate.toString(transform), transition }}>
+      <GripContext.Provider value={off ? null : { attributes, listeners, setActivatorNodeRef }}>{children}</GripContext.Provider>
     </div>
+  );
+}
+
+const DOTS = [0, 1, 2].flatMap((row) => [0, 1].map((col) => [2 + col * 4, 2 + row * 5]));
+
+/** The grip a card or row is dragged by (two columns of three dots); nothing outside a ``SortItem``. */
+export function SortHandle() {
+  const grip = useContext(GripContext);
+  if (!grip) return null;
+  return (
+    <span
+      ref={grip.setActivatorNodeRef}
+      className="sort-handle"
+      {...grip.attributes}
+      {...grip.listeners}
+      aria-label="끌어서 순서 바꾸기"
+      title="끌어서 순서 바꾸기"
+      onClick={(e) => {
+        e.preventDefault(); // the grip is often inside a card's link: holding it is not opening the card
+        e.stopPropagation();
+      }}
+    >
+      <svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true">
+        {DOTS.map(([cx, cy]) => (
+          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.3" />
+        ))}
+      </svg>
+    </span>
   );
 }

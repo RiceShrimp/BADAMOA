@@ -6,6 +6,7 @@ needs no open inbound port.
 
 from __future__ import annotations
 
+import getpass
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ import psutil
 
 from badamoa import __version__
 from badamoa.core import sysinfo
-from badamoa.core.paths import component_home
+from badamoa.core.paths import component_home, is_elevated
 from badamoa.node import browse, cache, containers, dataserver, envs, remover, storage, updater, workdirs
 
 log = logging.getLogger("badamoa.node")
@@ -72,6 +73,16 @@ class NodeConfig:
 
 def node_home(explicit: str | os.PathLike[str] | None = None) -> Path:
     return component_home("node", explicit)
+
+
+def account() -> dict[str, Any]:
+    """Who the agent runs as: root (installed with sudo: a systemd service that can open the firewall and let Docker
+    use in-house registries) or an account of its own (installed without sudo: starts from that account's crontab)."""
+    try:
+        name = getpass.getuser()
+    except (KeyError, OSError):
+        name = ""
+    return {"name": name, "admin": is_elevated()}
 
 
 def already_joined(hub_url: str, home: Path) -> NodeConfig | None:
@@ -261,6 +272,7 @@ class NodeAgent:
                         # what environments are ready here, and whether this node can run containers
                         "envs": envs.listing(self.home) + containers.listing(self.home),
                         "docker": containers.capability(),
+                        "account": account(),
                     }
                 resp = self._client.post("/api/agent/heartbeat", json=body, timeout=15)
                 if resp.status_code == 200:

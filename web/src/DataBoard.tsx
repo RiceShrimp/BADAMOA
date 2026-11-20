@@ -13,7 +13,7 @@ import {
   taskLabel,
 } from "./catalogTypes";
 import { ImportProgress, useImports } from "./Imports";
-import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
+import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
 
 // ---- what the Hub sends ---------------------------------------------------------------
@@ -849,7 +849,7 @@ export function ProjectCard({
         <Collage shots={card.collage} colorOf={classColor} />
         <div className="data-card-body">
           <div className="data-card-title">
-            <strong>{card.name}</strong>
+            <span className="with-grip"><SortHandle /><strong>{card.name}</strong></span>
           </div>
           {card.tasks.length > 0 && (
             <div className="task-tags">
@@ -1182,7 +1182,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
                 <Collage shots={d.collage} colorOf={colorOf(d)} more={d.items} />
                 <div className="data-card-body">
                   <div className="data-card-title">
-                    <strong>{d.name}</strong>
+                    <span className="with-grip"><SortHandle /><strong>{d.name}</strong></span>
                     <span className="title-tags">
                       <span className="tag task-tag" title={TASK_HINT_TEXT(d.task)}>
                         {taskLabel(d.task)}

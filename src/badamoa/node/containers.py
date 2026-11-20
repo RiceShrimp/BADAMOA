@@ -29,6 +29,8 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from . import registries
+
 PULLED = "docker-images.json"  # the images this node pulled or found for BADAMOA (``listing``)
 PROBE_TIMEOUT_S = 20
 
@@ -231,19 +233,24 @@ def image_id(image: str) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def pull_failure(image: str, output: str) -> str:
-    """Why ``docker pull`` failed, in words a person can act on."""
-    head = image.split("/", 1)[0] if "/" in image else ""
-    registry = head if any(c in head for c in ".:") else ""
+def pull_failure(image: str, output: str, hub_url: str = "") -> str:
+    """Why ``docker pull`` failed, in words a person can act on (``hub_url``: where the one-line fix is served)."""
+    registry = registries.registry_of(image)
     failed = f"Docker 이미지를 받지 못했습니다: {image}."
-    if "HTTP response to HTTPS client" in output and registry:
+    if registries.refused(output) and registry:
         # A registry without TLS (``docker run registry``): each Docker that pulls from it has to be told it may.
+        fix = (
+            f"이 서버에서 한 번 실행하세요: {registries.command(hub_url)} "
+            if hub_url
+            else f'이 서버의 /etc/docker/daemon.json에 "insecure-registries": ["{registry}"]를 넣고 '
+            "sudo systemctl reload docker를 하세요 "
+        )
         return (
-            f"{failed} 레지스트리 {registry}는 HTTPS 없이(HTTP로) 열려 있는데, "
-            "이 서버의 Docker는 HTTP 레지스트리를 허용하지 않습니다. "
-            f'이 서버의 /etc/docker/daemon.json에 "insecure-registries": ["{registry}"]를 넣고 '
-            "sudo systemctl reload docker를 하세요(돌고 있는 컨테이너는 멈추지 않음). "
-            "Windows · Mac의 Docker Desktop은 Settings → Docker Engine에서 같은 값을 넣습니다."
+            f"{failed} 레지스트리 {registry}는 HTTPS 없이(또는 믿을 수 없는 인증서로) 열려 있는데, "
+            "이 서버의 Docker는 그런 레지스트리를 허용하지 않고, 노드가 root가 아니라 직접 허용하지 못했습니다. "
+            + fix
+            + "(Docker의 insecure-registries에 넣고 설정을 다시 읽게 함, 돌고 있는 컨테이너는 그대로). "
+            f'Windows · Mac의 Docker Desktop은 Settings → Docker Engine에 "insecure-registries": ["{registry}"]를 넣습니다.'
         )
     if "unauthorized" in output or "authentication required" in output or "pull access denied" in output:
         return f"{failed} 레지스트리에 로그인이 필요합니다(이 서버에서 docker login {registry})."
@@ -252,8 +259,40 @@ def pull_failure(image: str, output: str) -> str:
     return f"{failed} 이미지 이름과 레지스트리 로그인을 확인하세요."
 
 
+def _hub_url(home: Path) -> str:
+    try:
+        return str(json.loads((home / "node.json").read_text(encoding="utf-8")).get("hub_url") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _pull(command: str, image: str, log: Callable[[str], None]) -> tuple[bool, str]:
+    """``docker pull``, its progress logged; whether it worked and its last lines."""
+    proc = subprocess.Popen(
+        [command, "pull", image],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert proc.stdout is not None
+    last = ""
+    said: list[str] = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line and line != last:  # layer progress repeats itself
+            log(line)
+            last = line
+            said = [*said[-20:], line]
+    return proc.wait() == 0, "\n".join(said)
+
+
 def ensure(home: Path, image: str, log: Callable[[str], None] = print) -> str:
-    """Have the image on this node (pulled from its registry the first time). Returns its id."""
+    """Have the image on this node (pulled from its registry the first time). Returns its id.
+
+    A registry without HTTPS refuses the pull until Docker is told it may use it: a node running as root (installed
+    with sudo) does that itself and pulls again; one without root says the line to run with sudo."""
     command = docker()
     if not command:
         raise RuntimeError("이 서버에 Docker가 없습니다. Docker 환경으로 학습하려면 Docker를 설치하세요.")
@@ -261,25 +300,15 @@ def ensure(home: Path, image: str, log: Callable[[str], None] = print) -> str:
     pulled = found is None
     if found is None:
         log(f"Docker 이미지를 받습니다 (이 서버에서 처음 한 번): {image}")
-        proc = subprocess.Popen(
-            [command, "pull", image],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert proc.stdout is not None
-        last = ""
-        said: list[str] = []
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line and line != last:  # layer progress repeats itself
-                log(line)
-                last = line
-                said = [*said[-20:], line]
-        if proc.wait() != 0:
-            raise RuntimeError(pull_failure(image, "\n".join(said)))
+        ok, said = _pull(command, image, log)
+        registry = registries.registry_of(image)
+        if not ok and registry and registries.refused(said) and registries.can_write():
+            registries.trust([registry], log)
+            time.sleep(2)  # Docker reads its settings again
+            log(f"Docker 이미지를 다시 받습니다: {image}")
+            ok, said = _pull(command, image, log)
+        if not ok:
+            raise RuntimeError(pull_failure(image, said, _hub_url(home)))
         found = image_id(image)
         if found is None:
             raise RuntimeError(f"받은 Docker 이미지를 찾을 수 없습니다: {image}")

@@ -1,7 +1,7 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { AliasChip } from "./Annotate";
 import { TaskTags, rememberProject } from "./DataBoard";
-import { type Order, OrderReset, SortItem, Sortable, useOrder } from "./Order";
+import { type Order, OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { api } from "./api";
 import { METRIC_LABEL, STAGE_LABEL, metric } from "./trainTypes";
 import { Badge, Icon, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
@@ -248,7 +248,7 @@ export function TrainingBoard() {
                   <a className="data-card-link" href={`#/training/project/${c.project.id}`} onClick={() => rememberProject(c.project.id)}>
                     <div className="data-card-body">
                       <div className="data-card-title">
-                        <strong>{c.project.name}</strong>
+                        <span className="with-grip"><SortHandle /><strong>{c.project.name}</strong></span>
                         {c.running + c.queued > 0 && (
                           <Badge kind="running">{c.running ? `실행 중 ${c.running}` : `대기 ${c.queued}`}</Badge>
                         )}
@@ -359,7 +359,7 @@ export function ModelsBoard() {
                 <a className="data-card-link" href={`#/models/project/${c.project.id}`} onClick={() => rememberProject(c.project.id)}>
                   <div className="data-card-body">
                     <div className="data-card-title">
-                      <strong>{c.project.name}</strong>
+                      <span className="with-grip"><SortHandle /><strong>{c.project.name}</strong></span>
                     </div>
                     {c.project.tasks.length > 0 && (
                       <div className="task-tags">

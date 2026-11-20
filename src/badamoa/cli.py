@@ -234,9 +234,17 @@ def node_join(
     rejoin: Annotated[bool, typer.Option(help="이미 등록되어 있어도 새 노드로 다시 등록")] = False,
 ) -> None:
     """이 머신을 Hub에 노드로 등록합니다. 이미 그 Hub에 등록된 머신이면 등록은 그대로 둡니다."""
-    from badamoa.node import agent
+    from badamoa.node import agent, service
 
     node_dir = agent.node_home(home)
+    if not rejoin:
+        try:  # installed with sudo where the node ran without it: the same node, not a second one
+            took = service.take_over_user_node(node_dir)
+        except RuntimeError as e:
+            typer.secho(str(e), fg="red")
+            raise typer.Exit(1) from e
+        if took:
+            typer.echo(took)
     existing = None if rejoin else agent.already_joined(hub, node_dir)
     if existing is not None:
         typer.secho(f"이미 이 Hub에 등록된 노드입니다: node_id={existing.node_id}. 등록은 그대로 둡니다.", fg="green")
@@ -315,6 +323,50 @@ def node_install_service() -> None:
     from badamoa.node import service
 
     typer.echo(service.install("node", "node run"))
+
+
+@node_app.command("trust-registries")
+def node_trust_registries(
+    hub: Annotated[str, typer.Option(help="Hub 주소 (기본: 이 노드가 등록된 Hub)")] = "",
+    home: HomeOpt = None,
+) -> None:
+    """Hub의 모델 종류 · 환경이 쓰는 사내 Docker 레지스트리 중 HTTPS가 없는 것을 이 서버의 Docker에 허용합니다 (root).
+
+    /etc/docker/daemon.json의 insecure-registries에 넣고 Docker가 다시 읽게 합니다(돌고 있는 컨테이너는 그대로).
+    노드 설치 · 업데이트(sudo)가 부르고, sudo 없이 설치한 노드에는 관리자가 <hub>/install/docker-registries.sh로 한 번."""
+    import httpx
+
+    from badamoa.node import agent, registries
+
+    url = hub.rstrip("/")
+    if not url:
+        try:
+            url = agent.NodeConfig.load(agent.node_home(home)).hub_url
+        except FileNotFoundError as e:
+            raise _fail(str(e)) from e
+    if not shutil.which("docker"):
+        typer.echo("이 서버에 Docker가 없어 할 일이 없습니다.")
+        return
+    try:
+        names = httpx.get(f"{url}/install/registries", timeout=15).raise_for_status().json().get("registries", [])
+    except (httpx.HTTPError, ValueError) as e:
+        raise _fail(f"Hub에서 레지스트리 목록을 받지 못했습니다 ({url}): {e}") from e
+    have = set(registries.listed())
+    wanted = [r for r in names if r not in have and registries.plain(r)]
+    if not wanted:
+        already = f" (이미 허용: {', '.join(sorted(have))})" if have else ""
+        typer.echo(f"Docker에 더 허용할 레지스트리가 없습니다{already}.")
+        return
+    if not registries.can_write():
+        typer.echo(
+            f"HTTPS 없는 레지스트리 {', '.join(wanted)}: root만 Docker 설정을 바꿀 수 있습니다. "
+            f"관리자가 한 번 실행하세요: {registries.command(url)}"
+            if sys.platform.startswith("linux")
+            else f'HTTPS 없는 레지스트리 {", ".join(wanted)}: Docker Desktop의 Settings → Docker Engine에 '
+            f'"insecure-registries": {list(wanted)}를 넣고 Apply & restart.'
+        )
+        return
+    registries.trust(wanted, typer.echo)
 
 
 @node_app.command("uninstall-service")

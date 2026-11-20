@@ -178,13 +178,14 @@ def start(home: Path) -> bool:
     return True
 
 
-def _agents() -> list:
-    """This account's running ``badamoa node run`` processes."""
+def _agents(uid: int | None = None) -> list:
+    """The running ``badamoa node run`` processes of this account (or of the account ``uid``)."""
     import psutil
 
+    uid = os.getuid() if uid is None else uid
     found = []
     for proc in psutil.process_iter(["pid", "cmdline", "uids"]):
-        if proc.info["pid"] == os.getpid() or (proc.info.get("uids") and proc.info["uids"].real != os.getuid()):
+        if proc.info["pid"] == os.getpid() or (proc.info.get("uids") and proc.info["uids"].real != uid):
             continue
         cmd = proc.info.get("cmdline") or []
         if any(Path(arg).name == "badamoa" and cmd[i + 1 : i + 3] == ["node", "run"] for i, arg in enumerate(cmd)):
@@ -192,11 +193,11 @@ def _agents() -> list:
     return found
 
 
-def stop() -> int:
-    """Stop this account's node agents. Returns how many there were."""
+def stop(uid: int | None = None) -> int:
+    """Stop this account's node agents (or those of the account ``uid``). Returns how many there were."""
     import psutil
 
-    agents = _agents()
+    agents = _agents(uid)
     for proc in agents:
         try:
             proc.terminate()
@@ -216,17 +217,72 @@ def _cron_lines(home: Path) -> list[str]:
     return [f"@reboot {command} {CRON_MARK}", f"*/5 * * * * {command} {CRON_MARK}"]
 
 
-def _crontab(lines: list[str]) -> str:
-    """Put ``lines`` in place of this module's lines in the account's crontab. "" or why it could not."""
+def _crontab(lines: list[str], user: str = "") -> str:
+    """Put ``lines`` in place of this module's lines in the account's crontab (root: ``user``'s). "" or why it could not."""
     if not shutil.which("crontab"):
         return "crontab 명령이 없습니다"
-    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
+    who = ["-u", user] if user else []
+    current = subprocess.run(["crontab", *who, "-l"], capture_output=True, text=True, check=False)
     kept = [line for line in current.stdout.splitlines() if CRON_MARK not in line] if current.returncode == 0 else []
     if not kept and not lines and current.returncode != 0:
         return ""  # nothing there, nothing to put
     text = "\n".join(kept + lines) + "\n" if kept or lines else ""
-    done = subprocess.run(["crontab", "-"], input=text, capture_output=True, text=True, check=False)
+    done = subprocess.run(["crontab", *who, "-"], input=text, capture_output=True, text=True, check=False)
     return "" if done.returncode == 0 else (done.stderr or done.stdout).strip() or "crontab이 거절했습니다"
+
+
+def _their_node_home(user: str, home_dir: Path) -> Path:
+    """Where ``user``'s own node keeps its registration: as its crontab line says, else the usual place."""
+    listed = subprocess.run(["crontab", "-u", user, "-l"], capture_output=True, text=True, check=False)
+    for line in listed.stdout.splitlines() if listed.returncode == 0 else []:
+        if CRON_MARK in line:
+            words = shlex.split(line.split(CRON_MARK)[0].replace(r"\%", "%"))
+            if "--home" in words[:-1]:
+                return Path(words[words.index("--home") + 1])
+    return home_dir / ".local" / "share" / "badamoa" / "node"
+
+
+def take_over_user_node(home: Path, user: str | None = None) -> str:
+    """Installing with sudo on a server whose node ran without it: the same node carries on as root.
+
+    The account that ran sudo had a node of its own (installed without sudo, started from its crontab). Its
+    registration moves to root's node home, its crontab lines go and its agent stops, so the machine stays one node
+    with its history and datasets. Nothing moves while that agent runs a job. Returns what was done ("" if nothing)."""
+    if not sys.platform.startswith("linux") or os.geteuid() != 0 or (home / "node.json").is_file():
+        return ""
+    user = user if user is not None else os.environ.get("SUDO_USER", "")
+    if not user or user == "root":
+        return ""
+    import pwd
+
+    import psutil
+
+    try:
+        entry = pwd.getpwnam(user)
+    except KeyError:
+        return ""
+    theirs = _their_node_home(user, Path(entry.pw_dir))
+    if not (theirs / "node.json").is_file():
+        return ""
+    agents = _agents(entry.pw_uid)
+    working = []
+    for proc in agents:
+        try:
+            working += [c for c in proc.children(recursive=True) if c.name() not in ("nvidia-smi",)]
+        except psutil.Error:
+            continue
+    if working:
+        raise RuntimeError(
+            f"{user} 계정의 노드가 작업을 하고 있어 지금은 이어받지 않았습니다. "
+            "작업이 끝난 뒤 이 설치 명령을 다시 실행하세요."
+        )
+    home.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(theirs / "node.json", home / "node.json")
+    (home / "node.json").chmod(0o600)
+    why = _crontab([], user)
+    stopped = stop(entry.pw_uid)
+    done = f"{user} 계정으로 돌던 노드를 root가 이어받습니다(같은 노드 · 같은 등록): 그 계정의 노드 {stopped}개를 멈추고"
+    return done + (f" crontab에서 빼지 못했습니다({why})." if why else " crontab에서 뺐습니다.")
 
 
 def _cron_running() -> bool:

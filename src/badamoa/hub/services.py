@@ -320,6 +320,7 @@ def serialize_node(
                 for g in info.get("gpus", [])
             ],
             "docker": info.get("docker"),  # {"version", "os", "gpu"} when the node can run containers
+            "account": info.get("account"),  # {"name", "admin"}: the account the agent runs as
         },
         "metrics": node.metrics or {},
         "reserved_gpus": node.reserved_gpus or [],

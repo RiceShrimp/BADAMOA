@@ -31,6 +31,11 @@ elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 
   { firewall-cmd --permanent --add-port=8475/tcp && firewall-cmd --reload; } >/dev/null 2>&1 || true
 fi
 
+if command -v docker >/dev/null 2>&1; then
+  echo "==> Docker: the Hub's in-house registries without HTTPS (insecure-registries)"
+  badamoa node trust-registries --hub "$HUB_URL" || true
+fi
+
 echo "==> restarting the service"
 systemctl restart badamoa-node
 

@@ -301,7 +301,7 @@ badamoa template push my-model --hub http://<Hub 주소> --token <관리자 API 
 - **사내 패키지**: PyPI에 없는 패키지는 wheel(.whl)로 만들어 설정 → 환경 → "사내 패키지"에 올리고 `requirements`에 이름을 적습니다. 서버가 Hub에서 받아 설치합니다.
 - 시험 실행을 통과한 버전은 그때 설치된 패키지 버전을 고정해, 다른 서버도 같은 버전으로 설치합니다(PyTorch는 버전만 고정하고 CUDA 빌드는 서버에 맞춤).
 - 환경을 서버에 미리 깔아 두려면 설정 → 모델 종류 → **환경 관리**.
-- **HTTPS 없는 사내 레지스트리**(예: `192.168.0.10:5000`): Docker는 HTTPS가 아닌 레지스트리에서 받지 않습니다. 이미지를 받을 서버마다 `/etc/docker/daemon.json`에 `"insecure-registries": ["192.168.0.10:5000"]`를 넣고 `sudo systemctl reload docker`(돌고 있는 컨테이너는 그대로). Docker Desktop은 Settings → Docker Engine에 같은 값을 넣습니다. 안 되어 있으면 학습 로그에 "HTTP response to HTTPS client"와 함께 이 방법이 나옵니다.
+- **HTTPS 없는 사내 레지스트리**(예: `192.168.0.10:5000`): Docker는 HTTPS가 아닌 레지스트리에서 받지 않습니다. sudo로 설치한 노드는 설치 · 업데이트할 때와 받다 막혔을 때 그 서버 Docker의 `insecure-registries`에 넣고 다시 받습니다. sudo 없이 설치한 노드는 서버 관리자가 한 번 `curl -fsSL <hub>/install/docker-registries.sh | sudo bash`를 실행합니다(학습 로그에 그대로 나옴). Docker Desktop은 Settings → Docker Engine에 같은 값을 넣습니다.
 
 ## 11. 버전
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import "./nodes.css";
-import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
+import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { type HubAddress, type JoinToken, api } from "./api";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
@@ -57,9 +57,21 @@ export interface BoardNode {
   cache_dir?: string; // as an admin set it ("" = the node picks)
   cache?: { dir: string; auto: boolean; free_gb: number | null; bytes: number | null; files: number | null } | null;
   serve?: { port: number; addresses?: string[]; error?: string } | null;
+  os?: string;
+  account?: { name: string; admin: boolean } | null; // the account the node runs as (admin: installed with sudo)
   last_seen_at: string | null;
   gpus: BoardGpu[];
 }
+
+/** A Linux node installed without sudo: it runs as one account and cannot change the server's settings. */
+export function withoutSudo(node: { os?: string; account?: { name: string; admin: boolean } | null }): boolean {
+  return node.os === "linux" && !!node.account && !node.account.admin;
+}
+
+export const WITHOUT_SUDO_HINT =
+  "sudo 없이 설치되어 이 계정으로만 돕니다. 부팅 때는 이 계정의 crontab으로 켜지고, 방화벽(이미지 전송 포트 8475)과 " +
+  "Docker의 사내 레지스트리 허용 같은 서버 설정은 스스로 하지 못합니다. sudo로 쓰려면 노드 추가의 Linux 명령(sudo)을 " +
+  "이 서버에서 다시 실행하세요: 같은 노드로 이어받고, 이 계정의 노드는 멈춥니다(학습이 돌 때는 끝난 뒤에).";
 
 interface Board {
   hub_version: string;
@@ -273,15 +285,23 @@ function ServerRow({
   return (
     <div className={`board-row ${online ? "" : "away"}`}>
       <div className="board-server">
-        <a className="board-name" href={`#/nodes/${node.id}`}>
-          <i className={`dot ${node.status}`} />
-          {node.name}
-        </a>
+        <span className="with-grip">
+          <SortHandle />
+          <a className="board-name" href={`#/nodes/${node.id}`}>
+            <i className={`dot ${node.status}`} />
+            {node.name}
+          </a>
+        </span>
         <div className="muted small">
           {node.gpus.length > 0 ? `${node.gpu_name ?? "GPU"} × ${node.gpus.length}` : "GPU 없음"}
           {node.is_local ? " · Hub" : ""}
         </div>
         <RoleChips roles={node.roles} />
+        {withoutSudo(node) && (
+          <div className="small warn-text" title={WITHOUT_SUDO_HINT}>
+            sudo 없이 설치 · {node.account?.name} 계정으로 실행
+          </div>
+        )}
         {sys.length > 0 && <SysBars bars={sys} />}
         {!online && (
           <div className="small bad-text">{node.status === "disabled" ? "작업 받지 않음" : `응답 없음 · ${timeAgo(node.last_seen_at)}`}</div>

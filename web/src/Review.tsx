@@ -3,7 +3,7 @@ import { type BoardProject, useBoardFilter } from "./Boards";
 import { Collage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
-import { OrderReset, SortItem, Sortable, useOrder } from "./Order";
+import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { useProject } from "./ProjectPicker";
 import { colorFor } from "./ReleaseTabs";
 import { api } from "./api";
@@ -227,7 +227,7 @@ function ProjectReviewCard({ group }: { group: ReviewProject }) {
         <Collage shots={datasets[0].collage} colorOf={classColor} />
         <div className="data-card-body">
           <div className="data-card-title">
-            <strong>{project.name}</strong>
+            <span className="with-grip"><SortHandle /><strong>{project.name}</strong></span>
           </div>
           <div className="muted small">
             데이터셋 {datasets.length} · 이미지 {images.toLocaleString()}
@@ -312,7 +312,7 @@ function DatasetReviewCard({ card: c }: { card: ReviewCard }) {
       <Collage shots={c.collage} colorOf={classColor} />
       <div className="data-card-body">
         <div className="data-card-title">
-          <strong>{c.dataset.name}</strong>
+          <span className="with-grip"><SortHandle /><strong>{c.dataset.name}</strong></span>
           {c.release.draft && <span className="tag accent">작업 중</span>}
         </div>
         <div className="muted small">

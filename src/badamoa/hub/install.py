@@ -118,6 +118,28 @@ def node_update_ps1(request: Request, hub: Hub = Depends(get_hub)) -> str:
     return _render("node-update.ps1", public_base_url(request, hub))
 
 
+@router.get("/docker-registries.sh", response_class=PlainTextResponse)
+def docker_registries_sh(request: Request, hub: Hub = Depends(get_hub)) -> str:
+    return _render("docker-registries.sh", public_base_url(request, hub))
+
+
+@router.get("/registries")
+def docker_registries(hub: Hub = Depends(get_hub)) -> dict[str, list[str]]:
+    """The in-house registries (not Docker Hub) the model kinds and environments pull from: a node lets its Docker
+    use the ones without HTTPS (``badamoa node trust-registries``)."""
+    from sqlalchemy import select
+
+    from badamoa.node.registries import registry_of
+
+    from .train_models import Environment, Template
+
+    with hub.db.session() as db:
+        kinds = db.scalars(select(Template.manifest))
+        images = [str(((manifest or {}).get("environment") or {}).get("image") or "") for manifest in kinds]
+        images += [str(image or "") for image in db.scalars(select(Environment.image))]
+    return {"registries": sorted({registry for image in images if (registry := registry_of(image))})}
+
+
 @router.get("/node-remove.sh", response_class=PlainTextResponse)
 def node_remove_sh(request: Request, hub: Hub = Depends(get_hub)) -> str:
     return _render("node-remove.sh", public_base_url(request, hub))

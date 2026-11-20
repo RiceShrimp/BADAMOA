@@ -145,6 +145,9 @@ def board(db: Session, settings: HubSettings) -> dict[str, Any]:
                 "cache_dir": node.cache_dir or "",
                 "cache": metrics.get("cache") or None,
                 "serve": metrics.get("serve") or None,
+                # the account the node runs as: one without root (installed without sudo) is marked on the board
+                "os": node.os,
+                "account": (node.info or {}).get("account") or None,
                 "last_seen_at": iso(node.last_seen_at),
                 "gpus": gpus,
             }

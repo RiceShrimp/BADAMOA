@@ -88,7 +88,7 @@ def test_a_run_trains_on_a_node_that_receives_the_images_first(two_nodes, tmp_pa
     sync = _wait(hub, syncs[0]["id"])
     assert sync["status"] == "succeeded", _logs(hub, sync["id"])
     assert (sync["result"]["items"], sync["result"]["fetched"], sync["result"]["changed_count"]) == (8, 8, 0)
-    assert "에서 이미지를 직접 받습니다" in _logs(hub, sync["id"])
+    assert "에 있는 데이터셋을 이 서버로 받습니다" in _logs(hub, sync["id"])
     done = _wait(hub, run["job_id"])
     assert done["status"] == "succeeded", _logs(hub, run["job_id"])
     view = hub.get(f"/api/runs/{run['id']}").json()

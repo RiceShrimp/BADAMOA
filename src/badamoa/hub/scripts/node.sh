@@ -69,4 +69,9 @@ else
 fi
 badamoa node install-service
 
+if command -v docker >/dev/null 2>&1; then
+  echo "==> Docker: the Hub's in-house registries without HTTPS (insecure-registries; needs root)"
+  badamoa node trust-registries --hub "$HUB_URL" || true
+fi
+
 echo "BADAMOA node installed. Check the Hub UI → 노드."

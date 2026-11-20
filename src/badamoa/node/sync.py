@@ -60,7 +60,7 @@ def _reach(source: dict[str, Any]) -> str:
     name = source.get("name") or "데이터 노드"
     if not port:
         raise RuntimeError(
-            f"{name}에서 이미지를 받을 수 없습니다. "
+            f"{name}에 있는 데이터셋을 받을 수 없습니다. "
             f"{name}가 0.37.0 이상이어야 하고, 이미지 전송용 포트가 열려 있어야 합니다."
         )
     tried = []
@@ -179,11 +179,18 @@ def receive(client: httpx.Client, job_id: str, root: Path, log: Callable[[str], 
     need = sum(it["bytes"] for it in missing)
     all_bytes = sum(it["bytes"] for it in items)
     source = first.get("source") or {}
-    log(
-        f"{source.get('name', '데이터 노드')}에서 이미지를 직접 받습니다: "
-        f"전체 {len(items):,}장 ({_size(all_bytes)}) 중 {len(missing):,}장 ({_size(need)}), "
-        f"이미 있는 것 {len(items) - len(missing):,}장 · 보관 위치 {root}"
-    )
+    holder = source.get("name", "데이터 노드")
+    if missing:
+        log(
+            f"{holder}에 있는 데이터셋을 이 서버로 받습니다: 전체 {len(items):,}장 ({_size(all_bytes)}) 중 "
+            f"이 서버에 없는 {len(missing):,}장 ({_size(need)}), 받아 둔 것 {len(items) - len(missing):,}장 · "
+            f"보관 위치 {root}"
+        )
+    else:
+        log(
+            f"{holder}에 있는 데이터셋은 이 서버에 이미 다 받아 두었습니다: {len(items):,}장 ({_size(all_bytes)}) · "
+            f"보관 위치 {root}"
+        )
     result = {
         "items": len(items),
         "bytes": all_bytes,
