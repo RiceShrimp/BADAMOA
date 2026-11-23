@@ -32,6 +32,8 @@ from . import (
     migration,
     modelops_api,
     overview,
+    pipelines,
+    pipelines_api,
     qa,
     registry,
     registry_api,
@@ -135,17 +137,22 @@ async def _sweeper(hub: Hub) -> None:
 
 
 async def _searches(hub: Hub) -> None:
-    """Start the next runs of hyperparameter searches: soon after a training ends, else every 15 s."""
+    """Start the next runs of hyperparameter searches and the next steps of pipelines (and pipelines' runs on new
+    versions): soon after a job ends, else every 15 s."""
     ticks = 0
     while True:
         await anyio.sleep(1.0)
         ticks += 1
-        if not sweeps.pending() and ticks % 15:
+        if not sweeps.pending() and not pipelines.pending() and ticks % 15:
             continue
         try:
             await anyio.to_thread.run_sync(sweeps.advance_all, hub.db)
         except Exception:  # keep the loop alive
             log.exception("advancing searches failed")
+        try:
+            await anyio.to_thread.run_sync(pipelines.advance_all, hub.db, hub.settings)
+        except Exception:
+            log.exception("advancing pipelines failed")
 
 
 def create_app(settings: HubSettings) -> FastAPI:
@@ -205,6 +212,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(catalog_api.media_router)
     app.include_router(labeling_api.router)
     app.include_router(autolabel_api.router)
+    app.include_router(pipelines_api.router)
     app.include_router(boards_api.router)
     app.include_router(exports_api.router)
     app.include_router(exports_api.agent_router)

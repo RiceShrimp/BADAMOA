@@ -13,6 +13,7 @@ import { Models } from "./Models";
 import { NodeDetail } from "./NodeDetail";
 import { Nodes } from "./Nodes";
 import { OnlineTray } from "./Online";
+import { Pipelines } from "./Pipelines";
 import { GuidesPage } from "./Guides";
 import { ReleasesPage, hasUnseenRelease } from "./ReleaseNotes";
 import { Settings } from "./Settings";
@@ -20,7 +21,7 @@ import { Training } from "./Training";
 import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "labeling" | "review" | "autolabel" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
+type Page = "home" | "datasets" | "labeling" | "review" | "autolabel" | "training" | "models" | "pipelines" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
 
 interface NavItem {
   label: string;
@@ -63,7 +64,7 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     hint: "배포",
     items: [
       { label: "배포", icon: "rocket", phase: 4 },
-      { label: "파이프라인", icon: "flow", phase: 5 },
+      { label: "파이프라인", icon: "flow", page: "pipelines" }, // train → evaluate → promote, chained on the Hub
     ],
   },
   {
@@ -338,6 +339,7 @@ function Shell({
           {page === "autolabel" && <Autolabel sub={sub} arg={arg} />}
           {page === "training" && <Training runId={sub} arg={arg} />}
           {page === "models" && <Models modelId={sub} arg={arg} isAdmin={isAdmin} />}
+          {page === "pipelines" && <Pipelines sub={sub} arg={arg} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} isAdmin={isAdmin} /> : <Nodes isAdmin={isAdmin} />)}
           {page === "jobs" && <Jobs />}
           {page === "agents" && <Agents />}

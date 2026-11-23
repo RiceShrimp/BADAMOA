@@ -185,6 +185,8 @@ const ICONS: Record<string, ReactNode> = {
   ),
   plus: <path d="M12 5v14M5 12h14" />,
   x: <path d="M6 6l12 12M18 6L6 18" />,
+  minus: <path d="M6 12h12" />,
+  play: <path d="M8 5.5v13l10.5-6.5z" />,
   arrow: <path d="M5 12h14M13 6l6 6-6 6" />,
   sun: (
     <>
@@ -421,4 +423,4 @@ export const STATUS_LABEL: Record<string, string> = {
   canceled: "취소됨",
 };
 
-export const VIA_LABEL: Record<string, string> = { ui: "웹", mcp: "에이전트", api: "API", agent: "노드" };
+export const VIA_LABEL: Record<string, string> = { ui: "웹", mcp: "에이전트", api: "API", agent: "노드", pipeline: "파이프라인" };

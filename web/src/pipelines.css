@@ -1,0 +1,516 @@
+/* ---- 파이프라인: steps the Hub runs one after another ---- */
+
+/* the steps in a row: 학습 ✓ → 평가 · 검수 ● → 승격 ○ */
+.pl-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pl-chain li {
+  display: inline-flex;
+  align-items: center;
+}
+.pl-chain li + li::before {
+  content: "";
+  width: 14px;
+  height: 1.5px;
+  margin: 0 3px;
+  background: var(--border-strong);
+}
+.pl-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--idle-soft);
+  text-decoration: none;
+}
+.pl-step i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.pl-step .num {
+  font-weight: 400;
+  color: var(--muted);
+}
+a.pl-step:hover {
+  text-decoration: none;
+  filter: brightness(0.96);
+}
+.pl-step.plan {
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.pl-step.succeeded {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+.pl-step.succeeded i {
+  background: var(--ok);
+}
+.pl-step.running {
+  color: var(--text);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.pl-step.running i {
+  background: var(--accent);
+  animation: pl-pulse 1.4s ease-in-out infinite;
+}
+.pl-step.failed {
+  color: var(--bad);
+  background: var(--bad-soft);
+}
+.pl-step.failed i {
+  background: var(--bad);
+}
+.pl-step.held {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.pl-step.held i {
+  background: var(--warn);
+}
+.pl-step.skipped,
+.pl-step.stopped {
+  opacity: 0.6;
+}
+.pl-step.skipped {
+  text-decoration: line-through;
+}
+@keyframes pl-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pl-step.running i {
+    animation: none;
+  }
+}
+
+/* templates: the ways a pipeline can go */
+.pl-templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.pl-coming {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+.pl-coming span[title] {
+  cursor: help;
+}
+.pl-template {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.pl-template p {
+  margin: 0;
+}
+.pl-template-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pl-template-head strong {
+  font-size: 15px;
+}
+.pl-template-head .tag {
+  margin-left: auto;
+}
+.pl-picks {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pl-pick {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 10px;
+}
+
+/* saved pipelines */
+.pl-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.pl-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.pl-card-link {
+  display: grid;
+  gap: 3px;
+  color: inherit;
+  text-decoration: none;
+}
+.pl-card-link:hover strong {
+  text-decoration: underline;
+}
+.pl-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pl-card-title strong {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.pl-card-title .tag {
+  margin-left: auto;
+  flex: none;
+}
+.pl-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.pl-last {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* runs */
+table.pl-runs td {
+  vertical-align: top;
+}
+table.pl-runs .nowrap {
+  white-space: nowrap;
+}
+.pl-run-name a {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.pl-run-error {
+  max-width: 520px;
+  margin-top: 4px;
+}
+.pl-run-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pl-run-version {
+  margin: 0;
+}
+.pl-run-version select {
+  margin-top: 2px;
+  min-width: 120px;
+}
+
+/* one pipeline: its steps and when it runs */
+.pl-spec {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+}
+.pl-spec-row {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.pl-spec-row > .eyebrow {
+  padding-top: 3px;
+}
+.pl-spec-steps {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pl-spec-steps li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.pl-spec-n {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* one run: its steps down the page */
+.pl-timeline {
+  display: grid;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pl-tl {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  padding-bottom: 14px;
+}
+.pl-tl::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 32px;
+  bottom: 2px;
+  width: 2px;
+  background: var(--border);
+}
+.pl-tl:last-child::before {
+  display: none;
+}
+.pl-dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 8px;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--idle-soft);
+}
+.pl-dot.succeeded {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+.pl-dot.running {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.pl-dot.failed {
+  color: var(--bad);
+  background: var(--bad-soft);
+}
+.pl-dot.held {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.pl-tl.skipped .pl-tl-card,
+.pl-tl.pending .pl-tl-card {
+  box-shadow: none;
+  background: var(--surface-2);
+}
+.pl-tl.skipped .pl-tl-card {
+  opacity: 0.65;
+}
+.pl-tl-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.pl-tl-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.pl-tl-head strong {
+  font-size: 15px;
+}
+.pl-tl-time {
+  margin-left: auto;
+}
+.pl-tl-state {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.pl-tl-state.succeeded {
+  color: var(--ok);
+}
+.pl-tl-state.running {
+  color: var(--accent);
+}
+.pl-tl-state.failed {
+  color: var(--bad);
+}
+.pl-tl-state.held {
+  color: var(--warn);
+}
+.pl-tl-message {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.pl-tl-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+.pl-tl-metrics strong {
+  font-size: 15px;
+}
+.pl-tl-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+/* "학습 끝나면" in the new-run dialog, and the same choices after a run */
+.pl-follow {
+  display: grid;
+  gap: 9px;
+  margin: 2px 0 14px;
+  padding: 10px 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.pl-follow legend {
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pl-follow legend .muted {
+  font-weight: 400;
+}
+.pl-check {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 14px;
+}
+.pl-check.pl-check > label {
+  display: inline;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.pl-check > input[type="checkbox"] {
+  margin: 0;
+}
+/* inline controls: beat the form's block inputs (loaded after this sheet, same specificity otherwise) */
+.pl-check.pl-check > select,
+.pl-check.pl-check > input:not([type="checkbox"]):not([type="radio"]) {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+  padding: 3px 8px;
+  font-size: 13px;
+}
+.pl-check.pl-check > input.pl-alias {
+  width: 120px;
+}
+.pl-check.off > label,
+.pl-check.off > span {
+  color: var(--muted);
+}
+.pl-sub {
+  margin-left: 22px;
+}
+.pl-hint {
+  flex-basis: 100%;
+  margin-left: 22px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.pl-sub .pl-hint {
+  margin-left: 22px;
+}
+.pl-hint.pl-lead {
+  margin-left: 0;
+}
+.pl-save {
+  margin-bottom: 12px;
+}
+.pl-run-now {
+  margin-bottom: 14px;
+}
+.pl-save .form-row {
+  margin-top: 8px;
+}
+.pl-checks {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* on a training run's screen */
+.pl-banner {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+.pl-banner-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pl-banner-link {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pl-nudge {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 14px;
+}
+.pl-nudge-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.pl-nudge-card button {
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  .pl-cards,
+  .pl-templates {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pl-nudge-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pl-tl-time {
+    margin-left: 0;
+  }
+}

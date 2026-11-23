@@ -31,6 +31,7 @@ from . import (
     node_data,
     node_storage,
     originals,
+    pipelines,
     registry,
     services,
     sweeps,
@@ -222,4 +223,5 @@ def complete(
     template_checks.on_job_finished(db, job)
     db.commit()
     sweeps.on_job_finished(job)  # a search may start its next run
+    pipelines.on_job_finished(job)  # a pipeline may start its next step
     return {"status": job.status}

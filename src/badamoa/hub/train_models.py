@@ -234,3 +234,49 @@ class ModelVersion(Base):
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Pipeline(Base):
+    """A saved pipeline (Phase 5 · Automate): steps that run one after another on a version of one dataset.
+
+    ``steps`` is the list ``[{"kind", "config"}]`` (train → eval → promote → export, each at most once);
+    ``trigger`` says what starts a run besides a person: ``manual`` (nothing) or ``new_version`` (each version
+    of the dataset that becomes ready after ``watch_since``)."""
+
+    __tablename__ = "pipelines"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    dataset_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual | new_version
+    watch_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PipelineRun(Base):
+    """One pass of a pipeline over a version: each step's state, and what it made (training run, evaluation …).
+
+    Also made without a saved pipeline (``pipeline_id`` empty): the follow-up steps a new training run was given
+    ("학습 끝나면"), or that were added to a training run afterwards."""
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    pipeline_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), default="")
+    release_id: Mapped[str] = mapped_column(String(32), index=True)
+    train_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # its training step's run
+    # [{"kind", "config", "status", "message", "refs", "started_at", "finished_at"}]
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running | succeeded | held | failed | stopped
+    error: Mapped[str] = mapped_column(Text, default="")
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual | new_version | training
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

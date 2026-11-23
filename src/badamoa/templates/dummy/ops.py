@@ -13,7 +13,10 @@ assert run.weights is not None and run.weights.is_file(), "the node hands over t
 if action == "eval":
     images = len([p for p in (run.data_dir / "images" / run.split).iterdir() if p.is_file()])
     print(f"평가: {run.split} split {images}장 · 학습 때 설정 {run.train_params}")
-    per_class = [{"id": i, "name": name, "map50_95": 0.4, "map50": 0.6} for i, name in enumerate(run.classes)]
+    # A model trained to a higher ceiling measures higher (0.6, the default: 0.4 · 0.6), so gates can be tried
+    ceiling = float(run.train_params.get("ceiling", 0.6))
+    score, score50 = round(ceiling * 2 / 3, 4), round(min(0.99, ceiling), 4)
+    per_class = [{"id": i, "name": name, "map50_95": score, "map50": score50} for i, name in enumerate(run.classes)]
     # per-image results by name, and (as templates may) the worst as a picture with boxes: the Hub keeps no pictures
     # of an evaluation
     pictures = sorted(p for p in (run.data_dir / "images" / run.split).iterdir() if p.is_file())
@@ -34,7 +37,7 @@ if action == "eval":
             for n, p in enumerate(pictures)
         ]
     )
-    bm.finish({"map50_95": 0.4, "map50": 0.6, "images": images}, classes=per_class)
+    bm.finish({"map50_95": score, "map50": score50, "images": images}, classes=per_class)
 elif action == "autolabel":
     # one image in three each: a sure box, an unsure one, nothing (so the confidences can be tried)
     predicted = []

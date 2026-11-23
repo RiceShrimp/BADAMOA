@@ -35,6 +35,7 @@ from . import (
     labeling,
     lineage,
     node_data,
+    pipelines,
     qa,
     registry,
     resources,
@@ -806,6 +807,55 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         with sweeps.lock, hub.db.session() as db:
             sweep = sweeps.stop_sweep(db, user, sweep_id, via="mcp")
             return sweeps.sweep_view(db, hub.settings, sweep)
+
+    @mcp.tool(title="파이프라인 목록", annotations=READ_ONLY)
+    @guarded
+    def list_pipelines(project_id: str, ctx: Context) -> dict[str, Any]:
+        """프로젝트의 저장한 파이프라인(단계 · 언제 도는지 · 마지막 실행)과 최근 실행(단계마다 상태 · 메시지)을
+        반환합니다. 단계는 train(학습) → eval(평가, review면 학습한 버전 전체를 함께 평가해 검수에도) →
+        promote(같은 데이터로 지금 alias 모델보다 나을 때만 alias를 옮기는 게이트) → export(내보내기) 순서이고,
+        앞 단계가 성공하면 Hub가 다음을 시작합니다."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return pipelines.board(db, hub.settings, project_id)
+
+    @mcp.tool(title="파이프라인 실행", annotations=WRITE)
+    @guarded
+    def run_pipeline(
+        ctx: Context,
+        pipeline_id: str = "",
+        release_id: str = "",
+        steps: list[dict[str, Any]] | None = None,
+        follow_run_id: str = "",
+    ) -> dict[str, Any]:
+        """저장한 파이프라인을 돌리거나(pipeline_id; release_id를 비우면 그 데이터셋의 최신 버전), 저장하지 않은
+        단계를 버전에서 돌립니다(release_id + steps). follow_run_id: 이미 있는 학습 실행 뒤에 steps(평가 · 승격 ·
+        내보내기)를 붙입니다.
+        steps 예: [{"kind": "train", "config": {"template": "yolo", "params": {"epochs": 30}}},
+        {"kind": "eval", "config": {"split": "auto", "review": true}}, {"kind": "promote", "config": {"alias": "champion"}},
+        {"kind": "export", "config": {"format": "onnx"}}]. eval의 split auto는 test가 있으면 test, 없으면 val입니다.
+        첫 단계는 바로 시작하고, 나머지는 Hub가 차례로 시작합니다. 진행은 get_pipeline_run으로 봅니다."""
+        user = user_of(ctx)
+        with pipelines.lock, hub.db.session() as db:
+            release = catalog.find_release(db, release_id).id if release_id else ""
+            if pipeline_id:
+                run = pipelines.run_pipeline(db, user, pipeline_id, release, settings=hub.settings, via="mcp")
+            else:
+                run = pipelines.start_run(
+                    db, user, steps=steps or [], release_id=release, follow_run_id=follow_run_id,
+                    trigger="training" if follow_run_id else "manual", settings=hub.settings, via="mcp",
+                )  # fmt: skip
+            return pipelines.run_view(db, hub.settings, run)
+
+    @mcp.tool(title="파이프라인 실행 조회", annotations=READ_ONLY)
+    @guarded
+    def get_pipeline_run(run_id: str, ctx: Context) -> dict[str, Any]:
+        """파이프라인 실행의 단계마다 상태(pending · running · succeeded · failed · skipped · stopped · held)와
+        메시지, 만든 것(학습 실행 · 모델 · 평가 op_id · 승격 결과)을 반환합니다. held: 게이트에서 지금 모델보다
+        낫지 않아 그대로 둠."""
+        user_of(ctx)
+        with hub.db.session() as db:
+            return pipelines.run_view(db, hub.settings, pipelines.get_run(db, run_id))
 
     @mcp.tool(title="학습 실행 메모 · 태그", annotations=WRITE)
     @guarded
