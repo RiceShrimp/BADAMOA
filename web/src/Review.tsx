@@ -585,7 +585,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   );
 
   if (error && !summary) return <div className="error">{error}</div>;
-  if (!summary || !release) return <div className="muted">검사하는 중…</div>;
+  if (!summary || !release) return <CheckProgress releaseId={releaseId} />;
   const classes = release.label_space.classes;
   const colorOf = colorFor(classes);
   const task = release.task ?? "detect";
@@ -1179,6 +1179,51 @@ function ConfThreshold({
         </button>
       </div>
     </Modal>
+  );
+}
+
+interface QaProgress {
+  running: boolean;
+  step?: "prepare" | "read" | "write";
+  done?: number;
+  total?: number;
+  seconds?: number;
+}
+
+/**
+ * While a version's label checks run for the first time (a big one takes a while): how far they got, read every
+ * second — looking at the labels, reading and judging N / M images with the time left, keeping the results. The
+ * checks go on on the Hub whatever this screen does, and are kept.
+ */
+function CheckProgress({ releaseId }: { releaseId: string }) {
+  const { data } = usePolling(() => api<QaProgress>(`/releases/${releaseId}/qa/progress`), 1000, [releaseId]);
+  const done = data?.done ?? 0;
+  const total = data?.total ?? 0;
+  const reading = data?.running && data.step === "read" && total > 0;
+  const share = !data?.running ? 0 : data.step === "write" ? 1 : reading ? done / total : 0;
+  let words = "검사 준비하는 중…";
+  if (data?.running && data.step === "prepare") words = "라벨 살펴보는 중…";
+  if (reading) words = `라벨 검사하는 중 · ${done.toLocaleString()} / ${total.toLocaleString()}장 · ${Math.floor(share * 100)}%`;
+  if (data?.running && data.step === "write") words = "검사 결과 저장하는 중…";
+  if (data && !data.running && total === 0) words = "검사 결과 모으는 중…";
+  let left = "";
+  if (reading && done > 0 && (data?.seconds ?? 0) >= 2) {
+    const seconds = ((total - done) * (data?.seconds ?? 0)) / done;
+    left = seconds < 60 ? "1분 안에 끝남" : `약 ${Math.ceil(seconds / 60)}분 남음`;
+  }
+  return (
+    <section className="card check-progress">
+      <div className="import-progress">
+        <div className="bar">
+          <i style={{ width: `${Math.round(share * 100)}%` }} />
+        </div>
+        <div className="import-progress-line">
+          <span className="small">{words}</span>
+          {left && <span className="muted small">{left}</span>}
+        </div>
+      </div>
+      <p className="muted small">처음 여는 버전만 이렇게 한 번 검사합니다. 다른 탭으로 가도 검사는 Hub에서 계속되고 결과는 저장됩니다.</p>
+    </section>
   );
 }
 

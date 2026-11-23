@@ -35,6 +35,11 @@ def test_a_set_split_into_parts_labelled_and_reviewed(hub, tmp_path):  # noqa: F
     assert one["columns"] == {"unassigned": 3, "labeling": 0, "review": 0, "done": 0}
     assert one["open_release_id"] == v1 and {p["name"] for p in one["people"]} >= {"admin", "kim"}
     assert hub.post("/api/label-sets", json={**body, "filter": {"state": "labelled"}}).status_code == 400  # none
+    # every image to one person: a part as big as the set, however big a number is asked for (no 10,000 bound)
+    whole = hub.post("/api/label-sets", json={**body, "name": "한 사람이 모두", "part_size": 99_999}).json()
+    assert (whole["items"], whole["parts"], whole["part_size"]) == (8, 1, 8)
+    assert hub.delete(f"/api/label-sets/{whole['id']}").status_code == 200
+    assert hub.post("/api/label-sets", json={**body, "part_size": 0}).status_code == 400
 
     # ---- part 0 to kim (admin reviews); the board moves it to 라벨링
     given = {"assignee": member["id"], "reviewer": one["me"]}

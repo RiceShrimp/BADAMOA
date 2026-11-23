@@ -69,8 +69,8 @@ def create_set(
     name = name.strip()
     if not name:
         raise ServiceError(400, "이름을 적으세요.")
-    if not 1 <= part_size <= 10_000:
-        raise ServiceError(400, "일감 하나의 이미지 수는 1~10,000입니다.")
+    if part_size < 1:
+        raise ServiceError(400, "일감 하나의 이미지 수는 1장 이상입니다.")
     wanted = match or {}
     class_id = wanted.get("class_id")
     query = catalog._item_filter(
@@ -109,6 +109,7 @@ def create_set(
         raise ServiceError(400, "고른 조건에 맞는 이미지가 없습니다.")
     if len(item_ids) > MAX_ITEMS:
         raise ServiceError(400, f"라벨링 묶음 하나에는 이미지 {MAX_ITEMS:,}장까지 담을 수 있습니다. 조건을 좁혀 주세요.")
+    part_size = min(part_size, len(item_ids))  # no bound but the set's own size: all of it to one person is one part
     dataset = db.get(Dataset, release.dataset_id)
     found = LabelSet(
         project_id=dataset.project_id,

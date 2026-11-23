@@ -555,6 +555,12 @@ def label_checks(
     return result
 
 
+@router.get("/releases/{release_id}/qa/progress")
+def label_check_progress(release_id: str, _: User = Depends(current_user)) -> dict:
+    """How far the label checks of a version got while they run (검수 shows it while it waits for them)."""
+    return qa.progress(release_id)
+
+
 @router.get("/releases/{release_id}/qa/history")
 def label_check_history(
     release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)

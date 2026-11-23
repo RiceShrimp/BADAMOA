@@ -305,6 +305,80 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
     assert hub.get(f"/api/releases/{v1}/qa", params={"conf": 0.01}).json()["rule"]["conf"] == 0.25  # kept from 0.25
 
 
+def test_the_checks_tell_how_far_they_got(hub, tmp_path, settings, monkeypatch):  # noqa: F811
+    """While a version's checks run (the first time 검수 opens a big one), how far they got is there to read: the
+    step and the images judged of those with labels; nothing once they end."""
+    from badamoa.hub import qa
+    from badamoa.hub.catalog_models import Release
+    from badamoa.hub.db import Database
+
+    root = make_yolo(tmp_path / "ds")  # 8 images, 6 with boxes
+    project = hub.post("/api/projects", json={"name": "진행"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+    seen = []
+    measure = qa._measure
+
+    def watched(*args, **kwargs):
+        seen.append(qa.progress(v1))
+        return measure(*args, **kwargs)
+
+    monkeypatch.setattr(qa, "_measure", watched)
+    monkeypatch.setattr(qa, "_fingerprint", lambda db, release: "changed")  # checked again
+    database = Database(settings.database_url)
+    with database.session() as db:
+        qa.run(db, db.get(Release, v1))
+    database.engine.dispose()
+    assert [(p["running"], p["step"], p["done"], p["total"]) for p in seen[:1]] == [(True, "read", 0, 6)]
+    assert len(seen) == 6 and qa.progress(v1) == {"running": False}
+    assert hub.get(f"/api/releases/{v1}/qa/progress").json() == {"running": False}
+
+
+def test_a_version_checked_twice_at_once_is_checked_once(hub, tmp_path, settings, monkeypatch):  # noqa: F811
+    """검수 opened while the Hub's background loop checks the same version: the second waits and reads the first's
+    result (both used to check it, and the second failed keeping it: UNIQUE constraint failed: qa_runs)."""
+    import threading
+    import time
+
+    from badamoa.hub import qa
+    from badamoa.hub.catalog_models import Release
+    from badamoa.hub.db import Database
+
+    root = make_yolo(tmp_path / "ds")
+    project = hub.post("/api/projects", json={"name": "동시에"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+    assert hub.get(f"/api/releases/{v1}/qa").status_code == 200  # checked once as it is
+    calls = []
+    measure = qa._measure
+
+    def slow(*args, **kwargs):
+        calls.append(1)
+        time.sleep(0.05)
+        return measure(*args, **kwargs)
+
+    monkeypatch.setattr(qa, "_measure", slow)
+    monkeypatch.setattr(qa, "_fingerprint", lambda db, release: "labels changed")
+    database = Database(settings.database_url)
+    ended: list[object] = []
+
+    def check():
+        try:
+            with database.session() as db:
+                ended.append(qa.run(db, db.get(Release, v1)).fingerprint)
+        except Exception as e:  # noqa: BLE001 - told below
+            ended.append(e)
+
+    first = threading.Thread(target=check)
+    first.start()
+    while not qa.progress(v1)["running"]:
+        time.sleep(0.01)
+    second = threading.Thread(target=check)
+    second.start()
+    first.join(30)
+    second.join(30)
+    database.engine.dispose()
+    assert ended == ["labels changed", "labels changed"] and len(calls) == 6  # its 6 images with labels, once
+
+
 def test_box_checks_count_at_the_thresholds_asked_for(hub, tmp_path):  # noqa: F811
     """The box checks count at the thresholds 검수 asks for (IoU 0.95 · 3 px · 98% by default), with the counts at
     each level beside; the images and the labels framed follow."""

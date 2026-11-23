@@ -455,7 +455,10 @@ export function NewSetDialog({
 }) {
   const [name, setName] = useState(`${release.dataset.name} 라벨링`);
   const [instructions, setInstructions] = useState("");
-  const [partSize, setPartSize] = useState(50);
+  // images to a part: up to every image of the set (one part, one person); a number over it reads as it
+  const most = Math.max(1, filtered);
+  const [partText, setPartText] = useState(String(Math.min(50, most)));
+  const partSize = Math.min(most, Math.max(1, Math.floor(Number(partText)) || 1));
   const [review, setReview] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -493,13 +496,27 @@ export function NewSetDialog({
         <div className="form-row">
           <label>
             일감 하나에 이미지
-            <input type="number" min={1} max={10000} value={partSize} onChange={(e) => setPartSize(Number(e.target.value) || 1)} />
+            <input
+              type="number"
+              min={1}
+              max={most}
+              value={partText}
+              onChange={(e) => setPartText(e.target.value !== "" && Number(e.target.value) > most ? String(most) : e.target.value)}
+              onBlur={() => setPartText(String(partSize))}
+            />
           </label>
           <label className="check" style={{ alignSelf: "end" }}>
             <input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> 검수하기 (승인 · 돌려보내기)
           </label>
         </div>
-        <p className="muted small">일감 {parts.toLocaleString()}개가 생깁니다. 맡길 사람은 만든 뒤 보드에서 정합니다.</p>
+        <p className="muted small">
+          {parts === 1 ? "일감 1개가 생깁니다(한 사람이 모두)." : `일감 ${parts.toLocaleString()}개가 생깁니다.`} 맡길 사람은 만든 뒤 보드에서 정합니다.
+          {parts > 1 && (
+            <button type="button" className="link small" onClick={() => setPartText(String(most))}>
+              한 사람에게 모두 (일감 1개)
+            </button>
+          )}
+        </p>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>

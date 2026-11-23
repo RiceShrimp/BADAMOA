@@ -27,7 +27,6 @@ import {
   type DraftChanges,
   type ItemPage,
   type Project,
-  type ReleaseCheck,
   type ReleaseInfo,
   SPLIT_LABEL,
   STATE_HELP,
@@ -170,7 +169,6 @@ function ReleaseView({
   const [q, setQ] = useState("");
   const [fixedOnly, setFixedOnly] = useState(false); // only the images the work in progress changed
   const [changeKind, setChangeKind] = useState<ChangeKind | "">(""); // and only those changed this way
-  const [suspect, setSuspect] = useState(""); // an evaluation: its images, likely wrong labels first
   const { page, setPage, pageSize, setPageSize } = usePaging();
   const listTop = useRef<HTMLDivElement>(null); // the pager above the images: the one under them brings it back
   const [viewing, setViewing] = useState<number | null>(null);
@@ -190,12 +188,9 @@ function ReleaseView({
     if (q.trim()) params.set("q", q.trim());
     if (fixedOnly) params.set("edited", "true");
     if (fixedOnly && changeKind) params.set("changed", changeKind);
-    if (suspect) params.set("suspect", suspect);
     return params.toString();
-  }, [split, state, classId, site, camera, q, fixedOnly, changeKind, suspect]);
-  // Evaluations of this dataset's models that can sort the images by likely wrong labels.
-  const { data: checks } = usePolling(() => api<ReleaseCheck[]>(`/releases/${releaseId}/checks`), 60000, [releaseId]);
-  const check = checks?.find((c) => c.id === suspect);
+  }, [split, state, classId, site, camera, q, fixedOnly, changeKind]);
+  // The images a model's evaluation finds likely wrong are 검수's (its model cards), not this list's order.
   useEffect(() => setPage(0), [filterQuery]);
   // The same filters as the Hub takes them for a new release.
   const filter = useMemo(() => {
@@ -454,24 +449,10 @@ function ReleaseView({
             ))}
           </select>
         )}
-        {(checks?.length ?? 0) > 0 && (
-          <select
-            value={suspect}
-            onChange={(e) => setSuspect(e.target.value)}
-            aria-label="정렬"
-            title="평가한 모델의 예측과 라벨이 어긋나는 이미지부터 봅니다"
-            className={suspect ? "active-select" : ""}
-          >
-            <option value="">기본 순서</option>
-            {checks?.map((c) => (
-              <option key={c.id} value={c.id}>
-                라벨 의심 순 · {c.model ? `${c.model.name} v${c.model.version}` : "모델"} ({c.release?.version} {c.split} · {c.created_at.slice(0, 10)})
-              </option>
-            ))}
-          </select>
-        )}
         <span className="muted count">{(items?.total ?? 0).toLocaleString()}개</span>
         <span className="spacer" />
+        {/* how the images are shown: one group, so it moves to a line of its own as a whole when the row is full */}
+        <div className="view-controls">
         {release.fixable && (
           <button className="ghost-btn" onClick={() => setLabelingSet(true)} title="지금 거른 이미지를 일감으로 나눠 사람에게 맡깁니다">
             <Icon name="edit" size={13} /> 라벨링 묶음 만들기
@@ -486,7 +467,11 @@ function ReleaseView({
         {task !== "classify" && predictionRuns && predictionRuns.length > 0 && (
           <label className="inline-select" title="고른 모델의 예측을 썸네일에 점선으로 겹칩니다 (라벨은 실선)">
             <span className="muted small">예측</span>
-            <select value={predictionRuns.some((r) => r.op_id === gridRun) ? gridRun : ""} onChange={(e) => pickGridRun(e.target.value)}>
+            <select
+              value={predictionRuns.some((r) => r.op_id === gridRun) ? gridRun : ""}
+              onChange={(e) => pickGridRun(e.target.value)}
+              aria-label="겹쳐 볼 예측"
+            >
               <option value="">겹쳐 보지 않음</option>
               {predictionRuns.map((r) => (
                 <option key={r.op_id} value={r.op_id}>
@@ -503,15 +488,9 @@ function ReleaseView({
             </button>
           ))}
         </div>
+        </div>
       </div>
 
-      {check && (
-        <div className="notice compact check-note">
-          {check.model?.name} v{check.model?.version}이(가) {check.release?.version}의 {check.split} split을 평가할 때 예측과 라벨이 어긋난 이미지부터 봅니다
-          · 평가한 이미지 {check.images.toLocaleString()}장 중 어긋난 것 {check.wrong.toLocaleString()}장. 숫자는 평가할 때의 라벨 기준이고, 이미지를
-          열면 예측을 겹쳐 보고 라벨로 넣을 수 있습니다.
-        </div>
-      )}
       <Pager page={page} pages={pages} onGo={setPage} pageSize={pageSize} onPageSize={setPageSize} innerRef={listTop} />
 
       {items && items.items.length === 0 && <div className="card empty">조건에 맞는 항목이 없습니다.</div>}
@@ -638,11 +617,9 @@ function ReleaseView({
       {labelingSet && (
         <NewSetDialog
           release={release}
-          filter={{ ...filter, ...(fixedOnly ? { edited: true } : {}), ...(suspect ? { suspect } : {}) }}
-          filtered={suspect ? (check?.wrong ?? 0) : (items?.total ?? 0)}
-          describe={[describeFilter(filter, release), fixedOnly ? "고친 것만" : "", check ? `${check.model?.name} 평가에서 어긋난 것` : ""]
-            .filter(Boolean)
-            .join(" · ")}
+          filter={{ ...filter, ...(fixedOnly ? { edited: true } : {}) }}
+          filtered={items?.total ?? 0}
+          describe={[describeFilter(filter, release), fixedOnly ? "고친 것만" : ""].filter(Boolean).join(" · ")}
           onClose={() => setLabelingSet(false)}
         />
       )}
@@ -669,7 +646,6 @@ function ReleaseView({
           colorOf={colorOf}
           classes={classes}
           task={task}
-          checkOp={suspect || undefined}
           predictionRun={predictionRuns?.some((r) => r.op_id === gridRun) ? gridRun : undefined}
           onClose={() => setViewing(null)}
           onSaved={() => {

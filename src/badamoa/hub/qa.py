@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from collections import Counter
 from typing import Any
 
@@ -35,7 +37,7 @@ from .catalog_models import (
     ReleaseItem,
     RevisionClass,
 )
-from .db import iso, utcnow
+from .db import iso, utcnow, write_lock
 from .models import User
 from .services import ServiceError, audit
 
@@ -229,8 +231,52 @@ def _flags(
     return out
 
 
+# How far the checks of a version got while they run (this process; 검수 shows it while it waits):
+# {release id: {"step": prepare | read | write, "done", "total", "since"}}
+_RUNNING: dict[str, dict[str, Any]] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+def progress(release_id: str) -> dict[str, Any]:
+    """How far the checks of a version got: {"running": False} when none run, else the step (prepare: looking at
+    the labels; read: reading and judging them, ``done`` of ``total`` images; write: keeping the results) and the
+    seconds since the checks began."""
+    with _RUNNING_LOCK:
+        now = _RUNNING.get(release_id)
+        if now is None:
+            return {"running": False}
+        return {
+            "running": True,
+            "step": now["step"],
+            "done": now["done"],
+            "total": now["total"],
+            "seconds": round(time.monotonic() - now["since"], 1),
+        }
+
+
 def run(db: Session, release: Release) -> QaRun:
-    """Run the rule checks on the release's labels (again only when they changed)."""
+    """Run the rule checks on the release's labels (again only when they changed); how far they got is told by
+    ``progress`` meanwhile. The same version being checked already (the Hub's background loop, another request)
+    is waited for, and its result read, rather than checked twice at once."""
+    release_id = release.id
+    while True:
+        with _RUNNING_LOCK:
+            other = _RUNNING.get(release_id)
+            if other is None:
+                mine = {"step": "prepare", "done": 0, "total": 0, "since": time.monotonic(), "over": threading.Event()}
+                _RUNNING[release_id] = mine
+                break
+        other["over"].wait()
+    try:
+        return _run(db, release, mine)
+    finally:
+        with _RUNNING_LOCK:
+            if _RUNNING.get(release_id) is mine:
+                del _RUNNING[release_id]
+        mine["over"].set()
+
+
+def _run(db: Session, release: Release, mine: dict[str, Any]) -> QaRun:
     fingerprint = _fingerprint(db, release)
     done = db.get(QaRun, release.id)
     if done is not None and done.fingerprint == fingerprint:
@@ -264,6 +310,9 @@ def run(db: Session, release: Release) -> QaRun:
     scored: list[dict[str, Any]] = []  # the box checks' values, for 검수's thresholds
     # the images with labels, in order of their number, each label record read once as text and parsed here
     # (faster than SQLAlchemy turning each into a Python value); images without labels fail no check
+    labelled = (ReleaseItem.release_id == release.id, ReleaseItem.box_count > 0, ReleaseItem.state != "unlabelled")
+    mine["total"] = db.scalar(select(func.count()).select_from(ReleaseItem).where(*labelled)) or 0
+    mine["step"] = "read"
     last = 0
     while True:
         rows = db.execute(
@@ -297,6 +346,16 @@ def run(db: Session, release: Release) -> QaRun:
                         }
                     )
         last = rows[-1][0]
+        mine["done"] += len(rows)
+    mine["step"] = "write"
+    # one writer at a time: what another run of this version kept meanwhile (a request ending after its own
+    # check, another Hub process) is read again here, and kept as it is when it was made from the same labels
+    write_lock(db)
+    done = db.execute(
+        select(QaRun).where(QaRun.release_id == release.id).execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if done is not None and done.fingerprint == fingerprint:
+        return done
     db.execute(delete(QaResult).where(QaResult.release_id == release.id))
     db.execute(delete(QaScore).where(QaScore.release_id == release.id))
     for start in range(0, len(scored), CHUNK):

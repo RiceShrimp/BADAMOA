@@ -207,7 +207,7 @@ model = load(run.weights, run.train_params)
 
 if action == "eval":                     # 평가
     metrics, per_image = evaluate(model, run.data_dir, run.split)
-    bm.log_predictions(per_image)        # (선택) 이미지마다 예측 → 검수 · "라벨 의심 순"
+    bm.log_predictions(per_image)        # (선택) 이미지마다 예측 → 검수의 모델 기준
     bm.finish(metrics)
 elif action == "export":                 # 내보내기
     path = export(model, run.config.get("format", "onnx"), run.out)
@@ -222,7 +222,7 @@ else:                                    # predict: 테스트
 
 | 진입점 | 받는 것 | 알려야 하는 것 |
 |---|---|---|
-| **평가** `eval` | `run.data_dir`(평가할 데이터, 학습과 같은 형식) · `run.split` | `bm.finish(지표)`. 이미지마다 예측을 `bm.log_predictions`로 남기면 검수의 "모델 기준"과 버전 화면의 "라벨 의심 순"에 쓰임 |
+| **평가** `eval` | `run.data_dir`(평가할 데이터, 학습과 같은 형식) · `run.split` | `bm.finish(지표)`. 이미지마다 예측을 `bm.log_predictions`로 남기면 검수의 "모델 기준"과 데이터셋 화면의 예측 겹쳐 보기에 쓰임 |
 | **테스트** `predict` | `run.source`(올린 이미지 폴더) · `run.config["conf"]` | `bm.finish(predictions=[{"image": 파일 이름, "boxes": [[클래스, 확신도, cx, cy, w, h], …]}, …])` (분류는 `"top": [[클래스, 확률], …]`) |
 | **오토라벨** (`predict`, `action = "autolabel"`) | `run.source`(파일 이름 = 이미지의 sha256) · `run.config["conf"]` | `bm.log_predictions([{"image": 파일 이름(확장자 뺀 것), "labels": [[클래스, cx, cy, w, h, …]], "scores": [확신도, …]}, …])` — 데이터셋의 라벨 형식 그대로(분할은 뒤에 윤곽 x, y …, 키포인트는 x, y, 보임 …, 분류는 `[[클래스]]`) |
 | **내보내기** `export` | `run.config["format"]`(`onnx` · `torchscript`) | `bm.log_artifact(파일)`, `bm.finish(file=...)` |
