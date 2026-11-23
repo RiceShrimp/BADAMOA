@@ -559,21 +559,26 @@ def test_a_kinds_description_and_each_versions_memo_are_written_on_the_hub(clien
 
     def upload(version):
         sent = client.post(
-            "/api/templates", content=_bundle(tmp_path, version=version), headers={**admin, "Content-Type": "application/zip"}
+            "/api/templates",
+            content=_bundle(tmp_path, version=version),
+            headers={**admin, "Content-Type": "application/zip"},
         )
         assert sent.status_code == 200, sent.text
         return sent.json()
 
     first, second = upload("1"), upload("2")
     declared = second["description"]
-    written = client.put(f"/api/templates/{second['id']}/description", json={"text": "  커리큘럼 검출기\n둘째 줄 "}, headers=admin)
+    written = client.put(
+        f"/api/templates/{second['id']}/description", json={"text": "  커리큘럼 검출기\n둘째 줄 "}, headers=admin
+    )
     assert written.status_code == 200 and written.json()["description"] == "커리큘럼 검출기\n둘째 줄"
     view = next(t for t in client.get("/api/templates", headers=admin).json() if t["name"] == "trial")
     assert (view["description"], view["declared_description"]) == ("커리큘럼 검출기\n둘째 줄", declared)
     # it belongs to the kind: every version shows it
     assert client.get(f"/api/templates/{first['id']}", headers=admin).json()["description"] == "커리큘럼 검출기\n둘째 줄"
 
-    assert client.put(f"/api/templates/{first['id']}/memo", json={"text": "첫 버전: 박스만"}, headers=admin).status_code == 200
+    memo = client.put(f"/api/templates/{first['id']}/memo", json={"text": "첫 버전: 박스만"}, headers=admin)
+    assert memo.status_code == 200
     versions = client.get(f"/api/templates/{second['id']}/versions", headers=admin).json()
     assert [(v["version"], v["memo"]) for v in versions] == [("2", ""), ("1", "첫 버전: 박스만")]
     assert versions[0]["check"]["state"] == "pending" and versions[0]["uploaded_by"] == "admin"
