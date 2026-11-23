@@ -390,8 +390,8 @@ def _pypi_newest(requirement: str) -> str:
 
 def library_versions(db: Session, row: Template, manifest: TemplateManifest) -> dict[str, Any] | None:
     """Which version of its library a model kind runs on: what its recent runs installed, per server (the
-    newest of each), else what its trial installed; and what a server installing it now would get (PyPI's
-    newest that the requirement allows; an in-house wheel's own version)."""
+    newest of each), else what its trial installed; and what a server installing it now would get (the newest
+    the requirement allows of the Hub's wheels and PyPI's releases)."""
     from packaging.utils import canonicalize_name
     from packaging.version import InvalidVersion, Version
 
@@ -427,22 +427,28 @@ def library_versions(db: Session, row: Template, manifest: TemplateManifest) -> 
     trial = row.trial or {}
     if not seen and version_in(trial.get("installed") or []):
         seen["trial"] = {"node": str(trial.get("node") or ""), "version": version_in(trial["installed"]), "trial": True}
-    in_house = db.scalars(select(Package.version).where(Package.name == name)).all()
-    available = ""
-    if in_house:
-        from packaging.requirements import Requirement
-
-        spec = Requirement(requirement).specifier
-        fits = [v for v in in_house if spec.contains(v, prereleases=True)]
-        available = max(fits, key=Version) if fits else ""
-    elif row.builtin or seen:
-        available = _pypi_newest(requirement)
 
     def key(text: str) -> Any:
         try:
             return Version(text)
         except InvalidVersion:
             return Version("0")
+
+    # what a server installing it now gets: uv reads the Hub's wheels and the index together and takes the newest
+    # the requirement allows, so an in-house build (a fork, 8.4.138.1) is what a kind gets only where it pins it
+    # (or the index is out of reach); the built-in YOLO beside it still gets PyPI's 8.4.216
+    in_house = db.scalars(select(Package.version).where(Package.name == name)).all()
+    candidates: list[str] = []
+    if in_house:
+        from packaging.requirements import Requirement
+
+        spec = Requirement(requirement).specifier
+        candidates += [v for v in in_house if spec.contains(v, prereleases=True)]
+    if in_house or row.builtin or seen:
+        newest = _pypi_newest(requirement)
+        if newest:
+            candidates.append(newest)
+    available = max(candidates, key=key) if candidates else ""
 
     installed = sorted(seen.values(), key=lambda s: key(s["version"]), reverse=True)
     return {

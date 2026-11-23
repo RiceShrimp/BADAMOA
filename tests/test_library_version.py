@@ -89,3 +89,26 @@ def test_a_servers_environments_name_built_in_kinds_by_their_library(client, adm
         monkeypatch.setattr(registry, "_pypi_newest", lambda requirement: "")  # no internet, never ran: no number
         assert node_storage._names(db, [seg], there.id) == [seg.title]
     database.engine.dispose()
+
+
+def test_an_in_house_build_is_what_only_a_kind_pinning_it_gets(client, admin, settings, monkeypatch):
+    """The Hub keeps a fork of the library (DCL's ultralytics 8.4.138.1): uv takes the newest of the Hub's wheels and
+    PyPI's releases, so the built-in YOLO still gets 8.4.216 and only a kind pinning the fork gets it."""
+    from sqlalchemy import select
+
+    from badamoa.hub.train_models import Package, Template
+
+    monkeypatch.setattr(registry, "_pypi_newest", lambda requirement: "" if "==8.4.138.1" in requirement else "8.4.216")
+    client.get("/api/templates", headers=admin)  # the built-in kinds are in
+    database = Database(settings.database_url)
+    with database.session() as db:
+        db.add(Package(name="ultralytics", version="8.4.138.1", filename="ultralytics-8.4.138.1-py3-none-any.whl", blob="b"))
+        db.flush()
+        yolo = db.scalars(select(Template).where(Template.name == "yolo", Template.deleted_at.is_(None))).one()
+        manifest = registry.manifest_of(yolo)
+        assert registry.library_versions(db, yolo, manifest)["available"] == "8.4.216"
+        manifest.environment.requirements = ["ultralytics==8.4.138.1", "yolo-curriculum==1.0.0"]
+        assert registry.library_versions(db, yolo, manifest)["available"] == "8.4.138.1"
+        monkeypatch.setattr(registry, "_pypi_newest", lambda requirement: "")  # PyPI out of reach: the Hub's own
+        assert registry.library_versions(db, yolo, registry.manifest_of(yolo))["available"] == "8.4.138.1"
+    database.engine.dispose()
