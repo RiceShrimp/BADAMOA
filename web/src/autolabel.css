@@ -63,6 +63,12 @@
 .al-runs tbody tr {
   cursor: pointer;
 }
+.al-runs td:nth-child(2),
+.al-runs td:nth-child(5),
+.al-runs td:nth-child(6),
+.al-runs td:nth-child(7) {
+  white-space: nowrap;
+}
 .al-runs tbody tr:hover td {
   background: var(--surface-2);
 }

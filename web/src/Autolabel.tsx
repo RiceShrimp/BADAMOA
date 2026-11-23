@@ -820,7 +820,8 @@ export function StartAutolabel({
   useEffect(() => {
     if (!targets || fixedSet) return;
     const open = targets.sets.filter((s) => s.todo > 0);
-    const raw = targets.datasets.filter((d) => unlabelled(d, "") > 0);
+    // the dataset with the most images nobody labelled yet first
+    const raw = targets.datasets.filter((d) => unlabelled(d, "") > 0).sort((a, b) => unlabelled(b, "") - unlabelled(a, ""));
     if (setId && targets.sets.some((s) => s.id === setId)) {
       setMode("set");
       setChosenSet(setId);
@@ -963,7 +964,13 @@ export function StartAutolabel({
                 <div className="segmented" role="radiogroup" aria-label="split">
                   <span className="eyebrow">split</span>
                   {["", ...SPLITS.filter((s) => dataset?.counts[s])].map((s) => (
-                    <button type="button" key={s || "all"} className={split === s ? "active" : ""} onClick={() => setSplit(s)}>
+                    <button
+                      type="button"
+                      key={s || "all"}
+                      className={split === s ? "active" : ""}
+                      disabled={split !== s && unlabelled(dataset, s) === 0}
+                      onClick={() => setSplit(s)}
+                    >
                       {s || "전체"} <span className="muted">{n(unlabelled(dataset, s))}</span>
                     </button>
                   ))}
@@ -987,7 +994,7 @@ export function StartAutolabel({
         )}
         {fixedSet && (
           <p className="muted">
-            등록한 모델이 이 묶음의 아직 안 한 이미지 {n(offer?.todo)}장에 라벨을 먼저 그립니다. 라벨링하는 사람은 이미지를 열면 모델이 그린 것에서
+            등록한 모델이 이 묶음의 아직 안 한 이미지 {offer ? n(offer.todo) : "…"}장에 라벨을 먼저 그립니다. 라벨링하는 사람은 이미지를 열면 모델이 그린 것에서
             시작해 고치기만 합니다. 이미 라벨링했거나 돌려받은 이미지는 건드리지 않습니다.
           </p>
         )}
@@ -995,6 +1002,7 @@ export function StartAutolabel({
         <div className="eyebrow al-label">모델</div>
         {offerError && <div className="error">{offerError}</div>}
         {!query && <p className="muted small">대상을 고르면 쓸 수 있는 모델이 나옵니다.</p>}
+        {query && !offer && !offerError && <p className="muted small">모델과 돌릴 서버를 찾는 중…</p>}
         {offer && offer.models.length === 0 && <div className="notice">이 프로젝트에 등록된 모델이 없습니다. 먼저 학습해 모델을 만드세요.</div>}
         {offer && offer.models.length > 0 && (
           <div className="autolabel-models" role="radiogroup" aria-label="모델">
