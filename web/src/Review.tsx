@@ -93,7 +93,7 @@ interface EvalChoice extends CheckModel {
   trained_on: boolean; // trained on this version: its train split was learned
   fits: boolean;
   why: string; // why it cannot, when it cannot
-  relation: "same_version" | "same_dataset" | "same_project" | "other_project"; // what it learned from
+  relation: "same_version" | "same_dataset" | "same_project" | "other_project" | "uploaded"; // what it learned from
   trained: { project: string; dataset: string; version: string };
   warning: string; // when it learned from other data
   classes: number; // how many classes it knows
@@ -104,6 +104,7 @@ const RELATION: Record<EvalChoice["relation"], string> = {
   same_dataset: "다른 버전으로 학습",
   same_project: "다른 데이터셋",
   other_project: "다른 프로젝트",
+  uploaded: "올린 모델",
 };
 
 interface EvalChoices {

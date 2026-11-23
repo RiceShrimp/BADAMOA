@@ -915,7 +915,8 @@ th.sortable:hover {
   stroke: var(--border-strong);
   stroke-width: 1;
 }
-.lineage-box.kind-release {
+.lineage-box.kind-release,
+.lineage-box.kind-upload {
   fill: var(--surface-2);
 }
 .lineage-box.kind-run,
@@ -1505,7 +1506,8 @@ label.check {
   color: var(--accent);
 }
 .eval-choice .tag.relation-same_project,
-.eval-choice .tag.relation-other_project {
+.eval-choice .tag.relation-other_project,
+.eval-choice .tag.relation-uploaded {
   border-color: var(--warn);
   color: var(--warn);
 }

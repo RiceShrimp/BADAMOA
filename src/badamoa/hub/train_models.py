@@ -204,7 +204,7 @@ class RunFile(Base):
 
 
 class ModelVersion(Base):
-    """One trained model. Versions of the same ``name`` form a family; an alias marks one of them."""
+    """One trained model (by a run here, or uploaded). Versions of one ``name`` form a family; an alias marks one."""
 
     __tablename__ = "model_versions"
     __table_args__ = (UniqueConstraint("project_id", "name", "version"),)
@@ -231,6 +231,9 @@ class ModelVersion(Base):
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     class_metrics: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     note: Mapped[str] = mapped_column(Text, default="")
+    # Where the weights came from: {} for a run of this Hub, {"kind": "upload", "file_name", "yaml", "ultralytics",
+    # …} for weights trained elsewhere and uploaded with their classes (``model_upload``).
+    source: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

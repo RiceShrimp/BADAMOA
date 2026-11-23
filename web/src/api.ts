@@ -70,6 +70,32 @@ export async function apiUpload<T>(path: string, file: Blob, contentType = "appl
   return (await resp.json()) as T;
 }
 
+/** Send a multipart form (several files with fields), reporting how much of it went up: big uploads take minutes. */
+export function apiForm<T>(path: string, form: FormData, onProgress?: (sent: number, total: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api${path}`);
+    const token = getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (onProgress) xhr.upload.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : 0);
+    xhr.onload = () => {
+      let data: unknown = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        /* non-JSON body */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else {
+        const detail = (data as { detail?: unknown } | null)?.detail;
+        reject(new ApiError(xhr.status, typeof detail === "string" ? detail : xhr.statusText || `HTTP ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError(0, "Hub에 연결하지 못했습니다. 네트워크를 확인하고 다시 올리세요."));
+    xhr.send(form);
+  });
+}
+
 export interface User {
   id: string;
   username: string;

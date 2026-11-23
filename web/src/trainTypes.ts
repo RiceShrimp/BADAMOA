@@ -293,6 +293,17 @@ export interface ModelInfo {
   created_at: string;
   run: { id: string; name: string } | null;
   release: { id: string; dataset: string; version: string; deleted: boolean } | null;
+  source?: "train" | "upload"; // upload: trained elsewhere and uploaded with its class yaml
+}
+
+/** Where uploaded weights came from (a model's ``upload``). */
+export interface ModelUploadInfo {
+  kind: "upload";
+  file_name: string;
+  yaml: string;
+  ultralytics?: string;
+  weights_classes?: string[]; // the names the weights carried, when the yaml named the classes otherwise
+  renamed?: number;
 }
 
 /** An evaluation, an export or a test run of a model. */
@@ -332,6 +343,7 @@ export interface ModelDetail extends ModelInfo {
   info: Record<string, unknown>;
   export: ExportSummary;
   download_url: string;
+  upload?: ModelUploadInfo | null;
 }
 
 export const METRIC_LABEL: Record<string, string> = {

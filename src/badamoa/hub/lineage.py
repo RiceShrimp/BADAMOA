@@ -194,6 +194,11 @@ def for_model(db: Session, model: ModelVersion) -> dict[str, Any]:
         graph.edge(graph.upstream(run), here)
     elif source := graph.release(model.release_id):
         graph.edge(source, here)
+    elif (model.source or {}).get("kind") == "upload":  # trained elsewhere: the file it came as
+        found = model.source
+        sub = f"ultralytics {found['ultralytics']}" if found.get("ultralytics") else "밖에서 학습한 가중치"
+        label = found.get("file_name") or "가중치"
+        graph.edge(graph.node(f"upload:{model.id}", kind="upload", label=label, sub=sub, href=None), here)
     graph.downstream(model)
     return graph.result(here)
 

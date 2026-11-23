@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { EvalBoardPage, EvalView } from "./EvalView";
 import { ModelCompare } from "./ModelCompare";
 import { ModelOps } from "./ModelOps";
+import { UploadModel } from "./ModelUpload";
 import { ModelsBoard } from "./Boards";
 import { rememberProject } from "./DataBoard";
 import { ProjectPicker, useProject } from "./ProjectPicker";
@@ -75,6 +76,7 @@ function ModelList({
     [projectId, models?.length],
   );
   const [picked, setPicked] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const metricKeys = keyMetrics(projects?.find((p) => p.id === projectId)?.tasks?.[0]);
   const primary = metricKeys[0];
   useEffect(() => {
@@ -99,14 +101,18 @@ function ModelList({
         <div>
           <h1>모델</h1>
           <p className="muted">
-            학습이 끝나면 가중치가 여기에 버전으로 등록됩니다. 두 버전을 체크하면 지표를 나란히 비교하고, "비교 화면"에서 다른 프로젝트의
-            모델까지 더해 6개까지 비교합니다.
+            학습이 끝나면 가중치가 여기에 버전으로 등록됩니다. 밖에서 학습한 가중치는 "모델 올리기"로 클래스 yaml과 함께 올립니다. 두
+            버전을 체크하면 지표를 나란히 비교하고, "비교 화면"에서 다른 프로젝트의 모델까지 더해 6개까지 비교합니다.
           </p>
         </div>
         <div className="head-actions">
           <ProjectPicker projects={projects} projectId={projectId} onChange={onProject} />
+          <button className="btn" onClick={() => setUploading(true)} disabled={!projectId}>
+            <Icon name="upload" size={14} /> 모델 올리기
+          </button>
         </div>
       </div>
+      {uploading && <UploadModel projects={projects} projectId={projectId} onClose={() => setUploading(false)} />}
 
       <div className="stats three metrics">
         <Stat icon="box" label="모델 버전" value={models?.length ?? 0} sub={`모델 ${families}종`} />
@@ -172,7 +178,8 @@ function ModelList({
                     "찾는 모델이 없습니다."
                   ) : (
                     <>
-                      아직 등록된 모델이 없습니다. <a href="#/training">학습</a>을 실행하면 끝날 때 자동으로 등록됩니다.
+                      아직 등록된 모델이 없습니다. <a href="#/training">학습</a>을 실행하면 끝날 때 자동으로 등록되고, 밖에서 학습한
+                      가중치는 "모델 올리기"로 올립니다.
                     </>
                   )}
                 </td>
@@ -209,7 +216,17 @@ function ModelList({
                   </td>
                 ))}
                 <td className="num right">{bytesLabel(m.bytes)}</td>
-                <td>{m.release ? `${m.release.dataset} ${m.release.version}` : <span className="muted">–</span>}</td>
+                <td>
+                  {m.release ? (
+                    `${m.release.dataset} ${m.release.version}`
+                  ) : m.source === "upload" ? (
+                    <span className="tag" title="밖에서 학습해 올린 가중치">
+                      올린 모델
+                    </span>
+                  ) : (
+                    <span className="muted">–</span>
+                  )}
+                </td>
                 <td className="muted right">{timeAgo(m.created_at)}</td>
               </tr>
             ))}
@@ -465,7 +482,13 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
             </button>
           </h1>
           <p className="muted">
-            {model.arch} · {taskLabel(model.task)} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)} 등록
+            {model.source === "upload" && (
+              <span className="tag" title="밖에서 학습해 클래스 yaml과 함께 올린 가중치">
+                올린 모델
+              </span>
+            )}{" "}
+            {model.arch} · {taskLabel(model.task)} · 클래스 {model.class_count}개 · 입력 {model.imgsz}px · {timeAgo(model.created_at)}{" "}
+            {model.source === "upload" ? "올림" : "등록"}
           </p>
         </div>
         <div className="head-actions">
@@ -511,11 +534,17 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
       />
       {failure && <div className="error">{failure}</div>}
 
-      <div className="stats metrics">
-        {metricKeys.map((k) => (
-          <Stat key={k} icon="chart" label={METRIC_LABEL[k]} value={metric(model.metrics[k])} sub="검증 데이터 기준" />
-        ))}
-      </div>
+      {model.source === "upload" && Object.keys(model.metrics).length === 0 ? (
+        <div className="notice">
+          올린 모델은 여기서 잰 지표가 없습니다. 아래 "평가"로 이 프로젝트의 데이터셋 버전에서 재면, 평가 결과와 비교 화면에 나옵니다.
+        </div>
+      ) : (
+        <div className="stats metrics">
+          {metricKeys.map((k) => (
+            <Stat key={k} icon="chart" label={METRIC_LABEL[k]} value={metric(model.metrics[k])} sub="검증 데이터 기준" />
+          ))}
+        </div>
+      )}
 
       <ModelOps model={model} />
 
@@ -523,6 +552,30 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
         <h3>계보</h3>
         <LineageGraph path={`/models/${model.id}/lineage`} />
         <dl className="kv compact">
+          {model.upload && (
+            <>
+              <dt>올린 파일</dt>
+              <dd className="small">
+                {model.upload.file_name} · 클래스 {model.upload.yaml || "yaml"}
+                {model.upload.ultralytics ? ` · ultralytics ${model.upload.ultralytics}로 저장된 가중치` : ""}
+              </dd>
+              {(model.upload.renamed ?? 0) > 0 && (
+                <>
+                  <dt>클래스 이름</dt>
+                  <dd className="small">
+                    가중치에 적힌 이름 {model.upload.renamed}개를 yaml의 이름으로 씁니다 (예:{" "}
+                    {model.upload.weights_classes
+                      ?.map((w, i) => [w, model.classes[i]] as const)
+                      .filter(([w, c]) => w !== c)
+                      .slice(0, 3)
+                      .map(([w, c]) => `${w} → ${c}`)
+                      .join(", ")}
+                    )
+                  </dd>
+                </>
+              )}
+            </>
+          )}
           <dt>sha256</dt>
           <dd className="mono small">{model.sha256}</dd>
           {info.ultralytics && (

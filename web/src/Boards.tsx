@@ -1,7 +1,9 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { AliasChip } from "./Annotate";
 import { TaskTags, rememberProject } from "./DataBoard";
+import { UploadModel } from "./ModelUpload";
 import { type Order, OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
+import { useProject } from "./ProjectPicker";
 import { api } from "./api";
 import { METRIC_LABEL, STAGE_LABEL, metric } from "./trainTypes";
 import { Badge, Icon, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
@@ -66,16 +68,27 @@ export function useBoardFilter<T>(cards: T[] | null | undefined, projectOf: (car
 const cardProject = (card: { project: BoardProject }) => card.project;
 const cardId = (card: { project: BoardProject }) => card.project.id;
 
-function BoardHead({ title, order, children }: { title: string; order?: Order<unknown>; children: ReactNode }) {
+function BoardHead({
+  title,
+  order,
+  actions,
+  children,
+}: {
+  title: string;
+  order?: Order<unknown>;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <div className="page-head">
       <div>
         <h1>{title}</h1>
         <p className="muted">{children}</p>
       </div>
-      {order && (
+      {(order || actions) && (
         <div className="head-actions">
-          <OrderReset order={order} />
+          {order && <OrderReset order={order} />}
+          {actions}
         </div>
       )}
     </div>
@@ -333,16 +346,28 @@ interface ModelsBoardInfo {
 /** 모델's first screen: each project's models, the ones with an alias (SOTA, production …) first. */
 export function ModelsBoard() {
   const { data: board, error } = usePolling(() => api<ModelsBoardInfo>("/boards/models"), 30000);
+  const { projects } = useProject();
+  const [uploading, setUploading] = useState(false);
   const order = useOrder("models.projects", board?.projects, cardId);
   const { shown, tools } = useBoardFilter(board ? order.ordered : null, cardProject);
   if (error && !board) return <div className="error">{error}</div>;
   const t = board?.totals;
   return (
     <>
-      <BoardHead title="모델" order={order as Order<unknown>}>
+      <BoardHead
+        title="모델"
+        order={order as Order<unknown>}
+        actions={
+          <button className="btn" onClick={() => setUploading(true)} disabled={!projects?.length}>
+            <Icon name="upload" size={14} /> 모델 올리기
+          </button>
+        }
+      >
         프로젝트별로 SOTA · production 같은 별칭이 붙은 모델과 가장 좋은 모델을 봅니다. 프로젝트를 누르면 모델 목록에서 비교 · 평가 ·
-        내보내기를 합니다. 프로젝트 카드는 끌어서 순서를 바꿀 수 있습니다.
+        내보내기를 합니다. 밖에서 학습한 가중치는 "모델 올리기"로 클래스 yaml과 함께 올립니다. 프로젝트 카드는 끌어서 순서를 바꿀 수
+        있습니다.
       </BoardHead>
+      {uploading && <UploadModel projects={projects} onClose={() => setUploading(false)} />}
       <div className="stats metrics">
         <Stat icon="box" label="모델 버전" value={t?.models ?? "–"} sub={`모델 ${t?.families ?? 0}종`} />
         <Stat icon="check" label="별칭 붙은 버전" value={t?.aliased ?? "–"} sub="SOTA · production 등" />

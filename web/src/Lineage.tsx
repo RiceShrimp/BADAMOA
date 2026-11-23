@@ -3,7 +3,7 @@ import { usePolling } from "./ui";
 
 interface LineageNode {
   id: string;
-  kind: "release" | "run" | "model" | "eval" | "export" | "predict" | "sweep";
+  kind: "release" | "run" | "model" | "eval" | "export" | "predict" | "sweep" | "upload";
   label: string;
   sub: string;
   href: string | null;
@@ -25,6 +25,7 @@ const KIND_LABEL: Record<LineageNode["kind"], string> = {
   export: "내보내기",
   predict: "테스트",
   sweep: "탐색",
+  upload: "올린 가중치",
 };
 
 const W = 196;

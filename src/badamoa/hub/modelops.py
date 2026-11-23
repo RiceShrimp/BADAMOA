@@ -185,7 +185,10 @@ def _start(
             "environment": env,
             "params": params,
             # How the model was trained (architecture, image size …): the code needs it to rebuild the network.
-            "train_params": {k: v for k, v in (run.config if run else {}).items() if k in declared},
+            # Uploaded weights have no run: the image size read from them.
+            "train_params": {k: v for k, v in run.config.items() if k in declared}
+            if run
+            else ({"imgsz": model.imgsz} if model.imgsz and "imgsz" in declared else {}),
             "classes": model.classes or [],
             "weights": {"blob": model.blob, "file_name": model.file_name or "best.pt"},
             **(extra or {}),
@@ -382,6 +385,14 @@ def _trained_on(db: Session, model: ModelVersion, dataset: Dataset, target: Rele
     it (a model of other data counts more mistakes that are its own, not the labels')."""
     from .catalog_models import Project
 
+    if (model.source or {}).get("kind") == "upload":
+        return {
+            "relation": "uploaded",
+            "trained": {"dataset": "", "version": "", "project": ""},
+            "warning": "밖에서 학습해 올린 모델입니다. 클래스 이름은 같아도 무엇을 그 클래스로 라벨했는지나 "
+            "촬영 환경이 다르면, 모델이 더 찾거나 놓친 것이 라벨의 잘못이 아니라 모델의 잘못일 수 있어 "
+            "미라벨 · 오라벨이 실제보다 많이 나옵니다. 걸린 이미지를 직접 보고 판단하세요.",
+        }
     run_release = db.get(Release, model.release_id) if model.release_id else None
     run_dataset = db.get(Dataset, run_release.dataset_id) if run_release else None
     project = db.get(Project, run_dataset.project_id) if run_dataset else None
@@ -411,7 +422,7 @@ def _trained_on(db: Session, model: ModelVersion, dataset: Dataset, target: Rele
     }
 
 
-RELATION_ORDER = ("same_version", "same_dataset", "same_project", "other_project")
+RELATION_ORDER = ("same_version", "same_dataset", "same_project", "other_project", "uploaded")
 
 
 def eval_choices(db: Session, release: Release) -> dict[str, Any]:
@@ -622,8 +633,33 @@ def add_file(
     return {"name": name}
 
 
+def _named_as_model(result: dict[str, Any], classes: list[str]) -> dict[str, Any]:
+    """Per-class results named by the model's classes: uploaded weights may carry other names than the yaml that
+    came with them, and the code reports the weights' own."""
+
+    def renamed(rows: Any) -> Any:
+        if not isinstance(rows, list):
+            return rows
+        out = []
+        for row in rows:
+            n = row.get("id") if isinstance(row, dict) else None
+            out.append({**row, "name": classes[n]} if isinstance(n, int) and 0 <= n < len(classes) else row)
+        return out
+
+    found = {**result, "classes": renamed(result.get("classes"))} if "classes" in result else dict(result)
+    splits = found.get("splits")
+    if isinstance(splits, dict):
+        found["splits"] = {
+            k: ({**v, "classes": renamed(v.get("classes"))} if isinstance(v, dict) and "classes" in v else v)
+            for k, v in splits.items()
+        }
+    return found
+
+
 def finish(db: Session, node: Node, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
-    op, _ = _running(db, node, job_id)
+    op, model = _running(db, node, job_id)
+    if (model.source or {}).get("renamed") and op.kind == "eval":
+        result = _named_as_model(result, list(model.classes or []))
     predictions = result.get("predictions")
     if isinstance(predictions, list):
         result = {**result, "predictions": predictions[:MAX_RESULT_ITEMS]}

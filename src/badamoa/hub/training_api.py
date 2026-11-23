@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -19,7 +20,7 @@ from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import TrainFinish, TrainReport
 
-from . import catalog, lineage, modelops, node_data, services, sweeps, training, transfers
+from . import catalog, lineage, model_upload, modelops, node_data, services, sweeps, training, transfers
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -332,6 +333,88 @@ def list_models(
 ) -> list[dict[str, Any]]:
     """Model versions; ``name`` and ``alias`` together find the version an alias points at."""
     return training.list_models(db, hub.settings, project_id, tag=tag, q=q, name=name, alias=alias)
+
+
+@router.post("/projects/{project_id}/models/upload")
+async def upload_model(project_id: str, request: Request, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """A model trained elsewhere (multipart): ``weights`` the Ultralytics YOLO ``.pt``, ``data`` the YOLO data yaml with
+    its class names; optional ``name`` (the file's), ``task`` (the checkpoint's), ``note``, ``imgsz``. The class counts
+    of the two must agree, else nothing is kept."""
+    token = bearer_token(request)
+    if int(request.headers.get("content-length") or 0) > MAX_WEIGHTS_BYTES + 2 * model_upload.MAX_YAML_BYTES:
+        raise HTTPException(status_code=413, detail="가중치 파일이 너무 큽니다.")
+
+    def who() -> None:
+        with hub.db.session() as db:
+            if services.authenticate(db, token) is None:
+                raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+            catalog.get_project(db, project_id)
+
+    await anyio.to_thread.run_sync(who)  # before reading a body that may be gigabytes
+    async with request.form(max_files=2, max_fields=10) as form:
+        weights, data = form.get("weights"), form.get("data")
+        if not hasattr(weights, "file") or not getattr(weights, "filename", ""):
+            raise HTTPException(status_code=400, detail="가중치 파일(.pt)을 올리세요.")
+        if not hasattr(data, "file") or not getattr(data, "filename", ""):
+            raise HTTPException(
+                status_code=400, detail="클래스 정보 yaml을 같이 올리세요 (YOLO 데이터셋의 data.yaml과 같은 names: 형식)."
+            )
+        if not str(weights.filename).lower().endswith((".pt", ".pth")):
+            raise HTTPException(status_code=400, detail="가중치는 Ultralytics YOLO의 .pt 파일이어야 합니다.")
+        fields = {k: str(form.get(k) or "").strip() for k in ("name", "task", "note", "imgsz")}
+        yaml_bytes = await data.read(model_upload.MAX_YAML_BYTES + 1)
+        file_name, yaml_name = str(weights.filename), str(data.filename)
+
+        def work() -> dict[str, Any]:
+            if len(yaml_bytes) > model_upload.MAX_YAML_BYTES:
+                raise services.ServiceError(400, "yaml 파일이 너무 큽니다.")
+            try:
+                text = yaml_bytes.decode("utf-8-sig")
+            except UnicodeDecodeError as e:
+                raise services.ServiceError(400, "yaml을 UTF-8로 읽을 수 없습니다.") from e
+            classes = model_upload.read_yaml(text)
+            pt = model_upload.read_checkpoint(weights.file)
+            task = model_upload.check(pt, classes, fields["task"])
+            try:
+                imgsz = int(fields["imgsz"] or 0)
+            except ValueError as e:
+                raise services.ServiceError(400, "이미지 크기는 숫자로 적으세요.") from e
+            incoming = hub.settings.storage_dir / "incoming"
+            incoming.mkdir(parents=True, exist_ok=True)
+            handle, temp = tempfile.mkstemp(dir=incoming, suffix=".part")
+            try:
+                weights.file.seek(0)
+                with os.fdopen(handle, "wb") as out:
+                    shutil.copyfileobj(weights.file, out, _CHUNK)
+                storage = catalog.storage_for(str(hub.settings.storage_dir))
+                with hub.db.session() as db:
+                    user = services.authenticate(db, token)
+                    if user is None:
+                        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+                    model = model_upload.register(
+                        db, user, storage, project_id, Path(temp), pt, classes, task,
+                        name=fields["name"], file_name=file_name, yaml_name=yaml_name, note=fields["note"], imgsz=imgsz,
+                        via="ui",
+                    )
+                    db.commit()
+                    view = training.model_view(db, hub.settings, model, detail=True)
+                    view["actions"] = modelops.actions(db, model)
+                    return view
+            finally:
+                Path(temp).unlink(missing_ok=True)
+
+        return await anyio.to_thread.run_sync(work)
+
+
+@router.get("/model-upload/sample")
+def model_upload_sample(kind: str = "example") -> Response:
+    """A class yaml to start from (no sign-in: it is a template, linked for download)."""
+    file_name, text = model_upload.sample_yaml(kind)
+    return Response(
+        text.encode("utf-8"),
+        media_type="application/x-yaml; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(file_name)}"},
+    )
 
 
 @router.get("/model-aliases")

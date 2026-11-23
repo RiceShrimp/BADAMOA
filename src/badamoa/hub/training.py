@@ -1250,8 +1250,11 @@ def model_view(
         "created_at": iso(model.created_at),
         "run": {"id": run.id, "name": run.name} if run and run.deleted_at is None else None,
         "release": source,
+        # "upload": trained elsewhere and uploaded with its classes (``model_upload``); "train": a run of this Hub
+        "source": (model.source or {}).get("kind") or "train",
     }
     if detail:
+        view["upload"] = dict(model.source or {}) if view["source"] == "upload" else None
         view["classes"] = model.classes or []
         view["class_metrics"] = model.class_metrics or []
         view["file_name"] = model.file_name
