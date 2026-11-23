@@ -36,7 +36,8 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     group: "Build",
     hint: "데이터",
     items: [
-      { label: "샘플 라이브러리", icon: "images", phase: 2 },
+      // every image of every dataset in one place, found by what is in it (text · similar image), P2
+      { label: "이미지 검색", icon: "images", phase: 2 },
       { label: "데이터셋", icon: "database", page: "datasets" },
     ],
   },
