@@ -3,7 +3,7 @@ import { api } from "./api";
 import { bytesLabel } from "./catalogTypes";
 import "./storage.css";
 import { DockerMoveDialog } from "./DiskAlerts";
-import { Badge, timeAgo, usePolling } from "./ui";
+import { Badge, Modal, timeAgo, usePolling } from "./ui";
 
 /** One thing BADAMOA keeps on a server: an environment, an image, a weights file, a folder. */
 interface StorageItem {
@@ -195,11 +195,95 @@ function whyNotEmpty(k: StorageKind, notUsed: number, canClean: boolean, cleanin
   return undefined;
 }
 
+/** How an item is named to the node when removing it (Docker images go by name). */
+function itemKey(kind: Kind, item: StorageItem): string {
+  return kind === "containers" ? (item.image ?? item.id) : item.id;
+}
+
+/** 비우기 of a kind with items: each listed with a box, those no job uses ticked; the admin unticks what stays. */
+function EmptyDialog({ k, onClose, onRemove }: { k: StorageKind; onClose: () => void; onRemove: (items: string[]) => void }) {
+  const items = k.items ?? [];
+  const free = items.filter((i) => !i.in_use);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(free.map((i) => itemKey(k.kind, i))));
+  const chosen = free.filter((i) => picked.has(itemKey(k.kind, i)));
+  const bytes = chosen.reduce((sum, i) => sum + i.bytes, 0);
+  const toggle = (key: string, on: boolean) =>
+    setPicked((was) => {
+      const next = new Set(was);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  // what happens after, without the "remove all?" question the old confirm asked
+  const after = KIND[k.kind].empty.replace(/^모두 지울까요\?\s*/, "");
+  return (
+    <Modal title={`${KIND[k.kind].name} 비우기`} onClose={onClose}>
+      <p className="muted small empty-pick-about">
+        지울 것을 고르세요. {after}
+        {free.length < items.length ? " 작업이 쓰는 것은 고를 수 없습니다." : ""}
+      </p>
+      <div className="empty-pick-bar small">
+        <button
+          type="button"
+          className="link small"
+          disabled={chosen.length === free.length}
+          onClick={() => setPicked(new Set(free.map((i) => itemKey(k.kind, i))))}
+        >
+          모두 고르기
+        </button>
+        <button type="button" className="link small" disabled={chosen.length === 0} onClick={() => setPicked(new Set())}>
+          모두 빼기
+        </button>
+        <span className="spacer" />
+        <span className="muted">
+          {chosen.length}개 고름 · {bytesLabel(bytes)}
+        </span>
+      </div>
+      <ul className="empty-pick">
+        {items.map((item) => {
+          const key = itemKey(k.kind, item);
+          const where = itemPath(k, item);
+          return (
+            <li key={key}>
+              <label className={`empty-pick-item ${item.in_use ? "in-use" : ""}`} title={where || undefined}>
+                <input
+                  type="checkbox"
+                  checked={!item.in_use && picked.has(key)}
+                  disabled={Boolean(item.in_use)}
+                  onChange={(e) => toggle(key, e.target.checked)}
+                />
+                <span className="empty-pick-text">
+                  <strong>{itemName(k.kind, item)}</strong>
+                  <span className="muted small">{itemNote(k.kind, item)}</span>
+                </span>
+                {item.in_use ? (
+                  <Badge kind="running">작업이 쓰는 중</Badge>
+                ) : (
+                  <span className="storage-size small">{bytesLabel(item.bytes)}</span>
+                )}
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="modal-actions">
+        <button type="button" onClick={onClose}>
+          취소
+        </button>
+        <button type="button" className="danger" disabled={chosen.length === 0} onClick={() => onRemove(chosen.map((i) => itemKey(k.kind, i)))}>
+          {chosen.length ? `${chosen.length}개 지우기 · ${bytesLabel(bytes)}` : "지우기"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 /** What BADAMOA keeps on a server, by kind, with sizes against the disk's free space; admins remove items. */
 export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: boolean }) {
   const { data, refresh } = usePolling(() => api<StorageInfo>(`/nodes/${nodeId}/storage`), 15000, [nodeId]);
   const [open, setOpen] = useState<Kind[]>([]); // the kinds whose items are listed
   const [dockerMove, setDockerMove] = useState(false);
+  const [emptying, setEmptying] = useState<Kind | null>(null); // the kind whose 비우기 picker is open
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!data) return null;
@@ -219,9 +303,14 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
   const removeOne = (k: StorageKind, item: StorageItem) => {
     const name = itemName(k.kind, item);
     if (!window.confirm(`${KIND[k.kind].name} '${name}'(${bytesLabel(item.bytes)})을(를) 이 서버에서 지울까요?`)) return;
-    void post({ kind: k.kind, items: [k.kind === "containers" ? (item.image ?? item.id) : item.id] });
+    void post({ kind: k.kind, items: [itemKey(k.kind, item)] });
   };
   const empty = (k: StorageKind) => {
+    // a kind with items: pick what goes in a dialog; the rest (uv's cache) is one question
+    if (k.items && k.items.length > 0) {
+      setEmptying(k.kind);
+      return;
+    }
     const what = k.items ? `${k.items.length}개 · ${bytesLabel(k.bytes)}` : bytesLabel(k.bytes);
     const ask =
       k.kind === "uv"
@@ -324,7 +413,11 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                       {expandable ? <span className="storage-caret">{shown ? "▾" : "▸"}</span> : <span className="storage-caret" />}
                       <i className={`swatch kind-${k.kind}`} />
                       <span>{KIND[k.kind].name}</span>
-                      {expandable && <span className="muted">{items.length}개 {shown ? "" : "보기"}</span>}
+                      {expandable && (
+                        <span className="storage-count">
+                          {items.length}개{shown ? " 접기" : " 보기"}
+                        </span>
+                      )}
                     </button>
                     <span className="muted small storage-about" title={KIND[k.kind].about}>
                       {KIND[k.kind].about}
@@ -340,7 +433,10 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                       </button>
                     ) : isAdmin && k.removable ? (
                       // a disabled button shows no tooltip: the reason sits on what holds it
-                      <span className="btn-wrap" title={whyNotEmpty(k, free_.length, data.can_clean, cleaning)}>
+                      <span
+                        className="btn-wrap"
+                        title={whyNotEmpty(k, free_.length, data.can_clean, cleaning) ?? (expandable ? "지울 것을 골라 지웁니다" : undefined)}
+                      >
                       <button
                         type="button"
                         className="small"
@@ -423,6 +519,20 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
         </p>
       ) : null}
       {dockerMove && <DockerMoveDialog nodeId={nodeId} suggest="" onClose={() => setDockerMove(false)} />}
+      {emptying &&
+        (() => {
+          const k = data.kinds.find((x) => x.kind === emptying);
+          return k ? (
+            <EmptyDialog
+              k={k}
+              onClose={() => setEmptying(null)}
+              onRemove={(items) => {
+                setEmptying(null);
+                void post({ kind: k.kind, items });
+              }}
+            />
+          ) : null;
+        })()}
     </section>
   );
 }

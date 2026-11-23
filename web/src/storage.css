@@ -195,3 +195,70 @@
 .btn-wrap button:disabled {
   pointer-events: none;
 }
+
+/* "N개 보기": the kind's items open below (in the accent, so it reads as something to click) */
+.storage-name .storage-count {
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 12.5px;
+}
+.storage-name:hover .storage-count {
+  text-decoration: underline;
+}
+
+/* 비우기 → pick what goes (EmptyDialog) */
+.empty-pick-about {
+  margin: 0 0 10px;
+}
+.empty-pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.empty-pick {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+}
+.empty-pick li + li {
+  border-top: 1px solid var(--border);
+}
+.empty-pick-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.empty-pick-item:hover {
+  background: var(--surface-2);
+}
+.empty-pick-item input {
+  margin: 0;
+}
+.empty-pick-item.in-use {
+  cursor: default;
+}
+.empty-pick-item.in-use .empty-pick-text {
+  opacity: 0.6;
+}
+.empty-pick-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.empty-pick-text > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empty-pick-text > .muted {
+  overflow-wrap: anywhere; /* the whole package list: it tells environments apart */
+}
