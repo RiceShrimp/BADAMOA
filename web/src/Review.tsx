@@ -126,7 +126,7 @@ const GROUPS: { id: Rule["group"]; title: string; hint: string }[] = [
 const MODEL: Record<Mistake, { group: Rule["group"]; title: string; hint: string }> = {
   extra: { group: "missing", title: "라벨에 없는 물체", hint: "라벨이 없는 곳에 모델이 확신하는 물체: 빠뜨린 라벨일 수 있음" },
   reclass: { group: "wrong", title: "클래스가 다를 수 있는 라벨", hint: "같은 자리에서 모델은 다른 클래스라고 확신함" },
-  missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "어떤 예측도 닿지 않은 라벨: 없는 물체를 그렸을 수 있음" },
+  missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "라벨은 있는데 어떤 예측도 닿지 않음: 없는 물체를 그렸거나, 모델이 놓친 것(라벨이 맞으면 문제 없음)" },
 };
 
 /** A dataset's newest labels as 검수's screens show them. */

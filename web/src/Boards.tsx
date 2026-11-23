@@ -330,7 +330,7 @@ interface ModelsBoardInfo {
   totals: { models: number; families: number; aliased: number; production: number; projects: number };
 }
 
-/** 모델's first screen: each project's models, the ones with an alias (champion, production …) first. */
+/** 모델's first screen: each project's models, the ones with an alias (SOTA, production …) first. */
 export function ModelsBoard() {
   const { data: board, error } = usePolling(() => api<ModelsBoardInfo>("/boards/models"), 30000);
   const order = useOrder("models.projects", board?.projects, cardId);
@@ -340,12 +340,12 @@ export function ModelsBoard() {
   return (
     <>
       <BoardHead title="모델" order={order as Order<unknown>}>
-        프로젝트별로 champion · production 같은 별칭이 붙은 모델과 가장 좋은 모델을 봅니다. 프로젝트를 누르면 모델 목록에서 비교 · 평가 ·
+        프로젝트별로 SOTA · production 같은 별칭이 붙은 모델과 가장 좋은 모델을 봅니다. 프로젝트를 누르면 모델 목록에서 비교 · 평가 ·
         내보내기를 합니다. 프로젝트 카드는 끌어서 순서를 바꿀 수 있습니다.
       </BoardHead>
       <div className="stats metrics">
         <Stat icon="box" label="모델 버전" value={t?.models ?? "–"} sub={`모델 ${t?.families ?? 0}종`} />
-        <Stat icon="check" label="별칭 붙은 버전" value={t?.aliased ?? "–"} sub="champion · production 등" />
+        <Stat icon="check" label="별칭 붙은 버전" value={t?.aliased ?? "–"} sub="SOTA · production 등" />
         <Stat icon="activity" label="production" value={t?.production ?? "–"} sub="서비스에 쓰는 버전" />
         <Stat icon="database" label="모델 있는 프로젝트" value={t?.projects ?? "–"} sub={`전체 ${board?.projects.length ?? 0}`} />
       </div>

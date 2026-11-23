@@ -78,7 +78,7 @@ def test_training_and_model_boards(hub, release):  # noqa: F811
     failed, job = _train(hub, release, {"fail": True})
     assert job["status"] == "failed"
     model = hub.get(f"/api/runs/{done['id']}").json()["model"]
-    assert hub.post(f"/api/models/{model['id']}/alias", json={"alias": "champion"}).status_code == 200
+    assert hub.post(f"/api/models/{model['id']}/alias", json={"alias": "SOTA"}).status_code == 200
 
     # ---- a run going on: how far, about how long is left, where
     body = {"release_id": release["id"], "template": "dummy", "params": {"epochs": 8, "sleep": 0.4}, "gpus": 0}
@@ -111,7 +111,7 @@ def test_training_and_model_boards(hub, release):  # noqa: F811
     models = hub.get("/api/boards/models").json()
     card = models["projects"][0]
     assert card["project"]["name"] == "주차장" and card["models"] == 2 and card["families"] == 1
-    assert [(m["id"], m["aliases"]) for m in card["aliased"]] == [(model["id"], ["champion"])]
+    assert [(m["id"], m["aliases"]) for m in card["aliased"]] == [(model["id"], ["SOTA"])]
     assert card["aliased"][0]["value"] is not None and card["best"]["value"] >= card["aliased"][0]["value"]
     assert card["latest"]["version"] == 2
     assert models["projects"][1]["project"]["id"] == empty["id"] and models["projects"][1]["latest"] is None
@@ -140,7 +140,7 @@ def test_review_checks_with_models_that_fit(hub, release, tmp_path):  # noqa: F8
     assert hub.get(f"/api/releases/{draft}/eval-models").json()["evaluate"]["id"] == release["id"]
 
     # ---- checked with the model: the 검수 screen names it, with its task and aliases
-    hub.post(f"/api/models/{model['id']}/alias", json={"alias": "champion"})
+    hub.post(f"/api/models/{model['id']}/alias", json={"alias": "SOTA"})
     op = hub.post(f"/api/models/{model['id']}/eval", json={"release_id": release["id"], "split": "val", "gpus": 0}).json()
     pending = hub.get(f"/api/releases/{draft}/qa").json()["pending"]
     assert pending == [] or (pending[0]["id"] == op["id"] and pending[0]["model"]["id"] == model["id"])
@@ -148,7 +148,7 @@ def test_review_checks_with_models_that_fit(hub, release, tmp_path):  # noqa: F8
     summary = hub.get(f"/api/releases/{draft}/qa").json()
     assert summary["pending"] == []
     [used] = summary["evaluations"]
-    assert used["id"] == op["id"] and used["model"]["task"] == "detect" and used["model"]["aliases"] == ["champion"]
+    assert used["id"] == op["id"] and used["model"]["task"] == "detect" and used["model"]["aliases"] == ["SOTA"]
 
     # ---- an evaluation by a model of another task is no check of these labels (one made before evaluations were refused)
     database = sqlite3.connect(hub.hub_home / "hub.db")

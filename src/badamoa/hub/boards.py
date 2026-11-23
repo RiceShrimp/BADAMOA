@@ -7,7 +7,7 @@
                evaluation of a model adds; the most problems first
     training   the runs going on now (how far, about how long is left, node and GPUs) and each
                project's runs: how many, how many failed, the best by the task's metric, the latest
-    models     each project's models: the versions with an alias (champion, production …) and their
+    models     each project's models: the versions with an alias (SOTA, production …) and their
                metric, how many there are, the best and the newest
 
 Everything comes from what the Hub keeps already: nothing is stored for these screens.
@@ -43,7 +43,7 @@ SHOTS = 4  # thumbnails on a card
 QA_ON_BOARD = 20_000  # images: a bigger version whose checks are out of date is checked when it is opened
 RECENT = 4  # runs listed on a project's card
 TREND = 12  # finished runs drawn on a project's card, oldest first
-ALIAS_ORDER = ("production", "champion", "staging", "challenger")
+ALIAS_ORDER = ("production", "SOTA", "staging", "challenger")
 SHOWN_ALIASED = 4
 
 

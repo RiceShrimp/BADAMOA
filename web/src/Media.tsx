@@ -431,7 +431,15 @@ function TableView({
             </label>
             <label className="inline">
               확신도 ≥ {minScore.toFixed(2)}
-              <input type="range" min={0} max={0.95} step={0.05} value={minScore} onChange={(e) => onView({ minScore: Number(e.target.value) })} />
+              <input
+                type="range"
+                min={0}
+                max={0.99}
+                step={0.01}
+                value={minScore}
+                onChange={(e) => onView({ minScore: Number(e.target.value) })}
+                aria-label="예측 확신도 하한"
+              />
             </label>
           </>
         )}

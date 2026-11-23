@@ -380,7 +380,7 @@ export function classScore(c: ClassMetric): number {
 
 export const KEY_METRICS = ["map50_95", "map50", "precision", "recall"] as const;
 
-export const ALIAS_LABEL: Record<string, string> = { champion: "champion", challenger: "challenger" };
+export const ALIAS_LABEL: Record<string, string> = { SOTA: "SOTA", challenger: "challenger" };
 
 export function metric(value: number | null | undefined, digits = 3): string {
   return value == null || Number.isNaN(value) ? "–" : value.toFixed(digits);

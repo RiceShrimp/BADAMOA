@@ -232,7 +232,7 @@ export function AliasEditor({
           <button className="primary small">붙이기</button>
         </form>
       ) : (
-        <button className="link small" onClick={() => setAdding(true)} title="champion, production처럼 이 버전을 가리키는 이름">
+        <button className="link small" onClick={() => setAdding(true)} title="SOTA, production처럼 이 버전을 가리키는 이름">
           + alias
         </button>
       )}

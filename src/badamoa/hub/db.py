@@ -125,6 +125,45 @@ class Database:
         Base.metadata.create_all(self.engine)
         self._add_missing_columns()
         self._split_autolabel_role()
+        self._sota_alias()
+
+    def _sota_alias(self) -> None:
+        """0.98.0: the alias "champion" is called "SOTA" (the best model so far), as the screens suggest it now.
+        Once: the versions holding it and the pipelines naming it (a gate's alias, a model to evaluate) take the new
+        name, the runs of pipelines too (one waiting at its gate goes on with the new name); a model whose family
+        has a "SOTA" already keeps its "champion"."""
+        import copy
+
+        from .models import HubSetting
+        from .train_models import ModelVersion, Pipeline, PipelineRun
+
+        def renamed_steps(steps: list[Any]) -> list[Any] | None:
+            out, changed = copy.deepcopy(steps or []), False
+            for step in out:
+                if not isinstance(step, dict):
+                    continue
+                for holder in (step.get("config"), (step.get("config") or {}).get("model"), step.get("refs")):
+                    if isinstance(holder, dict) and holder.get("alias") == "champion":
+                        holder["alias"], changed = "SOTA", True
+            return out if changed else None
+
+        key = "migration.sota_alias"
+        with self.session() as s:
+            if s.get(HubSetting, key) is not None:
+                return
+            versions = s.query(ModelVersion).all()
+            taken = {(v.project_id, v.name) for v in versions if "SOTA" in (v.aliases or [])}
+            renamed = 0
+            for v in versions:
+                if "champion" in (v.aliases or []) and (v.project_id, v.name) not in taken:
+                    v.aliases = ["SOTA" if a == "champion" else a for a in v.aliases]
+                    v.alias = v.aliases[0]
+                    renamed += 1
+            for row in [*s.query(Pipeline).all(), *s.query(PipelineRun).all()]:
+                steps = renamed_steps(row.steps)
+                if steps is not None:
+                    row.steps = steps
+            s.add(HubSetting(key=key, value={"done": utcnow().isoformat(), "versions": renamed}))
 
     def _split_autolabel_role(self) -> None:
         """0.54.0: the "학습·오토라벨" role became 학습용 (compute) and 오토라벨용 (autolabel). A server (or an

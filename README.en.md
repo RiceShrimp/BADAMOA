@@ -224,7 +224,7 @@ Flagged images can be fixed on the spot or turned into a **labeling set** handed
 
 - A finished run's weights become a model version.
 
-- Give it aliases such as champion or production, evaluate models on the same data to compare them, export to ONNX or TorchScript, and upload images to test it on the spot.
+- Give it aliases such as SOTA or production, evaluate models on the same data to compare them, export to ONNX or TorchScript, and upload images to test it on the spot.
 
 - Its lineage traces back which data and settings produced it.
 

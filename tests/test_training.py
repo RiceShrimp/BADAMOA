@@ -236,15 +236,15 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     models = hub.get(f"/api/projects/{release['project_id']}/models").json()
     assert [(m["name"], m["version"]) for m in models] == [("street-yolo11n", 2), ("street-yolo11n", 1)]
     v2, v1 = models
-    assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": "champion"}).json()["alias"] == "champion"
-    assert hub.post(f"/api/models/{v2['id']}/alias", json={"alias": "champion"}).json()["alias"] == "champion"
+    assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": "SOTA"}).json()["alias"] == "SOTA"
+    assert hub.post(f"/api/models/{v2['id']}/alias", json={"alias": "SOTA"}).json()["alias"] == "SOTA"
     assert hub.get(f"/api/models/{v1['id']}").json()["alias"] == ""
     for reserved in ("latest", "v3", "two words"):  # version spellings are not aliases
         assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": reserved}).status_code == 400
 
     runs = hub.get(f"/api/projects/{release['project_id']}/runs").json()
     assert [r["name"] for r in runs] == [f"{named}-2", named]
-    assert runs[0]["model"]["alias"] == "champion"
+    assert runs[0]["model"]["alias"] == "SOTA"
     assert hub.delete(f"/api/runs/{run['id']}").status_code == 200
     assert len(hub.get(f"/api/projects/{release['project_id']}/runs").json()) == 1
     assert hub.get(f"/api/models/{v1['id']}").json()["run"] is None  # the model outlives its run
@@ -435,13 +435,13 @@ def test_notes_tags_and_aliases(hub, release):
     other_id = hub.get(f"/api/runs/{second['id']}").json()["model"]["id"]
     described = hub.patch(f"/api/models/{model_id}", json={"note": "야간 데이터 보강 전 기준", "tags": ["기준"]}).json()
     assert (described["note"], described["tags"]) == ("야간 데이터 보강 전 기준", ["기준"])
-    for alias in ("champion", "production", "현장-1"):
+    for alias in ("SOTA", "production", "현장-1"):
         assert hub.post(f"/api/models/{model_id}/alias", json={"alias": alias}).status_code == 200
-    assert hub.get(f"/api/models/{model_id}").json()["aliases"] == ["champion", "production", "현장-1"]
+    assert hub.get(f"/api/models/{model_id}").json()["aliases"] == ["SOTA", "production", "현장-1"]
     moved = hub.post(f"/api/models/{other_id}/alias", json={"alias": "production"}).json()
     assert moved["aliases"] == ["production"]  # one version per alias in a family: it moved
-    assert hub.get(f"/api/models/{model_id}").json()["aliases"] == ["champion", "현장-1"]
-    removed = hub.delete(f"/api/models/{model_id}/alias/champion").json()
+    assert hub.get(f"/api/models/{model_id}").json()["aliases"] == ["SOTA", "현장-1"]
+    removed = hub.delete(f"/api/models/{model_id}/alias/SOTA").json()
     assert removed["aliases"] == ["현장-1"] and removed["alias"] == "현장-1"
     by_alias = hub.get(f"/api/projects/{project}/models", params={"name": moved["name"], "alias": "production"}).json()
     assert [m["id"] for m in by_alias] == [other_id]

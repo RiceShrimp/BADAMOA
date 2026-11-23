@@ -34,7 +34,7 @@ from .services import ServiceError
 from .train_models import ModelVersion, Run, RunFile, RunMetric, Tag, Template
 
 # Offered first in the screen; any other name works too (MLflow aliases are free names).
-SUGGESTED_ALIASES = ("champion", "challenger", "production", "staging")
+SUGGESTED_ALIASES = ("SOTA", "challenger", "production", "staging")
 ALIAS_RE = re.compile(r"^[0-9A-Za-z가-힣][0-9A-Za-z가-힣._-]{0,31}$")
 MAX_ALIASES = 10
 MAX_TAGS = 20

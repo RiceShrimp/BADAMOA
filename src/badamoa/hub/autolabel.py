@@ -44,7 +44,7 @@ from .train_models import ModelJob, ModelVersion
 SINCE = (0, 52, 0)  # node versions from here on run a template's predict in autolabel mode
 RECEIVED_SINCE = (0, 93, 0)  # and from here on over images received from another server (kept in its cache)
 KEEP = 0.25  # predictions below this are dropped
-ALIASES = ("production", "champion")
+ALIASES = ("production", "SOTA")
 
 
 def _names(db: Session, release: Release) -> dict[str, int]:
@@ -90,7 +90,7 @@ def choices(db: Session, set_id: str) -> dict[str, Any]:
 
 def _models(db: Session, project_id: str, release: Release) -> list[dict[str, Any]]:
     """The project's models, each with why it cannot label this release's images ("" when it can), the ones that
-    can and have an alias (production, champion) first, then the best by the task's metric."""
+    can and have an alias (production, SOTA) first, then the best by the task's metric."""
     task = catalog.release_task(db, release)
     names = _names(db, release)
     models = []

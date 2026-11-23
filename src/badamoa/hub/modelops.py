@@ -355,7 +355,7 @@ def places(db: Session, settings: HubSettings, model_id: str, kind: str, release
     return {"kind": kind, "default": default, "nodes": found}
 
 
-ALIAS_ORDER = ("production", "champion", "staging", "challenger")
+ALIAS_ORDER = ("production", "SOTA", "staging", "challenger")
 
 
 def eval_problem(db: Session, model: ModelVersion, release: Release) -> str:

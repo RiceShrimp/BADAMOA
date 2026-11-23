@@ -1677,7 +1677,15 @@ export function ItemViewer({
                   <span className="small">
                     확신도 <strong>{Math.round(minScore * 100)}%</strong> 이상만
                   </span>
-                  <input type="range" min={0} max={0.95} step={0.05} value={minScore} onChange={(e) => pickScore(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={0.99}
+                    step={0.01}
+                    value={minScore}
+                    onChange={(e) => pickScore(Number(e.target.value))}
+                    aria-label="예측 확신도 하한"
+                  />
                 </label>
                 {overlays.map(({ run, style }) => {
                   const missing = missingOf(run);

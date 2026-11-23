@@ -86,7 +86,7 @@ function ModelList({
   const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].slice(-6));
   const families = new Set(models?.map((m) => m.name)).size;
   const best = [...(models ?? [])].sort((a, b) => (b.metrics[primary] ?? 0) - (a.metrics[primary] ?? 0))[0];
-  const champion = models?.find((m) => m.aliases.includes("champion"));
+  const sota = models?.find((m) => m.aliases.includes("SOTA"));
   const project = projects?.find((p) => p.id === projectId);
 
   return (
@@ -118,9 +118,9 @@ function ModelList({
         />
         <Stat
           icon="check"
-          label="champion"
-          value={champion ? `v${champion.version}` : "–"}
-          sub={champion ? champion.name : "아직 지정하지 않음"}
+          label="SOTA"
+          value={sota ? `v${sota.version}` : "–"}
+          sub={sota ? sota.name : "아직 지정하지 않음"}
         />
       </div>
 
@@ -591,7 +591,7 @@ function RenameModel({ model, onClose, onDone }: { model: ModelDetail; onClose: 
         </label>
         <p className="muted small">
           계보 · 학습 · 평가 · 검수 화면은 새 이름으로 보입니다. 같은 프로젝트에 같은 이름의 모델(같은 모델에 같은 번호)이 있으면 바꿀 수
-          없습니다(휴지통 포함). 별칭(champion 등)은 그대로 따라갑니다.
+          없습니다(휴지통 포함). 별칭(SOTA 등)은 그대로 따라갑니다.
         </p>
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">

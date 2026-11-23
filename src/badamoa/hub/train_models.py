@@ -213,7 +213,7 @@ class ModelVersion(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     version: Mapped[int] = mapped_column(Integer)
-    # Names that point at this version within its family, like MLflow's aliases ("champion", "production").
+    # Names that point at this version within its family, like MLflow's aliases ("SOTA", "production").
     # An alias sits on one version of a family at a time; a version can carry several.
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     alias: Mapped[str] = mapped_column(String(32), default="")  # the first of ``aliases``, for older readers

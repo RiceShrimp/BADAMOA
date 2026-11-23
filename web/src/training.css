@@ -135,7 +135,7 @@ td.pick i {
   color: var(--idle);
   vertical-align: middle;
 }
-.alias.champion {
+.alias.SOTA {
   background: var(--ok-soft);
   color: var(--ok);
 }
