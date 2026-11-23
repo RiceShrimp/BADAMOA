@@ -218,6 +218,8 @@ export function ItemViewer({
   const [minScore, setMinScore] = useState<number>(rememberedScore);
   const [showPred, setShowPred] = useState(true);
   const [showFlagged, setShowFlagged] = useState(true); // 검수's frames round the labels it flagged (Q)
+  const [flaggedOff, setFlaggedOff] = useState<Set<number>>(new Set()); // single frames turned off (label indices)
+  const [hoverFlagged, setHoverFlagged] = useState<number | null>(null); // the frame pointed at in the 검수 list
   const [showDiff, setShowDiff] = useState(true); // what the work in progress changed, over the image
 
   // ---- zoom: 1 fits the image; pan is where the zoomed image sits inside its frame (screen pixels)
@@ -338,6 +340,8 @@ export function ItemViewer({
         setFull(detail.image_url ? "loading" : "error");
         setHiddenBoxes(new Set());
         setHoverBox(null);
+        setFlaggedOff(new Set());
+        setHoverFlagged(null);
         setFocusBox(null);
         setRevisionId(detail.revision_id);
         setCompareId(null);
@@ -993,7 +997,8 @@ export function ItemViewer({
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="flagged">
       {indices.map((i, n) => {
         const b = labels[i];
-        if (!b || b.length < 5) return null;
+        if (!b || b.length < 5 || flaggedOff.has(i)) return null;
+        const lit = hoverFlagged === i;
         const box = { x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h };
         const text = `${n + 1} ${className(b[0])}`;
         const width = text.length * font * 0.6 + font * 0.7;
@@ -1010,10 +1015,11 @@ export function ItemViewer({
           }
         }
         placed.push({ x: left, y: top, width });
+        // the one pointed at in the list stands out, the others step back
         return (
-          <g key={i}>
-            <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth="6" vectorEffect="non-scaling-stroke" />
-            <rect {...box} fill="none" stroke="#ffd400" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+          <g key={i} opacity={hoverFlagged != null && !lit ? 0.3 : 1}>
+            <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth={lit ? 9 : 6} vectorEffect="non-scaling-stroke" />
+            <rect {...box} fill="none" stroke="#ffd400" strokeWidth={lit ? 5 : 3} vectorEffect="non-scaling-stroke" />
             <rect x={left} y={top} width={width} height={tall} fill="#ffd400" stroke="rgb(0 0 0 / 0.6)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
             <text x={left + font * 0.35} y={top + font * 0.95} fontSize={font * 0.85} fill="#111" fontWeight="700">
               {text}
@@ -1301,26 +1307,67 @@ export function ItemViewer({
             </div>
             {flagged && flagged.boxes.length > 0 && (
               <>
-                <ol className="qa-labels">
+                <ol
+                  className="qa-labels"
+                  onMouseLeave={() => {
+                    setHoverFlagged(null);
+                    setHoverBox(null);
+                  }}
+                >
                   {flagged.boxes.map((i, n) => {
                     const b = item.revisions.find((r) => r.id === item.revision_id)?.boxes[i];
                     if (!b) return null;
+                    const off = flaggedOff.has(i);
                     return (
-                      <li key={i}>
+                      <li
+                        key={i}
+                        className={`${off ? "off" : ""} ${hoverFlagged === i ? "lit" : ""}`}
+                        onMouseEnter={() => {
+                          // on the image: this frame (and its label) stands out
+                          setHoverFlagged(i);
+                          setHoverBox(i);
+                        }}
+                      >
                         <span className="qa-number">{n + 1}</span>
                         <i className="class-dot" style={{ background: colorOf(b[0]) }} />
                         <strong>{className(b[0])}</strong>
                         {b.length >= 5 && (
-                          <span className="muted">
-                            {" "}
-                            {Math.round(b[3] * w)}×{Math.round(b[4] * h)}px
+                          <span className="muted small qa-where">
+                            {placeOf(b[1], b[2])} · {Math.round(b[3] * w)}×{Math.round(b[4] * h)}
                           </span>
                         )}
+                        <button
+                          className="icon-btn label-eye"
+                          onClick={() =>
+                            setFlaggedOff((was) => {
+                              const next = new Set(was);
+                              if (next.has(i)) next.delete(i);
+                              else next.add(i);
+                              return next;
+                            })
+                          }
+                          aria-pressed={!off}
+                          title={off ? "이 테두리 보이기" : "이 테두리만 끄기"}
+                          aria-label={`검수 ${n + 1} ${off ? "보이기" : "끄기"}`}
+                        >
+                          <Icon name={off ? "eye-off" : "eye"} size={15} />
+                        </button>
                       </li>
                     );
                   })}
                 </ol>
-                <p className="muted small">이미지 위에 같은 번호와 클래스로 노란 테두리를 쳤습니다(이 버전의 라벨을 볼 때).</p>
+                <p className="muted small">
+                  이미지 위에 같은 번호와 클래스로 노란 테두리를 쳤습니다(이 버전의 라벨을 볼 때). 줄에 마우스를 올리면 그 자리가
+                  보이고, 눈으로 하나씩 끕니다.
+                  {flaggedOff.size > 0 && (
+                    <>
+                      {" "}
+                      <button className="link small" onClick={() => setFlaggedOff(new Set())}>
+                        끈 {flaggedOff.size}개 다시 보이기
+                      </button>
+                    </>
+                  )}
+                </p>
               </>
             )}
             {qaCheck && !editing && (
@@ -1670,22 +1717,31 @@ export function ItemViewer({
 
         <section>
           <div className="eyebrow">표시</div>
-          <label className="check">
-            <input type="checkbox" checked={showLabels || editing} disabled={editing} onChange={(e) => setShowLabels(e.target.checked)} /> 라벨{" "}
-            <kbd>L</kbd>
-          </label>
-          <label className="check">
-            <input type="checkbox" checked={showNames} onChange={(e) => setShowNames(e.target.checked)} /> 클래스 이름 <kbd>N</kbd>
-          </label>
-          <label className="check">
-            <input type="checkbox" checked={fill} onChange={(e) => setFill(e.target.checked)} /> 박스 채우기 <kbd>F</kbd>
-          </label>
-          {flagged && flagged.boxes.length > 0 && (
-            <label className="check" title="검수가 걸린 라벨에 두른 노란 테두리와 번호">
-              <input type="checkbox" checked={showFlagged} onChange={(e) => setShowFlagged(e.target.checked)} /> 검수 표시{" "}
-              <kbd>Q</kbd>
+          {/* two even columns, each switch's key at its column's right edge */}
+          <div className="view-toggles">
+            <label className="check">
+              <input type="checkbox" checked={showLabels || editing} disabled={editing} onChange={(e) => setShowLabels(e.target.checked)} />
+              <span>라벨</span>
+              <kbd>L</kbd>
             </label>
-          )}
+            <label className="check">
+              <input type="checkbox" checked={showNames} onChange={(e) => setShowNames(e.target.checked)} />
+              <span>클래스 이름</span>
+              <kbd>N</kbd>
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={fill} onChange={(e) => setFill(e.target.checked)} />
+              <span>박스 채우기</span>
+              <kbd>F</kbd>
+            </label>
+            {flagged && flagged.boxes.length > 0 && (
+              <label className="check" title="검수가 걸린 라벨에 두른 노란 테두리와 번호">
+                <input type="checkbox" checked={showFlagged} onChange={(e) => setShowFlagged(e.target.checked)} />
+                <span>검수 표시</span>
+                <kbd>Q</kbd>
+              </label>
+            )}
+          </div>
           {anyForeign && (
             <label className="check" title="다른 클래스 목록의 라벨에서, 이 버전에 같은 이름의 클래스가 없는 것은 숨깁니다">
               <input type="checkbox" checked={onlyHere} onChange={(e) => setOnlyHere(e.target.checked)} /> 이 버전의 클래스만

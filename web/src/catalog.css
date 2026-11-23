@@ -535,6 +535,28 @@ kbd {
   border: 1px solid var(--border-strong);
   color: var(--muted);
 }
+/* the viewer's 표시 switches: two even columns, keys lined up at each column's right */
+.view-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 18px;
+  margin-bottom: 4px;
+}
+.view-toggles label.check {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  line-height: 20px;
+}
+.view-toggles label.check input {
+  margin: 0;
+  flex: none;
+}
+.view-toggles label.check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .class-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1350,6 +1372,19 @@ select.active-select {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding: 1px 2px;
+  border-radius: 6px;
+}
+.qa-labels li.lit,
+.qa-labels li:hover {
+  background: var(--hover, rgb(127 127 127 / 0.12));
+}
+.qa-labels li.off > :not(.label-eye) {
+  opacity: 0.45;
+}
+.qa-labels .qa-where {
+  margin-left: auto;
+  white-space: nowrap;
 }
 .qa-number {
   display: inline-grid;

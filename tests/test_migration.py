@@ -128,3 +128,36 @@ def test_an_import_does_not_overwrite_a_hub_in_use(client, admin, tmp_path):
     said = []
     migration.import_file(file, used, force=True, log_line=said.append)
     assert any("before-import-" in line for line in said) and list(used.glob("before-import-*/hub.db"))
+
+
+def test_a_new_hubs_first_requests_agree_on_its_id(tmp_path):
+    """A new Hub's first requests ask its id at once (health checks, its own node): one id, no unique-key error."""
+    import threading
+
+    from badamoa.hub.db import Database
+
+    database = Database(f"sqlite:///{(tmp_path / 'hub.db').as_posix()}")
+    database.create_all()
+    start = threading.Barrier(8)
+    ids: list[str] = []
+    errors: list[Exception] = []
+
+    def ask() -> None:
+        try:
+            with database.session() as db:
+                start.wait()
+                found = migration.hub_id(db)
+                time.sleep(0.05)  # still in the transaction while the others insert
+            ids.append(found)
+        except Exception as e:  # noqa: BLE001 - collected for the assert
+            errors.append(e)
+
+    threads = [threading.Thread(target=ask) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert len(set(ids)) == 1
+    with database.session() as db:
+        assert migration.hub_id(db) == ids[0]

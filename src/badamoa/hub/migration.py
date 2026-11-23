@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 
 from . import services
 from .config import HubSettings
-from .db import iso, utcnow
+from .db import insert_new, iso, utcnow
 from .models import HubSetting, Job, User
 from .services import ServiceError
 
@@ -126,6 +126,11 @@ def _save(db: Session) -> None:
 def hub_id(db: Session) -> str:
     """This Hub's identity: the same after an import, so the old Hub can tell its new place answers."""
     row = db.get(HubSetting, ID_KEY)
+    if row is None:
+        # a new Hub's first requests (health checks, its own node) may all get here: the first insert wins and
+        # every one of them answers its id (a plain add failed the others on the unique key)
+        insert_new(db, HubSetting, [{"key": ID_KEY, "value": {"id": uuid.uuid4().hex}}], ["key"])
+        row = db.get(HubSetting, ID_KEY, populate_existing=True)
     if row is None or not (row.value or {}).get("id"):
         value = {"id": uuid.uuid4().hex}
         if row is None:
