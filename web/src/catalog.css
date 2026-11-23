@@ -1882,3 +1882,33 @@ select.active-select {
   background: var(--warn-soft);
   color: var(--warn);
 }
+
+/* 검수: picking several checks */
+.check-multi-hint {
+  margin: 6px 2px 0;
+}
+.check-multi-hint .link {
+  margin-left: 8px;
+}
+
+/* 이미지 보기 · 검수: several checks, each its own part */
+.qa-group + .qa-group {
+  margin-top: 10px;
+}
+.qa-group.several {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.qa-group.several:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+.qa-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.qa-group-head .small {
+  flex: none;
+}

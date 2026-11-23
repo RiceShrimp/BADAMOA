@@ -374,6 +374,7 @@ def list_items(
     reclass_conf: float | None = None,
     missed_iou: float | None = None,
     rules: str = "",  # 검수: the box checks' thresholds, e.g. duplicate:0.9,tiny:5 (the defaults when left out)
+    picks: str = "",  # 검수: several checks at once, e.g. rule:duplicate,model:extra (with suspect for a model's)
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -402,6 +403,7 @@ def list_items(
         classes=picked,
         counting=checks.rule(conf, min_area, reclass_conf, missed_iou),
         at=qa.limits(rules),
+        picks=[p for p in picks.split(",") if p.strip()],
         pred=pred,
     )
 

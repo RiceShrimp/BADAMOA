@@ -150,7 +150,8 @@ def test_a_model_check_counts_as_fiftyone_does():
     """FiftyOne's compute_mistakenness: boxes paired whatever their classes (IoU 0.5, the surest first); an unpaired
     prediction counts only when the model is sure (over 0.95), a pair of other classes only when it is sure of its
     own (each with its own threshold), and a label paired with none when no prediction overlaps it by the IoU asked
-    (0.95 by default: about every unpaired label, as FiftyOne flags them), however small."""
+    (0.01 by default: the model put nothing near it; 0.95 takes about every unpaired label, as FiftyOne), however
+    small."""
     from badamoa.hub.checks import DEFAULT_RULE, judge
 
     rule = {"conf": 0.95, "min_area": 0.001}
@@ -166,11 +167,12 @@ def test_a_model_check_counts_as_fiftyone_does():
     other = [1, 0.5, 0.5, 0.2, 0.2]
     assert judge([other], [0.98], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": [0]}
     assert judge([other], [0.7], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": []}
-    # an imprecise box (IoU 0.39 with the label, too little to pair): the label is not found at 0.95 (the default),
-    # it is at 0.1 (the prediction came near enough); one nothing touches is missed however small, unless a size
-    # cut is asked for (under 0.1% of the image)
-    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], rule)["missed"] == [0]
+    # an imprecise box (IoU 0.39 with the label, too little to pair): the model came near, so the label is not
+    # counted at 0.01 (the default) or 0.1, it is at 0.95; one nothing touches is counted however small, unless a
+    # size cut is asked for (under 0.1% of the image)
+    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], rule)["missed"] == []
     assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], {**rule, "missed_iou": 0.1})["missed"] == []
+    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], {**rule, "missed_iou": 0.95})["missed"] == [0]
     assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], {**rule, "missed_iou": 0.4})["missed"] == [0]
     assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], DEFAULT_RULE)["missed"] == [0]
     assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], rule)["missed"] == []
@@ -299,7 +301,7 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
 
     fiftyone = hub.get(f"/api/releases/{v1}/qa").json()
     # FiftyOne's: no size cut for a label the model did not find (0.95.0)
-    defaults = {"conf": 0.95, "reclass_conf": 0.95, "missed_iou": 0.95, "min_area": 0.0}
+    defaults = {"conf": 0.95, "reclass_conf": 0.95, "missed_iou": 0.01, "min_area": 0.0}
     assert fiftyone["rule"] == {**defaults, "defaults": defaults}
     first = fiftyone["evaluations"][0]
     assert (first["extra"], first["reclass"], first["missed"]) == (0, 0, 0)
@@ -310,7 +312,7 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
     # each card its own threshold: another class's confidence and the IoU a label must be overlapped by
     apart = hub.get(f"/api/releases/{v1}/qa", params={"reclass_conf": 0.3, "missed_iou": 0.2}).json()["rule"]
     assert (apart["conf"], apart["reclass_conf"], apart["missed_iou"]) == (0.95, 0.3, 0.2)
-    assert [v for v, _ in first["levels"]["missed"]] == [0.1, 0.3, 0.5, 0.7, 0.9, 0.95]
+    assert [v for v, _ in first["levels"]["missed"]] == [0.01, 0.1, 0.3, 0.5, 0.7, 0.95]
     found = hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra", "conf": 0.8}).json()
     assert [i["id"] for i in found["items"]] == [item_id] and found["items"][0]["check"]["extra"] == 1
     # the object no label has, framed in 검수 as a rule check's labels are: the model's box, how sure, its class
@@ -392,6 +394,37 @@ def test_a_version_checked_twice_at_once_is_checked_once(hub, tmp_path, settings
     second.join(30)
     database.engine.dispose()
     assert ended == ["labels changed", "labels changed"] and len(calls) == 6  # its 6 images with labels, once
+
+
+def test_several_checks_at_once(hub, tmp_path):  # noqa: F811
+    """검수 with several checks picked: the images any of them found, the ones most found first, each saying what
+    each check found on it; a labeling set of them; a check that is not one is refused."""
+    root = make_yolo(tmp_path / "ds")
+    for name, text in LABELS.items():
+        (root / "labels" / name.split("_")[0] / f"{name}.txt").write_text(text, encoding="utf-8")
+    project = hub.post("/api/projects", json={"name": "여럿"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+    names = {i["id"]: i["file_name"] for i in hub.get(f"/api/releases/{v1}/items", params={"limit": 200}).json()["items"]}
+
+    both = hub.get(f"/api/releases/{v1}/items", params={"picks": "rule:duplicate,rule:tiny,rule:huge"}).json()
+    assert both["total"] == 3
+    marked = {names[i["id"]]: sorted(i["qa_by"]) for i in both["items"]}
+    assert marked == {
+        "train_0000.jpg": ["rule:duplicate"],
+        "train_0004.jpg": ["rule:tiny"],
+        "train_0005.jpg": ["rule:huge"],
+    }
+    first = next(i for i in both["items"] if names[i["id"]] == "train_0000.jpg")
+    assert first["qa_by"]["rule:duplicate"]["boxes"] == [0, 1] and "qa" not in first
+    # an image two of them found comes first
+    two = hub.get(f"/api/releases/{v1}/items", params={"picks": "rule:class_overlap,rule:rare_class,rule:tiny"}).json()
+    assert two["total"] >= 2 and len(two["items"][0]["qa_by"]) >= len(two["items"][-1]["qa_by"])
+    assert hub.get(f"/api/releases/{v1}/items", params={"picks": "rule:nope"}).status_code == 400
+
+    body = {"release_id": v1, "name": "여러 검사", "filter": {"picks": ["rule:duplicate", "rule:tiny"]}, "part_size": 10}
+    made = hub.post("/api/label-sets", json=body)
+    assert made.status_code == 200, made.text
+    assert made.json()["items"] == 2
 
 
 def test_box_checks_count_at_the_thresholds_asked_for(hub, tmp_path):  # noqa: F811

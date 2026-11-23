@@ -122,18 +122,18 @@ def _iou(a: list[float], b: list[float]) -> float:
 
 RULE_KEY = "qa.model"  # what the stored counts were made with (``recount_if_needed``)
 # 1: FiftyOne's (0.89.0); 2: with the values that count at any threshold; 3: no size cut for a label the model
-# did not find (0.95.0); 4: how near the nearest prediction came to each such label, any IoU (0.100.1). A new one
-# counts again
-RULE_VERSION = 4
+# did not find (0.95.0); 4: how near the nearest prediction came to each such label, any IoU (0.100.1); 5: IoU 0.01
+# by default (0.103.0). A new one counts again
+RULE_VERSION = 5
 # FiftyOne's 0.95; every label no prediction touches, however small (FiftyOne has no size cut either). ``min_area``
 # is still taken from an older screen's query
 # ``conf``: how sure the model must be of an object no label has (extra); ``reclass_conf``: of another class on a
 # label (reclass), set apart on 검수 since 0.100.1
-# ``missed_iou``: a label paired with no prediction counts as not found when none overlaps it by this much (0.95:
-# about every unpaired label, as FiftyOne flags them)
-DEFAULT_RULE = {"conf": 0.95, "reclass_conf": 0.95, "missed_iou": 0.95, "min_area": 0.0}
+# ``missed_iou``: a label paired with no prediction counts as not found when none overlaps it by this much (0.01:
+# the model put nothing near it; 0.95 would take about every unpaired label, as FiftyOne flags them)
+DEFAULT_RULE = {"conf": 0.95, "reclass_conf": 0.95, "missed_iou": 0.01, "min_area": 0.0}
 MATCH_IOU = 0.5  # a prediction and a label are one object (FiftyOne's _DETECTION_IOU)
-MISSED_IOU_LEVELS = (0.1, 0.3, 0.5, 0.7, 0.9, 0.95)  # 물체가 없을 수 있는 라벨: the counts beside the one chosen
+MISSED_IOU_LEVELS = (0.01, 0.1, 0.3, 0.5, 0.7, 0.95)  # 물체가 없을 수 있는 라벨: the counts beside the one chosen
 # What 검수 shows the counts at besides the one chosen: how they change with the threshold
 CONF_LEVELS = (0.5, 0.7, 0.8, 0.9, 0.95, 0.99)
 

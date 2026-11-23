@@ -122,6 +122,8 @@ interface EvalChoices {
 
 /** What the grid shows: a rule, or one side of an evaluated model's view. */
 type Pick = { kind: "rule"; id: string } | { kind: "model"; mistake: Mistake };
+/** A picked check as the Hub's ``picks`` take it: rule:duplicate, model:extra. */
+const pickKey = (p: Pick) => (p.kind === "rule" ? `rule:${p.id}` : `model:${p.mistake}`);
 
 const GROUPS: { id: Rule["group"]; title: string; hint: string }[] = [
   { id: "missing", title: "미라벨", hint: "라벨이 빠진 이미지 · 물체" },
@@ -549,7 +551,16 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
       );
     });
   }, [started, summary]);
-  const [pick, setPick] = useState<Pick | null>(null);
+  // The checks picked: one by a click, more with Ctrl (⌘) or Shift held. ``pick``: the first, for what one shows.
+  const [picks, setPicks] = useState<Pick[]>([]);
+  const pick = picks[0] ?? null;
+  const multi = picks.length > 1;
+  const isPicked = (p: Pick) => picks.some((q) => pickKey(q) === pickKey(p));
+  const choose = (p: Pick, e?: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    if (e && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+      setPicks((was) => (was.some((q) => pickKey(q) === pickKey(p)) ? was.filter((q) => pickKey(q) !== pickKey(p)) : [...was, p]));
+    } else setPicks([p]);
+  };
   const { page, setPage, pageSize, setPageSize } = usePaging();
   const listTop = useRef<HTMLDivElement>(null); // the pager above the images: the one under them brings it back
   const [viewing, setViewing] = useState<number | null>(null);
@@ -561,10 +572,10 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   useEffect(() => {
     if (pick || !summary) return;
     const best = [...summary.checks].sort((a, b) => b.images - a.images)[0];
-    if (best && best.images > 0) setPick({ kind: "rule", id: best.id });
+    if (best && best.images > 0) setPicks([{ kind: "rule", id: best.id }]);
   }, [summary, pick]);
   const [showLetBe, setShowLetBe] = useState(false); // the images someone judged right, instead
-  useEffect(() => setShowLetBe(false), [pick, op]);
+  useEffect(() => setShowLetBe(false), [picks, op]);
   // The found images narrowed like the dataset screen's: split, label state, class, site, camera, file name.
   const [filter, setFilter] = useState<ItemFilter>({});
   const [showBoxes, setShowBoxes] = useState(true); // the thumbnails' label boxes
@@ -573,7 +584,15 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const query = useMemo(() => {
     if (!pick) return "";
     const params = new URLSearchParams();
-    if (pick.kind === "rule") {
+    if (multi) {
+      // several checks: the images any of them found (each image once), each marked by what found it
+      params.set("picks", picks.map(pickKey).join(","));
+      if (picks.some((p) => p.kind === "model") && op) {
+        params.set("suspect", op);
+        confQuery(params);
+      }
+      if (rulesParam) params.set("rules", rulesParam);
+    } else if (pick.kind === "rule") {
       params.set("check", pick.id);
       if (ruleLimits[pick.id] != null) params.set("rules", rulesParam);
     }
@@ -582,12 +601,12 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
       params.set("mistake", pick.mistake);
       confQuery(params);
     }
-    if (showLetBe) params.set("let_be", "true");
+    if (showLetBe && !multi) params.set("let_be", "true");
     for (const [key, value] of Object.entries(filter)) {
       if (value) params.set(key, key === "split" && value === "none" ? "" : value);
     }
     return params.toString();
-  }, [pick, op, showLetBe, filter, confs, ruleLimits]);
+  }, [picks, op, showLetBe, filter, confs, ruleLimits]);
   useEffect(() => setPage(0), [query]);
   const { data: items, refresh: refreshItems } = usePolling(
     () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * pageSize}&limit=${pageSize}`) : Promise.resolve(null)),
@@ -601,13 +620,18 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const colorOf = colorFor(classes);
   const task = release.task ?? "detect";
   const evaluation = summary.evaluations.find((e) => e.id === op);
-  const rule = pick?.kind === "rule" ? summary.checks.find((c) => c.id === pick.id) : undefined;
-  const title = rule ? rule.title : pick?.kind === "model" ? MODEL[pick.mistake].title : "";
+  const rule = pick?.kind === "rule" && !multi ? summary.checks.find((c) => c.id === pick.id) : undefined;
+  const titleOf = (p: Pick) => (p.kind === "rule" ? (summary.checks.find((c) => c.id === p.id)?.title ?? p.id) : MODEL[p.mistake].title);
+  const titles: Record<string, string> = Object.fromEntries(picks.map((p) => [pickKey(p), titleOf(p)]));
+  const title = picks.map(titleOf).join(" + ");
+  // several checks: the images more than one found are listed once (100 + 100 with 20 in both: 180)
+  const countOf = (p: Pick) => (p.kind === "rule" ? (summary.checks.find((c) => c.id === p.id)?.images ?? 0) : (evaluation?.[p.mistake] ?? 0));
   // what someone judged right for the check in view: listed apart
-  const letBeCount = rule ? rule.let_be : pick?.kind === "model" && evaluation ? evaluation[`${pick.mistake}_let_be`] : 0;
+  const letBeCount = multi ? 0 : rule ? rule.let_be : pick?.kind === "model" && evaluation ? evaluation[`${pick.mistake}_let_be`] : 0;
   const total = items?.total ?? 0;
+  const overlap = multi && !narrowed && items ? Math.max(0, picks.reduce((n, p) => n + countOf(p), 0) - total) : 0;
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  const card = (key: string, name: string, hint: string, count: number, active: boolean, onClick: () => void) => (
+  const card = (key: string, name: string, hint: string, count: number, active: boolean, onClick: (e: React.MouseEvent) => void) => (
     <button key={key} className={`check-card ${active ? "active" : ""} ${count ? "" : "zero"}`} onClick={onClick} title={hint}>
       <span className="check-count">{count.toLocaleString()}</span>
       <span className="check-body">
@@ -623,7 +647,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const going = summary.pending[0];
   const modelCard = (m: Mistake) => {
     const count = evaluation ? evaluation[m] : null;
-    const active = pick?.kind === "model" && pick.mistake === m;
+    const active = isPicked({ kind: "model", mistake: m });
     const rule = summary.rule;
     if (count != null && rule) {
       const key = CONF_KEY[m];
@@ -653,7 +677,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
       <button
         key={m}
         className={`check-card model-check ${active ? "active" : ""} ${count ? "" : "zero"} ${count == null ? "waiting" : ""}`}
-        onClick={() => (count == null ? !going && setChoosing(true) : setPick({ kind: "model", mistake: m }))}
+        onClick={(e) => (count == null ? !going && setChoosing(true) : choose({ kind: "model", mistake: m }, e))}
         title={MODEL[m].hint}
       >
         <span className="check-count">{count != null ? count.toLocaleString() : <Icon name={going ? "clock" : "box"} size={18} />}</span>
@@ -750,7 +774,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               .map((c) =>
                 c.levels ? (
                   <div key={c.id} className="check-card-wrap">
-                    {card(c.id, c.title, c.hint, c.images, pick?.kind === "rule" && pick.id === c.id, () => setPick({ kind: "rule", id: c.id }))}
+                    {card(c.id, c.title, c.hint, c.images, isPicked({ kind: "rule", id: c.id }), (e) => choose({ kind: "rule", id: c.id }, e))}
                     <button
                       className={`icon-btn card-gear ${c.limit !== c.default ? "moved" : ""}`}
                       onClick={() => setTuning(c.id)}
@@ -761,13 +785,21 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
                     </button>
                   </div>
                 ) : (
-                  card(c.id, c.title, c.hint, c.images, pick?.kind === "rule" && pick.id === c.id, () => setPick({ kind: "rule", id: c.id }))
+                  card(c.id, c.title, c.hint, c.images, isPicked({ kind: "rule", id: c.id }), (e) => choose({ kind: "rule", id: c.id }, e))
                 ),
               )}
             {(Object.keys(MODEL) as Mistake[]).filter((m) => MODEL[m].group === g.id).map(modelCard)}
           </section>
         ))}
       </div>
+      <p className="muted small check-multi-hint">
+        Ctrl(⌘)이나 Shift를 누른 채 카드를 누르면 여러 검사를 함께 봅니다(여러 검사에 걸린 이미지는 한 번만).
+        {multi && (
+          <button className="link small" onClick={() => setPicks(picks.slice(0, 1))}>
+            하나만 보기
+          </button>
+        )}
+      </p>
 
       {pick && (
         <section className="check-results">
@@ -775,7 +807,8 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
             <h2>
               {title}
               {showLetBe && " · 문제 없음으로 둔 것"} <span className="muted">{total.toLocaleString()}장{narrowed ? " (거른 것)" : ""}</span>
-              {pick.kind === "model" && evaluation?.model && (
+              {overlap > 0 && <span className="muted small"> · 여러 검사에 함께 걸린 {overlap.toLocaleString()}장은 한 번만</span>}
+              {picks.some((p) => p.kind === "model") && evaluation?.model && (
                 <span className="muted small model-of">
                   {" "}
                   · {evaluation.model.name} v{evaluation.model.version} 기준
@@ -828,7 +861,13 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
                 </span>
                 <span className="thumb-meta">
                   {item.qa?.note && <span className="tag">{item.qa.note}</span>}
-                  {item.check && pick.kind === "model" && (
+                  {multi &&
+                    Object.keys(item.qa_by ?? {}).map((k) => (
+                      <span key={k} className="tag" title={item.qa_by?.[k]?.note}>
+                        {titles[k] ?? k}
+                      </span>
+                    ))}
+                  {item.check && !multi && pick.kind === "model" && (
                     <span className="tag">
                       {pick.mistake === "extra"
                         ? `라벨에 없음 ${item.check.extra}`
@@ -856,10 +895,11 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           colorOf={colorOf}
           classes={classes}
           task={task}
-          checkOp={pick?.kind === "model" ? op : undefined}
+          checkOp={picks.some((p) => p.kind === "model") ? op : undefined}
           qaTitle={title}
-          qaCheck={pick?.kind === "rule" ? pick.id : pick?.mistake}
-          qaLetBe={showLetBe}
+          qaCheck={multi ? undefined : pick?.kind === "rule" ? pick.id : pick?.mistake}
+          qaTitles={titles}
+          qaLetBe={showLetBe && !multi}
           onSaved={() => {
             void refresh();
             void refreshItems();
@@ -926,7 +966,11 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           release={release}
           filter={{
             ...Object.fromEntries(Object.entries(filter).map(([k, v]) => [k, k === "split" && v === "none" ? "" : v])),
-            ...(pick.kind === "rule" ? { check: pick.id } : { suspect: op, mistake: pick.mistake }),
+            ...(multi
+              ? { picks: picks.map(pickKey), ...(picks.some((p) => p.kind === "model") ? { suspect: op } : {}) }
+              : pick.kind === "rule"
+                ? { check: pick.id }
+                : { suspect: op, mistake: pick.mistake }),
           }}
           filtered={total}
           describe={title}

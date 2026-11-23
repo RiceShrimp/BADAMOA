@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select
+from sqlalchemy import and_, case, func, insert, literal, or_, select
 from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
@@ -1361,8 +1361,11 @@ def list_items(
     classes: list[int] | None = None,
     counting: dict[str, float] | None = None,
     at: dict[str, float] | None = None,
+    picks: list[str] | None = None,
 ) -> dict[str, Any]:
-    """A page of a release's items. ``counting``: the thresholds a model check's findings are taken at
+    """A page of a release's items. ``picks`` (검수, several checks at once): ``rule:<check>`` and ``model:<mistake>``
+    (with ``suspect``): the images any of them found, the ones most of them found first; each image says what each
+    found on it (``qa_by``, as ``qa`` for one). ``counting``: the thresholds a model check's findings are taken at
     (``checks.rule``; FiftyOne's by default). ``pred``: a model run's id (``checks.prediction_runs``): each image
     also carries what that run predicted for it, to lay over the thumbnail.
     ``edited``: only the images the dataset's work in progress changed.
@@ -1400,7 +1403,12 @@ def list_items(
             order = [checks.order_of(mistake).desc(), ReleaseItem.item_id]
     picked = {int(c) for c in classes or []}
     of_class: dict[int, list[int]] = {}
-    if check:
+    chosen = parse_picks(picks or [])
+    if chosen:
+        found_by, hits = picks_condition(db, release, chosen, suspect, counting, at, picked, let_be)
+        query = query.where(found_by)
+        order = [hits.desc(), ReleaseItem.item_id]
+    elif check:
         if check not in qa.CHECKS:
             raise ServiceError(400, "그런 검사가 없습니다.")
         qa.run(db, release)
@@ -1420,7 +1428,7 @@ def list_items(
     elif picked:
         holding = select(RevisionClass.revision_id).where(RevisionClass.class_id.in_(picked))
         query = query.where(ReleaseItem.revision_id.in_(holding))
-    judged = check or (mistake if suspect and mistake in checks.MISTAKES else "")  # whose "문제 없음" counts
+    judged = "" if chosen else check or (mistake if suspect and mistake in checks.MISTAKES else "")  # whose 문제 없음
     if judged:
         kept = checks.let_be(judged, ReleaseItem.item_id, ReleaseItem.revision_id)
         query = query.where(kept if let_be else ~kept)
@@ -1442,7 +1450,20 @@ def list_items(
     fixed = drafts.edited_ids(db, draft, [item.id for _, item in rows]) if draft is not None and rows else set()
     change = drafts.change_counts(db, draft, list(fixed)) if fixed else {}
     in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
-    if check:
+    found_each: dict[str, dict[int, dict[str, Any]]] = {}  # several checks: what each found, by image
+    for kind, key in chosen:
+        ids = [item.id for _, item in rows]
+        if kind == "rule":
+            marks = qa.flagged(db, release.id, key, ids, at)
+            if picked:  # only the labels of the chosen classes are marked
+                mine = qa.of_classes(db, release.id, key, picked, at)
+                marks = {i: {**m, "boxes": mine.get(i, [])} for i, m in marks.items() if i in mine}
+        else:
+            marks = checks.flagged(db, release, suspect, key, ids, counting)
+        found_each[f"{kind}:{key}"] = marks
+    if chosen:
+        found = {}
+    elif check:
         found = qa.flagged(db, release.id, check, [item.id for _, item in rows], at)
     elif suspect and mistake in checks.MISTAKES:  # the labels a model check is on, framed as a rule check's
         found = checks.flagged(db, release, suspect, mistake, [item.id for _, item in rows], counting)
@@ -1484,6 +1505,12 @@ def list_items(
                 **({"set": in_set[item.id]} if item.id in in_set else {}),
                 # flagged by a label check: which labels (indices) and why
                 **({"qa": found[item.id]} if item.id in found else {}),
+                # several checks: the same by each that found something here
+                **(
+                    {"qa_by": {k: marks[item.id] for k, marks in found_each.items() if item.id in marks}}
+                    if found_each
+                    else {}
+                ),
                 # judged right for the check in play ("문제 없음"): by whom, why
                 **({"let_be": kept_as[item.id]} if item.id in kept_as else {}),
                 # what the run asked for (``pred``) predicted for it: labels (light) and scores
@@ -1492,6 +1519,61 @@ def list_items(
             for member, item in rows
         ],
     }
+
+
+def parse_picks(picks: list[str]) -> list[tuple[str, str]]:
+    """검수's checks picked together: ``rule:<check>`` (a label check) or ``model:<mistake>`` (extra, reclass, missed)."""
+    out: list[tuple[str, str]] = []
+    for text in picks:
+        kind, _, key = text.strip().partition(":")
+        if (kind == "rule" and key in qa.CHECKS) or (kind == "model" and key in checks.MISTAKES):
+            if (kind, key) not in out:
+                out.append((kind, key))
+        elif text.strip():
+            raise ServiceError(400, f"그런 검사가 없습니다: {text}")
+    return out
+
+
+def picks_condition(
+    db: Session,
+    release: Release,
+    chosen: list[tuple[str, str]],
+    suspect: str,
+    counting: dict[str, float] | None,
+    at: dict[str, float] | None,
+    classes: set[int],
+    let_be: bool = False,
+) -> tuple[Any, Any]:
+    """SQL over ``ReleaseItem``: an image any of these checks found (what someone judged right for that check left
+    out, or with ``let_be`` only that), and how many of them found it (to list those first). A model's check is the
+    evaluation ``suspect``'s at ``counting``; a box check at ``at``; ``classes``: only findings of these classes."""
+    counting = counting or checks.rule()
+    op = checks.check_of(db, release, suspect) if any(kind == "model" for kind, _ in chosen) else None
+    if any(kind == "rule" for kind, _ in chosen):
+        qa.run(db, release)
+    each = []
+    for kind, key in chosen:
+        if kind == "rule":
+            if key in qa.DEFAULTS and at is not None and at[key] != qa.DEFAULTS[key]:  # a box check at another threshold
+                found = ReleaseItem.item_id.in_(qa.scored_items(release.id, key, at[key]))
+            else:
+                found = ReleaseItem.item_id.in_(
+                    select(QaResult.item_id).where(QaResult.release_id == release.id, QaResult.check == key)
+                )
+            if classes:
+                found = and_(found, ReleaseItem.item_id.in_(list(qa.of_classes(db, release.id, key, classes, at))))
+        else:
+            assert op is not None
+            found = ReleaseItem.item_id.in_(
+                select(ItemPrediction.item_id).where(ItemPrediction.op_id == op.id, checks.over(key, counting))
+            )
+            if classes:
+                mine = checks.mistakes_of_classes(db, release, op.id, key, classes, counting)
+                found = and_(found, ReleaseItem.item_id.in_(list(mine)))
+        kept = checks.let_be(key, ReleaseItem.item_id, ReleaseItem.revision_id)
+        each.append(and_(found, kept if let_be else ~kept))
+    hits = sum((case((cond, 1), else_=0) for cond in each), start=literal(0))
+    return or_(*each), hits
 
 
 def _revision_view(rev: LabelRevision, spaces: dict[str, LabelSpace], with_boxes: bool = False) -> dict[str, Any]:

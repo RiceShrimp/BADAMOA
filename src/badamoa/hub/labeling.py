@@ -86,7 +86,7 @@ def create_set(
     if wanted.get("edited"):  # only the images the work in progress changed
         draft = drafts.fixing(db, release)
         query = query.where(ReleaseItem.item_id.in_(drafts.edited_items(draft))) if draft else query.where(false())
-    if wanted.get("suspect"):  # an evaluation's images it got wrong, the most mistakes first
+    if wanted.get("suspect") and not wanted.get("picks"):  # an evaluation's images it got wrong, the most first
         op = checks.check_of(db, release, str(wanted["suspect"]))
         query = query.join(
             ItemPrediction, and_(ItemPrediction.op_id == op.id, ItemPrediction.item_id == ReleaseItem.item_id)
@@ -96,7 +96,12 @@ def create_set(
             column = getattr(ItemPrediction, wanted["mistake"])
             query = query.where(column > 0)
             order = [column.desc(), ReleaseItem.item_id]
-    if wanted.get("check"):  # a label check's images (검수)
+    chosen = catalog.parse_picks([str(p) for p in wanted.get("picks") or []])
+    if chosen:  # several of 검수's checks at once: the images any of them found
+        found_by, hits = catalog.picks_condition(db, release, chosen, str(wanted.get("suspect") or ""), None, None, set())
+        query = query.where(found_by)
+        order = [hits.desc(), ReleaseItem.item_id]
+    elif wanted.get("check"):  # a label check's images (검수)
         if wanted["check"] not in qa.CHECKS:
             raise ServiceError(400, "그런 검사가 없습니다.")
         qa.run(db, release)

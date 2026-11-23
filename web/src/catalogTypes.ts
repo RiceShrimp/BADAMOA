@@ -102,6 +102,8 @@ export interface GridItem {
   set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
   // flagged by a label check (검수): which labels, why; for 라벨이 없는 물체 the model's boxes and how sure
   qa?: { check: string; boxes: number[]; note: string; predicted?: number[][]; scores?: number[] };
+  // several checks picked (검수): the same by each that found something here, by "rule:<check>" / "model:<mistake>"
+  qa_by?: Record<string, { boxes: number[]; note: string; predicted?: number[][]; scores?: number[] }>;
   let_be?: { note: string; by: string | null; at: string }; // judged right for the check in play ("문제 없음")
 }
 

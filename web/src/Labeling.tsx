@@ -448,7 +448,7 @@ export function NewSetDialog({
   onClose,
 }: {
   release: ReleaseInfo;
-  filter: ItemFilter & { edited?: boolean; suspect?: string; mistake?: string; check?: string };
+  filter: ItemFilter & { edited?: boolean; suspect?: string; mistake?: string; check?: string; picks?: string[] };
   filtered: number;
   describe: string;
   onClose: () => void;
