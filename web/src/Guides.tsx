@@ -35,12 +35,11 @@ interface Hits {
   section: string[];
 }
 
-const REPO = "https://github.com/RiceShrimp/BADAMOA/blob/main/";
 const NO_HITS: Hits = { ranges: [], section: [] };
 // How far below the window's top a heading counts as the one being read (top bar 52px + room).
 const READING_LINE = 140;
 
-/** A heading's anchor as GitHub makes it, so the guides' own links and a link copied here both work. */
+/** A heading's anchor: lower case, punctuation dropped, spaces as hyphens, so the guides' own links and a link copied here both work. */
 function slug(text: string): string {
   return text
     .trim()
@@ -66,7 +65,7 @@ function withoutToc(md: string): string {
   return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
 }
 
-// ---- markdown plugins: GitHub's alert boxes (> [!NOTE]) and heading ids like GitHub's ----
+// ---- markdown plugins: alert boxes (> [!NOTE]) and heading ids ----
 
 interface MdNode {
   type: string;
@@ -79,7 +78,7 @@ interface MdNode {
 
 const ALERTS: Record<string, string> = { NOTE: "참고", TIP: "팁", IMPORTANT: "중요", WARNING: "주의", CAUTION: "조심" };
 
-/** `> [!NOTE]` and its kin become a box with a label, as GitHub shows them. */
+/** `> [!NOTE]` and its kin become a box with a label. */
 function remarkAlerts() {
   const walk = (node: MdNode) => {
     if (node.type === "blockquote") {
@@ -105,7 +104,7 @@ function plainText(node: MdNode): string {
   return node.type === "text" ? (node.value ?? "") : (node.children ?? []).map(plainText).join("");
 }
 
-/** Each heading's id: its slug, numbered from the second time the same one comes (-1, -2), as GitHub does. */
+/** Each heading's id: its slug, numbered from the second time the same one comes (-1, -2). */
 function rehypeHeadingIds() {
   return (tree: MdNode) => {
     const seen = new Map<string, number>();
@@ -328,17 +327,10 @@ export function GuidesPage({ name, section }: { name?: string; section?: string 
           </a>
         );
       }
-      // a file of the repository (README, CHANGELOG …): on GitHub
-      const clean = href.replace(/^\.\.\//, "").replace(/^\.\//, "");
-      return (
-        <a
-          href={`${REPO}${clean.startsWith("docs/") || clean.includes("/") || !clean.split("#")[0].endsWith(".md") ? clean : `docs/${clean}`}`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {children}
-        </a>
-      );
+      // the release notes have their own screen
+      if (file === "CHANGELOG.md") return <a href="#/releases">{children}</a>;
+      // any other file is not in the Hub: the words stay, without a link out
+      return <span>{children}</span>;
     };
     const components: Components = {
       h1: heading("h1"),

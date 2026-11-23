@@ -438,7 +438,7 @@
   margin-bottom: 0;
 }
 
-/* GitHub's alert boxes: > [!NOTE] · [!TIP] · [!IMPORTANT] · [!WARNING] · [!CAUTION] */
+/* Alert boxes: > [!NOTE] · [!TIP] · [!IMPORTANT] · [!WARNING] · [!CAUTION] */
 .markdown blockquote.callout {
   --c: var(--accent);
   --c-soft: var(--accent-soft);
