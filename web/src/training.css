@@ -1511,3 +1511,28 @@ label.check {
 .review-grid-bar .review-filters {
   flex: 1 1 auto;
 }
+
+/* the run screen's title: 이름 바꾸기 beside it, and the form in its place while renaming (RunName) */
+.run-rename {
+  opacity: 0.55;
+}
+.run-rename:hover,
+.run-rename:focus-visible {
+  opacity: 1;
+}
+.run-rename-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 6px;
+}
+.run-rename-form input {
+  flex: 1 1 320px;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.run-rename-form .error {
+  flex-basis: 100%;
+}

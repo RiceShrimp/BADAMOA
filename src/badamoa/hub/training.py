@@ -61,6 +61,40 @@ def _unique(base: str, taken: set[str]) -> str:
     return candidate
 
 
+# ---- run names: one per Hub ---------------------------------------------------------------
+# A run's name says which run it is across the whole Hub (the Hub's lists, links, a model's "trained by"), not only
+# in its project: two projects' runs never share one.
+
+_DATED = re.compile(r"-\d{8}(-\d+)?$")  # a name's date (and its number that day): coco8-v1-yolov8s-20261123-2
+
+
+def _today() -> str:
+    """The day a run is named after, by the Hub's own clock (where its people are): 20261123."""
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y%m%d")
+
+
+def run_name(db: Session, given: str, auto: str, again: bool = False) -> str:
+    """A new run's name, kept apart from every run's on the Hub (any project, the trash too, which gives them back).
+    Unnamed, it is ``auto`` (dataset-version-variant) with today's date: coco8-v1-yolov8s-20261123, the next that
+    day -2. A run started again (다시 실행, 이어서 실행) takes its source's name with today's date in place of its
+    day. A name given as it is (a sweep's trials too) gets a number only when the Hub has it already."""
+    from .db import write_lock
+
+    base = _slug(given)
+    if not base or again:
+        base = f"{_DATED.sub('', (base or _slug(auto)))[:140]}-{_today()}"
+    write_lock(db)  # two starts at once read the names one after the other
+    taken = set(db.scalars(select(Run.name).where(Run.name.startswith(base, autoescape=True))))
+    return _unique(base[:150], taken)
+
+
+def _name_holder(db: Session, name: str, run_id: str = "") -> Run | None:
+    """A run on the Hub (not in the trash) already called ``name``, other than ``run_id``."""
+    return db.scalars(select(Run).where(Run.name == name, Run.deleted_at.is_(None), Run.id != run_id).limit(1)).first()
+
+
 # ---- starting runs -----------------------------------------------------------------
 
 
@@ -384,11 +418,10 @@ def start_run(
     # What the model is called: the chosen variant (yolo11n.pt → yolo11n), else the template itself.
     variant = Path(str(settings.get(manifest.variant, ""))).stem if manifest.variant else ""
     variant = _slug(variant) or row.name
-    taken = set(db.scalars(select(Run.name).where(Run.project_id == project.id)))
     epochs = settings.get("epochs")
     run = Run(
         project_id=project.id,
-        name=_unique(_slug(name) or _slug(f"{dataset.name}-{release.version}-{variant}"), taken),
+        name=run_name(db, name, f"{dataset.name}-{release.version}-{variant}", again=bool(source_run_id or resume_run_id)),
         release_id=release.id,
         trainer=row.name,
         template={
@@ -1101,13 +1134,17 @@ def update_run(
         if not name:
             raise ServiceError(400, "이름을 비울 수 없습니다.")
         if name != run.name:
-            taken = db.scalar(
-                select(Run.id).where(
-                    Run.project_id == run.project_id, Run.name == name, Run.deleted_at.is_(None), Run.id != run.id
-                )
-            )
-            if taken:
-                raise ServiceError(409, f"이 프로젝트에 이미 {name} 실행이 있습니다.")
+            from .catalog_models import Project
+            from .db import write_lock
+
+            write_lock(db)  # two renames to one name at once: the second sees the first
+            holder = _name_holder(db, name, run.id)
+            if holder is not None:  # one name per Hub, whatever the project
+                if holder.project_id == run.project_id:
+                    raise ServiceError(409, f"이 프로젝트에 이미 '{name}' 실행이 있습니다. 다른 이름을 쓰세요.")
+                other = db.get(Project, holder.project_id)
+                where = f"'{other.name}' 프로젝트" if other is not None else "다른 프로젝트"
+                raise ServiceError(409, f"{where}에 이미 '{name}' 실행이 있습니다. 실행 이름은 Hub 전체에서 하나씩입니다.")
             changed["name"], run.name = name, name
     if note is not None:
         run.note = note.strip()[:MAX_NOTE]
@@ -1140,9 +1177,7 @@ def restore_run(db: Session, user: User, run_id: str, storage: Storage) -> dict[
         raise ServiceError(403, "자신이 시작한 학습이나 관리자만 되살릴 수 있습니다.")
     notes = []
     base, name, n = run.name[:150], run.name, 2
-    while db.scalar(
-        select(Run.id).where(Run.project_id == run.project_id, Run.name == name, Run.deleted_at.is_(None)).limit(1)
-    ):
+    while _name_holder(db, name, run.id) is not None:  # one name per Hub: another project's run keeps it too
         name, n = f"{base}-{n}", n + 1
     if name != run.name:
         notes.append(f"같은 이름의 학습이 있어 이름을 바꿨습니다: {name}")

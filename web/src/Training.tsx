@@ -3,7 +3,7 @@ import { MediaPanel } from "./Media";
 import { SweepFields, SweepList, type SweepMethod, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
 import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
 import { FileList, fileSize } from "./Files";
-import { type FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { LineChart } from "./Chart";
 import { EpochChart, type EpochSeries } from "./EpochChart";
 import { TrainingBoard } from "./Boards";
@@ -574,6 +574,73 @@ const VAL_SOURCE: Record<string, string> = {
   train: "train으로 검증 (지표가 높게 나옴)",
 };
 
+/**
+ * A run's name as its screen's title, with "이름 바꾸기" beside it. A name is one per Hub: one another run has, in
+ * any project, is refused, and the Hub says where.
+ */
+function RunName({ name, badge, onSave }: { name: string; badge: ReactNode; onSave: (name: string) => Promise<unknown> }) {
+  const [draft, setDraft] = useState<string | null>(null); // the name being typed, while renaming
+  const [failure, setFailure] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const wanted = (draft ?? "").trim();
+    if (!wanted || wanted === name) {
+      setDraft(null);
+      return;
+    }
+    setBusy(true);
+    setFailure(null);
+    try {
+      await onSave(wanted);
+      setDraft(null);
+    } catch (err) {
+      setFailure(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (draft === null) {
+    return (
+      <h1 className="with-badge">
+        {name}
+        {badge}
+        <button
+          type="button"
+          className="icon-btn run-rename"
+          title="이름 바꾸기 (Hub 전체에서 겹치지 않는 이름)"
+          aria-label="실행 이름 바꾸기"
+          onClick={() => {
+            setFailure(null);
+            setDraft(name);
+          }}
+        >
+          <Icon name="edit" size={15} />
+        </button>
+      </h1>
+    );
+  }
+  return (
+    <form className="run-rename-form" onSubmit={save}>
+      <input
+        autoFocus
+        value={draft}
+        maxLength={160}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => e.key === "Escape" && setDraft(null)}
+        aria-label="새 실행 이름"
+      />
+      <button className="primary small" disabled={busy || !draft.trim()}>
+        {busy ? "저장 중…" : "저장"}
+      </button>
+      <button type="button" className="small" disabled={busy} onClick={() => setDraft(null)}>
+        취소
+      </button>
+      {failure && <div className="error small">{failure}</div>}
+    </form>
+  );
+}
+
 function RunView({ runId }: { runId: string }) {
   const [live, setLive] = useState(true);
   const { data: run, error, refresh } = usePolling(() => api<RunDetail>(`/runs/${runId}`), live ? 2500 : 20000, [runId]);
@@ -651,10 +718,14 @@ function RunView({ runId }: { runId: string }) {
       </a>
       <div className="page-head">
         <div>
-          <h1 className="with-badge">
-            {run.name}
-            <Badge kind={run.status}>{STATUS_LABEL[run.status]}</Badge>
-          </h1>
+          <RunName
+            name={run.name}
+            badge={<Badge kind={run.status}>{STATUS_LABEL[run.status]}</Badge>}
+            onSave={async (name) => {
+              await api(`/runs/${run.id}`, { method: "PATCH", body: { name } });
+              await refresh();
+            }}
+          />
           <p className="muted">
             {run.release ? (
               <a href={`#/datasets/${run.release.id}`}>
@@ -1547,7 +1618,12 @@ function NewRun({
             <div className="form-row">
               <label>
                 실행 이름
-                <input value={extra.name} onChange={setExtraField("name")} placeholder="자동" />
+                <input
+                  value={extra.name}
+                  onChange={setExtraField("name")}
+                  placeholder="자동: 데이터셋-버전-모델-오늘 날짜"
+                  title="비우면 데이터셋-버전-모델-오늘 날짜(같은 날 둘째부터 -2). 실행 이름은 Hub 전체에서 하나씩이라, 이미 있는 이름이면 번호가 붙습니다. 나중에 실행 화면에서 바꿀 수 있습니다."
+                />
               </label>
               <label>
                 모델 이름

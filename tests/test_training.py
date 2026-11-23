@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import shutil
 import threading
 import time
@@ -181,7 +182,8 @@ def _train(hub, release, params=None, **settings):
 def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     run, job = _train(hub, release, {"model": "yolo11n.pt", "ceiling": 0.5})
     assert job["status"] == "succeeded", _logs(hub, job["id"])
-    assert run["name"] == "street-v1-yolo11n" and run["status"] in ("queued", "running")
+    assert re.fullmatch(r"street-v1-yolo11n-\d{8}", run["name"]) and run["status"] in ("queued", "running")  # the day
+    named = run["name"]
 
     done = hub.get(f"/api/runs/{run['id']}").json()
     assert done["status"] == "succeeded" and done["epoch"] == 5 and done["epochs"] == 5
@@ -206,9 +208,9 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
     table = httpx.get(base + done["metrics_csv_url"])  # every step, for a spreadsheet
     lines = table.content.decode("utf-8-sig").splitlines()
     assert lines[0].split(",")[:3] == ["step", "time", "map50"] and "map50_95" in lines[0] and len(lines) == 6
-    assert lines[5].startswith("5,") and "street-v1-yolo11n-metrics.csv" in table.headers["content-disposition"]
+    assert lines[5].startswith("5,") and f"{named}-metrics.csv" in table.headers["content-disposition"]
     bundle = httpx.get(base + done["files_url"])
-    assert bundle.status_code == 200 and "street-v1-yolo11n.zip" in bundle.headers["content-disposition"]
+    assert bundle.status_code == 200 and f"{named}.zip" in bundle.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
         assert sorted(archive.namelist()) == ["epoch.txt", "logs/history.csv"] and archive.read("epoch.txt") == b"5"
     usage = hub.get("/api/storage").json()
@@ -229,7 +231,7 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
 
     # ---- same settings again → a second version; aliases move within the family
     again = hub.post(f"/api/runs/{run['id']}/rerun").json()
-    assert again["name"] == "street-v1-yolo11n-2" and again["source_run_id"] == run["id"]
+    assert again["name"] == f"{named}-2" and again["source_run_id"] == run["id"]  # today's day, taken: a number
     assert _wait(hub, again["job_id"])["status"] == "succeeded"
     models = hub.get(f"/api/projects/{release['project_id']}/models").json()
     assert [(m["name"], m["version"]) for m in models] == [("street-yolo11n", 2), ("street-yolo11n", 1)]
@@ -241,7 +243,7 @@ def test_run_reports_metrics_and_registers_a_model_with_lineage(hub, release):
         assert hub.post(f"/api/models/{v1['id']}/alias", json={"alias": reserved}).status_code == 400
 
     runs = hub.get(f"/api/projects/{release['project_id']}/runs").json()
-    assert [r["name"] for r in runs] == ["street-v1-yolo11n-2", "street-v1-yolo11n"]
+    assert [r["name"] for r in runs] == [f"{named}-2", named]
     assert runs[0]["model"]["alias"] == "champion"
     assert hub.delete(f"/api/runs/{run['id']}").status_code == 200
     assert len(hub.get(f"/api/projects/{release['project_id']}/runs").json()) == 1
@@ -1016,3 +1018,37 @@ def test_lineage_of_a_model_and_a_run(hub, release):
     from_run = hub.get(f"/api/runs/{second['id']}/lineage").json()
     assert [n["id"] for n in from_run["nodes"] if n["current"]] == [run2]
     assert {(model1, run2), (run2, model2)} <= {(e["from"], e["to"]) for e in from_run["edges"]}
+
+
+def test_run_names_carry_the_day_and_are_one_per_hub(client, admin, settings, monkeypatch):
+    """A run's name says which run it is on the whole Hub: unnamed it gets the day (coco8-v1-yolov8s-20261123, the
+    next that day -2), started again it takes today's day, and no rename takes a name a run of any project has."""
+    from badamoa.hub import training
+    from badamoa.hub.db import Database
+    from badamoa.hub.train_models import Run
+
+    monkeypatch.setattr(training, "_today", lambda: "20261123")
+    a = client.post("/api/projects", json={"name": "A 현장"}, headers=admin).json()
+    b = client.post("/api/projects", json={"name": "B 현장"}, headers=admin).json()
+    database = Database(settings.database_url)
+    with database.session() as db:
+        assert training.run_name(db, "", "coco8-v1-yolov8s") == "coco8-v1-yolov8s-20261123"
+        db.add(Run(project_id=b["id"], name="coco8-v1-yolov8s-20261123", release_id="r", trainer="yolo"))
+        db.flush()
+        assert training.run_name(db, "", "coco8-v1-yolov8s") == "coco8-v1-yolov8s-20261123-2"  # another project's
+        # started again: the source's name with today's day in place of its own
+        assert training.run_name(db, "coco8-v1-yolov8s-20261120-3", "x", again=True) == "coco8-v1-yolov8s-20261123-2"
+        assert training.run_name(db, "lr 낮춤", "x", again=True) == "lr-낮춤-20261123"
+        assert training.run_name(db, "sweep-1", "x") == "sweep-1"  # a name given as it is stays as it is
+        mine = Run(project_id=a["id"], name="baseline", release_id="r", trainer="yolo")
+        theirs = Run(project_id=b["id"], name="night", release_id="r", trainer="yolo")
+        db.add_all([mine, theirs])
+        db.flush()
+        ids = (mine.id, theirs.id)
+    database.engine.dispose()
+
+    taken = client.patch(f"/api/runs/{ids[0]}", json={"name": "night"}, headers=admin)
+    assert taken.status_code == 409 and "'B 현장' 프로젝트" in taken.json()["detail"]
+    assert client.patch(f"/api/runs/{ids[1]}", json={"name": "coco8-v1-yolov8s-20261123"}, headers=admin).status_code == 409
+    assert client.patch(f"/api/runs/{ids[0]}", json={"name": "baseline 2차"}, headers=admin).status_code == 200
+    assert client.get(f"/api/runs/{ids[0]}", headers=admin).json()["name"] == "baseline 2차"
