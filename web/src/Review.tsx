@@ -610,7 +610,9 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const card = (key: string, name: string, hint: string, count: number, active: boolean, onClick: () => void) => (
     <button key={key} className={`check-card ${active ? "active" : ""} ${count ? "" : "zero"}`} onClick={onClick} title={hint}>
       <span className="check-count">{count.toLocaleString()}</span>
-      <span className="check-title">{name}</span>
+      <span className="check-title">
+        {name} <TrustTag level="mid" why="규칙으로 찾은 것: 걸린 이미지를 보고 판단하세요" />
+      </span>
       <span className="muted small">{hint}</span>
     </button>
   );
@@ -654,6 +656,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
         <span className="check-count">{count != null ? count.toLocaleString() : <Icon name={going ? "clock" : "box"} size={18} />}</span>
         <span className="check-title">
           {MODEL[m].title} <span className="tag model-tag">모델</span>
+          {count != null && summary.rule && <TrustTag {...trustOf(m, summary.rule)} />}
         </span>
         <span className="muted small">
           {count != null
@@ -1129,6 +1132,44 @@ function RuleThreshold({ rule, onChange, onClose }: { rule: Rule; onChange: (val
   );
 }
 
+type Trust = "high" | "mid" | "low";
+const TRUST_WORDS: Record<Trust, string> = { high: "신뢰도 높음", mid: "신뢰도 보통", low: "신뢰도 낮음" };
+
+/**
+ * How far a model card's findings can be trusted to be label mistakes, by its threshold: the surer the model must be
+ * (라벨이 없는 물체, 클래스가 다를 수 있는 라벨: 0.9 and up 높음, 0.7 and up 보통), or the nearer nothing may come to a
+ * label (물체가 없을 수 있는 라벨: IoU 0.3 and under 높음 — the model put nothing there —, 0.7 and under 보통).
+ */
+function trustOf(kind: Mistake, rule: { conf: number; reclass_conf: number; missed_iou: number }): { level: Trust; why: string } {
+  if (kind === "missed") {
+    const v = rule.missed_iou;
+    const level: Trust = v <= 0.3 ? "high" : v <= 0.7 ? "mid" : "low";
+    const why = {
+      high: `모델이 근처에 아무것도 내지 않은 라벨만 셉니다(IoU ${v} 미만): 라벨이 틀렸을 가능성이 큽니다`,
+      mid: `모델 예측이 조금 겹친 라벨도 셉니다(IoU ${v} 미만)`,
+      low: `짝이 안 된 라벨을 거의 다 셉니다(IoU ${v} 미만): 모델이 놓친 것도 많이 섞입니다`,
+    }[level];
+    return { level, why };
+  }
+  const v = kind === "extra" ? rule.conf : rule.reclass_conf;
+  const level: Trust = v >= 0.9 ? "high" : v >= 0.7 ? "mid" : "low";
+  const why = {
+    high: `모델이 ${v}보다 확신한 것만 셉니다: 라벨 실수일 가능성이 큽니다`,
+    mid: `모델이 ${v}보다 확신한 것을 셉니다: 모델의 실수도 섞입니다`,
+    low: `모델이 ${v}보다 확신한 것을 셉니다: 모델의 실수가 많이 섞입니다`,
+  }[level];
+  return { level, why };
+}
+
+/** 신뢰도 높음 · 보통 · 낮음 on a 검수 card: how likely what it found are label mistakes. */
+function TrustTag({ level, why }: { level: Trust; why: string }) {
+  return (
+    <span className={`tag trust-tag trust-${level}`} title={why}>
+      {TRUST_WORDS[level]}
+    </span>
+  );
+}
+
 const CONF_WORDS: Record<ConfKind, { title: string; what: string; of: string; min: number; max: number; shown: (v: number) => string }> = {
   extra: {
     title: "라벨이 없는 물체 · 확신도",
@@ -1198,6 +1239,7 @@ function ConfThreshold({
           aria-label={words.title}
         />
         <strong className="num">{words.shown(value)}</strong>
+        <TrustTag {...trustOf(kind, { ...rule, [key]: value })} />
       </label>
       <table className="threshold-levels small">
         <tbody>

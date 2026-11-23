@@ -1844,3 +1844,22 @@ select.active-select {
   max-width: 220px;
   text-overflow: ellipsis;
 }
+
+/* 검수: 신뢰도 높음 · 보통 · 낮음 on a card (how likely its findings are label mistakes) */
+.trust-tag {
+  margin-left: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.trust-tag.trust-high {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.trust-tag.trust-mid {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.trust-tag.trust-low {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
