@@ -46,8 +46,9 @@ def test_the_library_and_its_version_the_servers_run(client, admin, settings, mo
 
 
 def test_a_servers_environments_name_built_in_kinds_by_their_library(client, admin, settings, monkeypatch):
-    """Node → 저장 공간: what an environment serves reads "Ultralytics YOLO 8.4.200", the version this server runs
-    (not the template's own number, "Ultralytics YOLO 12", read as YOLO12); one an admin added keeps its own."""
+    """Node → 저장 공간: what an environment serves reads "Ultralytics YOLO 8.4.200" — the built-in kinds on one
+    library as one (it detects, segments and finds keypoints alike), with the version this server runs, not their
+    own numbers ("Ultralytics YOLO 분할 8, Ultralytics YOLO 12", read as YOLOv8 · YOLO12); an admin's keeps its own."""
     from datetime import datetime
 
     from sqlalchemy import select
@@ -78,16 +79,20 @@ def test_a_servers_environments_name_built_in_kinds_by_their_library(client, adm
         added = Template(name="dcl", title="Ultralytics YOLO DCL", version="1.0.5", builtin=False)
         added.created_at = datetime(2026, 1, 1)
 
-        assert sorted(node_storage._names(db, [yolo, seg, added], here.id)) == sorted(
-            [
-                f"{yolo.title} 8.4.200",  # what ran on this server
-                f"{seg.title} 8.4.216",  # never ran anywhere: what installing it now gets
-                "Ultralytics YOLO DCL 1.0.5",  # an admin's kind: its own version
-            ]
-        )
-        assert node_storage._names(db, [yolo], there.id) == [f"{yolo.title} 8.4.200"]  # the newest any server runs
-        monkeypatch.setattr(registry, "_pypi_newest", lambda requirement: "")  # no internet, never ran: no number
-        assert node_storage._names(db, [seg], there.id) == [seg.title]
+        def names(rows, node):
+            return node_storage._names(rows, node_storage._Libraries(db, node.id))
+
+        # the detection kind ran here on 8.4.200: the segmentation one shares its environment, so its version
+        assert names([yolo, seg, added], here) == ["Ultralytics YOLO 8.4.200", "Ultralytics YOLO DCL 1.0.5"]
+        assert names([seg], there) == ["Ultralytics YOLO 8.4.200"]  # the newest any server runs
+        libraries = node_storage._Libraries(db, here.id)
+        assert (libraries.code(seg), libraries.code(added)) == (f"{seg.title} 8.4.200", "Ultralytics YOLO DCL 1.0.5")
+
+        # never ran anywhere: what installing it now gets; nothing known (no internet): the library alone
+        tv = built_in["torchvision"]
+        assert names([tv], here) == ["torchvision 8.4.216"]  # (the stand-in PyPI answers 8.4.216 to all)
+        monkeypatch.setattr(registry, "_pypi_newest", lambda requirement: "")
+        assert names([tv], there) == ["torchvision"]
     database.engine.dispose()
 
 

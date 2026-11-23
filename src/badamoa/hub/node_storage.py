@@ -122,40 +122,92 @@ def _templates(db: Session) -> list[tuple[Template, dict[str, Any] | None]]:
     return out
 
 
-def _version_of(db: Session, row: Template, node_id: str) -> str:
-    """A model kind's version as people know it. One an admin added goes by its own (1.0.5). A built-in one goes
-    by its library's version, as on Settings → 모델 종류: on this server when it ran here, else the newest any
-    server runs, else what installing it now gets. Its own number only counts changes to its code, and next to
-    its name it reads like a model (Ultralytics YOLO 12 → YOLO12); nothing known, it is left out."""
-    if not row.builtin:
-        return row.version
-    try:
-        library = registry.library_versions(db, row, registry.manifest_of(row))
-    except Exception:  # noqa: BLE001 - a broken declaration only means no version to show
-        library = None
-    if not library:
-        return ""
-    here = next((s["version"] for s in library["installed"] if s.get("node_id") == node_id), "")
-    return here or library["newest"] or library["available"]
+# what a built-in kind's library is called on the screen (another goes by the library's own name: torchvision)
+LIBRARY_TITLES = {"ultralytics": "Ultralytics YOLO"}
 
 
-def _names(db: Session, rows: list[Template], node_id: str) -> list[str]:
-    """Model types by title, each once (its newest version), with their version as people know it."""
-    seen: dict[str, str] = {}
+def _newest(versions: list[str]) -> str:
+    from packaging.version import InvalidVersion, Version
+
+    def key(text: str) -> Version:
+        try:
+            return Version(text)
+        except InvalidVersion:
+            return Version("0")
+
+    found = [v for v in versions if v]
+    return max(found, key=key) if found else ""
+
+
+class _Libraries:
+    """The built-in model kinds' libraries and their versions, asked once per view. The built-in kinds on one
+    library install the same requirement into one environment, so they share a version, as on Settings → 모델
+    종류: the one on this server when any of them ran here, else the newest any server runs, else what installing
+    it now gets. Their own numbers (8, 12) only count changes to their code and read like models (YOLO12)."""
+
+    def __init__(self, db: Session, node_id: str) -> None:
+        self.db, self.node_id = db, node_id
+        self._of: dict[str, dict[str, Any] | None] = {}  # template id → its library and versions
+        self._versions: dict[str, str] = {}  # library → its version here
+
+    def of(self, row: Template) -> dict[str, Any] | None:
+        if row.id not in self._of:
+            try:
+                self._of[row.id] = registry.library_versions(self.db, row, registry.manifest_of(row))
+            except Exception:  # noqa: BLE001 - a broken declaration only means no version to show
+                self._of[row.id] = None
+        return self._of[row.id]
+
+    def version(self, name: str) -> str:
+        if name not in self._versions:
+            built_in = self.db.scalars(select(Template).where(Template.builtin, Template.deleted_at.is_(None)))
+            found = [lib for lib in map(self.of, built_in) if lib and lib["name"] == name]
+            here = [s["version"] for lib in found for s in lib["installed"] if s.get("node_id") == self.node_id]
+            self._versions[name] = (
+                _newest(here) or _newest([lib["newest"] for lib in found]) or _newest([lib["available"] for lib in found])
+            )
+        return self._versions[name]
+
+    def title(self, row: Template) -> str:
+        """A model kind as an environment's user: a built-in one by its library and version, for one library
+        serves each of its tasks (Ultralytics YOLO 8.4.216 detects, segments and finds keypoints); one an admin
+        added by its title and version (Ultralytics YOLO DCL 1.0.5)."""
+        library = self.of(row) if row.builtin else None
+        if library:
+            return f"{LIBRARY_TITLES.get(library['name'], library['name'])} {self.version(library['name'])}".strip()
+        return f"{row.title or row.name} {'' if row.builtin else row.version}".strip()
+
+    def code(self, row: Template) -> str:
+        """A model kind's code: each task's own (the built-in ones by their task, with their library's version)."""
+        library = self.of(row) if row.builtin else None
+        version = self.version(library["name"]) if library else ("" if row.builtin else row.version)
+        return f"{row.title or row.name} {version}".strip()
+
+
+def _names(rows: list[Template], libraries: _Libraries) -> list[str]:
+    """The model kinds an environment or image serves, each once (a kind's newest version; the built-in ones on
+    one library as one)."""
+    names: list[str] = []
+    seen: set[str] = set()
     for row in sorted(rows, key=lambda r: r.created_at, reverse=True):
-        if row.name not in seen:
-            seen[row.name] = f"{row.title or row.name} {_version_of(db, row, node_id)}".strip()
-    return list(seen.values())
+        if row.name in seen:
+            continue
+        seen.add(row.name)
+        name = libraries.title(row)
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def _describe(db: Session, kind: str, items: list[dict[str, Any]], node_id: str = "") -> None:
     """Add ``label`` (what it is) and ``users`` (the model types it serves) to each item, in place."""
+    libraries = _Libraries(db, node_id)
     if kind in ("envs", "containers"):
         templates = _templates(db)
         docker_envs = db.scalars(select(Environment).where(Environment.kind == "docker")).all()
         for item in items:
             rows = [row for row, spec in templates if spec is not None and registry._same_env(item, spec)]
-            item["users"] = _names(db, rows, node_id)
+            item["users"] = _names(rows, libraries)
             if kind == "containers":
                 item["label"] = item.get("image") or ""
                 item["environments"] = [e.name for e in docker_envs if e.image == item.get("image")]
@@ -179,7 +231,7 @@ def _describe(db: Session, kind: str, items: list[dict[str, Any]], node_id: str 
         by_sha = {r.blob: r for r in rows}
         for item in items:
             row = by_sha.get(item.get("id"))
-            item["label"] = f"{row.title or row.name} {_version_of(db, row, node_id)}".strip() if row else "Hub에 없는 코드"
+            item["label"] = libraries.code(row) if row else "Hub에 없는 코드"
             item["gone"] = row is None or row.deleted_at is not None
     elif kind == "template_data":
         names = [i.get("id") for i in items]
