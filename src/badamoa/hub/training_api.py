@@ -338,8 +338,9 @@ def list_models(
 @router.post("/projects/{project_id}/models/upload")
 async def upload_model(project_id: str, request: Request, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
     """A model trained elsewhere (multipart): ``weights`` the Ultralytics YOLO ``.pt``, ``data`` the YOLO data yaml with
-    its class names; optional ``name`` (the file's), ``task`` (the checkpoint's), ``note``, ``imgsz``. The class counts
-    of the two must agree, else nothing is kept."""
+    its class names; optional ``name`` (the file's), ``task`` (the checkpoint's), ``kind`` (the model kind that runs it,
+    id or name; GET /api/model-upload/kinds), ``note``, ``imgsz``. The class counts of the two must agree, else nothing
+    is kept."""
     token = bearer_token(request)
     if int(request.headers.get("content-length") or 0) > MAX_WEIGHTS_BYTES + 2 * model_upload.MAX_YAML_BYTES:
         raise HTTPException(status_code=413, detail="가중치 파일이 너무 큽니다.")
@@ -361,7 +362,7 @@ async def upload_model(project_id: str, request: Request, hub: Hub = Depends(get
             )
         if not str(weights.filename).lower().endswith((".pt", ".pth")):
             raise HTTPException(status_code=400, detail="가중치는 Ultralytics YOLO의 .pt 파일이어야 합니다.")
-        fields = {k: str(form.get(k) or "").strip() for k in ("name", "task", "note", "imgsz")}
+        fields = {k: str(form.get(k) or "").strip() for k in ("name", "task", "note", "imgsz", "kind")}
         yaml_bytes = await data.read(model_upload.MAX_YAML_BYTES + 1)
         file_name, yaml_name = str(weights.filename), str(data.filename)
 
@@ -393,8 +394,8 @@ async def upload_model(project_id: str, request: Request, hub: Hub = Depends(get
                         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
                     model = model_upload.register(
                         db, user, storage, project_id, Path(temp), pt, classes, task,
-                        name=fields["name"], file_name=file_name, yaml_name=yaml_name, note=fields["note"], imgsz=imgsz,
-                        via="ui",
+                        kind=fields["kind"], name=fields["name"], file_name=file_name, yaml_name=yaml_name,
+                        note=fields["note"], imgsz=imgsz, via="ui",
                     )
                     db.commit()
                     view = training.model_view(db, hub.settings, model, detail=True)
@@ -404,6 +405,12 @@ async def upload_model(project_id: str, request: Request, hub: Hub = Depends(get
                 Path(temp).unlink(missing_ok=True)
 
         return await anyio.to_thread.run_sync(work)
+
+
+@router.get("/model-upload/kinds")
+def model_upload_kinds(_: User = Depends(current_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
+    """The model kinds that can run uploaded weights (the built-in Ultralytics YOLO first, then forks such as DCL)."""
+    return model_upload.kinds(db)
 
 
 @router.get("/model-upload/sample")

@@ -302,6 +302,7 @@ export interface ModelUploadInfo {
   file_name: string;
   yaml: string;
   ultralytics?: string;
+  kind_chosen?: "auto" | "asked"; // how the model kind that runs it was picked
   weights_classes?: string[]; // the names the weights carried, when the yaml named the classes otherwise
   renamed?: number;
 }

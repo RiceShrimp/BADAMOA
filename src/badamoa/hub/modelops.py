@@ -188,7 +188,7 @@ def _start(
             # Uploaded weights have no run: the image size read from them.
             "train_params": {k: v for k, v in run.config.items() if k in declared}
             if run
-            else ({"imgsz": model.imgsz} if model.imgsz and "imgsz" in declared else {}),
+            else ({"imgsz": model.imgsz} if model.imgsz else {}),
             "classes": model.classes or [],
             "weights": {"blob": model.blob, "file_name": model.file_name or "best.pt"},
             **(extra or {}),

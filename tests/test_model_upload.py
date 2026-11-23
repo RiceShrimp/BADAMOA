@@ -126,10 +126,16 @@ def test_upload_is_registered_and_a_count_mismatch_is_refused(hub, release):  # 
     assert model["upload"]["file_name"] == "yolo11n-street.pt" and model["upload"]["yaml"] == "data.yaml"
     assert model["upload"]["weights_classes"] == ["0", "1", "2"] and model["upload"]["renamed"] == 3
     assert model["template"]["name"] == "yolo" and model["run"] is None and model["release"] is None
+    assert model["upload"]["kind_chosen"] == "auto"
     assert model["note"] == "밖에서 학습" and model["bytes"] == len(pt)
     assert sorted(model["actions"]) == ["eval", "export", "predict"]
     assert _blobs(hub) == before + 1
-    again = _upload(hub, project, pt, yaml_of(names), name="yolo11n street")
+    kinds = hub.get("/api/model-upload/kinds").json()
+    assert kinds[0]["name"] == "yolo" and kinds[0]["tasks"] == ["detect", "segment", "pose", "classify"]
+    assert all(k["name"] != "dummy" for k in kinds)  # only kinds that run Ultralytics weights
+    other = _upload(hub, project, pt, yaml_of(names), kind="dummy")
+    assert other.status_code == 400 and "Ultralytics YOLO 종류만" in other.json()["detail"]
+    again = _upload(hub, project, pt, yaml_of(names), name="yolo11n street", kind="yolo")
     assert (again.json()["name"], again.json()["version"]) == ("yolo11n-street", 2)  # the same family
 
     # ---- the screens that pick a model take it: 검수's model check, 오토라벨, lineage
@@ -157,3 +163,22 @@ def test_sample_yaml_downloads(client):
         assert parsed["names"][0] == first
     assert len(model_upload.read_yaml(client.get("/api/model-upload/sample?kind=coco").text)["names"]) == 80
     assert client.get("/api/model-upload/sample", params={"kind": "nope"}).status_code == 404
+
+
+def test_the_kind_that_runs_an_upload():
+    found = [
+        {"id": "1", "name": "yolo", "title": "YOLO", "tasks": ["detect", "segment"], "requirement": "ultralytics>=8.3,<9"},
+        {"id": "2", "name": "yolo-curriculum", "title": "DCL", "tasks": ["detect"], "requirement": "ultralytics==8.4.138.1"},
+    ]
+    choose = model_upload.choose_kind
+    # weights a fork saved say its version: the kind pinning it runs them; stock weights go to the built-in one
+    assert choose(found, "detect", "8.4.138.1")["name"] == "yolo-curriculum"
+    assert choose(found, "detect", "8.2.100")["name"] == "yolo"
+    assert choose(found, "segment", "8.4.138.1")["name"] == "yolo"  # the fork does not segment
+    assert choose(found, "detect", "8.2.100", wanted="yolo-curriculum")["name"] == "yolo-curriculum"
+    with pytest.raises(model_upload.ServiceError, match="Seg 모델을 돌리지 않습니다"):
+        choose(found, "segment", wanted="2")
+    with pytest.raises(model_upload.ServiceError, match="Ultralytics YOLO 종류만"):
+        choose(found, "detect", wanted="dummy")
+    with pytest.raises(model_upload.ServiceError, match="Kpt 모델을 돌릴"):
+        choose(found, "pose")

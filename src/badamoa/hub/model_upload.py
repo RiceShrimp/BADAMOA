@@ -4,7 +4,8 @@ The person uploads the ``.pt`` with a YOLO data yaml (the ``names:`` a dataset i
 class count, task and image size from the checkpoint without torch: a ``.pt`` is a zip holding a pickle, which is
 read here with every class and function it names replaced by an inert stand-in (nothing in it runs) and its tensors
 left unread. The counts must agree, else nothing is stored. The upload becomes a model version like a trained one,
-run by the built-in Ultralytics YOLO kind, so evaluation, 검수, 오토라벨, export, comparisons and pipelines take it.
+run by a model kind that runs Ultralytics weights (the built-in Ultralytics YOLO, or a team's fork such as DCL), so
+evaluation, 검수, 오토라벨, export, comparisons and pipelines take it.
 """
 
 from __future__ import annotations
@@ -25,9 +26,10 @@ from badamoa.node.importer import parse_yolo_yaml
 from . import catalog, services, training
 from .models import User
 from .services import ServiceError
-from .train_models import ModelVersion
+from .train_models import ModelVersion, Template
 
 TEMPLATE = "yolo"  # the built-in kind that evaluates, exports, tests and auto-labels Ultralytics YOLO weights
+LIBRARY = "ultralytics"  # the library whose weights can be uploaded (a kind naming it among its packages runs them)
 MAX_PICKLE_BYTES = 64 * 1024**2  # the pickle holds the structure; the tensors are separate files in the zip
 MAX_YAML_BYTES = 1024**2
 MAX_CLASSES = 10_000
@@ -253,6 +255,72 @@ def check(pt: dict[str, Any], classes: dict[str, Any], task: str = "") -> str:
     return found
 
 
+# ---- the model kinds that run them -----------------------------------------------------
+
+
+def kinds(db: Session) -> list[dict[str, Any]]:
+    """The model kinds an upload can be run by: the newest offered version of each kind that names Ultralytics among
+    its packages and evaluates (the built-in Ultralytics YOLO, a team's fork such as DCL), the built-in one first."""
+    from . import registry, template_checks
+
+    rows = db.scalars(
+        select(Template).where(Template.deleted_at.is_(None)).order_by(Template.created_at.desc(), Template.id)
+    ).all()
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if row.name in seen or not template_checks.offered(row):
+            continue
+        seen.add(row.name)
+        manifest = registry.manifest_of(row)
+        library, requirement = registry.library_of(manifest)
+        if row.hidden or library != LIBRARY or "eval" not in manifest.entrypoints:
+            continue
+        found.append(
+            {
+                "id": row.id,
+                "name": row.name,
+                "title": row.title,
+                "version": row.version,
+                "builtin": row.builtin,
+                "tasks": [t for t in task_names.BUILTIN if manifest.supports(t)],
+                "requirement": requirement,  # ultralytics==8.4.138.1: weights a fork saved say that version
+            }
+        )
+    found.sort(key=lambda k: (k["name"] != TEMPLATE, not k["builtin"], k["title"].lower()))
+    return found
+
+
+def _pins(requirement: str, version: str) -> bool:
+    """Whether the requirement names exactly this version (``==``), as a fork's kind does."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        spec = Requirement(requirement).specifier
+        Version(version)
+    except (InvalidRequirement, InvalidVersion):
+        return False
+    return any(s.operator in ("==", "===") for s in spec) and spec.contains(version, prereleases=True)
+
+
+def choose_kind(found: list[dict[str, Any]], task: str, saved_with: str = "", wanted: str = "") -> dict[str, Any]:
+    """The kind that runs an upload: the one asked for (by id or name), else the one whose Ultralytics is the very
+    version the weights were saved with (a fork's kind: DCL pins its 8.4.138.1), else the built-in one."""
+    able = [k for k in found if task in k["tasks"]]
+    if wanted:
+        picked = next((k for k in found if wanted in (k["id"], k["name"])), None)
+        if picked is None:
+            raise ServiceError(400, "그 모델 종류로는 올린 가중치를 돌릴 수 없습니다 (Ultralytics YOLO 종류만).")
+        if picked not in able:
+            raise ServiceError(400, f"{picked['title']}은(는) {task_names.short(task)} 모델을 돌리지 않습니다.")
+        return picked
+    if not able:
+        raise ServiceError(400, f"{task_names.short(task)} 모델을 돌릴 Ultralytics YOLO 모델 종류가 없습니다.")
+    same = [k for k in able if saved_with and _pins(k["requirement"], saved_with)]
+    return same[0] if same else able[0]
+
+
 # ---- registering -----------------------------------------------------------------------
 
 
@@ -266,6 +334,7 @@ def register(
     classes: dict[str, Any],
     task: str,
     *,
+    kind: str = "",
     name: str = "",
     file_name: str = "",
     yaml_name: str = "",
@@ -273,11 +342,11 @@ def register(
     imgsz: int = 0,
     via: str = "api",
 ) -> ModelVersion:
-    """Store the checked weights and make them the next version of ``name`` (the file's name when empty)."""
-    from . import registry  # here: registry → cleanup → exports → training → registry when imported first
-
+    """Store the checked weights and make them the next version of ``name`` (the file's name when empty), run by
+    ``kind`` (id or name; empty: ``choose_kind``)."""
     catalog.get_project(db, project_id)
-    template = registry.get_template(db, TEMPLATE)
+    chosen = choose_kind(kinds(db), task, pt["ultralytics"], kind)
+    template = db.get(Template, chosen["id"])
     file_name = Path(file_name or weights.name).name[:128] or "model.pt"
     name = training._slug(name or Path(file_name).stem)[:128]
     if not name:
@@ -320,6 +389,7 @@ def register(
             "file_name": file_name,
             "yaml": Path(yaml_name).name[:128],
             "ultralytics": pt["ultralytics"],
+            "kind_chosen": "asked" if kind else "auto",
             # the names the weights carried, when the yaml gave the classes other names
             **({"weights_classes": pt["classes"], "renamed": renamed} if renamed else {}),
         },
@@ -330,7 +400,7 @@ def register(
     db.flush()
     services.audit(
         db, user.id, via, "model.upload", model.id, name=model.name, version=model.version, task=task,
-        classes=len(model.classes), bytes=size,
+        classes=len(model.classes), bytes=size, kind=f"{template.name} {template.version}",
     )
     return model
 

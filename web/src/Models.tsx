@@ -559,6 +559,11 @@ function ModelView({ modelId, isAdmin }: { modelId: string; isAdmin: boolean }) 
                 {model.upload.file_name} · 클래스 {model.upload.yaml || "yaml"}
                 {model.upload.ultralytics ? ` · ultralytics ${model.upload.ultralytics}로 저장된 가중치` : ""}
               </dd>
+              <dt>돌리는 코드</dt>
+              <dd className="small">
+                {model.template.title} {model.template.version}
+                {model.upload.kind_chosen === "auto" ? " (자동으로 고름)" : ""}
+              </dd>
               {(model.upload.renamed ?? 0) > 0 && (
                 <>
                   <dt>클래스 이름</dt>

@@ -39,7 +39,11 @@ export function ModelOps({ model }: { model: ModelDetail }) {
         <div className="card-head">
           <div>
             <h3>이 모델로 할 수 있는 것</h3>
-            <div className="muted small">학습할 때와 같은 코드와 환경으로 실행합니다.</div>
+            <div className="muted small">
+              {model.source === "upload"
+                ? `올릴 때 정한 모델 종류(${model.template.title})의 코드와 환경으로 실행합니다.`
+                : "학습할 때와 같은 코드와 환경으로 실행합니다."}
+            </div>
           </div>
           <div className="head-actions">
             {(["eval", "export", "predict"] as const).map((action) => (

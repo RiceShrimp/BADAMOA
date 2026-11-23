@@ -1,8 +1,19 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { apiForm } from "./api";
-import { type Project, bytesLabel } from "./catalogTypes";
+import { api, apiForm } from "./api";
+import { type Project, bytesLabel, taskLabel } from "./catalogTypes";
 import type { ModelDetail } from "./trainTypes";
-import { Modal } from "./ui";
+import { Modal, usePolling } from "./ui";
+
+/** A model kind that can run uploaded Ultralytics weights (GET /api/model-upload/kinds). */
+interface UploadKind {
+  id: string;
+  name: string;
+  title: string;
+  version: string;
+  builtin: boolean;
+  tasks: string[];
+  requirement: string;
+}
 
 /** The sample class yamls the Hub hands out (GET /api/model-upload/sample?kind=…). */
 const SAMPLES: { kind: string; label: string; title: string }[] = [
@@ -81,6 +92,8 @@ export function UploadModel({
   const [name, setName] = useState("");
   const [named, setNamed] = useState(false); // the person typed a name: picking another file keeps it
   const [task, setTask] = useState("");
+  const [kind, setKind] = useState("");
+  const { data: kinds } = usePolling(() => api<UploadKind[]>("/model-upload/kinds"), 600000);
   const [imgsz, setImgsz] = useState("");
   const [note, setNote] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -116,6 +129,7 @@ export function UploadModel({
     form.append("data", data);
     form.append("name", name.trim());
     if (task) form.append("task", task);
+    if (kind) form.append("kind", kind);
     if (imgsz.trim()) form.append("imgsz", imgsz.trim());
     if (note.trim()) form.append("note", note.trim());
     setError(null);
@@ -129,7 +143,7 @@ export function UploadModel({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
-      if (message.includes("태스크")) setAdvanced(true);
+      if (message.includes("태스크") || message.includes("모델 종류") || message.includes("돌리지")) setAdvanced(true);
       setSent(null);
     }
   };
@@ -141,7 +155,7 @@ export function UploadModel({
       <form onSubmit={submit} className="model-upload">
         <p className="muted">
           다른 곳에서 학습했거나 공개된 Ultralytics YOLO 가중치(.pt)를 올려, 여기서 학습한 모델처럼 평가 · 검수 · 오토라벨 · 내보내기 ·
-          비교 · 파이프라인에 씁니다.
+          비교 · 파이프라인에 씁니다. 지금은 YOLO 모델 종류(기본 제공{kinds && kinds.length > 1 ? ` · ${kinds.slice(1).map((k) => k.title.split("(")[0].trim()).join(" · ")}` : ""})로 돌리는 가중치만 올립니다.
         </p>
         {projectId === undefined && (
           <label>
@@ -226,6 +240,21 @@ export function UploadModel({
               ))}
             </select>
             <span className="muted small">보통 가중치에 적혀 있습니다. 적혀 있지 않을 때만 고르세요.</span>
+          </label>
+          <label>
+            모델 종류 <span className="muted small">(이 가중치를 돌릴 코드)</span>
+            <select value={kind} onChange={(e) => setKind(e.target.value)} disabled={busy}>
+              <option value="">자동 · 가중치를 저장한 ultralytics 버전으로 고름</option>
+              {kinds?.map((k) => (
+                <option key={k.id} value={k.name} disabled={task !== "" && !k.tasks.includes(task)}>
+                  {k.title} {k.version}
+                  {k.builtin ? " · 기본 제공" : ""} · {k.tasks.map(taskLabel).join(" · ")}
+                </option>
+              ))}
+            </select>
+            <span className="muted small">
+              자동은 포크로 저장한 가중치(예: DCL의 ultralytics 8.4.138.1)를 그 종류로, 나머지는 기본 제공 Ultralytics YOLO로 돌립니다.
+            </span>
           </label>
           <label>
             이미지 크기 (px)

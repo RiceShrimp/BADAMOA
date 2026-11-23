@@ -1609,3 +1609,20 @@ label.check {
 .split-row .right {
   text-align: right;
 }
+
+/* 모델 올리기 (ModelUpload.tsx): its few settings open in full (the dialog scrolls, not the section) */
+.model-upload .advanced[open] {
+  max-height: none;
+  overflow: visible;
+}
+.model-upload .sample-links {
+  margin-top: 6px;
+}
+.upload-progress {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 10px;
+}
+.upload-progress progress {
+  width: 100%;
+}
