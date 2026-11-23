@@ -1033,7 +1033,8 @@ function SystemLoad({ runId, live }: { runId: string; live: boolean }) {
   );
 }
 
-export function LogTail({ jobId, live }: { jobId: string; live: boolean }) {
+/** A job's log, following it while ``live``; folded unless live or ``open`` (asked for by a click). */
+export function LogTail({ jobId, live, open }: { jobId: string; live: boolean; open?: boolean }) {
   const { data: job } = usePolling(() => api<Job>(`/jobs/${jobId}`), live ? 2000 : 30000, [jobId]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const lastSeq = useRef(0);
@@ -1061,7 +1062,7 @@ export function LogTail({ jobId, live }: { jobId: string; live: boolean }) {
   }, [lines.length]);
 
   return (
-    <details className="card fold" open={live}>
+    <details className="card fold" open={open ?? live}>
       <summary>
         로그 <span className="muted">({count.toLocaleString()}줄)</span>
       </summary>

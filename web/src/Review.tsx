@@ -23,8 +23,9 @@ import {
   classColor,
   taskLabel,
 } from "./catalogTypes";
+import { LogTail } from "./Training";
 import { METRIC_LABEL, metric } from "./trainTypes";
-import { Icon, Modal, STATUS_LABEL, Stat, timeAgo, usePolling } from "./ui";
+import { Badge, Icon, Modal, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
 
 /** One label check (rules on the labels) as the Hub counts it. */
 interface Rule {
@@ -42,6 +43,28 @@ interface Summary {
   checks: Rule[];
   evaluations: (ReleaseCheck & { extra: number; missed: number; extra_let_be: number; missed_let_be: number })[];
   pending: { id: string; job_id: string; status: string; split: string; model: CheckModel | null; created_at: string }[];
+}
+
+/** One model check of this dataset as 검수 keeps it: like a training's record, there after it ends too. */
+interface CheckRecord {
+  id: string;
+  job_id: string | null;
+  status: string;
+  error: string | null;
+  wait_reason: string | null;
+  node_name: string | null;
+  duration_s: number | null;
+  created_at: string;
+  finished_at: string | null;
+  log_count: number;
+  by: string;
+  model: CheckModel | null;
+  release: { id: string; dataset: string; version: string } | null;
+  splits: string[];
+  code: { version?: string; trained_with?: string };
+  images: number; // images it kept predictions of
+  basis: boolean; // usable as the model basis here
+  sent: { job_id: string; status: string; error: string | null; node_name: string | null; duration_s: number | null } | null;
 }
 
 /** A model (this project's, or another's with the same task and classes) and whether it can check this version. */
@@ -615,6 +638,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           </div>
         ))}
         {failed && <div className="error small">{failed}</div>}
+        <CheckHistory releaseId={releaseId} nudge={summary} />
       </section>
       <div className="check-groups" style={{ gridTemplateRows: `auto repeat(${slots}, auto)` }}>
         {GROUPS.map((g) => (
@@ -879,6 +903,105 @@ function ClassFilter({
 }
 
 /** A model by name and version, with its task and aliases; a link to it. */
+const ENDED_BADLY = ["failed", "canceled", "cancelled"];
+
+/**
+ * The model checks of this dataset (its versions with the same classes), newest first: each with how it went, on
+ * which server, how long, who started it, the images it had sent there first, and its log — kept after it ends,
+ * as a training's are. The newest one failing stays said until another starts.
+ */
+function CheckHistory({ releaseId, nudge }: { releaseId: string; nudge: unknown }) {
+  const [busy, setBusy] = useState(false);
+  const { data: rows, refresh } = usePolling(
+    () => api<CheckRecord[]>(`/releases/${releaseId}/qa/history`),
+    busy ? 4000 : 20000,
+    [releaseId],
+  );
+  useEffect(() => setBusy((rows ?? []).some((r) => r.status === "queued" || r.status === "running")), [rows]);
+  useEffect(() => {
+    void refresh(); // the summary was read again: a check may have started or ended
+  }, [nudge]);
+  const [open, setOpen] = useState(false);
+  const [log, setLog] = useState<string | null>(null); // the job whose log is shown
+  if (!rows || rows.length === 0) return null;
+  const last = rows[0];
+  const said = (r: CheckRecord) => STATUS_LABEL[r.status] ?? r.status;
+  const showLog = (jobId: string | null) => {
+    setOpen(true);
+    setLog(jobId);
+  };
+  return (
+    <div className="check-history">
+      {ENDED_BADLY.includes(last.status) && !open && (
+        <div className="check-history-failed small">
+          <Badge kind={last.status}>{said(last)}</Badge>
+          <span>
+            마지막 검사({last.model ? `${last.model.name} v${last.model.version}` : "모델"} · {timeAgo(last.created_at)}):{" "}
+            {last.error || last.sent?.error || "끝나지 못했습니다"}
+          </span>
+          {last.job_id && (
+            <button className="link small" onClick={() => showLog(last.job_id)}>
+              로그 보기
+            </button>
+          )}
+        </div>
+      )}
+      <button className="link small check-history-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
+        {open ? "▾" : "▸"} 검사 작업 기록 {rows.length}개
+      </button>
+      {open && (
+        <ul className="check-history-list">
+          {rows.map((r) => (
+            <li key={r.id}>
+              <div className="check-history-row">
+                <Badge kind={r.status}>{said(r)}</Badge>
+                <ModelName model={r.model} />
+                <span className="muted small check-history-what">
+                  {[
+                    r.release?.version,
+                    r.splits.join("·"),
+                    r.node_name,
+                    r.duration_s != null && r.status !== "queued" ? duration(r.duration_s) : "",
+                    r.by,
+                    timeAgo(r.created_at),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  {r.code.trained_with ? ` · ${r.code.version} 코드로` : ""}
+                  {r.basis ? ` · 기준 이미지 ${r.images.toLocaleString()}장` : ""}
+                </span>
+                <span className="spacer" />
+                {r.job_id && (
+                  <button className="link small" onClick={() => setLog(log === r.job_id ? null : r.job_id)} aria-expanded={log === r.job_id}>
+                    {log === r.job_id ? "로그 닫기" : "로그"}
+                  </button>
+                )}
+                <a className="small" href={`#/models/eval/${r.id}`} title="평가 화면: 클래스별 · 다시 실행 · 같은 데이터로 비교">
+                  평가 화면
+                </a>
+              </div>
+              {r.sent && (
+                <div className={`small check-history-sub ${ENDED_BADLY.includes(r.sent.status) ? "bad-text" : "muted"}`}>
+                  이미지를 {r.sent.node_name || "그 서버"}에 먼저 보냄: {STATUS_LABEL[r.sent.status] ?? r.sent.status}
+                  {r.sent.duration_s != null ? ` · ${duration(r.sent.duration_s)}` : ""}
+                  {r.sent.error ? ` · ${r.sent.error}` : ""}
+                </div>
+              )}
+              {r.status === "queued" && r.wait_reason && <div className="muted small check-history-sub">{r.wait_reason}</div>}
+              {r.error && <div className="bad-text small check-history-sub">{r.error}</div>}
+              {log === r.job_id && r.job_id && (
+                <div className="check-history-log">
+                  <LogTail jobId={r.job_id} live={r.status === "queued" || r.status === "running"} open />
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ModelName({ model }: { model: CheckModel | null }) {
   if (!model) return <strong>지운 모델</strong>;
   return (

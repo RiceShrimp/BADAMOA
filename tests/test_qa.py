@@ -136,6 +136,7 @@ def test_the_class_filter_narrows_findings_by_their_own_class(hub, tmp_path):  #
     assert tiny("2") == []  # train_0000 holds a dog, but its tiny box is a person
     assert tiny("0") == [("train_0000.jpg", (0,))]
     assert tiny("0,1") == [("train_0000.jpg", (0,)), ("train_0001.jpg", (0,))]
+
     # outside a check: the images holding any of them, as the dataset screen
     def names(**params):
         found = hub.get(f"/api/releases/{v1}/items", params={**params, "limit": 200}).json()["items"]
@@ -153,3 +154,70 @@ def test_a_models_mistakes_have_the_classes_of_what_it_missed_or_added():
     assert unmatched([[0, 0.5, 0.5, 0.2, 0.2], [2, 0.8, 0.8, 0.1, 0.1]], [0.9, 0.4], truth) == ([2], [1])
     assert unmatched([[1, 0.5, 0.5, 0.2, 0.2]], [0.9], truth[:1]) == ([1], [0])  # the right box, the wrong class
     assert unmatched([[3]], [0.8], [[1]]) == ([3], [1])  # classification
+
+
+def test_model_checks_stay_on_the_review_screen_after_they_end(hub, settings, tmp_path):  # noqa: F811
+    """검수 keeps its model checks like a training's record: each one after it ends, the failed one with why, on
+    which server, how long, who started it, and the images it had sent to that server first; the log is the job's."""
+    from datetime import timedelta
+
+    from badamoa.hub.db import Database, utcnow
+    from badamoa.hub.models import Job
+    from badamoa.hub.train_models import ModelJob, ModelVersion
+
+    root = make_yolo(tmp_path / "ds")
+    project = hub.post("/api/projects", json={"name": "검수 기록"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+    me = hub.get("/api/auth/me").json()
+    database = Database(settings.database_url)
+    with database.session() as db:
+        now = utcnow()
+        model = ModelVersion(project_id=project["id"], name="det", version=1, blob="0" * 64, trainer="yolo", task="detect")
+        db.add(model)
+        db.flush()
+        sent = Job(type="data.sync", params={"release_id": v1}, status="succeeded", target_node_id=hub.node_id,
+                   node_id=hub.node_id, started_at=now - timedelta(minutes=5),
+                   finished_at=now - timedelta(minutes=3))  # fmt: skip
+        db.add(sent)
+        db.flush()
+        failed = Job(type="model.run", params={}, status="failed", error="CUDA out of memory", node_id=hub.node_id,
+                     requirements={"after": sent.id}, started_at=now - timedelta(minutes=3),
+                     finished_at=now - timedelta(minutes=2))  # fmt: skip
+        done = Job(type="model.run", params={}, status="succeeded", node_id=hub.node_id,
+                   started_at=now - timedelta(hours=1, minutes=2), finished_at=now - timedelta(hours=1))  # fmt: skip
+        db.add_all([failed, done])
+        db.flush()
+        db.add_all(
+            [
+                ModelJob(
+                    model_id=model.id,
+                    kind="eval",
+                    release_id=v1,
+                    params={"split": "val"},
+                    job_id=done.id,
+                    created_by=me["id"],
+                    created_at=now - timedelta(hours=1, minutes=3),
+                ),  # fmt: skip
+                ModelJob(
+                    model_id=model.id,
+                    kind="eval",
+                    release_id=v1,
+                    params={"split": "val", "splits": ["val", "test"]},
+                    job_id=failed.id,
+                    created_by=me["id"],
+                    created_at=now - timedelta(minutes=6),
+                ),  # fmt: skip
+            ]
+        )
+    database.engine.dispose()
+
+    rows = hub.get(f"/api/releases/{v1}/qa/history").json()
+    assert [r["status"] for r in rows] == ["failed", "succeeded"]  # the newest first, kept after they ended
+    newest, older = rows
+    assert (newest["error"], newest["node_name"], newest["by"]) == ("CUDA out of memory", "data-node", "admin")
+    assert newest["splits"] == ["val", "test"] and newest["model"]["name"] == "det"
+    assert newest["duration_s"] == 60 and older["duration_s"] == 120
+    assert newest["sent"]["status"] == "succeeded" and newest["sent"]["node_name"] == "data-node"
+    assert newest["sent"]["duration_s"] == 120 and older["sent"] is None
+    assert older["basis"] is False  # it kept no per-image predictions: no model basis
+    assert hub.get(f"/api/jobs/{newest['job_id']}/logs").status_code == 200

@@ -351,6 +351,71 @@ def pending(db: Session, release: Release) -> list[dict[str, Any]]:
     ]
 
 
+HISTORY = 30  # the model checks 검수 lists for a dataset
+
+
+def history(db: Session, settings: Any, release: Release, limit: int = HISTORY) -> list[dict[str, Any]]:
+    """검수's record of the model checks on this dataset's versions (those with the same classes), newest first.
+    Like a training's, each stays after it ends: how it went and where, how long, who started it, the images it had
+    sent to that server first, and why it failed — the Jobs screen shows it only briefly. The log is the job's."""
+    from . import modelops, services
+    from .models import User
+
+    siblings = select(Release.id).where(
+        Release.dataset_id == release.dataset_id, Release.label_space_id == release.label_space_id
+    )
+    ops = db.scalars(
+        select(ModelJob)
+        .where(ModelJob.kind == "eval", ModelJob.release_id.in_(siblings))
+        .order_by(ModelJob.created_at.desc())
+        .limit(limit)
+    ).all()
+    names = services.node_name_map(db)
+    users = {
+        u.id: u.username for u in db.scalars(select(User).where(User.id.in_({op.created_by for op in ops if op.created_by})))
+    }
+    basis = {op.id for op in _offered(db, release)}  # usable as 검수's model basis (it kept per-image predictions)
+    out = []
+    for op in ops:
+        view = modelops.op_view(db, settings, op, names)
+        job = db.get(Job, op.job_id) if op.job_id else None
+        sent = None
+        after = (job.requirements or {}).get("after") if job else None
+        before = db.get(Job, after) if after else None
+        if before is not None and before.type == "data.sync":  # the images went to that server first
+            shown = services.job_view(db, settings, before, names)
+            sent = {
+                "job_id": before.id,
+                "status": shown["status"],
+                "error": shown["error"],
+                "node_name": shown["node_name"] or names.get(before.target_node_id or "", ""),
+                "duration_s": shown["duration_s"],
+            }
+        out.append(
+            {
+                "id": op.id,
+                "job_id": op.job_id,
+                "status": view["status"],
+                "error": view["error"],
+                "wait_reason": view["wait_reason"],
+                "node_name": view["node_name"] or (names.get(job.target_node_id or "", "") if job else ""),
+                "duration_s": view["duration_s"],
+                "created_at": view["created_at"],
+                "finished_at": iso(job.finished_at) if job else None,
+                "log_count": job.log_count if job else 0,
+                "by": users.get(op.created_by or "", ""),
+                "model": model_ref(db.get(ModelVersion, op.model_id)),
+                "release": view["release"],
+                "splits": [str(s) for s in (op.params or {}).get("splits") or [(op.params or {}).get("split") or "val"]],
+                "code": view["code"],
+                "images": view["predicted"],
+                "basis": op.id in basis,
+                "sent": sent,
+            }
+        )
+    return out
+
+
 def check_of(db: Session, release: Release, op_id: str) -> ModelJob:
     op = db.get(ModelJob, op_id)
     if op is None or op.kind != "eval" or op not in _offered(db, release):

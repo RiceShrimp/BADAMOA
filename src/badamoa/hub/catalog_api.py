@@ -497,6 +497,15 @@ def label_checks(release_id: str, _: User = Depends(current_user), db: Session =
     return result
 
 
+@router.get("/releases/{release_id}/qa/history")
+def label_check_history(
+    release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> list:
+    """검수's record of the model checks on this dataset's versions: each with how it went, where, the images it
+    had sent first and why it failed, kept after it ends (the log: ``/jobs/{job_id}/logs``)."""
+    return checks.history(db, hub.settings, catalog.get_release(db, release_id))
+
+
 @router.get("/releases/{release_id}/checks")
 def release_checks(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> list:
     """Evaluations that can sort this release's images by likely wrong labels (``items?suspect=<id>``)."""

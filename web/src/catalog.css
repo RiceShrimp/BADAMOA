@@ -1666,3 +1666,55 @@ select.active-select {
   width: auto;
   margin: 0;
 }
+
+/* 검수 → 모델 기준: the dataset's model checks, kept after they end (CheckHistory) */
+.check-history {
+  margin-top: 8px;
+}
+.check-history-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--bad, #d64545);
+  border-radius: 8px;
+}
+.check-history-toggle {
+  padding: 0;
+}
+.check-history-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 460px;
+  overflow-y: auto;
+}
+.check-history-list > li {
+  padding: 8px 12px;
+}
+.check-history-list > li + li {
+  border-top: 1px solid var(--border);
+}
+.check-history-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.check-history-row .spacer {
+  flex: 1;
+}
+.check-history-what {
+  min-width: 0;
+}
+.check-history-sub {
+  margin: 3px 0 0 2px;
+}
+.check-history-log {
+  margin-top: 6px;
+}
