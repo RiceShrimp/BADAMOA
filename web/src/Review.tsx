@@ -486,6 +486,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   useEffect(() => setShowLetBe(false), [pick, op]);
   // The found images narrowed like the dataset screen's: split, label state, class, site, camera, file name.
   const [filter, setFilter] = useState<ItemFilter>({});
+  const [showBoxes, setShowBoxes] = useState(true); // the thumbnails' label boxes
   const narrowed = Object.values(filter).filter(Boolean).length;
   const setOne = (key: keyof ItemFilter, value: string) => setFilter((f) => ({ ...f, [key]: value || undefined }));
   const query = useMemo(() => {
@@ -654,7 +655,15 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               </button>
             )}
           </div>
-          <ReviewFilters release={release} filter={filter} onChange={setOne} onClear={() => setFilter({})} />
+          <div className="review-grid-bar">
+            <ReviewFilters release={release} filter={filter} onChange={setOne} onClear={() => setFilter({})} />
+            {task !== "classify" && (
+              <label className="check inline-check" title="썸네일에 라벨 박스를 그릴지">
+                <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />
+                라벨
+              </label>
+            )}
+          </div>
           {pages > 1 && (
             <div className="pager">
               <button onClick={() => setPage(page - 1)} disabled={page === 0} aria-label="이전 페이지">
@@ -674,7 +683,12 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               <button key={item.id} className="thumb" onClick={() => setViewing(page * PAGE + i)}>
                 <span className="thumb-image">
                   {item.thumb_url ? (
-                    <Shot shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }} colorOf={colorOf} task={task} />
+                    <Shot
+                      shot={{ url: item.thumb_url, width: item.width, height: item.height, boxes: item.boxes }}
+                      colorOf={colorOf}
+                      task={task}
+                      boxes={showBoxes}
+                    />
                   ) : (
                     <Icon name="images" size={22} />
                   )}

@@ -217,6 +217,7 @@ export function ItemViewer({
   });
   const [minScore, setMinScore] = useState<number>(rememberedScore);
   const [showPred, setShowPred] = useState(true);
+  const [showFlagged, setShowFlagged] = useState(true); // 검수's frames round the labels it flagged (Q)
   const [showDiff, setShowDiff] = useState(true); // what the work in progress changed, over the image
 
   // ---- zoom: 1 fits the image; pan is where the zoomed image sits inside its frame (screen pixels)
@@ -767,6 +768,7 @@ export function ItemViewer({
     else if (key === "n") setShowNames((v) => !v);
     else if (key === "f") setFill((v) => !v);
     else if (key === "p") setShowPred((v) => !v);
+    else if (key === "q") setShowFlagged((v) => !v);
     else if (key === "d") setShowDiff((v) => !v);
     else if (key === "o" && qaCheck) void judge();
   };
@@ -1179,7 +1181,14 @@ export function ItemViewer({
                     )}
                     {(showLabels || editing) && r && task !== "classify" && drawBoxes(r)}
                     {showPred && n === 0 && task !== "classify" && overlays.map(({ run, style }) => drawPredictions(run.labels ?? [], run.scores ?? [], style))}
-                    {flagged && !editing && n === 0 && r && item && r.id === item.revision_id && drawFlagged(r.boxes, flagged.boxes)}
+                    {flagged &&
+                      showFlagged &&
+                      !editing &&
+                      n === 0 &&
+                      r &&
+                      item &&
+                      r.id === item.revision_id &&
+                      drawFlagged(r.boxes, flagged.boxes)}
                     {showDiff && changeCount > 0 && n === 0 && baseRevision && afterLabels && drawChanges(baseRevision.boxes, afterLabels)}
                     {editing && shapes && fitWidth > 0 && (
                       <EditLayer
@@ -1671,6 +1680,12 @@ export function ItemViewer({
           <label className="check">
             <input type="checkbox" checked={fill} onChange={(e) => setFill(e.target.checked)} /> 박스 채우기 <kbd>F</kbd>
           </label>
+          {flagged && flagged.boxes.length > 0 && (
+            <label className="check" title="검수가 걸린 라벨에 두른 노란 테두리와 번호">
+              <input type="checkbox" checked={showFlagged} onChange={(e) => setShowFlagged(e.target.checked)} /> 검수 표시{" "}
+              <kbd>Q</kbd>
+            </label>
+          )}
           {anyForeign && (
             <label className="check" title="다른 클래스 목록의 라벨에서, 이 버전에 같은 이름의 클래스가 없는 것은 숨깁니다">
               <input type="checkbox" checked={onlyHere} onChange={(e) => setOnlyHere(e.target.checked)} /> 이 버전의 클래스만

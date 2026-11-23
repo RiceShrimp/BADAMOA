@@ -1500,3 +1500,14 @@ label.check {
   border-color: var(--warn);
   background: var(--warn-soft);
 }
+
+/* 검수: the filters and the thumbnails' 라벨 switch on one line */
+.review-grid-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.review-grid-bar .review-filters {
+  flex: 1 1 auto;
+}
