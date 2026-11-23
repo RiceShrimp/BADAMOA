@@ -5,9 +5,9 @@ import { ItemViewer, type LabelingMode } from "./ItemViewer";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import type { ItemFilter } from "./ReleaseMaker";
 import { colorFor } from "./ReleaseTabs";
+import { StartAutolabel } from "./Autolabel";
 import { api } from "./api";
 import {
-  type AutolabelModel,
   type AutolabelStatus,
   type LabelSetPart,
   type LabelSetSummary,
@@ -354,7 +354,8 @@ function SetBoard({ id, arg }: { id: string; arg?: string }) {
       {failed && <div className="error">{failed}</div>}
       {!openId && <div className="notice">이 데이터셋에 등록이 끝난 버전이 없어 라벨링할 곳이 없습니다.</div>}
       {autolabeling && (
-        <AutolabelDialog
+        <StartAutolabel
+          projectId={set.project_id}
           setId={id}
           review={set.review}
           onClose={() => setAutolabeling(false)}
@@ -543,115 +544,15 @@ function AutolabelLine({ status, review }: { status: AutolabelStatus; review: bo
         ) : (
           <> · 이미지 {status.items.toLocaleString()}장</>
         )}
-        {status.job_id && (
+        {(status as AutolabelStatus & { op_id?: string }).op_id && (
           <>
             {" "}
-            <a href="#/jobs" className="small">
-              작업 보기
+            <a href={`#/autolabel/run/${(status as AutolabelStatus & { op_id?: string }).op_id}`} className="small">
+              기록 · 로그 보기
             </a>
           </>
         )}
       </span>
     </div>
-  );
-}
-
-/** Pick a registered model and how sure it must be; it runs on the server holding the images. */
-function AutolabelDialog({
-  setId,
-  review,
-  onClose,
-  onStarted,
-}: {
-  setId: string;
-  review: boolean;
-  onClose: () => void;
-  onStarted: () => void;
-}) {
-  const { data, error: loadError } = usePolling(
-    () => api<{ todo: number; keep: number; models: AutolabelModel[] }>(`/label-sets/${setId}/autolabel/models`),
-    0,
-    [setId],
-  );
-  const [modelId, setModelId] = useState("");
-  const [keep, setKeep] = useState(0.25);
-  const [accepting, setAccepting] = useState(false);
-  const [accept, setAccept] = useState(0.8);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const usable = (data?.models ?? []).filter((m) => !m.problem);
-  useEffect(() => {
-    if (!modelId && usable.length) setModelId(usable[0].id);
-  }, [modelId, usable]);
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setError(null);
-    try {
-      await api(`/label-sets/${setId}/autolabel`, { body: { model_id: modelId, keep, accept: accepting ? accept : null } });
-      onStarted();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Modal title="오토라벨" onClose={onClose}>
-      <form onSubmit={submit}>
-        <p className="muted">
-          등록한 모델이 이 묶음의 아직 안 한 이미지 {(data?.todo ?? 0).toLocaleString()}장에 라벨을 먼저 그립니다. 라벨링하는 사람은 이미지를
-          열면 모델이 그린 것에서 시작해 고치기만 합니다. 이미 라벨링했거나 돌려받은 이미지는 건드리지 않습니다.
-        </p>
-        {loadError && <div className="error">{loadError}</div>}
-        {data && data.models.length === 0 && <div className="notice">이 프로젝트에 등록된 모델이 없습니다. 먼저 학습해 모델을 만드세요.</div>}
-        <div className="autolabel-models" role="radiogroup" aria-label="모델">
-          {data?.models.map((m) => (
-            <label key={m.id} className={`autolabel-model ${m.problem ? "off" : ""}`} title={m.problem || undefined}>
-              <input type="radio" name="model" value={m.id} checked={modelId === m.id} disabled={Boolean(m.problem)} onChange={() => setModelId(m.id)} />
-              <span>
-                <strong>
-                  {m.name} v{m.version}
-                </strong>{" "}
-                {m.aliases.map((a) => (
-                  <span key={a} className="tag">
-                    {a}
-                  </span>
-                ))}
-                <span className="muted small">
-                  {" "}
-                  · {m.metric} {m.value != null ? m.value.toFixed(3) : "–"} · 클래스 {m.matched}/{m.classes} 맞음
-                  {m.missing.length > 0 && ` (없는 클래스: ${m.missing.join(", ")} — 버림)`}
-                </span>
-                {m.problem && <span className="muted small"> · {m.problem}</span>}
-              </span>
-            </label>
-          ))}
-        </div>
-        <div className="form-row">
-          <label>
-            최소 확신도
-            <input type="number" min={0.05} max={0.95} step={0.05} value={keep} onChange={(e) => setKeep(Number(e.target.value) || 0.25)} />
-            <span className="muted small">이보다 낮은 예측은 버립니다</span>
-          </label>
-          <label>
-            <span className="check">
-              <input type="checkbox" checked={accepting} onChange={(e) => setAccepting(e.target.checked)} /> 자동 승인
-            </span>
-            <input type="number" min={keep} max={1} step={0.05} value={accept} disabled={!accepting} onChange={(e) => setAccept(Number(e.target.value) || 0.8)} />
-            <span className="muted small">예측이 모두 이 확신도 이상인 이미지는 바로 저장해 {review ? "검수로" : "완료로"} 보냅니다</span>
-          </label>
-        </div>
-        {error && <div className="error">{error}</div>}
-        <div className="modal-actions">
-          <button type="button" onClick={onClose}>
-            취소
-          </button>
-          <button className="primary" disabled={saving || !modelId || !data?.todo}>
-            오토라벨 시작
-          </button>
-        </div>
-      </form>
-    </Modal>
   );
 }

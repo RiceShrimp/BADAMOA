@@ -1,0 +1,149 @@
+/* ---- 오토라벨 screen ---- */
+
+/* the two ways: Closed-Voca (models trained here) and Open-Voca (text prompts, not yet) */
+.al-ways {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.al-way {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 14px 16px;
+}
+.al-way p {
+  margin: 0;
+}
+.al-way-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.al-way-head strong {
+  font-size: 15px;
+}
+.al-way.off {
+  border-style: dashed;
+  box-shadow: none;
+  background: var(--surface-2);
+  opacity: 0.6;
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
+.al-way.off button:disabled {
+  cursor: not-allowed;
+}
+@media (max-width: 760px) {
+  .al-ways {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* a project's card: what its runs drew */
+.al-sums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.al-sums strong {
+  color: var(--text);
+  font-size: 15px;
+}
+.al-lines-head {
+  padding: 6px 4px 0;
+}
+
+/* tables of runs and sets */
+.al-table td {
+  padding: 9px 14px;
+}
+.al-runs tbody tr {
+  cursor: pointer;
+}
+.al-runs tbody tr:hover td {
+  background: var(--surface-2);
+}
+.al-table .alias {
+  margin-left: 4px;
+}
+.al-outcome {
+  max-width: 320px;
+}
+.al-outcome .ellipsis {
+  display: block;
+}
+.al-current {
+  margin-left: 6px;
+}
+.al-last {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+/* one run */
+.al-facts {
+  padding: 14px 16px 2px;
+  margin-bottom: 14px;
+}
+
+/* starting one */
+.al-start {
+  display: grid;
+  gap: 12px;
+}
+.al-start .project-picker {
+  justify-self: start;
+}
+.al-way-pick button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.al-way-pick .tag {
+  margin-left: 4px;
+}
+.al-target {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.al-target legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.al-target p {
+  margin: 0;
+}
+.al-label {
+  margin-bottom: -6px;
+}
+.al-start .autolabel-models {
+  margin: 0;
+}
+.al-server {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.al-server > span {
+  flex: 1;
+  min-width: 220px;
+}
+.al-server.bad {
+  border-color: var(--bad);
+}

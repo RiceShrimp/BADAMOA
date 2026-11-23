@@ -24,8 +24,18 @@ from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
 
-from . import asks, catalog, drafts, labeling, modelops, services, training
-from .catalog_models import ItemPrediction, LabelSet, LabelSetItem, LabelSpace, Release, ReleaseItem
+from . import asks, catalog, drafts, labeling, modelops, registry, services, training
+from .catalog_models import (
+    Dataset,
+    ItemPrediction,
+    LabelSet,
+    LabelSetItem,
+    LabelSpace,
+    Project,
+    Release,
+    ReleaseItem,
+)
+from .config import HubSettings
 from .db import iso, utcnow
 from .models import Job, Node, User
 from .services import ServiceError
@@ -74,12 +84,18 @@ def choices(db: Session, set_id: str) -> dict[str, Any]:
     """The project's models that can label the set, the ones with an alias and the best first."""
     found = labeling.get_set(db, set_id)
     release = _open(db, found)
+    return {"todo": _todo(db, found), "keep": KEEP, "models": _models(db, found.project_id, release)}
+
+
+def _models(db: Session, project_id: str, release: Release) -> list[dict[str, Any]]:
+    """The project's models, each with why it cannot label this release's images ("" when it can), the ones that
+    can and have an alias (production, champion) first, then the best by the task's metric."""
     task = catalog.release_task(db, release)
     names = _names(db, release)
     models = []
     for model in db.scalars(
         select(ModelVersion)
-        .where(ModelVersion.project_id == found.project_id, ModelVersion.deleted_at.is_(None))
+        .where(ModelVersion.project_id == project_id, ModelVersion.deleted_at.is_(None))
         .order_by(ModelVersion.created_at.desc())
     ):
         metric = training.PRIMARY_METRIC.get(model.task or "detect", "map50_95")
@@ -108,7 +124,7 @@ def choices(db: Session, set_id: str) -> dict[str, Any]:
             -(m["value"] if m["value"] is not None else -1),
         )
     )
-    return {"todo": _todo(db, found), "keep": KEEP, "models": models}
+    return models
 
 
 def start(
@@ -266,7 +282,325 @@ def status(db: Session, found: LabelSet) -> dict[str, Any] | None:
     state = job.status if job is not None else "failed"
     return {
         **{k: info.get(k) for k in ("model", "keep", "accept", "items", "started_at", "finished_at", "result")},
+        "op_id": info.get("op_id"),  # the run on the 오토라벨 screen
         "job_id": job.id if job is not None else None,
         "status": state,
         "error": (job.error or "")[:500] if job is not None and state == "failed" else None,
     }
+
+
+# ---- the 오토라벨 screen: every run across projects, the sets waiting, starting from a dataset's images --------------
+
+RECENT = 4  # runs listed on a project's card
+SHOWN_SETS = 3  # sets waiting, listed on a project's card
+MAX_RUNS = 2000
+GOING = ("queued", "running")
+
+
+def _ops(db: Session, project_id: str = "", set_id: str = "", limit: int = MAX_RUNS) -> list[ModelJob]:
+    query = select(ModelJob).where(ModelJob.kind == "autolabel")
+    if project_id:
+        query = query.join(ModelVersion, ModelVersion.id == ModelJob.model_id).where(ModelVersion.project_id == project_id)
+    ops = list(db.scalars(query.order_by(ModelJob.created_at.desc()).limit(limit)))
+    if set_id:
+        ops = [op for op in ops if (op.params or {}).get("set_id") == set_id]
+    return ops
+
+
+def _rows(db: Session, settings: HubSettings, ops: list[ModelJob]) -> list[dict[str, Any]]:
+    """Runs as the screen lists them: where each is, which model on which set and images, and what came of it."""
+    if not ops:
+        return []
+    jobs = {j.id: j for j in db.scalars(select(Job).where(Job.id.in_([op.job_id for op in ops if op.job_id])))}
+    models = {m.id: m for m in db.scalars(select(ModelVersion).where(ModelVersion.id.in_({op.model_id for op in ops})))}
+    set_ids = {str((op.params or {}).get("set_id") or "") for op in ops} - {""}
+    sets = {s.id: s for s in db.scalars(select(LabelSet).where(LabelSet.id.in_(set_ids)))} if set_ids else {}
+    release_ids = {op.release_id for op in ops if op.release_id}
+    releases = {r.id: r for r in db.scalars(select(Release).where(Release.id.in_(release_ids)))}
+    dataset_ids = {r.dataset_id for r in releases.values()}
+    datasets = {d.id: d for d in db.scalars(select(Dataset).where(Dataset.id.in_(dataset_ids)))}
+    project_ids = {m.project_id for m in models.values()}
+    projects = {p.id: p for p in db.scalars(select(Project).where(Project.id.in_(project_ids)))}
+    starters = {op.created_by for op in ops if op.created_by}
+    users = dict(db.execute(select(User.id, User.username).where(User.id.in_(starters))).all()) if starters else {}
+    nodes = services.node_name_map(db)
+    now = utcnow()
+    out = []
+    for op in ops:
+        params = op.params or {}
+        job = jobs.get(op.job_id or "")
+        state = job.status if job is not None else "failed"
+        model = models.get(op.model_id)
+        found = sets.get(str(params.get("set_id") or ""))
+        release = releases.get(op.release_id or "")
+        dataset = datasets.get(release.dataset_id) if release else None
+        project = projects.get(model.project_id) if model else None
+        result = (op.result or {}).get("autolabel") or None
+        current = found is not None and (found.autolabel or {}).get("op_id") == op.id
+        took = None
+        if job is not None and job.started_at and (job.finished_at or state == "running"):
+            took = ((job.finished_at or now) - job.started_at).total_seconds()
+        out.append(
+            {
+                "id": op.id,
+                "job_id": op.job_id,
+                "status": state,
+                "error": (job.error or "")[:500] if job is not None and state == "failed" else None,
+                "wait_reason": services.explain_wait(db, settings, job) if job is not None and state == "queued" else None,
+                "duration_s": round(took, 1) if took is not None else None,
+                "node_name": nodes.get(job.node_id or job.target_node_id or "") if job is not None else None,
+                "gpus": int((job.requirements or {}).get("gpus") or 0) if job is not None else 0,
+                "created_at": iso(op.created_at),
+                "finished_at": iso(job.finished_at) if job is not None and job.finished_at else None,
+                "started_by": users.get(op.created_by or ""),
+                "via": job.created_via if job is not None else None,
+                "project": {"id": project.id, "name": project.name} if project else None,
+                "model": modelops._model_ref(model),
+                # the set it labelled (None once the set is deleted); a set's newest run is where its editor starts
+                "set": {"id": found.id, "name": found.name, "review": found.review} if found else None,
+                "set_gone": found is None,
+                "current": current,
+                "dataset": {"id": dataset.id, "name": dataset.name} if dataset else None,
+                "release": (
+                    {"id": release.id, "version": release.version, "draft": release.status == "draft"} if release else None
+                ),
+                "keep": params.get("keep"),
+                "accept": params.get("accept"),
+                # images it was asked to label: what its set had to do then (its newest run), else what it predicted
+                "items": (found.autolabel or {}).get("items") if current else (result or {}).get("images"),
+                "result": result,
+            }
+        )
+    return out
+
+
+def runs(db: Session, settings: HubSettings, project_id: str = "", set_id: str = "") -> list[dict[str, Any]]:
+    """Every 오토라벨 run (of a project, of a set), newest first."""
+    return _rows(db, settings, _ops(db, project_id, set_id))
+
+
+def run_view(db: Session, settings: HubSettings, op_id: str) -> dict[str, Any]:
+    """One run on its own screen: the row, which code ran it and how much it logged."""
+    op = db.get(ModelJob, op_id)
+    if op is None or op.kind != "autolabel":
+        raise ServiceError(404, "오토라벨 기록을 찾을 수 없습니다.")
+    (row,) = _rows(db, settings, [op])
+    job = db.get(Job, op.job_id) if op.job_id else None
+    return {
+        **row,
+        "code": modelops._code_of(job),
+        "started_at": iso(job.started_at) if job is not None and job.started_at else None,
+        "log_count": job.log_count if job is not None else 0,
+        "gpu_indices": list(job.gpu_indices or []) if job is not None else [],
+    }
+
+
+def _waiting(db: Session) -> dict[str, int]:
+    """Each set's images nobody labelled yet."""
+    return dict(
+        db.execute(
+            select(LabelSetItem.set_id, func.count()).where(LabelSetItem.state == "todo").group_by(LabelSetItem.set_id)
+        ).all()
+    )
+
+
+TOTALS = ("runs", "going", "succeeded", "failed", "images", "labels", "accepted", "sets_waiting", "todo")
+
+
+def board(db: Session, settings: HubSettings) -> dict[str, Any]:
+    """오토라벨's first screen: the runs going on now, then each project: its runs and what came of them, the sets
+    with images still to label, and how many of its models can label."""
+    tasks = catalog.project_tasks(db)
+    projects = {p.id: p for p in db.scalars(select(Project).where(Project.deleted_at.is_(None)).order_by(Project.name))}
+    rows = [r for r in _rows(db, settings, _ops(db)) if r["project"] and r["project"]["id"] in projects]
+    todo = _waiting(db)
+    sets: dict[str, list[LabelSet]] = {}
+    for found in db.scalars(select(LabelSet).order_by(LabelSet.created_at.desc())):
+        if found.project_id in projects:
+            sets.setdefault(found.project_id, []).append(found)
+    able: Counter = Counter()
+    for model in db.scalars(select(ModelVersion).where(ModelVersion.deleted_at.is_(None))):
+        if model.project_id in projects and modelops.autolabels(db, model):
+            able[model.project_id] += 1
+    names = {d.id: d.name for d in db.scalars(select(Dataset).where(Dataset.project_id.in_(list(projects))))}
+    cards = []
+    totals: Counter = Counter()
+    for pid, project in projects.items():
+        mine = [r for r in rows if r["project"]["id"] == pid]
+        waiting = sorted((s for s in sets.get(pid, []) if todo.get(s.id)), key=lambda s: -todo[s.id])
+        if not mine and not waiting and not tasks.get(pid):
+            continue  # no dataset version in it yet: nothing to label
+        done = [r["result"] for r in mine if r["status"] == "succeeded" and r["result"]]
+        counts = Counter(r["status"] for r in mine)
+        card = {
+            "project": {"id": pid, "name": project.name, "folder": project.folder, "tasks": tasks.get(pid, [])},
+            "runs": len(mine),
+            "going": counts["queued"] + counts["running"],
+            "succeeded": counts["succeeded"],
+            "failed": counts["failed"],
+            "images": sum(int(r.get("images") or 0) for r in done),
+            "labels": sum(int(r.get("labels") or 0) for r in done),
+            "accepted": sum(int(r.get("accepted") or 0) for r in done),
+            "recent": mine[:RECENT],
+            "last_at": mine[0]["created_at"] if mine else None,
+            "sets": [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "dataset": names.get(s.dataset_id, ""),
+                    "todo": todo[s.id],
+                    "autolabeled": bool((s.autolabel or {}).get("op_id")),
+                }
+                for s in waiting[:SHOWN_SETS]
+            ],
+            "sets_waiting": len(waiting),
+            "todo": sum(todo[s.id] for s in waiting),
+            "models": able[pid],
+        }
+        cards.append(card)
+        for key in TOTALS:
+            totals[key] += card[key]
+    # the projects worked on most recently first, then the ones with nothing run yet by name
+    cards.sort(key=lambda c: c["project"]["name"])
+    cards.sort(key=lambda c: c["last_at"] or "", reverse=True)
+    return {
+        "going": [r for r in rows if r["status"] in GOING],
+        "projects": cards,
+        "totals": {k: totals[k] for k in TOTALS},
+    }
+
+
+def targets(db: Session, project_id: str) -> dict[str, Any]:
+    """What a project's 오토라벨 can run over: its labeling sets (with the images nobody labelled yet), and each
+    dataset's images where labels go now (its work in progress, else its newest version), counted by split and
+    label state, to make a set of first."""
+    todo = _waiting(db)
+    sizes = dict(
+        db.execute(
+            select(LabelSetItem.set_id, func.count())
+            .join(LabelSet, LabelSet.id == LabelSetItem.set_id)
+            .where(LabelSet.project_id == project_id)
+            .group_by(LabelSetItem.set_id)
+        ).all()
+    )
+    sets = []
+    for found in db.scalars(select(LabelSet).where(LabelSet.project_id == project_id).order_by(LabelSet.created_at.desc())):
+        dataset = db.get(Dataset, found.dataset_id)
+        sets.append(
+            {
+                "id": found.id,
+                "name": found.name,
+                "dataset": {"id": dataset.id, "name": dataset.name} if dataset else None,
+                "review": found.review,
+                "todo": todo.get(found.id, 0),
+                "items": sizes.get(found.id, 0),
+                "autolabel": status(db, found),
+            }
+        )
+    datasets = []
+    for dataset in db.scalars(select(Dataset).where(Dataset.project_id == project_id).order_by(Dataset.name)):
+        release = drafts.draft_of(db, dataset.id) or drafts.latest_ready(db, dataset.id)
+        if release is None:
+            continue
+        counts: dict[str, dict[str, int]] = {}
+        for split, state, n in db.execute(
+            select(ReleaseItem.split, ReleaseItem.state, func.count())
+            .where(ReleaseItem.release_id == release.id)
+            .group_by(ReleaseItem.split, ReleaseItem.state)
+        ):
+            counts.setdefault(split or "", {})[state] = n
+        datasets.append(
+            {
+                "id": dataset.id,
+                "name": dataset.name,
+                "task": catalog.dataset_task(dataset),
+                "release": {"id": release.id, "version": release.version, "draft": release.status == "draft"},
+                "counts": counts,  # split → label state → images
+            }
+        )
+    return {"sets": sets, "datasets": datasets}
+
+
+def _server(db: Session, settings: HubSettings, release: Release) -> dict[str, Any]:
+    """The server it runs on (the one holding the images), what stops it there and what slows it."""
+    try:
+        node = training.data_node(db, release.id)
+    except ServiceError as e:
+        return {"id": None, "name": "", "status": "", "gpus": 0, "problems": [e.message], "notes": []}
+    problems, notes = [], []
+    if not node.enabled:
+        problems.append(f"{node.name}은(는) 작업을 받지 않도록 되어 있습니다.")
+    elif not registry.has_role(node, registry.AUTOLABELS):
+        problems.append(f"{node.name}은(는) 오토라벨용 서버가 아닙니다. 노드 설정에서 '오토라벨용'을 켜세요.")
+    if not asks.answers_questions(node.agent_version or "", SINCE):
+        need = ".".join(str(n) for n in SINCE)
+        problems.append(f"{node.name}의 MOA를 {need} 이상으로 업데이트해야 합니다.")
+    now = services.node_status(node, settings)
+    if now != "online":
+        notes.append(f"{node.name}이(가) 지금 응답이 없습니다. 켜지면 시작합니다.")
+    return {
+        "id": node.id,
+        "name": node.name,
+        "status": now,
+        "gpus": len((node.info or {}).get("gpus") or []),
+        "problems": problems,
+        "notes": notes,
+    }
+
+
+def offer(db: Session, settings: HubSettings, set_id: str = "", release_id: str = "") -> dict[str, Any]:
+    """For starting one: the models that can label a set's images (or a dataset's, before its set is made) and the
+    server it runs on."""
+    if set_id:
+        found = labeling.get_set(db, set_id)
+        release, project_id, todo = _open(db, found), found.project_id, _todo(db, found)
+    else:
+        release = catalog.get_release(db, release_id)
+        _, why = drafts.edit_place(db, release)
+        if why:
+            raise ServiceError(409, why.replace("라벨은", "오토라벨은").replace("고칩니다", "돌립니다"))
+        project_id, todo = db.get(Dataset, release.dataset_id).project_id, None
+    return {
+        "todo": todo,
+        "keep": KEEP,
+        "models": _models(db, project_id, release),
+        "server": _server(db, settings, release),
+    }
+
+
+def start_on_images(
+    db: Session,
+    user: User,
+    release_id: str,
+    model_id: str,
+    *,
+    name: str = "",
+    split: str = "",
+    part_size: int = 50,
+    review: bool = True,
+    keep: float = KEEP,
+    accept: float | None = None,
+    gpus: int | None = None,
+    via: str = "ui",
+) -> tuple[LabelSet, ModelJob]:
+    """A dataset's images nobody labelled yet (of one split, or all): a labeling set of them, labelled by the model
+    first. People take its parts as with any set."""
+    release = catalog.get_release(db, release_id)
+    dataset = db.get(Dataset, release.dataset_id)
+    model = training.get_model(db, model_id)
+    if model.project_id != dataset.project_id:
+        raise ServiceError(400, "다른 프로젝트의 모델입니다.")
+    if split and split not in ("train", "val", "test"):
+        raise ServiceError(400, "split은 train, val, test 중에서 고르세요.")
+    match: dict[str, Any] = {"state": "unlabelled", **({"split": split} if split else {})}
+    name = name.strip() or f"{dataset.name} 오토라벨 {utcnow():%m/%d}"
+    try:
+        found = labeling.create_set(
+            db, user, release_id=release.id, name=name, match=match, part_size=part_size, review=review, via=via
+        )
+    except ServiceError as e:
+        if e.status == 400 and "맞는 이미지가 없습니다" in e.message:
+            where = f"{split}에 " if split else ""
+            raise ServiceError(400, f"이 데이터셋의 {where}아직 라벨링하지 않은 이미지가 없습니다.") from e
+        raise
+    return found, start(db, user, found.id, model_id, keep=keep, accept=accept, gpus=gpus, via=via)

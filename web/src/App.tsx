@@ -1,6 +1,7 @@
 import { ImportTray } from "./Imports";
 import { type FormEvent, useEffect, useState } from "react";
 import { Agents } from "./Agents";
+import { Autolabel } from "./Autolabel";
 import { ApiError, type NodeInfo, type User, api, getToken, setToken } from "./api";
 import { Datasets } from "./Datasets";
 import { TRASH_EVENT } from "./catalogTypes";
@@ -19,7 +20,7 @@ import { Training } from "./Training";
 import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "labeling" | "review" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
+type Page = "home" | "datasets" | "labeling" | "review" | "autolabel" | "training" | "models" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
 
 interface NavItem {
   label: string;
@@ -45,7 +46,7 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     items: [
       { label: "라벨링", icon: "edit", page: "labeling" }, // labeling sets, with their review
       { label: "검수", icon: "review", page: "review" }, // finding missing and wrong labels
-      { label: "오토라벨", icon: "wand", phase: 3 },
+      { label: "오토라벨", icon: "wand", page: "autolabel" }, // models draw labels first; people fix them
     ],
   },
   {
@@ -333,6 +334,7 @@ function Shell({
           {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "labeling" && <Labeling setId={sub} arg={arg} />}
           {page === "review" && <Review sub={sub} arg={arg} />}
+          {page === "autolabel" && <Autolabel sub={sub} arg={arg} />}
           {page === "training" && <Training runId={sub} arg={arg} />}
           {page === "models" && <Models modelId={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "nodes" && (sub ? <NodeDetail nodeId={sub} isAdmin={isAdmin} /> : <Nodes isAdmin={isAdmin} />)}
