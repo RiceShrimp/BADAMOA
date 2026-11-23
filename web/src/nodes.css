@@ -677,3 +677,11 @@ details.node-more > summary {
 :root[data-theme="dark"] .role-chip.role-autolabel {
   --role-autolabel: #b79cff;
 }
+
+/* the storage kinds: a caret says the list opens (each item has its own 지우기) */
+.storage-caret {
+  display: inline-block;
+  width: 1em;
+  color: var(--muted);
+  font-size: 11px;
+}

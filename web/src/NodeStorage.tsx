@@ -23,6 +23,8 @@ interface StorageItem {
   in_use: string; // the job that may use it ("" when none)
   path?: string; // still where the node kept it before its work folder (its home): its own path
   mount?: string; // that path's disk
+  python?: string; // an environment's Python
+  requirements?: string[]; // what an environment was built from
 }
 
 interface StorageKind {
@@ -121,8 +123,15 @@ const STATUS: Record<string, string> = {
   cancelled: "멈춤",
 };
 
+/** What an item is called on the screen and in the question before removing it. */
+function itemName(kind: Kind, item: StorageItem): string {
+  // an environment is known by the model kinds that run in it, not by its Python
+  if (kind === "envs") return item.users?.length ? item.users.join(", ") : "쓰는 모델 종류 없는 환경";
+  return item.label || item.image || item.id;
+}
+
 function itemTitle(kind: Kind, item: StorageItem) {
-  const name = item.label || item.image || item.id;
+  const name = itemName(kind, item);
   if (kind === "models" && item.model_id && !item.gone) return <a href={`#/models/${item.model_id}`}>{name}</a>;
   if (kind === "runs" && item.run_id) return <a href={`#/training/${item.run_id}`}>{name}</a>;
   return <span className={item.gone ? "muted" : ""}>{name}</span>;
@@ -130,7 +139,12 @@ function itemTitle(kind: Kind, item: StorageItem) {
 
 function itemNote(kind: Kind, item: StorageItem): string {
   const parts: string[] = [];
-  if (kind === "envs" || kind === "containers") {
+  if (kind === "envs") {
+    const reqs = item.requirements ?? [];
+    parts.push(item.label || `Python ${item.python ?? ""}`);
+    if (reqs.length) parts.push(reqs.slice(0, 3).join(", ") + (reqs.length > 3 ? ` 외 ${reqs.length - 3}개` : ""));
+  }
+  if (kind === "containers") {
     const users = [...(item.users ?? []), ...(item.environments ?? []).map((e) => `환경 ${e}`)];
     parts.push(users.length ? users.join(", ") : "쓰는 모델 종류 없음");
   }
@@ -184,7 +198,7 @@ function whyNotEmpty(k: StorageKind, notUsed: number, canClean: boolean, cleanin
 /** What BADAMOA keeps on a server, by kind, with sizes against the disk's free space; admins remove items. */
 export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: boolean }) {
   const { data, refresh } = usePolling(() => api<StorageInfo>(`/nodes/${nodeId}/storage`), 15000, [nodeId]);
-  const [open, setOpen] = useState<Kind | null>(null);
+  const [open, setOpen] = useState<Kind[]>([]); // the kinds whose items are listed
   const [dockerMove, setDockerMove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -203,7 +217,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
     }
   };
   const removeOne = (k: StorageKind, item: StorageItem) => {
-    const name = item.label || item.image || item.id;
+    const name = itemName(k.kind, item);
     if (!window.confirm(`${KIND[k.kind].name} '${name}'(${bytesLabel(item.bytes)})을(를) 이 서버에서 지울까요?`)) return;
     void post({ kind: k.kind, items: [k.kind === "containers" ? (item.image ?? item.id) : item.id] });
   };
@@ -292,7 +306,7 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
             {shownKinds.map((k) => {
               const items = k.items ?? [];
               const expandable = items.length > 0;
-              const shown = open === k.kind;
+              const shown = open.includes(k.kind);
               const free_ = k.items ? items.filter((i) => !i.in_use) : [];
               const canEmpty =
                 isAdmin && data.can_clean && k.removable && k.bytes > 0 && (k.items ? free_.length > 0 : !k.in_use);
@@ -304,11 +318,13 @@ export function NodeStorage({ nodeId, isAdmin }: { nodeId: string; isAdmin: bool
                       className="storage-name"
                       disabled={!expandable}
                       aria-expanded={shown}
-                      onClick={() => setOpen(shown ? null : k.kind)}
+                      onClick={() => setOpen(shown ? open.filter((x) => x !== k.kind) : [...open, k.kind])}
+                      title={expandable ? (shown ? "접기" : "하나씩 보고 지우기") : undefined}
                     >
+                      {expandable ? <span className="storage-caret">{shown ? "▾" : "▸"}</span> : <span className="storage-caret" />}
                       <i className={`swatch kind-${k.kind}`} />
                       <span>{KIND[k.kind].name}</span>
-                      {expandable && <span className="muted">{items.length}개</span>}
+                      {expandable && <span className="muted">{items.length}개 {shown ? "" : "보기"}</span>}
                     </button>
                     <span className="muted small storage-about" title={KIND[k.kind].about}>
                       {KIND[k.kind].about}
