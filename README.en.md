@@ -54,50 +54,76 @@ The Hub serves the web app, the API and the MCP server, and holds the catalog an
 
 You need [uv](https://docs.astral.sh/uv/) and Node.js. Run these in order from the repository folder.
 
-```bash
-uv sync --all-extras
-```
+1. Install the packages and build the web app.
 
-```bash
-npm --prefix web install
-```
+   ```bash
+   uv sync --all-extras
+   ```
 
-```bash
-npm --prefix web run build
-```
+   ```bash
+   npm --prefix web install
+   ```
 
-```bash
-uv run badamoa hub run --home .badamoa/hub
-```
+   ```bash
+   npm --prefix web run build
+   ```
 
-When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account. The "샘플 (COCO8)" project then holds detection, segmentation and keypoint datasets and a 검수 example with labels made wrong on purpose (delete it if not needed). Other servers find the Hub through that address, so use it rather than `localhost`.
+2. Start the Hub.
 
-To have the Hub come back when the PC restarts, turn on "재부팅 시 자동 실행" under **Settings → Hub 실행** (설정 → Hub 실행). It starts with the same data folder, port and address, and nodes reconnect on their own once it is up. On Ubuntu it starts at boot from systemd when the Hub runs as root, else from that account's crontab. On Windows a Hub started without administrator rights comes up when that account logs on; the command shown there, run once in an administrator PowerShell, makes it start at boot without anyone logging on.
+   ```bash
+   uv run badamoa hub run --home .badamoa/hub
+   ```
+
+3. When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account.
+
+   - Other servers find the Hub through that address, so use it rather than `localhost`.
+   - The "샘플 (COCO8)" project then holds detection, segmentation and keypoint datasets and a 검수 example with labels made wrong on purpose. Delete it if not needed.
+
+4. (Optional) To have the Hub come back when the PC restarts, turn on "재부팅 시 자동 실행" under **Settings → Hub 실행** (설정 → Hub 실행). It starts with the same data folder, port and address, and nodes reconnect on their own once it is up.
+
+   | Hub started by | Comes up |
+   |---|---|
+   | Ubuntu (root) | at boot (systemd) |
+   | Ubuntu (other account) | at boot (that account's crontab) |
+   | Windows (administrator) | at boot, without anyone logging on |
+   | Windows (other) | when that account logs on. The command shown there, run once in an administrator PowerShell, makes it start at boot |
 
 > [!TIP]
 > For data to try, `uv run python scripts/fetch_coco128.py` (COCO128, about 7 MB) and `uv run python scripts/fetch_mnist160.py` (MNIST160, about 70 KB). Both unpack under `.badamoa/data/`.
 
 ### Move the Hub to another PC
 
-In **Settings → Hub 옮기기** (admins) the Hub is exported into one file (`badamoa-hub-<date>.tar`): accounts, projects, dataset records, training, models, evaluations, thumbnails and result files. Dataset originals and received copies stay on the nodes. From the moment of export the old Hub only reads (cancel to write again).
+1. On the old Hub, **Settings → Hub 옮기기** (admins) exports it into one file (`badamoa-hub-<date>.tar`).
 
-On the new PC prepare the Hub as above and, before starting it, import the file (`--home` as when running the Hub).
+   - In it: accounts, projects, dataset records, training, models, evaluations, thumbnails and result files
+   - Left where they are: dataset originals and received copies (they live on the nodes)
+   - From the moment of export the old Hub only reads (cancel to write again).
 
-```bash
-uv run badamoa hub import badamoa-hub-20261120-1500.tar --home .badamoa/hub
-```
+2. On the new PC prepare the Hub as above and, before starting it, import the file (`--home` as when running the Hub).
 
-Start the new Hub and enter its address on the old Hub's same screen: each node checks the new Hub knows it and switches, and people opening the old address are sent to the new one. To export a stopped Hub use `uv run badamoa hub export <folder> --home .badamoa/hub`.
+   ```bash
+   uv run badamoa hub import badamoa-hub-20261120-1500.tar --home .badamoa/hub
+   ```
+
+3. Start the new Hub and enter its address on the old Hub's same screen. Each node checks the new Hub knows it and switches, and people opening the old address are sent to the new one.
+
+To export a stopped Hub use `uv run badamoa hub export <folder> --home .badamoa/hub`.
 
 ### Add training and data servers
 
-In the web app, **Nodes** (노드) → **Add node** (노드 추가) asks which roles the server takes (training 학습용 · auto-labeling 오토라벨용 · inference 추론용 · data server 데이터 서버용), then shows a one-line command for Ubuntu and one for Windows. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows): it registers to start automatically and shows up on the node board shortly after. It comes back and reconnects after a reboot, and from then on the node updates itself to follow the Hub's version.
+1. In the web app, **Nodes** (노드) → **Add node** (노드 추가) asks which roles the server takes (training 학습용 · auto-labeling 오토라벨용 · inference 추론용 · data server 데이터 서버용), then shows a one-line command for Ubuntu and one for Windows.
 
-For a server where you have no sudo (say one whose datasets you only read), use the "sudo 권한이 없을 때" command on the same screen. It installs into that account's home (`~/.badamoa`), and that account's crontab starts the node at boot and every five minutes when it is not running. Registering a dataset only reads the images, so read access is all the account needs.
+2. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows).
 
-Training runs on training servers; auto-labeling runs on the server holding the images when that server has the auto-labeling role. Templates' environments are installed only on training or auto-labeling servers.
+3. It registers to start automatically and shows up on the node board shortly after. It comes back and reconnects after a reboot, and from then on the node updates itself to follow the Hub's version.
 
-Only node-to-node image transfers use TCP 8475, and the install command opens it in the firewall (without sudo the firewall is left alone: if one is on, ask the server's admin to open the port).
+Good to know:
+
+- **No sudo on the server** (say one whose datasets you only read): use the "sudo 권한이 없을 때" command on the same screen. It installs into that account's home (`~/.badamoa`), and that account's crontab starts the node at boot and every five minutes when it is not running. Registering a dataset only reads the images, so read access is all the account needs.
+
+- **What runs where**: training runs on training servers; auto-labeling runs on the server holding the images when that server has the auto-labeling role. Templates' environments are installed only on training or auto-labeling servers.
+
+- **Port**: only node-to-node image transfers use TCP 8475, and the install command opens it in the firewall. Without sudo the firewall is left alone: if one is on, ask the server's admin to open the port.
 
 <details>
 <summary>If the Hub was not started from this repository</summary>
@@ -106,25 +132,31 @@ Only node-to-node image transfers use TCP 8475, and the install command opens it
 
 Started from the repository with `uv`, the Hub builds the package nodes download (a wheel) by itself. Otherwise build and upload it yourself:
 
-```bash
-uv build --wheel -o .badamoa/dist
-```
+1. Build the package.
 
-```bash
-uv run badamoa hub publish-wheel <wheel file> --home .badamoa/hub
-```
+   ```bash
+   uv build --wheel -o .badamoa/dist
+   ```
+
+2. Upload it to the Hub.
+
+   ```bash
+   uv run badamoa hub publish-wheel <wheel file> --home .badamoa/hub
+   ```
 
 </details>
 
 ### Connect an agent (MCP)
 
-On the **Agents** (에이전트) page, issue a token and the connect command appears.
+1. On the **Agents** (에이전트) page, issue a token and the connect command appears.
 
-```bash
-claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "Authorization: Bearer <token>"
-```
+   ```bash
+   claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "Authorization: Bearer <token>"
+   ```
 
-Then just ask: "check the nodes", "train yolo11n on coco128 v1 and tell me the metrics when it's done". Agents can see nodes and GPUs, datasets and versions, run label checks and labeling sets, fix labels and confirm a version, start runs and hyperparameter sweeps, look up models and their lineage, and read job logs to diagnose failures.
+2. Then just ask, e.g. "check the nodes", "train yolo11n on coco128 v1 and tell me the metrics when it's done".
+
+Agents can see nodes and GPUs, datasets and versions, run label checks and labeling sets, fix labels and confirm a version, start runs and hyperparameter sweeps, look up models and their lineage, and read job logs to diagnose failures.
 
 <br>
 
@@ -138,7 +170,11 @@ Everything below is a real screen, taken from a Hub that has trained on COCO128 
   <img src="docs/img/feat-images.png" alt="A version's image grid: COCO images with boxes coloured by class" width="880">
 </p>
 
-YOLO, COCO and class-per-folder layouts are read as they are and registered as detection, segmentation, keypoint or classification datasets. Every import makes a version with a fingerprint, much like a commit hash, so versions compare at a glance. Images can be filtered by split, class and label state, and you can see where copies sent to other servers for training are still kept.
+- YOLO, COCO and class-per-folder layouts are read as they are and registered as detection, segmentation, keypoint or classification datasets.
+
+- Every import makes a version with a fingerprint, much like a commit hash, so versions compare at a glance.
+
+- Images can be filtered by split, class and label state, and you can see where copies sent to other servers for training are still kept.
 
 ### Refining labels
 
@@ -146,14 +182,26 @@ YOLO, COCO and class-per-folder layouts are read as they are and registered as d
   <img src="docs/img/feat-review.png" alt="검수 (label checks): the reference model and checks grouped as missing labels, wrong labels and box errors" width="880">
 </p>
 
-**검수** (label checks) finds images whose labels are probably missing or wrong. Rule checks such as overlapping or tiny boxes need no model; once a trained model has been evaluated, it also points at objects it found that have no label and labels it could not find. A label you have checked and found right can be marked "문제 없음" (no problem), and it is not flagged again in later versions while it stays unchanged.
+**검수** (label checks) finds images whose labels are probably missing or wrong.
+
+- **Rule checks**: overlapping or tiny boxes and the like are found without a model.
+
+- **Model checks**: once a trained model has been evaluated, it also points at objects it found that have no label and labels it could not find.
+
+- **No problem**: a label you have checked and found right can be marked "문제 없음", and it is not flagged again in later versions while it stays unchanged.
 
 <p align="center">
   <img src="docs/img/feat-labeling.png" alt="A labeling set's board: parts as cards in the unassigned, labeling, review and done columns" width="49%">
   <img src="docs/img/feat-label-edit.png" alt="Fixing labels: boxes over the image, the class list, the set's instructions and a done-and-next button" width="49%">
 </p>
 
-Flagged images can be fixed on the spot or turned into a **labeling set** handed out to teammates. A set is split into parts that move through labeling → review → done on a board, and whoever labels sees the instructions while fixing boxes, outlines, keypoints and classes. Fixed labels gather in the dataset's work in progress; look over what changed, confirm, and it becomes a new version. Existing versions never change, and the label-check record stays with the new version.
+Flagged images can be fixed on the spot or turned into a **labeling set** handed out to teammates.
+
+- **Board**: a set is split into parts that move through labeling → review → done, and whoever labels sees the instructions while fixing boxes, outlines, keypoints and classes.
+
+- **Auto-labeling**: a registered model draws labels on the set's images first, so people fix them instead of drawing from scratch.
+
+- **Confirm a version**: fixed labels gather in the dataset's work in progress; look over what changed, confirm, and it becomes a new version. Existing versions never change, and the label-check record stays with the new version.
 
 ### Training and hyperparameter sweeps
 
@@ -162,7 +210,11 @@ Flagged images can be fixed on the spot or turned into a **labeling set** handed
   <img src="docs/img/feat-sweep.png" alt="A hyperparameter sweep: the metric per setting and the best run" width="49%">
 </p>
 
-Pick a dataset version and a model and the run goes to a node with a free GPU; metric curves and per-epoch prediction images come in live. Overlay runs to compare their curves, and resume a stopped run from its checkpoint. Sweeps can be grid, random or Bayesian (Optuna TPE).
+- Pick a dataset version and a model and the run goes to a node with a free GPU; metric curves and per-epoch prediction images come in live.
+
+- Overlay runs to compare their curves, and resume a stopped run from its checkpoint.
+
+- Sweeps can be grid, random or Bayesian (Optuna TPE).
 
 ### Models
 
@@ -170,7 +222,11 @@ Pick a dataset version and a model and the run goes to a node with a free GPU; m
   <img src="docs/img/feat-model.png" alt="A model: evaluation records, an exported ONNX file and test images" width="880">
 </p>
 
-A finished run's weights become a model version. Give it aliases such as champion or production, evaluate models on the same data to compare them, export to ONNX or TorchScript, and upload images to test it on the spot. Its lineage traces back which data and settings produced it.
+- A finished run's weights become a model version.
+
+- Give it aliases such as champion or production, evaluate models on the same data to compare them, export to ONNX or TorchScript, and upload images to test it on the spot.
+
+- Its lineage traces back which data and settings produced it.
 
 <p align="center">
   <img src="docs/img/feat-lineage.png" alt="Lineage: from a dataset version to a run, a model, and its evaluation, export and test" width="880">
@@ -183,7 +239,11 @@ A finished run's weights become a model version. Give it aliases such as champio
   <img src="docs/img/feat-home.png" alt="Home: counts of data, models, nodes and storage, and a getting-started list" width="49%">
 </p>
 
-The node board shows each server's GPUs alongside its CPU, memory and disk. A GPU someone is using directly counts as busy and gets no jobs. Home sums up data, models, nodes and storage at a glance.
+- The node board shows each server's GPUs alongside its CPU, memory and disk.
+
+- A GPU someone is using directly counts as busy and gets no jobs.
+
+- Home sums up data, models, nodes and storage at a glance.
 
 <br>
 
@@ -196,55 +256,65 @@ The node board shows each server's GPUs alongside its CPU, memory and disk. A GP
 | Classification | Ultralytics YOLO11-cls · YOLO26-cls<br>torchvision ResNet · EfficientNet · MobileNetV3 · ConvNeXt · RegNet · ViT · Swin | Top-1 · Top-5, confusion matrix, ONNX |
 | Keypoints | Ultralytics YOLO11-pose · YOLO26-pose<br>torchvision Keypoint R-CNN | pose mAP (OKS), ONNX, images with points |
 
-There is one model kind per library: "Ultralytics YOLO" and "torchvision" each train all four tasks, and the model list follows the task of the dataset you pick.
+- There is one model kind per library: "Ultralytics YOLO" and "torchvision" each train all four tasks, and the model list follows the task of the dataset you pick.
 
-The first time a node trains, it installs PyTorch and the training libraries in a separate virtual environment on that node (a few minutes). The build is chosen to fit the GPU driver; set `BADAMOA_TORCH_BACKEND` on the node (e.g. `cpu`, `cu128`) to pick one yourself.
+- The first time a node trains, it installs PyTorch and the training libraries in a separate virtual environment on that node (a few minutes). The build is chosen to fit the GPU driver; set `BADAMOA_TORCH_BACKEND` on the node (e.g. `cpu`, `cu128`) to pick one yourself.
 
 <br>
 
 ## Bringing your own training code
 
-To use your team's training code instead of the built-in models, put it in one folder, add a declaration file (`badamoa.toml`) and upload it as a **model template**. It then appears as a model type on the training page and trains, evaluates and exports like the built-in ones.
+To use your team's training code instead of the built-in models, put it in one folder, add a declaration file (`badamoa.toml`) and upload it as a **model template**. It then appears as a model type on the training page and trains, evaluates and exports like the built-in ones. The [template guide](docs/TEMPLATE_GUIDE.md) (in Korean) has the details.
 
 <p align="center">
   <img src="docs/img/feat-templates.png" alt="Model types in settings: the built-in YOLO and torchvision templates" width="880">
 </p>
 
-```bash
-badamoa template init my-model
-```
+1. Make the skeleton.
 
-Replace the marked part of `my-model/train.py` with your code. Settings and progress go through the SDK (`badamoa_sdk`), which looks much like W&B or MLflow. BADAMOA provides the SDK when it runs your code, so there is nothing to install.
+   ```bash
+   badamoa template init my-model
+   ```
 
-```python
-import badamoa_sdk as bm
+2. Replace the marked part of `my-model/train.py` with your code. Settings and progress go through the SDK (`badamoa_sdk`), which looks much like W&B or MLflow. BADAMOA provides the SDK when it runs your code, so there is nothing to install.
 
-hp = bm.params(                                  # declared settings → input fields on the training page
-    model=bm.choice(["resnet18", "resnet50"], label="Model"),
-    epochs=bm.integer(30, min=1, label="epoch"),
-    lr=bm.number(0.001, label="Learning rate", group="Optimizer", advanced=True),  # folded under advanced settings
-)
-run = bm.init()                                  # run.data, run.out, run.device, run.classes …
-for epoch in range(1, hp.epochs + 1):
-    ...
-    bm.log({"train_loss": loss, "map50_95": score}, step=epoch)       # charts update right away
-    bm.progress(epoch, hp.epochs)
-bm.log_artifact("confusion.png")                 # (optional) images and files → the run's files
-bm.log_model(run.out / "best.pt")                # the weights to register as a model
-bm.finish({"map50_95": best})
-```
+   ```python
+   import badamoa_sdk as bm
 
-Check it, then upload it to the Hub:
+   hp = bm.params(                                  # declared settings → input fields on the training page
+       model=bm.choice(["resnet18", "resnet50"], label="Model"),
+       epochs=bm.integer(30, min=1, label="epoch"),
+       lr=bm.number(0.001, label="Learning rate", group="Optimizer", advanced=True),  # folded under advanced settings
+   )
+   run = bm.init()                                  # run.data, run.out, run.device, run.classes …
+   for epoch in range(1, hp.epochs + 1):
+       ...
+       bm.log({"train_loss": loss, "map50_95": score}, step=epoch)       # charts update right away
+       bm.progress(epoch, hp.epochs)
+   bm.log_artifact("confusion.png")                 # (optional) images and files → the run's files
+   bm.log_model(run.out / "best.pt")                # the weights to register as a model
+   bm.finish({"map50_95": best})
+   ```
 
-```bash
-badamoa template check my-model
-```
+3. Check it on this PC.
 
-```bash
-badamoa template push my-model --hub http://<hub>:8470 --token <admin API token>
-```
+   ```bash
+   badamoa template check my-model
+   ```
 
-By default the training environment is a virtual environment the servers build from the packages under `[environment] requirements` in `badamoa.toml`. If you already have a Docker image, put it under `[environment] image` or register it in **Settings** (설정) → **Environments** (환경), and runs go in a container. Which servers keep an environment ready is chosen under **Settings** → **Model types** (모델 종류) → **Manage environment** (환경 관리). Raise `version` when you upload changed code; every run remembers the version it used, so "run again" uses the same code.
+4. Upload it to the Hub.
+
+   ```bash
+   badamoa template push my-model --hub http://<hub>:8470 --token <admin API token>
+   ```
+
+Good to know:
+
+- **Environment**: by default the training environment is a virtual environment the servers build from the packages under `[environment] requirements` in `badamoa.toml`. If you already have a Docker image, put it under `[environment] image` or register it in **Settings** (설정) → **Environments** (환경), and runs go in a container.
+
+- **Ready ahead**: which servers keep an environment ready is chosen under **Settings** → **Model types** (모델 종류) → **Manage environment** (환경 관리).
+
+- **Uploading again**: raise `version` when you upload changed code. Every run remembers the version it used, so "run again" uses the same code.
 
 <br>
 
@@ -267,15 +337,23 @@ BADAMOA is in 0.x development. Here is what works and what is still to come; the
 
 ## Development
 
-```bash
-uv run pytest
-```
+- **Tests and lint**
 
-```bash
-uv run ruff check .
-```
+  ```bash
+  uv run pytest
+  ```
 
-When working on the web app, keep a Hub running and start `npm --prefix web run dev`: `/api` requests are passed to the Hub. With COCO128 downloaded, `uv run pytest` also runs the real-data checks, and `BADAMOA_TEST_YOLO=1` adds a real YOLO training (1 epoch, CPU).
+  ```bash
+  uv run ruff check .
+  ```
+
+  With COCO128 downloaded, `uv run pytest` also runs the real-data checks, and `BADAMOA_TEST_YOLO=1` adds a real YOLO training (1 epoch, CPU).
+
+- **Working on the web app**: keep a Hub running and start `npm --prefix web run dev`; `/api` requests are passed to the Hub.
+
+- **Shipping a version**: raise the version in `src/badamoa/__init__.py` together with [CHANGELOG.md](CHANGELOG.md) and push to main. A release with the same notes appears on [GitHub Releases](https://github.com/RiceShrimp/BADAMOA/releases) by itself.
+
+**Folders**
 
 ```
 src/badamoa/core       shared schemas · storage · system info
@@ -285,8 +363,6 @@ src/badamoa/templates  built-in model templates · SDK (badamoa_sdk) · new-temp
 web/                   web app (React + Vite)
 tests/                 unit · API · E2E
 ```
-
-To ship a version, raise the version in `src/badamoa/__init__.py` together with [CHANGELOG.md](CHANGELOG.md) and push to main. A release with the same notes appears on [GitHub Releases](https://github.com/RiceShrimp/BADAMOA/releases) by itself.
 
 ### Documents (in Korean)
 
