@@ -1,146 +1,613 @@
-/* ---- the guides: the user manual and the template guide, read in the app ---- */
+/* ---- the guides: the user manual and the template guide, read in the app ----
+   A column of contents beside the text (it stays put and follows the reading), a search above it,
+   and the text at a reading width. Narrow screens get the contents from a bar that stays at the top. */
 .guides {
+  --guides-top: 72px; /* below the 52px top bar */
+  --guides-anchor: 76px; /* where a heading lands when gone to */
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 24px;
+  grid-template-columns: 248px minmax(0, 1fr);
+  gap: 44px;
   align-items: start;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* the side: guides, search, contents */
+.guides-side {
+  position: sticky;
+  top: var(--guides-top);
+  z-index: 4;
+}
+.guides-bar,
+.guides-scrim {
+  display: none;
+}
+.guides-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: calc(100vh - var(--guides-top) - 20px);
+}
+.guides-list,
+.guides-search {
+  flex: none; /* only the contents below them scroll */
 }
 .guides-list {
-  position: sticky;
-  top: 12px;
-  display: grid;
-  gap: 4px;
-}
-.guides-item {
   display: grid;
   gap: 2px;
-  padding: 8px 10px;
+}
+.guides-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
   border-radius: 8px;
-  color: var(--text);
+  color: var(--muted);
+  font-weight: 500;
   text-decoration: none;
 }
 .guides-item:hover {
-  background: var(--hover, rgb(127 127 127 / 0.1));
+  background: var(--surface-2);
+  color: var(--text);
+  text-decoration: none;
 }
 .guides-item.active {
-  background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 .guides-item.off {
   opacity: 0.55;
 }
+
+.guides-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+}
+.guides-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.guides .guides-search input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+.guides-search input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.guides-search .icon-btn {
+  padding: 4px;
+}
+.guides-search-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.guides kbd {
+  min-width: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  font: 11px/16px var(--mono);
+  text-align: center;
+  color: var(--muted);
+}
+
+.guides-toc {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 4px 12px 0;
+  scrollbar-width: thin;
+}
+.guides-toc .eyebrow {
+  padding: 0 10px 6px;
+}
+.toc-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+  text-decoration: none;
+  word-break: keep-all;
+}
+.toc-entry:hover {
+  color: var(--text);
+  text-decoration: none;
+  background: var(--surface-2);
+}
+.toc-entry.in {
+  color: var(--text);
+  font-weight: 600;
+}
+.toc-entry.current {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.toc-entry.level-3 {
+  padding-left: 24px;
+  font-size: 13px;
+}
+.toc-num {
+  flex: none;
+  min-width: 1.4em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-weight: 500;
+}
+.toc-entry.current .toc-num {
+  color: inherit;
+}
+.toc-count {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.toc-sections {
+  margin: 2px 0 6px;
+}
+.guides-empty {
+  padding: 4px 10px;
+}
+
+/* the text */
 .guides-body {
   min-width: 0;
-  max-width: 920px;
+  max-width: 780px;
 }
 .guides-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
 }
+
 .markdown {
-  line-height: 1.7;
-  font-size: 14.5px;
-}
-.markdown h1 {
-  font-size: 26px;
-  margin: 0 0 12px;
-}
-.markdown h2 {
-  font-size: 20px;
-  margin: 36px 0 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-.markdown h3 {
-  font-size: 16.5px;
-  margin: 24px 0 8px;
-}
-.markdown h4 {
   font-size: 15px;
-  margin: 18px 0 6px;
+  line-height: 1.75;
+  color: var(--text);
+  word-break: keep-all; /* Korean breaks between words, not inside them */
+  overflow-wrap: break-word;
 }
-.markdown p,
-.markdown ul,
-.markdown ol {
-  margin: 8px 0;
-}
-.markdown ul,
-.markdown ol {
-  padding-left: 22px;
-}
-.markdown li {
-  margin: 3px 0;
-}
-.markdown code {
-  font-family: var(--mono);
-  font-size: 0.92em;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--surface-2);
-}
-.markdown pre {
-  overflow-x: auto;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--surface-2);
-}
-.markdown pre code {
-  padding: 0;
-  background: none;
-}
-.markdown table {
-  display: block;
-  overflow-x: auto;
-  border-collapse: collapse;
-  margin: 10px 0;
-  font-size: 13.5px;
-}
-.markdown th,
-.markdown td {
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  text-align: left;
-  vertical-align: top;
-}
-.markdown th {
-  background: var(--surface-2);
-}
-.markdown hr {
-  border: 0;
-  border-top: 1px solid var(--border);
-  margin: 20px 0;
-}
-.markdown a {
-  color: var(--accent);
+.markdown > :first-child {
+  margin-top: 0;
 }
 .markdown h1,
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  scroll-margin-top: 16px;
+  position: relative;
+  color: var(--text);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  scroll-margin-top: var(--guides-anchor);
 }
-@media (max-width: 760px) {
+.markdown h1 {
+  font-size: 30px;
+  font-weight: 750;
+  margin: 0 0 14px;
+}
+.markdown h2 {
+  font-size: 23px;
+  font-weight: 700;
+  margin: 64px 0 14px;
+  padding-top: 28px;
+  border-top: 1px solid var(--border);
+}
+.markdown h3 {
+  font-size: 18px;
+  font-weight: 650;
+  margin: 40px 0 12px;
+}
+.markdown h4 {
+  font-size: 15.5px;
+  font-weight: 650;
+  margin: 28px 0 8px;
+}
+/* the line under a chapter's title says what the chapter is for */
+.markdown h2 + p {
+  font-size: 16px;
+  color: var(--muted);
+  margin-bottom: 22px;
+}
+
+.heading-anchor {
+  margin-left: 8px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--muted);
+  font-weight: 400;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.markdown :is(h2, h3, h4):hover .heading-anchor,
+.heading-anchor:focus-visible,
+.heading-anchor.copied {
+  opacity: 1;
+}
+.heading-anchor:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+.heading-anchor.copied {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ok);
+  background: var(--ok-soft);
+  vertical-align: middle;
+}
+
+.markdown p {
+  margin: 0 0 14px;
+}
+.markdown strong {
+  font-weight: 650;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0 0 18px;
+  padding-left: 24px;
+}
+.markdown li {
+  margin: 6px 0;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin: 6px 0 4px;
+}
+.markdown li::marker {
+  color: var(--muted);
+}
+.markdown li > p {
+  margin-bottom: 6px;
+}
+/* steps of a procedure: numbered circles */
+.markdown > ol {
+  list-style: none;
+  counter-reset: step;
+  padding-left: 0;
+}
+.markdown > ol > li {
+  counter-increment: step;
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+}
+.markdown > ol > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-underline-offset: 3px;
+}
+.markdown a:hover {
+  text-decoration-color: currentColor;
+}
+.markdown h1 a,
+.markdown h2 a,
+.markdown h3 a,
+.markdown h4 a {
+  text-decoration: none;
+}
+
+.markdown code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.code-block {
+  position: relative;
+  margin: 10px 0 18px;
+}
+.markdown pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 14px 16px;
+  padding-right: 84px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.markdown pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+.code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+  opacity: 0.85;
+}
+.code-block:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+
+.table-wrap {
+  margin: 12px 0 20px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.markdown th,
+.markdown td {
+  padding: 9px 14px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.markdown tr:last-child td {
+  border-bottom: 0;
+}
+.markdown th {
+  background: var(--surface-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.markdown td:first-child {
+  min-width: 6.5em;
+  font-weight: 500;
+}
+.markdown tbody tr:hover td {
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+/* a table inside a step keeps the step's indent */
+.markdown li .table-wrap {
+  margin: 10px 0 12px;
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 28px 0;
+}
+.markdown blockquote {
+  margin: 14px 0 18px;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+.markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* GitHub's alert boxes: > [!NOTE] · [!TIP] · [!IMPORTANT] · [!WARNING] · [!CAUTION] */
+.markdown blockquote.callout {
+  --c: var(--accent);
+  --c-soft: var(--accent-soft);
+  padding: 12px 16px 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
+  border-left: 4px solid var(--c);
+  border-radius: 10px;
+  background: var(--c-soft);
+  color: var(--text);
+}
+.markdown blockquote.callout::before {
+  content: attr(data-label);
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--c);
+}
+.markdown blockquote.callout ul {
+  margin-bottom: 0;
+  padding-left: 20px;
+}
+.markdown blockquote.callout-tip {
+  --c: var(--ok);
+  --c-soft: var(--ok-soft);
+}
+.markdown blockquote.callout-important {
+  --c: var(--series-7);
+  --c-soft: color-mix(in srgb, var(--series-7) 12%, var(--surface));
+}
+.markdown blockquote.callout-warning {
+  --c: var(--warn);
+  --c-soft: var(--warn-soft);
+}
+.markdown blockquote.callout-caution {
+  --c: var(--bad);
+  --c-soft: var(--bad-soft);
+}
+
+/* the search's finds; the browser's highlight API paints them without changing the text */
+::highlight(guide-hit) {
+  background-color: rgb(250 204 21 / 0.4);
+}
+::highlight(guide-hit-now) {
+  background-color: rgb(249 115 22 / 0.6);
+}
+
+/* narrower: the text takes the width, the contents drop down from a bar that stays under the top bar */
+@media (max-width: 1080px) {
   .guides {
-    grid-template-columns: 1fr;
+    --guides-anchor: 112px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .guides-side {
+    top: 52px;
+    margin: -8px 0 0;
+    padding: 8px 0;
+    background: var(--bg);
+  }
+  .guides-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: 0 2px 8px rgb(14 23 38 / 0.06);
+    text-align: left;
+  }
+  .guides-bar-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+  }
+  .guides-bar-title .toc-num {
+    margin-right: 8px;
+  }
+  .guides-side.open .guides-bar svg:last-child {
+    transform: rotate(180deg);
+  }
+  .guides-panel {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% - 2px);
+    max-height: min(72vh, 620px);
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 0 12px 32px rgb(14 23 38 / 0.16);
+  }
+  .guides-side.open .guides-panel {
+    display: flex;
   }
   .guides-list {
-    position: static;
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    overflow-x: auto;
+  }
+  .guides-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    background: rgb(0 0 0 / 0.2);
+  }
+  .guides-body {
+    max-width: none;
+  }
+}
+@media (max-width: 560px) {
+  .guides-bar-hint {
+    display: none;
+  }
+  .markdown {
+    font-size: 14.5px;
+  }
+  .markdown h1 {
+    font-size: 25px;
+  }
+  .markdown h2 {
+    font-size: 20.5px;
+    margin-top: 48px;
+    padding-top: 22px;
+  }
+  .markdown h3 {
+    font-size: 17px;
+  }
+  .markdown th,
+  .markdown td {
+    padding: 8px 10px;
+  }
+  .guides-actions .mono {
+    display: none;
   }
 }
 @media print {
   .sidebar,
   .topbar,
-  .guides-list,
-  .guides-actions {
+  .guides-side,
+  .guides-actions,
+  .guides-scrim,
+  .heading-anchor,
+  .code-copy {
     display: none !important;
   }
   .guides {
     display: block;
+    max-width: none;
   }
-  .markdown h2 {
+  .guides-body {
+    max-width: none;
+  }
+  .markdown h2,
+  .markdown h3 {
     break-after: avoid;
+  }
+  .table-wrap,
+  .code-block,
+  .markdown blockquote {
+    break-inside: avoid;
   }
 }
 

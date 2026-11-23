@@ -127,7 +127,7 @@ claude mcp add --transport http badamoa http://192.168.0.10:8470/mcp --header "A
 
 ## 둘러보기
 
-아래는 모두 실제 화면입니다. COCO128과 MNIST160으로 학습해 둔 Hub에서 찍었습니다. 화면마다 자세한 사용법은 [사용 설명서](docs/MANUAL.md)에 있습니다.
+아래는 모두 실제 화면입니다. COCO128과 MNIST160으로 학습해 둔 Hub에서 찍었습니다. 화면마다 자세한 사용법은 [사용 설명서](docs/MANUAL.md)에 있습니다. 앱 안에서는 위쪽 줄의 **설명서**로 열며, 읽는 곳을 따라가는 차례와 찾기가 함께 나옵니다.
 
 ### 데이터셋
 
@@ -252,7 +252,7 @@ badamoa template push my-model --hub http://<hub>:8470 --token <관리자 API �
 | 영역 | 되는 것 | 남은 것 |
 |---|---|---|
 | **Build** · 데이터 | ✅ 복사 없는 등록, 버전과 지문, 버전 비교, 노드 간 직접 전송과 서버별 사본 관리 | 🚧 샘플 라이브러리, 임베딩 검색, 큐레이션 |
-| **Annotate** · 라벨 | ✅ 박스 · 윤곽 · 키포인트 · 클래스 고치기, 작업 중 → 버전 확정, 라벨링 묶음과 보드, 검수(규칙 · 모델 기준) | 🚧 오토라벨, CVAT 연동 |
+| **Annotate** · 라벨 | ✅ 박스 · 윤곽 · 키포인트 · 클래스 고치기, 작업 중 → 버전 확정, 라벨링 묶음과 보드, 검수(규칙 · 모델 기준), 오토라벨 | 🚧 CVAT 연동 |
 | **Develop** · 학습 | ✅ 학습, 탐색, 평가, 내보내기, 모델 레지스트리, 사내 템플릿, 가상환경 · Docker 환경 | 🚧 TensorRT |
 | **Automate** · 배포 | — | 🚧 추론 서비스, 배포, 파이프라인 |
 | **MOA** · 운영 | ✅ 노드와 GPU 배정, 자동 업데이트, MCP 에이전트 | 🚧 승인 게이트, 내장 에이전트 |
@@ -287,7 +287,8 @@ tests/                 단위 · API · E2E
 
 ### 문서
 
-- [docs/MANUAL.md](docs/MANUAL.md) — 사용 설명서: 화면마다 할 수 있는 것과 순서, 관리자 설정, 단축키
+- [docs/MANUAL.md](docs/MANUAL.md) — 사용 설명서: 화면마다 할 수 있는 것과 순서, 관리자 설정, 단축키 (앱의 **설명서**에서도 봄)
+- [docs/TEMPLATE_GUIDE.md](docs/TEMPLATE_GUIDE.md) — 템플릿 가이드: 팀의 학습 코드를 모델 종류로 만들어 확인하고 올리는 방법
 - [CHANGELOG.md](CHANGELOG.md) — 버전별 변경 (앱 안의 릴리즈 노트와 같은 내용)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 목표, 설계 원칙, 구조
 - [docs/ROADMAP.md](docs/ROADMAP.md) — 단계별 계획과 체크리스트

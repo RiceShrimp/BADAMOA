@@ -341,7 +341,7 @@ function Shell({
           {page === "settings" && <Settings isAdmin={isAdmin} nodes={nodes} user={user} sub={sub} />}
           {page === "trash" && <TrashPage isAdmin={isAdmin} />}
           {page === "releases" && <ReleasesPage version={loaded} selected={sub} />}
-          {page === "guides" && <GuidesPage name={sub} />}
+          {page === "guides" && <GuidesPage name={sub} section={arg} />}
         </main>
       </div>
     </div>

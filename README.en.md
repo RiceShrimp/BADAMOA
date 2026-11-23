@@ -130,7 +130,7 @@ Then just ask: "check the nodes", "train yolo11n on coco128 v1 and tell me the m
 
 ## A tour
 
-Everything below is a real screen, taken from a Hub that has trained on COCO128 and MNIST160.
+Everything below is a real screen, taken from a Hub that has trained on COCO128 and MNIST160. How to use each screen is in the [user manual](docs/MANUAL.md) (in Korean), which also opens inside the app from **설명서** in the top bar, with contents that follow your reading and a search.
 
 ### Datasets
 
@@ -255,7 +255,7 @@ BADAMOA is in 0.x development. Here is what works and what is still to come; the
 | Area | Works | To come |
 |---|---|---|
 | **Build** · data | ✅ Registering in place, versions with fingerprints, version diff, node-to-node transfer and copies per server | 🚧 Sample library, embedding search, curation |
-| **Annotate** · labels | ✅ Fixing boxes, outlines, keypoints and classes; work in progress → version; labeling sets with a board; label checks (rules and model) | 🚧 Autolabel, CVAT integration |
+| **Annotate** · labels | ✅ Fixing boxes, outlines, keypoints and classes; work in progress → version; labeling sets with a board; label checks (rules and model); autolabel | 🚧 CVAT integration |
 | **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates, virtualenv and Docker environments | 🚧 TensorRT |
 | **Automate** · deployment | — | 🚧 Inference service, deployment, pipelines |
 | **MOA** · operations | ✅ Nodes and GPU assignment, self-updating nodes, MCP agents | 🚧 Approval gates, built-in agent |
@@ -290,7 +290,8 @@ To ship a version, raise the version in `src/badamoa/__init__.py` together with 
 
 ### Documents (in Korean)
 
-- [docs/MANUAL.md](docs/MANUAL.md) — user manual (Korean): what each screen does and in what order, admin settings, shortcuts
+- [docs/MANUAL.md](docs/MANUAL.md) — user manual (Korean): what each screen does and in what order, admin settings, shortcuts (also in the app, under **설명서**)
+- [docs/TEMPLATE_GUIDE.md](docs/TEMPLATE_GUIDE.md) — template guide: turning your team's training code into a model type, checking and uploading it
 - [CHANGELOG.md](CHANGELOG.md) — changes per version (the same as the in-app release notes)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — goals, design principles, structure
 - [docs/ROADMAP.md](docs/ROADMAP.md) — phases and checklists
