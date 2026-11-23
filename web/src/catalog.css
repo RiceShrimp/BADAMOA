@@ -1375,6 +1375,9 @@ select.active-select {
   padding: 0 6px;
   font-size: 11px;
   font-weight: 600;
+  /* violet in both themes: apart from the 신뢰도 colours beside it */
+  background: color-mix(in srgb, #8b6cf0 18%, transparent);
+  color: #8b6cf0;
 }
 /* the labels a check flagged, by the numbers drawn on the image */
 .qa-labels {
@@ -1872,8 +1875,8 @@ select.active-select {
   color: var(--ok);
 }
 .trust-tag.trust-mid {
-  background: var(--surface-2);
-  color: var(--muted);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .trust-tag.trust-low {
   background: var(--warn-soft);
