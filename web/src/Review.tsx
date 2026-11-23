@@ -1143,19 +1143,12 @@ const TRUST_WORDS: Record<Trust, string> = { high: "신뢰도 높음", mid: "신
 
 /**
  * How far a model card's findings can be trusted to be label mistakes, by its threshold: the surer the model must be
- * (라벨이 없는 물체, 클래스가 다를 수 있는 라벨: 0.9 and up 높음, 0.7 and up 보통), or the nearer nothing may come to a
- * label (물체가 없을 수 있는 라벨: IoU 0.3 and under 높음 — the model put nothing there —, 0.7 and under 보통).
+ * (라벨이 없는 물체, 클래스가 다를 수 있는 라벨: 0.9 and up 높음, 0.7 and up 보통); 물체가 없을 수 있는 라벨 always 낮음.
  */
 function trustOf(kind: Mistake, rule: { conf: number; reclass_conf: number; missed_iou: number }): { level: Trust; why: string } {
   if (kind === "missed") {
-    const v = rule.missed_iou;
-    const level: Trust = v <= 0.3 ? "high" : v <= 0.7 ? "mid" : "low";
-    const why = {
-      high: `모델이 근처에 아무것도 내지 않은 라벨만 셉니다(IoU ${v} 미만): 라벨이 틀렸을 가능성이 큽니다`,
-      mid: `모델 예측이 조금 겹친 라벨도 셉니다(IoU ${v} 미만)`,
-      low: `짝이 안 된 라벨을 거의 다 셉니다(IoU ${v} 미만): 모델이 놓친 것도 많이 섞입니다`,
-    }[level];
-    return { level, why };
+    // always low: a label the model did not find is as often the model's miss as a wrong label, whatever the IoU
+    return { level: "low", why: "모델이 못 찾은 라벨은 모델이 놓친 것도 많이 섞입니다: 걸린 이미지를 보고 판단하세요" };
   }
   const v = kind === "extra" ? rule.conf : rule.reclass_conf;
   const level: Trust = v >= 0.9 ? "high" : v >= 0.7 ? "mid" : "low";
