@@ -610,10 +610,13 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const card = (key: string, name: string, hint: string, count: number, active: boolean, onClick: () => void) => (
     <button key={key} className={`check-card ${active ? "active" : ""} ${count ? "" : "zero"}`} onClick={onClick} title={hint}>
       <span className="check-count">{count.toLocaleString()}</span>
-      <span className="check-title">
-        {name} <TrustTag level="mid" why="규칙으로 찾은 것: 걸린 이미지를 보고 판단하세요" />
+      <span className="check-body">
+        <span className="check-title">{name}</span>
+        <span className="muted small">{hint}</span>
+        <span className="check-meta">
+          <TrustTag level="mid" why="규칙으로 찾은 것: 걸린 이미지를 보고 판단하세요" />
+        </span>
       </span>
-      <span className="muted small">{hint}</span>
     </button>
   );
   // A model's check is not worked out on the spot like the rules: it needs an evaluation, started from here.
@@ -654,16 +657,19 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
         title={MODEL[m].hint}
       >
         <span className="check-count">{count != null ? count.toLocaleString() : <Icon name={going ? "clock" : "box"} size={18} />}</span>
-        <span className="check-title">
-          {MODEL[m].title} <span className="tag model-tag">모델</span>
-          {count != null && summary.rule && <TrustTag {...trustOf(m, summary.rule)} />}
-        </span>
-        <span className="muted small">
-          {count != null
-            ? MODEL[m].hint
-            : going
-              ? `${going.model ? `${going.model.name} v${going.model.version}` : "모델"} 평가 중 — 끝나면 셉니다`
-              : "모델이 있어야 셉니다. 눌러서 모델로 검사"}
+        <span className="check-body">
+          <span className="check-title">{MODEL[m].title}</span>
+          <span className="muted small">
+            {count != null
+              ? MODEL[m].hint
+              : going
+                ? `${going.model ? `${going.model.name} v${going.model.version}` : "모델"} 평가 중 — 끝나면 셉니다`
+                : "모델이 있어야 셉니다. 눌러서 모델로 검사"}
+          </span>
+          <span className="check-meta">
+            <span className="tag model-tag">모델</span>
+            {count != null && summary.rule && <TrustTag {...trustOf(m, summary.rule)} />}
+          </span>
         </span>
       </button>
     );

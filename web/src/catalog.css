@@ -1107,10 +1107,8 @@ select.active-select {
 .check-card {
   display: grid;
   grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
   column-gap: 12px;
-  row-gap: 2px;
-  align-items: center;
+  align-items: stretch; /* the body fills the card: its tags sit on the card's bottom line */
   text-align: left;
   padding: 10px 12px;
   background: var(--surface);
@@ -1133,8 +1131,29 @@ select.active-select {
   border-color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
 }
+/* title, hint, then the tags (모델 · 신뢰도) on one line at the bottom: cards side by side line up */
+.check-card .check-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.check-card .check-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+.check-card .check-meta .tag {
+  margin: 0;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 18px;
+}
 .check-card .check-count {
-  grid-row: span 2;
+  align-self: start;
+  padding-top: 1px;
   font: 700 22px/1 var(--mono);
   min-width: 2.5ch;
   text-align: right;
@@ -1353,11 +1372,9 @@ select.active-select {
   border-color: var(--accent);
 }
 .tag.model-tag {
-  margin-left: 4px;
   padding: 0 6px;
   font-size: 11px;
   font-weight: 600;
-  vertical-align: 1px;
 }
 /* the labels a check flagged, by the numbers drawn on the image */
 .qa-labels {
@@ -1847,7 +1864,6 @@ select.active-select {
 
 /* 검수: 신뢰도 높음 · 보통 · 낮음 on a card (how likely its findings are label mistakes) */
 .trust-tag {
-  margin-left: 4px;
   font-weight: 500;
   white-space: nowrap;
 }
