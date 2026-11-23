@@ -102,14 +102,19 @@ def test_steps_are_checked_before_anything_starts(hub, release):  # noqa: F811
         return resp.json()["detail"]
 
     train = {"kind": "train", "config": _train_step()}
-    assert "순서" in refused([EVAL, train])
-    assert "평가 단계를 앞에" in refused([train, PROMOTE])
-    assert "한 번만" in refused([train, EVAL, EVAL])
+    # a step that uses a model comes after one that makes it, or names one by its alias
+    assert "1번째 단계(평가): 앞에 학습이나 탐색이 없으면 쓸 모델을 고르세요" in refused([EVAL, train])
+    assert "쓸 모델을 고르세요" in refused([EXPORT])
+    assert "쓸 모델을 고르세요" in refused([{"kind": "autolabel", "config": {}}])
+    assert "모델 이름과 alias" in refused([{"kind": "eval", "config": {"model": {"alias": "SOTA"}}}])
+    # a promotion decides on the evaluation right before it, of the model made before that
+    assert "2번째 단계(승격)" in refused([train, PROMOTE])
+    assert "바로 앞의 평가" in refused([train, EVAL, train, PROMOTE])
     assert "모르는 단계" in refused([train, {"kind": "deploy"}])
-    assert "alias가 붙은 모델" in refused([EXPORT])
-    assert "모델 이름과 alias" in refused([{"kind": "eval", "config": {}}])
     assert "latest" in refused([train, EVAL, {"kind": "promote", "config": {"alias": "latest"}}])
     assert "split" in refused([train, {"kind": "eval", "config": {"split": "dev"}}])
+    assert "서버를 고르세요" in refused([{"kind": "sync", "config": {}}, train])
+    assert "시험할 설정" in refused([{"kind": "sweep", "config": {"template": "dummy"}}])
     assert "trigger" in refused([train], trigger="hourly")
     bad = {"kind": "train", "config": {"template": "dummy", "params": {"epochs": "many"}}}
     refused([bad, EVAL])  # the training settings are checked against the newest version when saved
@@ -240,3 +245,127 @@ def test_agents_run_steps_after_a_training_through_mcp(hub, release):  # noqa: F
     assert call("get_pipeline_run", {"run_id": done["id"]})["steps"][2]["outcome"] == "promoted"
     assert call("list_pipelines", {"project_id": release["project_id"]})["runs"][0]["id"] == done["id"]
     assert hub.get(f"/api/runs/{run['id']}").json()["created_via"] == "ui"  # the training as it was started
+
+
+def _run(client, on, steps, **extra):
+    resp = client.post("/api/pipeline-runs", json={"release_id": on["id"], "steps": steps, **extra})
+    assert resp.status_code == 200, resp.text
+    return _done(client, resp.json()["id"])
+
+
+def test_composed_steps_go_on_by_success_or_through_their_gates(hub, release):  # noqa: F811
+    train = {"kind": "train", "config": _train_step()}
+    # 검수 확인: a gate on the rule checks' flagged images
+    lenient = _run(hub, release, [{"kind": "check", "config": {"max_flagged": 100000}}, train])
+    assert lenient["status"] == "succeeded", lenient
+    flagged = int(lenient["steps"][0]["message"].split("이미지 ")[1].split("장")[0].replace(",", ""))
+    assert lenient["steps"][0]["gate"] and lenient["steps"][0]["release"]["id"] == release["id"]
+    strict = _run(hub, release, [{"kind": "check", "config": {"max_flagged": 0}}, train])
+    assert strict["status"] == ("held" if flagged else "succeeded")
+
+    # an evaluation that must reach a number: 0.4 < 0.5 holds the run, the export after it is skipped
+    gated = {"kind": "eval", "config": {"split": "val", "at_least": 0.5}}
+    low = _run(hub, release, [train, gated, EXPORT])
+    assert low["status"] == "held" and [s["status"] for s in low["steps"]] == ["succeeded", "held", "skipped"]
+    assert low["steps"][1]["message"] == "mAP50-95 0.400 (v1 val) · 기준 0.500에 못 미쳐 멈춤" and low["steps"][1]["gate"]
+    high = _run(hub, release, [{"kind": "train", "config": _train_step(0.9)}, gated, EXPORT])
+    assert high["status"] == "succeeded" and high["steps"][1]["message"].endswith("기준 0.500 넘음")
+    # a training that must reach a number on its own validation
+    weak = _run(hub, release, [{"kind": "train", "config": {**_train_step(0.3), "at_least": 0.5}}, EVAL])
+    assert weak["status"] == "held" and weak["steps"][0]["message"].endswith("기준 0.500에 못 미쳐 멈춤")
+
+    # any order that can run: the second training's model is the one evaluated and promoted
+    val = {"kind": "eval", "config": {"split": "val"}}
+    two = _run(hub, release, [train, val, {"kind": "train", "config": _train_step(0.9)}, val, PROMOTE])
+    assert two["status"] == "succeeded", two
+    assert two["steps"][4]["model"]["id"] == two["steps"][2]["model"]["id"] != two["steps"][0]["model"]["id"]
+
+
+def test_a_search_then_its_best_model_evaluated_and_exported(hub, release):  # noqa: F811
+    space = {"ceiling": {"values": [0.3, 0.9]}}
+    config = {"template": "dummy", "params": {"epochs": 2}, "space": space, "method": "grid", "max_runs": 2, "gpus": 0}
+    done = _run(hub, release, [{"kind": "sweep", "config": config}, {"kind": "eval", "config": {"split": "val"}}, EXPORT])
+    assert done["status"] == "succeeded", done
+    searched, evaluated, exported = done["steps"]
+    assert searched["sweep"]["total"] == 2 and searched["message"].startswith("2번 중 최고 mAP50-95 ")
+    assert searched["message"].endswith("(ceiling=0.9)")
+    assert evaluated["model"]["id"] == searched["model"]["id"] and evaluated["metric"]["value"] == 0.6
+    assert exported["model"]["id"] == searched["model"]["id"]
+
+
+def test_import_then_send_and_the_labeling_loop_on_its_own_versions(hub, release, tmp_path, settings):  # noqa: F811
+    from sample_data import make_yolo
+    from sqlalchemy import update
+    from test_autolabel import _raw
+
+    from badamoa.hub.catalog_models import LabelSetItem
+    from badamoa.hub.db import Database
+
+    # ---- 가져오기 → 서버로 보내기: the folder again as the next version, then on the server (it holds it already)
+    folder = make_yolo(tmp_path / "again", train=8)
+    imported = _run(
+        hub,
+        release,
+        [{"kind": "import", "config": {"node_id": hub.node_id, "path": str(folder)}},
+         {"kind": "sync", "config": {"node_id": hub.node_id}}],
+    )  # fmt: skip
+    assert imported["status"] == "succeeded", imported
+    assert imported["steps"][0]["message"] == "v2 · 이미지 10장" and imported["steps"][0]["made_release"]["version"] == "v2"
+    assert imported["steps"][1]["message"] == "이미 그 서버에 있음"
+
+    # ---- 오토라벨 → 라벨링 → 버전 확정 on a dataset nobody labelled, by the model holding SOTA
+    made, job = _train(hub, release)
+    assert job["status"] == "succeeded", _logs(hub, job["id"])
+    model = hub.get(f"/api/runs/{made['id']}").json()["model"]
+    hub.post(f"/api/models/{model['id']}/alias", json={"alias": "SOTA"}).raise_for_status()
+    raw = _raw(hub, release["project_id"], tmp_path)
+    by_sota = {"model": {"name": model["name"], "alias": "SOTA"}, "accept": 0.9, "gpus": 0}
+    loop = [{"kind": "autolabel", "config": by_sota}, {"kind": "label", "config": {}}, {"kind": "confirm", "config": {}}]
+    saved = hub.post("/api/pipelines", json={"release_id": raw, "steps": loop, "trigger": "new_version", "run": True})
+    assert saved.status_code == 200, saved.text
+    run_id = saved.json()["started"]["id"]
+    deadline = time.monotonic() + 60
+    view = hub.get(f"/api/pipeline-runs/{run_id}").json()
+    while time.monotonic() < deadline and view["steps"][1]["status"] != "running":
+        time.sleep(0.3)
+        view = hub.get(f"/api/pipeline-runs/{run_id}").json()
+    labelled, waiting = view["steps"][0], view["steps"][1]
+    assert labelled["status"] == "succeeded" and "자동 승인" in labelled["message"], [
+        (s["kind"], s["status"], s["message"], s.get("job")) for s in view["steps"]
+    ]
+    assert waiting["set"]["id"] == labelled["set"]["id"] and waiting["set"]["done"] < waiting["set"]["total"]
+    time.sleep(1)
+    assert hub.get(f"/api/pipeline-runs/{run_id}").json()["status"] == "running"  # it waits for people
+    with Database(settings.database_url).session() as db:  # people finish the set
+        db.execute(update(LabelSetItem).where(LabelSetItem.set_id == waiting["set"]["id"]).values(state="approved"))
+    pipelines.wake()
+    done = _done(hub, run_id)
+    assert done["status"] == "succeeded", [(s["kind"], s["status"], s["message"], s.get("set")) for s in done["steps"]]
+    confirmed = done["steps"][2]
+    assert confirmed["made_release"]["version"] == "v2" and confirmed["message"].startswith("v2 확정 · 고친 이미지")
+    # the version the pipeline made starts no run of it
+    pipelines.wake()
+    time.sleep(2)
+    assert len(hub.get(f"/api/pipelines/{saved.json()['id']}").json()["history"]) == 1
+
+
+def test_templates_are_kept_and_offered(hub, release):  # noqa: F811
+    listed = hub.get("/api/pipeline-templates").json()
+    builtin = [t for t in listed if t["builtin"]]
+    assert [t["id"] for t in builtin][:2] == ["builtin-train", "builtin-retrain"] and len(builtin) == 6
+    assert builtin[0]["starts_with_train"]
+    assert not next(t for t in builtin if t["id"] == "builtin-sota")["starts_with_train"]
+    assert builtin[0]["steps"][2]["summary"] == "더 나으면 SOTA" and builtin[0]["steps"][2]["gate"]
+    steps = [{"kind": "train", "config": {**_train_step(), "classes": [0], "name": "keep-me-not"}}, EVAL, PROMOTE]
+    made = hub.post("/api/pipeline-templates", json={"name": "우리 팀 방식", "description": "검수까지", "steps": steps})
+    assert made.status_code == 200, made.text
+    mine = next(t for t in made.json() if t["name"] == "우리 팀 방식")
+    assert not mine["builtin"] and mine["created_by"] == "admin" and mine["starts_with_train"]
+    assert "classes" not in mine["steps"][0]["config"] and "name" not in mine["steps"][0]["config"]  # the dataset's own
+    assert hub.post("/api/pipeline-templates", json={"name": "우리 팀 방식", "steps": steps}).status_code == 409
+    assert hub.post("/api/pipeline-templates", json={"name": "빈 것", "steps": [PROMOTE]}).status_code == 400
+    # a pipeline made from it runs as any other
+    started = hub.post("/api/pipelines", json={"release_id": release["id"], "steps": mine["steps"], "run": True}).json()
+    assert _done(hub, started["started"]["id"])["status"] == "succeeded"
+    assert hub.delete(f"/api/pipeline-templates/{mine['id']}").status_code == 200
+    assert all(t["name"] != "우리 팀 방식" for t in hub.get("/api/pipeline-templates").json())

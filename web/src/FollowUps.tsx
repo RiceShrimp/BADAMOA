@@ -7,10 +7,41 @@ import "./pipelines.css";
 
 // ---- what the Hub sends about pipelines ----------------------------------------------------
 
-export type StepKind = "train" | "eval" | "promote" | "export";
+export type StepKind = "import" | "check" | "sync" | "autolabel" | "label" | "confirm" | "train" | "sweep" | "eval" | "promote" | "export";
 export interface StepSpec {
   kind: StepKind;
   config: Record<string, unknown>;
+}
+
+/** The new-run dialog opened for a pipeline's training or search step: it gives back the settings, starts nothing. */
+export interface StepSettings {
+  kind: "train" | "sweep";
+  config?: Record<string, unknown>;
+  onApply: (config: Record<string, unknown>) => void;
+}
+
+/** A pipeline template: built in, or kept by someone. */
+export interface PipelineTemplate {
+  id: string;
+  name: string;
+  description: string;
+  trigger: "manual" | "new_version";
+  builtin: boolean;
+  created_by: string | null;
+  created_by_id?: string | null;
+  created_at: string | null;
+  starts_with_train: boolean;
+  steps: { kind: StepKind; label: string; summary: string; gate: boolean; config: Record<string, unknown> }[];
+}
+
+export const DEFAULT_ALIAS = "SOTA";
+
+/** 와/과 after a word: by its last sound (Hangul by its final consonant; a Latin word ending in l, m, n or ng too). */
+export function wa(word: string): string {
+  const last = word.trim().slice(-1);
+  const code = last.charCodeAt(0) - 0xac00;
+  if (code >= 0 && code < 11172) return code % 28 ? "과" : "와";
+  return /(?:[lmn]|ng)$/i.test(word.trim()) ? "과" : "와";
 }
 type Ref = { id: string; name: string; version: number; aliases?: string[]; deleted?: boolean };
 
@@ -20,6 +51,7 @@ export interface PipelineStepView {
   status: "pending" | "running" | "succeeded" | "failed" | "skipped" | "stopped" | "held";
   message: string;
   summary: string;
+  gate?: boolean;
   config: Record<string, unknown>;
   started_at: string | null;
   finished_at: string | null;
@@ -37,6 +69,10 @@ export interface PipelineStepView {
   mine?: number | null;
   theirs?: number | null;
   holder?: { id: string; name: string; version: number; op_id: string } | null;
+  made_release?: { id: string; version: string; dataset: string } | null;
+  flagged?: number | null;
+  set?: { id: string; name: string; done?: number; total?: number } | null;
+  sweep?: { id: string; name: string; started: number; total: number } | null;
 }
 
 export interface PipelineRunView {
@@ -63,14 +99,6 @@ export const RUN_STATUS: Record<PipelineRunView["status"], [string, string]> = {
   failed: ["실패", "failed"],
   stopped: ["멈춤", "idle"],
 };
-/** 와/과 after a word: by its last sound (Hangul by its final consonant; a Latin word ending in l, m, n or ng too). */
-export function wa(word: string): string {
-  const last = word.trim().slice(-1);
-  const code = last.charCodeAt(0) - 0xac00;
-  if (code >= 0 && code < 11172) return code % 28 ? "과" : "와";
-  return /(?:[lmn]|ng)$/i.test(word.trim()) ? "과" : "와";
-}
-
 export const TRIGGER_LABEL: Record<string, string> = { manual: "직접 실행", new_version: "새 버전이 생겨서", training: "새 학습에서" };
 const STEP_STATUS: Record<PipelineStepView["status"], string> = {
   pending: "대기",
@@ -89,6 +117,10 @@ export function RunStatusBadge({ status }: { status: PipelineRunView["status"] }
 
 /** Where a step's work is seen: its training run, its evaluation, the model it promoted or exported. */
 export function stepHref(s: PipelineStepView): string | undefined {
+  if (s.made_release) return `#/datasets/${s.made_release.id}`;
+  if (s.kind === "check" && s.release) return `#/review/${s.release.id}`;
+  if ((s.kind === "autolabel" || s.kind === "label") && s.set) return `#/labeling/${s.set.id}`;
+  if (s.kind === "sweep" && s.sweep) return `#/training/sweep/${s.sweep.id}`;
   if (s.kind === "train" && s.run) return `#/training/${s.run.id}`;
   if (s.kind === "eval" && s.op_id) return `#/models/eval/${s.op_id}`;
   if ((s.kind === "promote" || s.kind === "export") && s.model) return `#/models/${s.model.id}`;
@@ -100,8 +132,11 @@ export function stepNote(s: PipelineStepView): string {
   if (s.status === "running") {
     if (s.job?.status === "queued") return "차례 기다림";
     if (s.kind === "train" && s.run && s.run.epochs > 0) return `${s.run.epoch}/${s.run.epochs}`;
+    if (s.kind === "label" && s.set?.total) return `${s.set.done ?? 0}/${s.set.total}`;
+    if (s.kind === "sweep" && s.sweep) return `${s.sweep.started}/${s.sweep.total}`;
     return "";
   }
+  if (s.made_release) return s.made_release.version;
   if (s.kind === "eval" && s.metric?.value != null) return s.metric.value.toFixed(3);
   if (s.kind === "promote" && s.status === "succeeded" && s.outcome === "promoted") return `→ ${s.alias}`;
   if (s.kind === "train" && s.model) return `v${s.model.version}`;
@@ -109,7 +144,13 @@ export function stepNote(s: PipelineStepView): string {
 }
 
 /** The steps in a row: 학습 ✓ → 평가 · 검수 ● → 승격 ○. Each links to what it made. */
-export function StepChain({ steps, plain = false }: { steps: (PipelineStepView | { kind: StepKind; label: string; summary?: string })[]; plain?: boolean }) {
+export function StepChain({
+  steps,
+  plain = false,
+}: {
+  steps: (PipelineStepView | { kind: StepKind; label: string; summary?: string; gate?: boolean })[];
+  plain?: boolean;
+}) {
   return (
     <ol className="pl-chain" aria-label="단계">
       {steps.map((s, i) => {
@@ -119,10 +160,12 @@ export function StepChain({ steps, plain = false }: { steps: (PipelineStepView |
         const title = live
           ? [`${s.label}: ${STEP_STATUS[live.status]}`, live.message || live.summary, live.job?.wait_reason].filter(Boolean).join("\n")
           : s.summary;
+        const gate = "gate" in s && s.gate;
         const body = (
           <>
             <i />
             {s.label}
+            {gate && <span className="pl-gate-mark" title="게이트: 기준을 넘어야 다음으로" aria-label="게이트" />}
             {note && <span className="num">{note}</span>}
           </>
         );
@@ -147,6 +190,8 @@ export function StepChain({ steps, plain = false }: { steps: (PipelineStepView |
 // ---- "학습 끝나면": the steps after a training --------------------------------------------
 
 export interface FollowSpec {
+  template?: string; // a template's steps after its training, instead of the choices below
+  templateSteps?: StepSpec[];
   eval: boolean;
   release: string; // "" = the version it trained on
   split: string; // auto | val | test | train
@@ -157,7 +202,7 @@ export interface FollowSpec {
 }
 
 const FOLLOW_KEY = "badamoa.follow-ups"; // the last choice, offered again next time (this browser only)
-const NO_FOLLOW: FollowSpec = { eval: false, release: "", split: "auto", review: true, promote: false, alias: "SOTA", export: false };
+const NO_FOLLOW: FollowSpec = { eval: false, release: "", split: "auto", review: true, promote: false, alias: DEFAULT_ALIAS, export: false };
 
 export function rememberedFollow(): FollowSpec {
   try {
@@ -179,9 +224,10 @@ export function rememberFollow(spec: FollowSpec) {
 
 /** The steps a choice makes, in the Hub's order (evaluate → promote → export). */
 export function followSteps(spec: FollowSpec): StepSpec[] {
+  if (spec.template && spec.templateSteps) return spec.templateSteps;
   const steps: StepSpec[] = [];
   if (spec.eval) steps.push({ kind: "eval", config: { release_id: spec.release, split: spec.split, review: spec.review } });
-  if (spec.eval && spec.promote) steps.push({ kind: "promote", config: { alias: spec.alias.trim() || "SOTA" } });
+  if (spec.eval && spec.promote) steps.push({ kind: "promote", config: { alias: spec.alias.trim() || DEFAULT_ALIAS } });
   if (spec.export) steps.push({ kind: "export", config: { format: "onnx" } });
   return steps;
 }
@@ -214,80 +260,116 @@ export function FollowFields({
   const set = (part: Partial<FollowSpec>) => onChange({ ...spec, ...part });
   const metric = METRIC_LABEL[keyMetrics(task)[0]] ?? "지표";
   const others = (tree ?? []).filter((d) => d.task === task || !task);
+  // templates that start with a training: their steps after it
+  const [templates, setTemplates] = useState<PipelineTemplate[]>([]);
+  useEffect(() => {
+    void api<PipelineTemplate[]>("/pipeline-templates")
+      .then((list) => setTemplates(list.filter((t) => t.starts_with_train && t.steps.length > 1)))
+      .catch(() => setTemplates([]));
+  }, []);
+  const chosen = spec.template ? templates.find((t) => t.id === spec.template) : undefined;
+  const pick = (id: string) => {
+    const t = templates.find((x) => x.id === id);
+    set({ template: t?.id, templateSteps: t?.steps.slice(1).map((step) => ({ kind: step.kind, config: step.config })) });
+  };
   return (
     <fieldset className="pl-follow">
       <legend>
         {legend} <span className="muted">— Hub가 이어서 합니다{optional ? " (선택)" : ""}</span>
       </legend>
       {hint}
-      <div className="pl-check">
-        <input id="fu-eval" type="checkbox" checked={spec.eval} onChange={(e) => set({ eval: e.target.checked })} />
-        <label htmlFor="fu-eval">평가</label>
-        {spec.eval && (
-          <>
-            <select value={spec.release} onChange={(e) => set({ release: e.target.value })} aria-label="평가할 버전">
-              <option value="">학습한 버전</option>
-              {others.map((d) => (
-                <optgroup key={d.id} label={d.name}>
-                  {d.releases
-                    .filter((r) => r.status === "ready" && !r.deleted_at)
-                    .map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {d.name} {r.version} (고정)
-                      </option>
-                    ))}
-                </optgroup>
-              ))}
-            </select>
-            <select value={spec.split} onChange={(e) => set({ split: e.target.value })} aria-label="평가할 split">
-              {SPLIT_CHOICES.map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
-      </div>
-      {spec.eval && (
-        <div className="pl-check pl-sub">
-          <input id="fu-review" type="checkbox" checked={spec.review} onChange={(e) => set({ review: e.target.checked })} />
-          <label htmlFor="fu-review">검수에도 쓰기</label>
-          <span className="pl-hint">학습한 버전의 모든 이미지를 함께 평가해, 검수에서 틀렸을 법한 라벨부터 봅니다</span>
+      {templates.length > 0 && (
+        <div className="pl-check">
+          <label htmlFor="fu-template">무엇을</label>
+          <select id="fu-template" value={spec.template ?? ""} onChange={(e) => pick(e.target.value)}>
+            <option value="">직접 고르기</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                템플릿: {t.name}
+              </option>
+            ))}
+          </select>
         </div>
       )}
-      <div className={`pl-check${spec.eval ? "" : " off"}`}>
-        <input
-          id="fu-promote"
-          type="checkbox"
-          checked={spec.eval && spec.promote}
-          disabled={!spec.eval}
-          onChange={(e) => set({ promote: e.target.checked })}
-        />
-        <label htmlFor="fu-promote">더 나으면</label>
-        <input
-          className="pl-alias"
-          value={spec.alias}
-          onChange={(e) => set({ alias: e.target.value })}
-          disabled={!spec.eval || !spec.promote}
-          aria-label="alias"
-          list="fu-aliases"
-        />
-        <datalist id="fu-aliases">
-          <option value="SOTA" />
-          <option value="production" />
-          <option value="staging" />
-        </datalist>
-        <span>(으)로 지정</span>
-        <span className="pl-hint">
-          {spec.eval ? `지금 ${spec.alias || "SOTA"}${wa(spec.alias || "SOTA")} 같은 데이터로 재서 ${metric}이 더 높을 때만` : "평가가 있어야 비교합니다"}
-        </span>
-      </div>
-      <div className="pl-check">
-        <input id="fu-export" type="checkbox" checked={spec.export} onChange={(e) => set({ export: e.target.checked })} />
-        <label htmlFor="fu-export">ONNX로 내보내기</label>
-        {spec.eval && spec.promote && spec.export && <span className="pl-hint">승격됐을 때만</span>}
-      </div>
+      {chosen ? (
+        <div className="pl-sub pl-template-pick">
+          <StepChain steps={chosen.steps.slice(1)} plain />
+          <span className="pl-hint">{chosen.description}</span>
+        </div>
+      ) : (
+        <>
+          <div className="pl-check">
+            <input id="fu-eval" type="checkbox" checked={spec.eval} onChange={(e) => set({ eval: e.target.checked })} />
+            <label htmlFor="fu-eval">평가</label>
+            {spec.eval && (
+              <>
+                <select value={spec.release} onChange={(e) => set({ release: e.target.value })} aria-label="평가할 버전">
+                  <option value="">학습한 버전</option>
+                  {others.map((d) => (
+                    <optgroup key={d.id} label={d.name}>
+                      {d.releases
+                        .filter((r) => r.status === "ready" && !r.deleted_at)
+                        .map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {d.name} {r.version} (고정)
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <select value={spec.split} onChange={(e) => set({ split: e.target.value })} aria-label="평가할 split">
+                  {SPLIT_CHOICES.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
+          {spec.eval && (
+            <div className="pl-check pl-sub">
+              <input id="fu-review" type="checkbox" checked={spec.review} onChange={(e) => set({ review: e.target.checked })} />
+              <label htmlFor="fu-review">검수에도 쓰기</label>
+              <span className="pl-hint">학습한 버전의 모든 이미지를 함께 평가해, 검수에서 틀렸을 법한 라벨부터 봅니다</span>
+            </div>
+          )}
+          <div className={`pl-check${spec.eval ? "" : " off"}`}>
+            <input
+              id="fu-promote"
+              type="checkbox"
+              checked={spec.eval && spec.promote}
+              disabled={!spec.eval}
+              onChange={(e) => set({ promote: e.target.checked })}
+            />
+            <label htmlFor="fu-promote">더 나으면</label>
+            <input
+              className="pl-alias"
+              value={spec.alias}
+              onChange={(e) => set({ alias: e.target.value })}
+              disabled={!spec.eval || !spec.promote}
+              aria-label="alias"
+              list="fu-aliases"
+            />
+            <datalist id="fu-aliases">
+              <option value="SOTA" />
+              <option value="production" />
+              <option value="staging" />
+            </datalist>
+            <span>(으)로 지정</span>
+            <span className="pl-hint">
+              {spec.eval
+                ? `지금 ${spec.alias || DEFAULT_ALIAS}${wa(spec.alias || DEFAULT_ALIAS)} 같은 데이터로 재서 ${metric}이 더 높을 때만`
+                : "평가가 있어야 비교합니다"}
+            </span>
+          </div>
+          <div className="pl-check">
+            <input id="fu-export" type="checkbox" checked={spec.export} onChange={(e) => set({ export: e.target.checked })} />
+            <label htmlFor="fu-export">ONNX로 내보내기</label>
+            {spec.eval && spec.promote && spec.export && <span className="pl-hint">승격됐을 때만</span>}
+          </div>
+        </>
+      )}
     </fieldset>
   );
 }

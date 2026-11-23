@@ -1,20 +1,31 @@
 """Pipelines (Phase 5 · Automate): steps the Hub runs one after another, each when the one before succeeded.
 
-A step is something the Hub already does, started as a person would start it, by the person who started the run:
+A step is something the Hub already does, started as a person would start it, by the person who started the run.
+A run follows a version (the current one) and, once a step has made one, a model (the current one):
 
-    train    a training run on the run's version (``training.start_run``) → the model it registers
-    eval     that model measured on a version's split (``modelops.start_eval``); with ``review`` also every split of
-             the version it trained on, so 검수 sorts that version's images by likely wrong labels (its model check)
-    promote  a gate: an alias (SOTA) moves to the model only if it beats the version holding it, both measured on
-             the same version and split; otherwise the alias stays and the run ends ``held``
-    export   the model exported (ONNX)
+    import     the dataset's folder on a server imported again as a new version (files it holds unchanged are not
+               read again) → the current version
+    check      a gate on 검수's rule checks: the current version's flagged images at most ``max_flagged``
+    sync       the current version's images sent to a server ahead of a training there
+    autolabel  the current model (or the one holding an alias) labels the version's images nobody labelled yet,
+               in a labeling set of them (오토라벨, Closed-Voca)
+    label      people finish a labeling set: the one 오토라벨 made, else a new one of the images to label
+    confirm    the work in progress (작업 중) confirmed as a new version → the current version
+    train      a training run on the current version → the model it registers
+    sweep      a hyperparameter search on the current version → the model of its best run
+    eval       the model measured on a version's split; with ``review`` also every split of the current version,
+               so 검수 sorts that version's images by likely wrong labels (its model check)
+    promote    a gate: an alias (SOTA) moves to the evaluated model only if it beats the version holding it, both
+               measured on the same version and split; otherwise the alias stays
+    export     the model exported (ONNX)
 
-They run in that order, each at most once. Without ``train`` a pipeline is one ``eval`` of the model holding an alias
-(re-measuring the SOTA on each new version: how it holds up, and a model check for 검수).
+Steps run in the order they are given. ``train``, ``sweep`` and ``eval`` become gates too with ``at_least`` (the
+model's number must reach it). A gate that does not pass ends the run ``held``; a step that fails stops it and
+says why; the steps after either are skipped. A run is started by a person, by a new version of the dataset
+(``new_version``; not one the pipeline made itself), or by a new training run ("학습 끝나면"). The Hub's background
+loop advances runs (``advance_all``): soon after a job ends, otherwise every 15 s.
 
-A step that fails stops the run and says why; the steps after it are skipped. A run follows one version and is
-started by a person, by a new version of the dataset (``new_version``), or by a new training run ("학습 끝나면").
-The Hub's background loop advances runs (``advance_all``): soon after a job ends, otherwise every 15 s.
+Templates keep steps to start pipelines from: the built-in ones (``BUILTIN_TEMPLATES``) and the ones people save.
 """
 
 from __future__ import annotations
@@ -32,28 +43,50 @@ from sqlalchemy.orm import Session
 from badamoa.core import tasks as task_names
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import catalog, modelops, registry, services, training
-from .catalog_models import Dataset, Project, Release
+from . import autolabel, catalog, drafts, labeling, modelops, qa, registry, services, sweeps, training, transfers
+from .catalog_models import Dataset, LabelSet, Project, Release
 from .config import HubSettings
 from .db import iso, utcnow, write_lock
-from .models import Job, User
+from .models import Job, Node, User
 from .services import ServiceError
-from .train_models import ModelJob, ModelVersion, Pipeline, PipelineRun, Run, Template
+from .train_models import ModelJob, ModelVersion, Pipeline, PipelineRun, PipelineTemplate, Run, Sweep, Template
 
 log = logging.getLogger("badamoa.hub.pipelines")
 
-KINDS = ("train", "eval", "promote", "export")
-LABEL = {"train": "학습", "eval": "평가", "promote": "승격", "export": "내보내기"}
+KINDS = ("import", "check", "sync", "autolabel", "label", "confirm", "train", "sweep", "eval", "promote", "export")
+LABEL = {
+    "import": "가져오기",
+    "check": "검수 확인",
+    "sync": "서버로 보내기",
+    "autolabel": "오토라벨",
+    "label": "라벨링",
+    "confirm": "버전 확정",
+    "train": "학습",
+    "sweep": "탐색",
+    "eval": "평가",
+    "promote": "승격",
+    "export": "내보내기",
+}
+MAKES_MODEL = ("train", "sweep")
+USES_MODEL = ("autolabel", "eval", "export")
+GATES = ("check", "promote")  # always; train · sweep · eval with ``at_least``
+DEFAULT_ALIAS = "SOTA"
 TRIGGERS = ("manual", "new_version")
 SPLITS = ("auto", "val", "test", "train")
+CHECK_GROUPS = {"any": "문제", "missing": "라벨 빠짐", "wrong": "틀린 라벨", "boxes": "박스 문제"}
 GOING = ("pending", "running")
 ENDED = {"failed": "failed", "stopped": "stopped", "held": "held"}  # a step's end → the run's
 MAX_NAME = 160
+MAX_STEPS = 20
 MAX_RUNS_SHOWN = 50
 # What a training step may carry: the new-run dialog's settings, without the version (the run's own)
 TRAIN_KEYS = (
     "template", "environment", "params", "name", "model_name", "classes", "unlabelled", "val_fraction", "gpus",
     "gpu_indices", "min_vram_mb", "base_model_id", "tags", "note", "nodes", "data_after",
+)  # fmt: skip
+SWEEP_KEYS = (
+    "template", "environment", "params", "space", "method", "metric", "goal", "max_runs", "parallel", "classes",
+    "gpus", "nodes",
 )  # fmt: skip
 METRIC_LABEL = {
     "map50_95": "mAP50-95",
@@ -63,6 +96,85 @@ METRIC_LABEL = {
     "top1": "Top-1",
     "top5": "Top-5",
 }
+
+# The ways to start from. Blanks (the training's model kind, the model a SOTA check looks at, the settings a search
+# tries) are filled in when a pipeline is made from one.
+BUILTIN_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "id": "builtin-train",
+        "name": "학습 → 평가 → 승격",
+        "description": "고른 버전으로 학습하고, 같은 데이터로 지금 SOTA와 비교해 더 나을 때만 SOTA로 지정합니다. "
+        "평가는 검수의 모델 검사로도 쓰입니다.",
+        "trigger": "manual",
+        "steps": [
+            {"kind": "train", "config": {}},
+            {"kind": "eval", "config": {"split": "auto", "review": True}},
+            {"kind": "promote", "config": {"alias": DEFAULT_ALIAS}},
+            {"kind": "export", "config": {"format": "onnx"}},
+        ],
+    },
+    {
+        "id": "builtin-retrain",
+        "name": "새 버전마다 다시 학습",
+        "description": "데이터셋에 새 버전이 생기면(가져오기 · 작업 중 확정) 같은 설정으로 다시 학습하고, "
+        "나을 때만 SOTA를 옮깁니다.",
+        "trigger": "new_version",
+        "steps": [
+            {"kind": "train", "config": {}},
+            {"kind": "eval", "config": {"split": "auto", "review": True}},
+            {"kind": "promote", "config": {"alias": DEFAULT_ALIAS}},
+        ],
+    },
+    {
+        "id": "builtin-sota",
+        "name": "새 버전마다 SOTA 평가",
+        "description": "새 버전이 생기면 지금 SOTA를 그 버전에서 평가합니다. 지난 버전보다 얼마나 달라졌는지 보고, "
+        "검수가 그 버전의 틀린 라벨 후보를 바로 찾습니다.",
+        "trigger": "new_version",
+        "steps": [
+            {"kind": "eval", "config": {"model": {"name": "", "alias": DEFAULT_ALIAS}, "split": "auto", "review": True}}
+        ],
+    },
+    {
+        "id": "builtin-labeling",
+        "name": "오토라벨 → 라벨링 → 새 버전 → 학습",
+        "description": "SOTA가 라벨 안 한 이미지에 먼저 그리고, 사람이 라벨링 묶음에서 고쳐 끝내면 "
+        "작업 중을 새 버전으로 확정해 다시 학습하고, 나을 때만 SOTA를 옮깁니다.",
+        "trigger": "manual",
+        "steps": [
+            {"kind": "autolabel", "config": {"model": {"name": "", "alias": DEFAULT_ALIAS}}},
+            {"kind": "label", "config": {}},
+            {"kind": "confirm", "config": {}},
+            {"kind": "train", "config": {}},
+            {"kind": "eval", "config": {"split": "auto", "review": True}},
+            {"kind": "promote", "config": {"alias": DEFAULT_ALIAS}},
+        ],
+    },
+    {
+        "id": "builtin-checked",
+        "name": "검수 확인 → 학습 → 평가 → 승격",
+        "description": "검수 규칙 검사에 걸린 이미지가 기준 이하일 때만 학습합니다. 라벨이 덜 된 버전으로 GPU를 쓰지 않게.",
+        "trigger": "new_version",
+        "steps": [
+            {"kind": "check", "config": {"max_flagged": 0, "group": "any"}},
+            {"kind": "train", "config": {}},
+            {"kind": "eval", "config": {"split": "auto", "review": True}},
+            {"kind": "promote", "config": {"alias": DEFAULT_ALIAS}},
+        ],
+    },
+    {
+        "id": "builtin-sweep",
+        "name": "탐색 → 최고 모델 평가 → 내보내기",
+        "description": "하이퍼파라미터 탐색이 끝나면 가장 좋은 실행의 모델을 평가해 나을 때만 SOTA로 지정하고 내보냅니다.",
+        "trigger": "manual",
+        "steps": [
+            {"kind": "sweep", "config": {"space": {}, "method": "random", "max_runs": 6}},
+            {"kind": "eval", "config": {"split": "auto"}},
+            {"kind": "promote", "config": {"alias": DEFAULT_ALIAS}},
+            {"kind": "export", "config": {"format": "onnx"}},
+        ],
+    },
+]
 
 # One advancing pass at a time (two would start the same step twice); requests that start or stop a run hold it
 # until they have committed, as hyperparameter searches do.
@@ -79,7 +191,7 @@ def pending() -> bool:
 
 
 def on_job_finished(job: Job) -> None:
-    if job.type in ("train.run", "model.run", "data.sync"):
+    if job.type in ("train.run", "model.run", "data.sync", "data.import"):
         wake()
 
 
@@ -104,7 +216,107 @@ def _check_alias(alias: str) -> str:
     return alias
 
 
-def _clean_train(db: Session, dataset: Dataset, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+def _number(value: Any, what: str, low: float | None = None, high: float | None = None) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as e:
+        raise ServiceError(400, f"{what}은(는) 숫자입니다.") from e
+    if (low is not None and number < low) or (high is not None and number > high):
+        span = f"{low if low is not None else ''}~{high if high is not None else ''}"
+        raise ServiceError(400, f"{what}은(는) {span} 사이입니다.")
+    return number
+
+
+def _gate_of(config: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
+    """``at_least``: the model's number must reach it to go on (a gate); ``metric``: which (else the task's main)."""
+    if config.get("at_least") not in (None, ""):
+        out["at_least"] = _number(config["at_least"], "기준값")
+    if str(config.get("metric") or "").strip():
+        out["metric"] = str(config["metric"]).strip()
+    return out
+
+
+def _gpus_of(config: dict[str, Any], out: dict[str, Any]) -> None:
+    """GPUs a model step takes; left out: as many as the training took (none: one when the server has any)."""
+    if config.get("gpus") is not None:
+        if not isinstance(config["gpus"], int) or config["gpus"] < 0:
+            raise ServiceError(400, "gpus는 0(CPU) 이상의 정수입니다.")
+        out["gpus"] = config["gpus"]
+
+
+def _model_choice(config: dict[str, Any]) -> dict[str, str] | None:
+    """A model named by its family and alias (the one holding it when the step runs)."""
+    model = config.get("model") or {}
+    if not model:
+        return None
+    name, alias = str(model.get("name") or "").strip(), str(model.get("alias") or "").strip()
+    if not name or not alias:
+        raise ServiceError(400, f"모델을 고르세요: 모델 이름과 alias(예: {DEFAULT_ALIAS}).")
+    return {"name": name, "alias": _check_alias(alias)}
+
+
+def _node_id(db: Session, config: dict[str, Any], what: str) -> str:
+    node_id = str(config.get("node_id") or "")
+    if not node_id:
+        raise ServiceError(400, f"{what}: 서버를 고르세요.")
+    if db.get(Node, node_id) is None:
+        raise ServiceError(404, f"{what}: 고른 서버를 찾을 수 없습니다.")
+    return node_id
+
+
+def _clean_import(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    path = str(config.get("path") or "").strip()
+    if not path:
+        raise ServiceError(400, "가져오기: 서버의 폴더 경로를 적으세요.")
+    fmt = str(config.get("format") or "auto")
+    if fmt not in ("auto", "yolo", "coco", "imagefolder"):
+        raise ServiceError(400, "가져오기 형식은 auto, yolo, coco, imagefolder 중 하나입니다.")
+    return {
+        "node_id": _node_id(db, config, "가져오기"),
+        "path": path,
+        "format": fmt,
+        "full_read": bool(config.get("full_read")),
+    }
+
+
+def _clean_check(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    group = str(config.get("group") or "any")
+    if group not in CHECK_GROUPS:
+        raise ServiceError(400, f"검수 확인의 group은 {', '.join(CHECK_GROUPS)} 중 하나입니다.")
+    return {"max_flagged": int(_number(config.get("max_flagged") or 0, "문제 이미지 수", 0)), "group": group}
+
+
+def _clean_sync(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    return {"node_id": _node_id(db, config, "서버로 보내기")}
+
+
+def _clean_autolabel(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    split = str(config.get("split") or "")
+    if split not in ("", "train", "val", "test"):
+        raise ServiceError(400, "오토라벨 split은 train, val, test 중 하나입니다(비우면 모두).")
+    out: dict[str, Any] = {"split": split, "keep": _number(config.get("keep", autolabel.KEEP), "최소 확신도", 0, 1)}
+    if config.get("accept") not in (None, ""):
+        out["accept"] = _number(config["accept"], "자동 승인 확신도", 0, 1)
+    _gpus_of(config, out)
+    model = _model_choice(config)
+    if model:
+        out["model"] = model
+    return out
+
+
+def _clean_label(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    split = str(config.get("split") or "")
+    if split not in ("", "train", "val", "test"):
+        raise ServiceError(400, "라벨링 split은 train, val, test 중 하나입니다(비우면 모두).")
+    part_size = int(_number(config.get("part_size") or 50, "일감 크기", 1, 10000))
+    return {"split": split, "review": bool(config.get("review", True)), "part_size": part_size}
+
+
+def _clean_confirm(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    return {}
+
+
+def _clean_train(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
     if config.get("attached"):  # follows a training run started on its own: repeated as "다시 실행" would
         return {"attached": True, "run_id": str(config.get("run_id") or "")}
     out = {k: v for k, v in config.items() if k in TRAIN_KEYS and v not in (None, "")}
@@ -116,10 +328,27 @@ def _clean_train(db: Session, dataset: Dataset, config: dict[str, Any], **_: Any
     for key in ("nodes", "tags"):
         if key in out:
             out[key] = [str(v) for v in out[key] or []]
-    return out
+    return _gate_of(config, out)
 
 
-def _clean_eval(db: Session, dataset: Dataset, config: dict[str, Any], train: bool = True, **_: Any) -> dict[str, Any]:
+def _clean_sweep(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    out = {k: v for k, v in config.items() if k in SWEEP_KEYS and v not in (None, "")}
+    space = out.get("space")
+    if not isinstance(space, dict) or not space:
+        raise ServiceError(400, "탐색: 시험할 설정과 값(space)을 하나 이상 적으세요.")
+    if out.get("method", "random") not in sweeps.METHODS:
+        raise ServiceError(400, "탐색 방식은 grid · random · bayes 중 하나입니다.")
+    out["max_runs"] = int(_number(out.get("max_runs", 10), "실행 수", 1, sweeps.MAX_RUNS))
+    out["parallel"] = int(_number(out.get("parallel", 1), "동시 실행 수", 1, sweeps.MAX_PARALLEL))
+    if not isinstance(out.get("params", {}), dict):
+        raise ServiceError(400, "params는 설정 이름과 값입니다.")
+    out.pop("metric", None)  # the search's metric is the gate's (below)
+    return _gate_of(config, out)
+
+
+def _clean_eval(
+    db: Session, dataset: Dataset | None, config: dict[str, Any], model_ready: bool = True, **_: Any
+) -> dict[str, Any]:
     release_id = str(config.get("release_id") or "")
     split = str(config.get("split") or "auto")
     if split not in SPLITS:
@@ -128,88 +357,107 @@ def _clean_eval(db: Session, dataset: Dataset, config: dict[str, Any], train: bo
         release = catalog.get_release(db, release_id)
         catalog.require_ready(release)
         other = db.get(Dataset, release.dataset_id)
-        if not task_names.same(catalog.dataset_task(other), catalog.dataset_task(dataset)):
+        if dataset is not None and not task_names.same(catalog.dataset_task(other), catalog.dataset_task(dataset)):
             raise ServiceError(400, "평가할 버전은 학습하는 데이터셋과 태스크가 같아야 합니다.")
         if not _has(release, _split_of(release, split)):
             raise ServiceError(400, f"{other.name} {release.version}의 {_split_of(release, split)}에는 이미지가 없습니다.")
     out: dict[str, Any] = {"release_id": release_id, "split": split, "review": bool(config.get("review"))}
-    if config.get("gpus") is not None:  # else as many as the training took (none: one when the server has any)
-        if not isinstance(config["gpus"], int) or config["gpus"] < 0:
-            raise ServiceError(400, "평가 gpus는 0(CPU) 이상의 정수입니다.")
-        out["gpus"] = config["gpus"]
-    if not train:
-        model = config.get("model") or {}
-        name, alias = str(model.get("name") or "").strip(), str(model.get("alias") or "").strip()
-        if not name or not alias:
-            raise ServiceError(400, "평가할 모델을 고르세요: 모델 이름과 alias(예: SOTA).")
-        out["model"] = {"name": name, "alias": _check_alias(alias)}
-    return out
+    _gpus_of(config, out)
+    model = _model_choice(config)
+    if model:
+        out["model"] = model
+    return _gate_of(config, out)
 
 
-def _clean_promote(db: Session, dataset: Dataset, config: dict[str, Any], **_: Any) -> dict[str, Any]:
-    try:
-        min_delta = float(config.get("min_delta") or 0)
-    except (TypeError, ValueError) as e:
-        raise ServiceError(400, "min_delta는 숫자입니다.") from e
-    if min_delta < 0:
-        raise ServiceError(400, "min_delta(이만큼 더 나아야 승격)는 0 이상입니다.")
+def _clean_promote(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    min_delta = _number(config.get("min_delta") or 0, "min_delta(이만큼 더 나아야 승격)", 0)
     return {
-        "alias": _check_alias(str(config.get("alias") or "SOTA")),
+        "alias": _check_alias(str(config.get("alias") or DEFAULT_ALIAS)),
         "metric": str(config.get("metric") or "").strip(),
         "min_delta": min_delta,
     }
 
 
-def _clean_export(db: Session, dataset: Dataset, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+def _clean_export(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
     fmt = str(config.get("format") or "onnx")
     if fmt not in modelops.EXPORT_FORMATS:
         raise ServiceError(400, f"내보내기 형식은 {', '.join(modelops.EXPORT_FORMATS)} 중 하나입니다.")
-    return {"format": fmt}
+    out: dict[str, Any] = {"format": fmt}
+    model = _model_choice(config)
+    if model:
+        out["model"] = model
+    return out
 
 
-CLEAN = {"train": _clean_train, "eval": _clean_eval, "promote": _clean_promote, "export": _clean_export}
+CLEAN = {
+    "import": _clean_import,
+    "check": _clean_check,
+    "sync": _clean_sync,
+    "autolabel": _clean_autolabel,
+    "label": _clean_label,
+    "confirm": _clean_confirm,
+    "train": _clean_train,
+    "sweep": _clean_sweep,
+    "eval": _clean_eval,
+    "promote": _clean_promote,
+    "export": _clean_export,
+}
 
 
-def clean_steps(db: Session, dataset: Dataset, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The steps as stored: known kinds, in order, each once, with complete settings."""
+def clean_steps(db: Session, dataset: Dataset | None, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The steps as stored: known kinds, each with complete settings, in an order that can run — a step that uses a
+    model comes after one that makes it (or names one by its alias), a promotion right after an evaluation of it.
+    ``dataset`` None: a template's steps (no dataset to check them against)."""
     if not steps:
         raise ServiceError(400, "단계를 하나 이상 넣으세요.")
-    kinds = [str((s or {}).get("kind") or "") for s in steps]
-    unknown = [k for k in kinds if k not in KINDS]
-    if unknown:
-        raise ServiceError(400, f"모르는 단계입니다: {unknown[0]}. 단계는 train · eval · promote · export입니다.")
-    if len(set(kinds)) != len(kinds):
-        raise ServiceError(400, "같은 단계는 한 번만 넣을 수 있습니다.")
-    if kinds != sorted(kinds, key=KINDS.index):
-        raise ServiceError(400, "단계는 학습 → 평가 → 승격 → 내보내기 순서입니다.")
-    if "promote" in kinds and "eval" not in kinds:
-        raise ServiceError(400, "승격은 평가한 결과로 정합니다. 평가 단계를 앞에 넣으세요.")
-    if "train" not in kinds and kinds != ["eval"]:
-        raise ServiceError(400, "학습 없이는 alias가 붙은 모델을 평가하는 단계 하나만 넣을 수 있습니다.")
-    train = "train" in kinds
-    return [
-        {"kind": k, "config": CLEAN[k](db, dataset, dict(s.get("config") or {}), train=train)}
-        for k, s in zip(kinds, steps, strict=True)
-    ]
+    if len(steps) > MAX_STEPS:
+        raise ServiceError(400, f"단계는 {MAX_STEPS}개까지입니다.")
+    out: list[dict[str, Any]] = []
+    model_ready = measured = False  # a model made by an earlier step; an evaluation of it since
+    for number, step in enumerate(steps, 1):
+        kind = str((step or {}).get("kind") or "")
+        if kind not in KINDS:
+            raise ServiceError(400, f"모르는 단계입니다: {kind or '(없음)'}. 단계는 {' · '.join(KINDS)}입니다.")
+        where = f"{number}번째 단계({LABEL[kind]})"
+        try:
+            config = CLEAN[kind](db, dataset, dict(step.get("config") or {}), model_ready=model_ready)
+        except ServiceError as e:
+            raise ServiceError(e.status, f"{where}: {e.message}") from e
+        if kind in USES_MODEL and not model_ready and not config.get("model"):
+            raise ServiceError(
+                400, f"{where}: 앞에 학습이나 탐색이 없으면 쓸 모델을 고르세요(모델 이름과 alias, 예: {DEFAULT_ALIAS})."
+            )
+        if kind == "promote" and not measured:
+            raise ServiceError(
+                400, f"{where}: 승격은 바로 앞의 평가로 정합니다. 학습 · 탐색 뒤에 평가를 넣고 그다음에 두세요."
+            )
+        if kind in MAKES_MODEL:
+            model_ready, measured = True, False
+        elif kind == "eval":
+            measured = not config.get("model")
+        out.append({"kind": kind, "config": config})
+    return out
 
 
 def _check_code(db: Session, dataset: Dataset, steps: list[dict[str, Any]]) -> None:
-    """The model kind the training step uses has code for the steps after it: refused now, not after training."""
-    train = next((s for s in steps if s["kind"] == "train"), None)
-    if train is None:
-        return
+    """The model kind a training or search uses has code for the steps after it: refused now, not after training."""
     task = catalog.dataset_task(dataset)
-    if train["config"].get("attached"):  # the kind the followed run trained with
-        followed = db.get(Run, train["config"].get("run_id") or "")
-        row = db.get(Template, (followed.template or {}).get("id", "")) if followed else None
-        if row is None:
-            return
-    else:
-        project = catalog.get_project(db, dataset.project_id)
-        row = registry.template_for(db, project.settings, task, str(train["config"].get("template") or ""))
-    entrypoints = registry.manifest_of(row, task).entrypoints
+    row: Template | None = None
     for step in steps:
-        if step["kind"] in ("eval", "export") and step["kind"] not in entrypoints:
+        c = step["config"]
+        if step["kind"] in MAKES_MODEL:
+            if c.get("attached"):  # the kind the followed run trained with
+                followed = db.get(Run, c.get("run_id") or "")
+                row = db.get(Template, (followed.template or {}).get("id", "")) if followed else None
+            else:
+                project = catalog.get_project(db, dataset.project_id)
+                row = registry.template_for(db, project.settings, task, str(c.get("template") or ""))
+            continue
+        if row is None or c.get("model") or step["kind"] not in USES_MODEL:
+            continue
+        if step["kind"] == "autolabel" and not modelops._does(row, "autolabel"):
+            raise ServiceError(400, f"{row.title}은(는) 오토라벨을 하지 않아 그 단계를 넣을 수 없습니다.")
+        if step["kind"] in ("eval", "export") and step["kind"] not in registry.manifest_of(row, task).entrypoints:
             raise ServiceError(400, f"{row.title}에는 {LABEL[step['kind']]} 코드가 없어 그 단계를 넣을 수 없습니다.")
 
 
@@ -271,7 +519,34 @@ def _unique_name(db: Session, project_id: str, name: str, pipeline_id: str = "")
 
 
 def _default_name(dataset: Dataset, steps: list[dict[str, Any]]) -> str:
-    return f"{dataset.name} {' → '.join(LABEL[s['kind']] for s in steps)}"
+    return f"{dataset.name} {' → '.join(LABEL[s['kind']] for s in steps)}"[:MAX_NAME]
+
+
+def _check_training(db: Session, user: User, dataset: Dataset, steps: list[dict[str, Any]]) -> None:
+    """A pipeline's first training (when no step before it makes a new version) is checked against the dataset's
+    newest version as it is saved, as the new-run dialog checks."""
+    newest = newest_release(db, dataset.id)
+    for step in steps:
+        if step["kind"] in ("import", "confirm"):
+            return  # it trains on a version still to come
+        if step["kind"] != "train" or newest is None:
+            continue
+        c = step["config"]
+        found = training.check_run(
+            db,
+            release_id=newest.id,
+            template=str(c.get("template") or ""),
+            params=c.get("params") or {},
+            classes=c.get("classes"),
+            nodes=c.get("nodes"),
+            val_fraction=float(c.get("val_fraction", 0.2)),
+            environment=str(c.get("environment") or ""),
+            gpus=c.get("gpus"),
+            user=user,
+        )
+        if found["problems"]:
+            raise ServiceError(400, " ".join(found["problems"]))
+        return
 
 
 def create_pipeline(
@@ -293,24 +568,7 @@ def create_pipeline(
     _check_code(db, dataset, cleaned)
     if trigger not in TRIGGERS:
         raise ServiceError(400, "trigger는 manual(직접 실행) 또는 new_version(새 버전이 생기면)입니다.")
-    train = next((s for s in cleaned if s["kind"] == "train"), None)
-    newest = newest_release(db, dataset.id)
-    if train is not None and newest is not None:
-        c = train["config"]
-        found = training.check_run(
-            db,
-            release_id=newest.id,
-            template=str(c.get("template") or ""),
-            params=c.get("params") or {},
-            classes=c.get("classes"),
-            nodes=c.get("nodes"),
-            val_fraction=float(c.get("val_fraction", 0.2)),
-            environment=str(c.get("environment") or ""),
-            gpus=c.get("gpus"),
-            user=user,
-        )
-        if found["problems"]:
-            raise ServiceError(400, " ".join(found["problems"]))
+    _check_training(db, user, dataset, cleaned)
     pipeline = Pipeline(
         project_id=dataset.project_id,
         dataset_id=dataset.id,
@@ -360,6 +618,7 @@ def update_pipeline(
         dataset = _dataset_of(db, pipeline.dataset_id)
         cleaned = clean_steps(db, dataset, steps)
         _check_code(db, dataset, cleaned)
+        _check_training(db, user, dataset, cleaned)
         pipeline.steps = cleaned
     services.audit(db, user.id, via, "pipeline.update", pipeline.id, name=pipeline.name, trigger=pipeline.trigger)
     return pipeline
@@ -370,6 +629,100 @@ def delete_pipeline(db: Session, user: User, pipeline_id: str, via: str = "api")
     pipeline = get_pipeline(db, pipeline_id)
     pipeline.deleted_at = utcnow()
     services.audit(db, user.id, via, "pipeline.delete", pipeline.id, name=pipeline.name)
+
+
+# ---- templates ------------------------------------------------------------------------------
+
+
+def _for_template(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What of a pipeline's steps belongs to one dataset only stays out of a template: the classes picked by id."""
+    out = copy.deepcopy(steps)
+    for step in out:
+        if step["kind"] in MAKES_MODEL:
+            step["config"].pop("classes", None)
+            step["config"].pop("name", None)  # a run name is the run's own
+    return out
+
+
+def create_template(
+    db: Session,
+    user: User,
+    *,
+    name: str,
+    steps: list[dict[str, Any]],
+    description: str = "",
+    trigger: str = "manual",
+    via: str = "api",
+) -> PipelineTemplate:
+    """Keep steps as a template everyone can start a pipeline from."""
+    name = name.strip()[:MAX_NAME]
+    if not name:
+        raise ServiceError(400, "템플릿 이름을 적으세요.")
+    if trigger not in TRIGGERS:
+        raise ServiceError(400, "trigger는 manual(직접 실행) 또는 new_version(새 버전이 생기면)입니다.")
+    cleaned = clean_steps(db, None, _for_template(steps))
+    if any(s["config"].get("attached") for s in cleaned):
+        raise ServiceError(400, "템플릿의 학습 단계에는 설정이 있어야 합니다.")
+    taken = db.scalar(select(PipelineTemplate).where(PipelineTemplate.name == name, PipelineTemplate.deleted_at.is_(None)))
+    if taken is not None or any(t["name"] == name for t in BUILTIN_TEMPLATES):
+        raise ServiceError(409, f"'{name}' 템플릿이 이미 있습니다. 다른 이름을 쓰세요.")
+    row = PipelineTemplate(name=name, description=description.strip(), steps=cleaned, trigger=trigger, created_by=user.id)
+    db.add(row)
+    db.flush()
+    services.audit(db, user.id, via, "pipeline.template.create", row.id, name=name)
+    return row
+
+
+def delete_template(db: Session, user: User, template_id: str, via: str = "api") -> None:
+    row = db.get(PipelineTemplate, template_id)
+    if row is None or row.deleted_at is not None:
+        raise ServiceError(404, "템플릿을 찾을 수 없습니다.")
+    if row.created_by != user.id and user.role != "admin":
+        raise ServiceError(403, "내가 만든 템플릿만 지울 수 있습니다(관리자는 모두).")
+    row.deleted_at = utcnow()
+    services.audit(db, user.id, via, "pipeline.template.delete", row.id, name=row.name)
+
+
+def _steps_view(db: Session, project: Project | None, dataset: Dataset | None, steps: list[dict[str, Any]]) -> list[dict]:
+    return [
+        {
+            "kind": s["kind"],
+            "label": _label(s),
+            "summary": _summary(db, project, dataset, s),
+            "gate": _is_gate(s),
+            "config": s["config"],
+        }
+        for s in steps
+    ]
+
+
+def list_templates(db: Session) -> list[dict[str, Any]]:
+    """The built-in templates, then the saved ones (newest first)."""
+    users = dict(db.execute(select(User.id, User.username)).all())
+    out = [
+        {**t, "builtin": True, "created_by": None, "created_at": None, "steps": _steps_view(db, None, None, t["steps"])}
+        for t in BUILTIN_TEMPLATES
+    ]
+    rows = db.scalars(
+        select(PipelineTemplate).where(PipelineTemplate.deleted_at.is_(None)).order_by(PipelineTemplate.created_at.desc())
+    )
+    for row in rows:
+        out.append(
+            {
+                "id": row.id,
+                "name": row.name,
+                "description": row.description,
+                "trigger": row.trigger,
+                "builtin": False,
+                "created_by": users.get(row.created_by or ""),
+                "created_by_id": row.created_by,
+                "created_at": iso(row.created_at),
+                "steps": _steps_view(db, None, None, row.steps),
+            }
+        )
+    for t in out:
+        t["starts_with_train"] = bool(t["steps"]) and t["steps"][0]["kind"] == "train"
+    return out
 
 
 # ---- runs -----------------------------------------------------------------------------------
@@ -487,12 +840,17 @@ def _jobs_of(step: dict[str, Any]) -> list[str]:
 
 
 def stop_run(db: Session, user: User, run_id: str, via: str = "api") -> PipelineRun:
-    """Stop the step going (its training or evaluation is canceled) and skip the rest. What finished stays."""
+    """Stop the step going (its training, search or evaluation is canceled) and skip the rest. What finished stays."""
     run = get_run(db, run_id)
     if run.status != "running":
         raise ServiceError(409, "이미 끝난 파이프라인 실행입니다.")
     steps = copy.deepcopy(run.steps)
     index = next((i for i, s in enumerate(steps) if s["status"] in GOING), len(steps) - 1)
+    sweep_id = (steps[index].get("refs") or {}).get("sweep_id")
+    if sweep_id:
+        found = db.get(Sweep, sweep_id)
+        if found is not None and found.status == "running":
+            sweeps.stop_sweep(db, user, sweep_id, via=via)
     for job_id in _jobs_of(steps[index]):
         job = db.get(Job, job_id)
         if job is not None and job.status not in TERMINAL_STATUSES:
@@ -510,10 +868,11 @@ def retry_run(db: Session, user: User, run_id: str, settings: HubSettings | None
         raise ServiceError(409, "실패했거나 멈춘 실행만 이어서 다시 할 수 있습니다.")
     steps = copy.deepcopy(run.steps)
     index = next((i for i, s in enumerate(steps) if s["status"] in ("failed", "stopped")), 0)
+    trained = (steps[index].get("refs") or {}).get("run_id") if steps[index]["kind"] == "train" else None
     for step in steps[index:]:
         step.update(_fresh(step))
-    if steps[0]["kind"] == "train" and index == 0 and run.train_run_id:  # again with what that training ran
-        steps[0]["config"] = {**steps[0]["config"], "again": run.train_run_id}
+    if trained:  # again with what that training ran
+        steps[index]["config"] = {**steps[index]["config"], "again": trained}
     run.steps, run.status, run.error, run.finished_at = steps, "running", "", None
     run.created_by = user.id  # the steps from here on are started as this person
     _advance(db, run, settings, strict=True, via=via)
@@ -578,38 +937,74 @@ def _measuring(db: Session, model_id: str, release_id: str, split: str) -> Model
     return next((op for op in ops if split in modelops._splits_of(op)), None)
 
 
-def _step(steps: list[dict[str, Any]], kind: str) -> dict[str, Any] | None:
-    return next((s for s in steps if s["kind"] == kind), None)
+def _before_step(steps: list[dict[str, Any]], index: int, kinds: tuple[str, ...]) -> dict[str, Any] | None:
+    """The nearest step before ``index`` of one of ``kinds``."""
+    return next((s for s in reversed(steps[:index]) if s["kind"] in kinds), None)
 
 
-def _subject(db: Session, run: PipelineRun, steps: list[dict[str, Any]], step: dict[str, Any]) -> ModelVersion:
-    """The model the steps after training act on: the one it registered, or (no training) the alias holder."""
-    train = _step(steps, "train")
-    if train is not None:
-        model = _model(db, (train.get("refs") or {}).get("model_id"))
-        if model is None:
-            raise ServiceError(409, "학습이 등록한 모델이 지워졌습니다.")
-        return model
-    wanted = step["config"].get("model") or {}
-    holder = _holder(db, run.project_id, wanted.get("name", ""), wanted.get("alias", ""))
-    if holder is None:
-        raise ServiceError(409, f"지금 {wanted.get('alias')}인 {wanted.get('name')} 모델이 없습니다.")
-    return holder
+def _gate_after(steps: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
+    """The promotion that decides on this evaluation (the next step that is one, before another model or evaluation)."""
+    for step in steps[index + 1 :]:
+        if step["kind"] == "promote":
+            return step
+        if step["kind"] in (*MAKES_MODEL, "eval"):
+            return None
+    return None
 
 
-def _gpus(db: Session, steps: list[dict[str, Any]]) -> int | None:
+def _release_now(run: PipelineRun, steps: list[dict[str, Any]], index: int) -> str:
+    """The current version: the newest one an earlier step made (import, confirm), else the run's."""
+    for step in reversed(steps[:index]):
+        made = (step.get("refs") or {}).get("release_out")
+        if made:
+            return made
+    return run.release_id
+
+
+def _subject(db: Session, run: PipelineRun, steps: list[dict[str, Any]], index: int) -> ModelVersion:
+    """The model a step acts on: the one it names by alias, else the one an earlier training or search made."""
+    wanted = steps[index]["config"].get("model")
+    if wanted:
+        holder = _holder(db, run.project_id, wanted.get("name", ""), wanted.get("alias", ""))
+        if holder is None:
+            raise ServiceError(409, f"지금 {wanted.get('alias')}인 {wanted.get('name')} 모델이 없습니다.")
+        return holder
+    maker = _before_step(steps, index, MAKES_MODEL)
+    model = _model(db, ((maker or {}).get("refs") or {}).get("model_id"))
+    if model is None:
+        raise ServiceError(409, f"{LABEL[maker['kind']]}이 등록한 모델이 지워졌습니다." if maker else "쓸 모델이 없습니다.")
+    return model
+
+
+def _gpus(db: Session, steps: list[dict[str, Any]], index: int) -> int | None:
     """An evaluation takes as many GPUs as the training did (a run on the CPU is measured on the CPU); without
     training, one when the server has any."""
-    evaluation = _step(steps, "eval")
-    if evaluation is not None and evaluation["config"].get("gpus") is not None:
-        return int(evaluation["config"]["gpus"])
-    train = _step(steps, "train")
-    made = db.get(Run, (train.get("refs") or {}).get("run_id") or "") if train else None
+    own = steps[index]["config"].get("gpus")
+    if own is not None:
+        return int(own)
+    maker = _before_step(steps, index, MAKES_MODEL)
+    refs = (maker or {}).get("refs") or {}
+    if maker is not None and maker["kind"] == "sweep":
+        found = db.get(Sweep, refs.get("sweep_id") or "")
+        gpus = (found.settings or {}).get("gpus") if found else None
+        return int(gpus) if gpus is not None else None
+    made = db.get(Run, refs.get("run_id") or "") if maker else None
     return int((made.config or {}).get("gpus") or 0) if made is not None else None
 
 
-def _metric_key(model: ModelVersion, config: dict[str, Any] | None = None) -> str:
-    return (config or {}).get("metric") or training.PRIMARY_METRIC.get(model.task or "detect", "map50_95")
+def _metric_key(model: ModelVersion | None, config: dict[str, Any] | None = None) -> str:
+    task = (model.task if model else "") or "detect"
+    return (config or {}).get("metric") or training.PRIMARY_METRIC.get(task, "map50_95")
+
+
+def _next_version(db: Session, dataset_id: str) -> str:
+    """The next version name: one past the highest vN, else after the count."""
+    names = set(db.scalars(select(Release.version).where(Release.dataset_id == dataset_id)))
+    numbers = [int(m.group(1)) for v in names if (m := re.fullmatch(r"[vV](\d+)", v or ""))]
+    n = (max(numbers) if numbers else len(names)) + 1
+    while f"v{n}" in names:
+        n += 1
+    return f"v{n}"
 
 
 def _begin(
@@ -625,30 +1020,85 @@ def _begin(
     it, else the pipeline)."""
     step = steps[index]
     kind, c = step["kind"], step["config"]
+    release_id = _release_now(run, steps, index)
     refs: dict[str, Any] = {}
-    if kind == "train":
+    if kind == "import":
+        release = catalog.get_release(db, release_id)
+        dataset = db.get(Dataset, release.dataset_id)
+        version = _next_version(db, dataset.id)
+        job = catalog.start_import(
+            db, owner, project_id=dataset.project_id, node_id=c["node_id"], path=c["path"], dataset=dataset.name,
+            version=version, fmt=c.get("format", "auto"), full_read=bool(c.get("full_read")), via=via,
+        )  # fmt: skip
+        refs = {"job_id": job.id, "version": version}
+    elif kind == "check":
+        refs = {"release_id": release_id}
+    elif kind == "sync":
+        node = services.get_node(db, c["node_id"])
+        refs = {"node_id": node.id, "release_id": release_id}
+        if node.id not in transfers.holders(db, release_id):
+            transfers.check_route(training.data_node(db, release_id), node)
+            refs["job_id"] = transfers.sync_job(db, owner, release_id, node, via).id
+    elif kind == "autolabel":
+        model = _subject(db, run, steps, index)
+        found, op = autolabel.start_on_images(
+            db, owner, release_id, model.id, split=c.get("split", ""), keep=c.get("keep", autolabel.KEEP),
+            accept=c.get("accept"), gpus=_gpus(db, steps, index), via=via,
+        )  # fmt: skip
+        refs = {"model_id": model.id, "set_id": found.id, "op_id": op.id, "op_jobs": [op.job_id]}
+    elif kind == "label":
+        made = _before_step(steps, index, ("autolabel", "label"))
+        set_id = ((made or {}).get("refs") or {}).get("set_id")
+        if set_id and db.get(LabelSet, set_id) is not None:
+            refs = {"set_id": set_id}
+        else:  # a set of the version's images nobody labelled yet
+            release = catalog.get_release(db, release_id)
+            dataset = db.get(Dataset, release.dataset_id)
+            match = {"state": "unlabelled", **({"split": c["split"]} if c.get("split") else {})}
+            found = labeling.create_set(
+                db, owner, release_id=release_id, name=f"{dataset.name} 라벨링 {utcnow():%m/%d}", match=match,
+                part_size=c.get("part_size", 50), review=c.get("review", True), via=via,
+            )  # fmt: skip
+            refs = {"set_id": found.id, "made": True}
+    elif kind == "confirm":
+        release = catalog.get_release(db, release_id)
+        draft = drafts.draft_of(db, release.dataset_id)
+        edited = drafts.edited_count(db, draft) if draft is not None else 0
+        if edited:
+            version = _next_version(db, release.dataset_id)
+            drafts.confirm(db, owner, draft.id, version, note=f"파이프라인 {run.name}에서 확정", via=via)
+            refs = {"release_out": draft.id, "version": version, "edited": edited}
+        else:
+            refs = {"edited": 0}
+    elif kind == "train":
         again = c.get("again") or (c.get("run_id") if c.get("attached") else "")
         if again:  # the training it followed, again with the same settings
-            made = training.rerun(db, owner, again, via=via)
+            made_run = training.rerun(db, owner, again, via=via)
         else:
-            made = training.start_run(
-                db, owner, release_id=run.release_id, via=via, **{k: v for k, v in c.items() if k in TRAIN_KEYS}
+            made_run = training.start_run(
+                db, owner, release_id=release_id, via=via, **{k: v for k, v in c.items() if k in TRAIN_KEYS}
             )
-        refs = {"run_id": made.id, "job_id": made.job_id}
-        run.train_run_id = made.id
-        run.name = run.name or made.name
+        refs = {"run_id": made_run.id, "job_id": made_run.job_id}
+        if _before_step(steps, index, ("train",)) is None:  # the run's training: its screen shows this run
+            run.train_run_id = made_run.id
+        run.name = run.name or made_run.name
+    elif kind == "sweep":
+        kept = {k: v for k, v in c.items() if k in SWEEP_KEYS and k != "metric"}
+        found = sweeps.start_sweep(db, owner, release_id=release_id, metric=c.get("metric", ""), via=via, **kept)
+        refs = {"sweep_id": found.id}
+        run.name = run.name or found.name
     elif kind == "eval":
-        model = _subject(db, run, steps, step)
-        release = catalog.get_release(db, c.get("release_id") or run.release_id)
+        model = _subject(db, run, steps, index)
+        release = catalog.get_release(db, c.get("release_id") or release_id)
         split = _split_of(release, c.get("split") or "auto")
         if not _has(release, split):
             raise ServiceError(400, f"{release.version}의 {split}에는 이미지가 없습니다.")
         splits = [split]
-        if c.get("review") and release.id == run.release_id:  # one evaluation: the gate's split and 검수's images
+        if c.get("review") and release.id == release_id:  # one evaluation: the gate's split and 검수's images
             splits += [s for s in ("train", "val", "test") if s != split and _has(release, s)]
-        gpus = _gpus(db, steps)
+        gpus = _gpus(db, steps, index)
         refs = {"model_id": model.id, "release_id": release.id, "split": split, "op_jobs": []}
-        gate = _step(steps[index + 1 :], "promote")
+        gate = _gate_after(steps, index)
         if gate is not None:  # the alias holder measured on the same data, alongside (and before, so the newest
             # evaluation 검수 offers is the new model's)
             holder = _holder(db, model.project_id, model.name, gate["config"]["alias"])
@@ -664,16 +1114,18 @@ def _begin(
         op = modelops.start_eval(db, owner, model.id, release.id, split, gpus, via="pipeline", splits=splits)
         refs.update(op_id=op.id)
         refs["op_jobs"].append(op.job_id)
-        if c.get("review") and release.id != run.release_id:  # 검수 looks at the version it trained on
-            own = catalog.get_release(db, run.release_id)
+        if c.get("review") and release.id != release_id:  # 검수 looks at the current version
+            own = catalog.get_release(db, release_id)
             parts = [s for s in ("train", "val", "test") if _has(own, s)]
             review = modelops.start_eval(db, owner, model.id, own.id, parts[0], gpus, via="pipeline", splits=parts)
-            refs.update(review_op_id=review.id)
+            refs.update(review_op_id=review.id, review_release_id=own.id)
             refs["op_jobs"].append(review.job_id)
+        else:
+            refs["review_release_id"] = release.id
     elif kind == "promote":
         refs = {}  # decided when the evaluations are in (``_check``)
     elif kind == "export":
-        model = _subject(db, run, steps, step)
+        model = _subject(db, run, steps, index)
         op = modelops.start_export(db, owner, model.id, c.get("format", "onnx"), via="pipeline", settings=settings)
         refs = {"model_id": model.id, "op_id": op.id, "op_jobs": [op.job_id]}
     step.update(status="running", refs=refs, started_at=iso(utcnow()), message="")
@@ -695,79 +1147,185 @@ def _job_end(db: Session, job_id: str | None) -> tuple[str, str] | None:
     return job.status, job.error or ""
 
 
+def _ended(db: Session, job_id: str | None, what: str) -> tuple[str, str] | None:
+    """A step that is one job: None while it goes, else how it went (succeeded with no words yet)."""
+    ended = _job_end(db, job_id)
+    if ended is None:
+        return None
+    status, error = ended
+    if status == "canceled":
+        return "stopped", f"{what}을(를) 중단했습니다."
+    if status != "succeeded":
+        return "failed", error or f"{what}이(가) 실패했습니다."
+    return "succeeded", ""
+
+
 def _fmt(value: Any) -> str:
     return f"{value:.3f}" if isinstance(value, int | float) else "–"
+
+
+def _reaches(config: dict[str, Any], key: str, value: Any, said: str) -> tuple[str, str]:
+    """A step's own gate: its number must reach ``at_least``."""
+    floor = config.get("at_least")
+    if floor is None:
+        return "succeeded", said
+    label = METRIC_LABEL.get(key, key)
+    if not isinstance(value, int | float):
+        return "held", f"{said} · {label}이(가) 없어 기준({_fmt(floor)})을 확인하지 못해 멈춤"
+    if ("loss" in key and value > floor) or ("loss" not in key and value < floor):
+        return "held", f"{said} · 기준 {_fmt(floor)}에 못 미쳐 멈춤"
+    return "succeeded", f"{said} · 기준 {_fmt(floor)} 넘음"
 
 
 def _check(db: Session, owner: User, run: PipelineRun, steps: list[dict[str, Any]], index: int) -> tuple[str, str] | None:
     """Whether a running step is over: (status, what to say), or None while it goes on."""
     step = steps[index]
-    kind, refs = step["kind"], step["refs"]
+    kind, refs, c = step["kind"], step["refs"], step["config"]
+    if kind == "import":
+        ended = _ended(db, refs.get("job_id"), "가져오기")
+        if ended is None or ended[0] != "succeeded":
+            return ended
+        made = db.scalar(select(Release).where(Release.job_id == refs["job_id"]))
+        if made is None or made.status != "ready":
+            return "failed", "가져오기는 끝났지만 새 버전이 없습니다."
+        refs["release_out"] = made.id
+        return "succeeded", f"{made.version} · 이미지 {int((made.stats or {}).get('items') or 0):,}장"
+    if kind == "check":
+        release = catalog.get_release(db, refs["release_id"])
+        if not qa.is_fresh(db, release):
+            qa.run(db, release)  # the rule checks on the labels as they are now
+        flagged = qa.groups(db, release.id).get(c.get("group", "any"), 0)
+        refs["flagged"] = flagged
+        what = CHECK_GROUPS.get(c.get("group", "any"), "문제")
+        said = f"{release.version}의 {what} 이미지 {flagged:,}장 (기준 {c['max_flagged']:,}장 이하)"
+        if flagged > c["max_flagged"]:
+            return "held", f"{said}: 검수에서 고치고 버전을 확정한 뒤 다시"
+        return "succeeded", said
+    if kind == "sync":
+        if not refs.get("job_id"):
+            return "succeeded", "이미 그 서버에 있음"
+        ended = _ended(db, refs["job_id"], "이미지 보내기")
+        if ended is None or ended[0] != "succeeded":
+            return ended
+        node = db.get(Node, refs.get("node_id") or "")
+        return "succeeded", f"{node.name if node else '서버'}에 보냄"
+    if kind == "autolabel":
+        op = db.get(ModelJob, refs.get("op_id") or "")
+        ended = _ended(db, op.job_id if op else None, "오토라벨")
+        if ended is None or ended[0] != "succeeded":
+            return ended
+        result = ((op.result or {}).get("autolabel") or op.result or {}) if op else {}
+        said = f"이미지 {int(result.get('images') or 0):,}장 · 라벨 {int(result.get('labels') or 0):,}개"
+        if c.get("accept") is not None:
+            said += f" · 자동 승인 {int(result.get('accepted') or 0):,}장"
+        return "succeeded", said
+    if kind == "label":
+        found = db.get(LabelSet, refs.get("set_id") or "")
+        if found is None:
+            return "failed", "라벨링 묶음이 지워졌습니다."
+        done, total = _set_progress(db, found)
+        refs["done"], refs["total"] = done, total
+        if done < total:
+            return None  # people are on it
+        return "succeeded", f"{found.name} 끝남 · {total:,}장"
+    if kind == "confirm":
+        if not refs.get("edited"):
+            return "succeeded", "고친 이미지가 없어 새 버전을 만들지 않음"
+        return "succeeded", f"{refs['version']} 확정 · 고친 이미지 {refs['edited']:,}장"
     if kind == "train":
-        ended = _job_end(db, refs.get("job_id"))
-        if ended is None:
-            return None
-        status, error = ended
-        if status == "canceled":
-            return "stopped", "학습을 중단했습니다."
-        if status != "succeeded":
-            return "failed", error or "학습이 실패했습니다."
+        ended = _ended(db, refs.get("job_id"), "학습")
+        if ended is None or ended[0] != "succeeded":
+            return ended
         model = db.scalar(select(ModelVersion).where(ModelVersion.run_id == refs.get("run_id")))
         if model is None:
             return "failed", "학습은 끝났지만 등록된 모델이 없습니다 (코드가 가중치를 올리지 않았습니다)."
         refs["model_id"] = model.id
-        return "succeeded", f"{model.name} v{model.version} 등록"
+        key = _metric_key(model, c)
+        return _reaches(c, key, (model.metrics or {}).get(key), f"{model.name} v{model.version} 등록")
+    if kind == "sweep":
+        return _sweep_end(db, step)
     if kind == "eval":
-        mine = [refs.get("op_id"), refs.get("review_op_id")]
-        ends = {}
-        for op_id in [*mine, refs.get("holder_op_id")]:
-            op = db.get(ModelJob, op_id) if op_id else None
-            if op is None:
-                continue
-            ended = _job_end(db, op.job_id)
-            if ended is None:
-                return None  # the holder's evaluation too: the gate right after needs it
-            ends[op_id] = ended
-        for op_id in mine:
-            status, error = ends.get(op_id, ("succeeded", ""))
-            if status == "canceled":
-                return "stopped", "평가를 중단했습니다."
-            if status != "succeeded":
-                return "failed", error or "평가가 실패했습니다."
-        op = db.get(ModelJob, refs.get("op_id"))
-        numbers = _numbers(op, refs["split"]) if op is not None else None
-        if not numbers:
-            return "failed", "평가는 끝났지만 지표가 없습니다."
-        model = _model(db, refs.get("model_id"))
-        gate = _step(steps[index + 1 :], "promote")
-        key = _metric_key(model, gate["config"] if gate else None) if model else "map50_95"
-        refs["metrics"] = {k: v for k, v in numbers.items() if isinstance(v, int | float)}
-        refs["metric"], refs["value"] = key, numbers.get(key)
-        release = db.get(Release, refs["release_id"])
-        said = (
-            f"{METRIC_LABEL.get(key, key)} {_fmt(numbers.get(key))} ({release.version if release else '?'} {refs['split']})"
-        )
-        if _step(steps, "train") is None and model is not None:  # the SOTA on a new version: how it holds up
-            before = _before(db, model, release, refs["split"], key)
-            if before is not None:
-                refs["before"] = before
-                change = (numbers.get(key) or 0) - before["value"]
-                said += f" · {before['version']}보다 {'+' if change >= 0 else ''}{change:.3f}"
-        return "succeeded", said
+        return _eval_end(db, steps, index)
     if kind == "promote":
         return _decide(db, owner, steps, index)
     if kind == "export":
-        op = db.get(ModelJob, refs.get("op_id"))
-        ended = _job_end(db, op.job_id if op else None)
-        if ended is None:
-            return None
-        status, error = ended
-        if status == "canceled":
-            return "stopped", "내보내기를 중단했습니다."
-        if status != "succeeded":
-            return "failed", error or "내보내기가 실패했습니다."
-        return "succeeded", f"{(op.result or {}).get('file') or step['config'].get('format', 'onnx')} 만듦"
+        op = db.get(ModelJob, refs.get("op_id") or "")
+        ended = _ended(db, op.job_id if op else None, "내보내기")
+        if ended is None or ended[0] != "succeeded":
+            return ended
+        return "succeeded", f"{(op.result or {}).get('file') or c.get('format', 'onnx')} 만듦"
     return "failed", f"모르는 단계입니다: {kind}"
+
+
+def _set_progress(db: Session, found: LabelSet) -> tuple[int, int]:
+    """A labeling set's images done (approved, or labelled without review) and in all."""
+    counts = labeling._counts(db, found.id)
+    total = sum(sum(c.values()) for c in counts.values())
+    done = sum(c["approved"] + (0 if found.review else c["labelled"]) for c in counts.values())
+    return done, total
+
+
+def _sweep_end(db: Session, step: dict[str, Any]) -> tuple[str, str] | None:
+    refs, c = step["refs"], step["config"]
+    found = db.get(Sweep, refs.get("sweep_id") or "")
+    if found is None:
+        return "failed", "탐색 기록을 찾을 수 없습니다."
+    if found.status == "running":
+        return None
+    if found.status == "stopped":
+        return ("failed", found.error) if found.error else ("stopped", "탐색을 멈췄습니다.")
+    runs = [r for r in sweeps._runs_of(db, found.id) if sweeps._status(db, r) == "succeeded"]
+    scored = [r for r in runs if isinstance((r.summary or {}).get(found.metric), int | float)]
+    if not scored:
+        return "failed", "탐색이 끝났지만 지표가 있는 실행이 없어 고를 모델이 없습니다."
+    pick = max if found.goal == "maximize" else min
+    best = pick(scored, key=lambda r: r.summary[found.metric])
+    model = db.scalar(select(ModelVersion).where(ModelVersion.run_id == best.id))
+    if model is None:
+        return "failed", f"가장 좋은 실행 {best.name}이 모델을 등록하지 않았습니다."
+    refs.update(model_id=model.id, run_id=best.id, value=best.summary[found.metric], metric=found.metric)
+    tried = ", ".join(f"{k}={(best.config or {}).get(k)}" for k in found.space)
+    said = f"{len(runs)}번 중 최고 {METRIC_LABEL.get(found.metric, found.metric)} {_fmt(refs['value'])} ({tried})"
+    return _reaches({**c, "metric": found.metric}, found.metric, refs["value"], said)
+
+
+def _eval_end(db: Session, steps: list[dict[str, Any]], index: int) -> tuple[str, str] | None:
+    step = steps[index]
+    refs, c = step["refs"], step["config"]
+    mine = [refs.get("op_id"), refs.get("review_op_id")]
+    ends = {}
+    for op_id in [*mine, refs.get("holder_op_id")]:
+        op = db.get(ModelJob, op_id) if op_id else None
+        if op is None:
+            continue
+        ended = _job_end(db, op.job_id)
+        if ended is None:
+            return None  # the holder's evaluation too: the gate right after needs it
+        ends[op_id] = ended
+    for op_id in mine:
+        status, error = ends.get(op_id, ("succeeded", ""))
+        if status == "canceled":
+            return "stopped", "평가를 중단했습니다."
+        if status != "succeeded":
+            return "failed", error or "평가가 실패했습니다."
+    op = db.get(ModelJob, refs.get("op_id"))
+    numbers = _numbers(op, refs["split"]) if op is not None else None
+    if not numbers:
+        return "failed", "평가는 끝났지만 지표가 없습니다."
+    model = _model(db, refs.get("model_id"))
+    gate = _gate_after(steps, index)
+    key = _metric_key(model, c if c.get("metric") else gate["config"] if gate else None)
+    refs["metrics"] = {k: v for k, v in numbers.items() if isinstance(v, int | float)}
+    refs["metric"], refs["value"] = key, numbers.get(key)
+    release = db.get(Release, refs["release_id"])
+    said = f"{METRIC_LABEL.get(key, key)} {_fmt(numbers.get(key))} ({release.version if release else '?'} {refs['split']})"
+    if c.get("model") and model is not None:  # the holder on a new version: how it holds up
+        before = _before(db, model, release, refs["split"], key)
+        if before is not None:
+            refs["before"] = before
+            change = (numbers.get(key) or 0) - before["value"]
+            said += f" · {before['version']}보다 {'+' if change >= 0 else ''}{change:.3f}"
+    return _reaches(c, key, numbers.get(key), said)
 
 
 def _before(db: Session, model: ModelVersion, release: Release | None, split: str, key: str) -> dict[str, Any] | None:
@@ -793,7 +1351,7 @@ def _decide(db: Session, owner: User, steps: list[dict[str, Any]], index: int) -
     """The gate: move the alias here when this model measured better than the version holding it."""
     step = steps[index]
     c, refs = step["config"], step["refs"]
-    measured = (_step(steps, "eval") or {}).get("refs") or {}
+    measured = (_before_step(steps, index, ("eval",)) or {}).get("refs") or {}
     model = _model(db, measured.get("model_id"))
     if model is None:
         return "failed", "평가한 모델이 지워졌습니다."
@@ -823,7 +1381,8 @@ def _decide(db: Session, owner: User, steps: list[dict[str, Any]], index: int) -
         refs["holder_tried"] = holder.id  # the holder changed since, or was never measured: measure it now
         try:
             with _savepoint(db):
-                op = modelops.start_eval(db, owner, holder.id, release_id, split, _gpus(db, steps), via="pipeline")
+                gpus = _gpus(db, steps, index)
+                op = modelops.start_eval(db, owner, holder.id, release_id, split, gpus, via="pipeline")
         except ServiceError as e:
             return (
                 "failed",
@@ -878,9 +1437,10 @@ def _advance(
                         _begin(db, owner, run, steps, index, settings, via if strict else "pipeline")
                 except ServiceError as e:
                     if strict:
-                        raise
+                        raise ServiceError(e.status, f"{LABEL[step['kind']]} 단계: {e.message}") from e
                     _end(run, steps, index, "failed", e.message)
                     return
+                strict = False  # only the first step a request starts is refused instead of failing the run
             outcome = _check(db, owner, run, steps, index)
             if outcome is None:
                 return
@@ -894,10 +1454,18 @@ def _advance(
         run.steps = steps
 
 
+def _made_by(db: Session, pipeline: Pipeline) -> set[str]:
+    """The versions a pipeline's own runs made (import, confirm): they start no run of it."""
+    made = set()
+    for steps in db.scalars(select(PipelineRun.steps).where(PipelineRun.pipeline_id == pipeline.id)):
+        made |= {(s.get("refs") or {}).get("release_out") for s in steps or []}
+    return made - {None}
+
+
 def _watch(db: Session, pipeline: Pipeline, settings: HubSettings | None) -> None:
     """A version of the dataset that became ready since the pipeline last looked starts a run (the newest only)."""
     since = pipeline.watch_since or pipeline.created_at
-    newest = db.scalar(
+    fresh = db.scalars(
         select(Release)
         .where(
             Release.dataset_id == pipeline.dataset_id,
@@ -906,14 +1474,16 @@ def _watch(db: Session, pipeline: Pipeline, settings: HubSettings | None) -> Non
             Release.created_at > since,
         )
         .order_by(Release.created_at.desc())
-        .limit(1)
-    )
-    if newest is None:
+        .limit(20)
+    ).all()
+    if not fresh:
         return
     write_lock(db)
-    pipeline.watch_since = newest.created_at
+    pipeline.watch_since = fresh[0].created_at
+    own = _made_by(db, pipeline)
+    newest = next((r for r in fresh if r.id not in own), None)
     owner = db.get(User, pipeline.created_by) if pipeline.created_by else None
-    if owner is None:
+    if newest is None or owner is None:
         return
     try:
         with _savepoint(db):
@@ -933,7 +1503,7 @@ def _watch(db: Session, pipeline: Pipeline, settings: HubSettings | None) -> Non
                 release_id=newest.id,
                 steps=steps,
                 status="failed",
-                error=f"{LABEL[steps[0]['kind']] if steps else ''} 단계: {e.message}",
+                error=e.message,
                 trigger="new_version",
                 created_by=owner.id,
                 finished_at=utcnow(),
@@ -989,41 +1559,86 @@ def _model_ref(model: ModelVersion | None) -> dict[str, Any] | None:
     }
 
 
-SPLIT_LABEL = {"auto": "test (없으면 val)", "val": "val", "test": "test", "train": "train"}
+SPLIT_LABEL = {"auto": "test (없으면 val)", "val": "val", "test": "test", "train": "train", "": "모든 split"}
+METHOD_LABEL = {"grid": "모든 조합", "random": "무작위", "bayes": "베이지안"}
+
+
+def _label(step: dict[str, Any]) -> str:
+    return LABEL[step["kind"]] + (" · 검수" if step["kind"] == "eval" and step["config"].get("review") else "")
+
+
+def _is_gate(step: dict[str, Any]) -> bool:
+    """Whether the step decides if the run goes on (else it goes on when the step succeeds)."""
+    return step["kind"] in GATES or step["config"].get("at_least") is not None
+
+
+def _node_name(db: Session, node_id: str | None) -> str:
+    node = db.get(Node, node_id) if node_id else None
+    return node.name if node else "지운 서버"
+
+
+def _train_summary(db: Session, project: Project | None, dataset: Dataset | None, c: dict[str, Any]) -> str:
+    task = catalog.dataset_task(dataset) if dataset else ""
+    try:
+        if task:
+            row = registry.template_for(db, project.settings if project else {}, task, str(c.get("template") or ""))
+        elif c.get("template"):
+            row = registry.get_template(db, str(c["template"]))
+        else:
+            return "프로젝트 기본 모델 종류"
+    except ServiceError:
+        return "삭제된 모델 종류"
+    manifest = registry.manifest_of(row, task) if task else registry.manifest_of(row)
+    params = c.get("params") or {}
+    parts = [row.title]
+    if manifest.variant:
+        spec = manifest.params.get(manifest.variant)
+        value = params.get(manifest.variant, spec.default if spec else "")
+        if value:
+            parts.append(PurePath(str(value)).stem)
+    epochs = params.get("epochs", manifest.params["epochs"].default if "epochs" in manifest.params else None)
+    if epochs:
+        parts.append(f"epoch {epochs}")
+    return " · ".join(parts)
 
 
 def _summary(db: Session, project: Project | None, dataset: Dataset | None, step: dict[str, Any]) -> str:
     """What a step does, in a few words (the cards and the steps not started yet)."""
     kind, c = step["kind"], step["config"]
+    gate = ""
+    if c.get("at_least") is not None:
+        gate = f" · {METRIC_LABEL.get(c.get('metric', ''), c.get('metric') or '주 지표')} {c['at_least']} 이상이면 다음"
+    if kind == "import":
+        return f"{_node_name(db, c.get('node_id'))}: {c.get('path')} → 새 버전"
+    if kind == "check":
+        return f"{CHECK_GROUPS.get(c.get('group', 'any'), '문제')} 이미지 {c.get('max_flagged', 0):,}장 이하면 다음"
+    if kind == "sync":
+        return f"{_node_name(db, c.get('node_id'))}(으)로"
+    if kind == "autolabel":
+        model = c.get("model")
+        who = f"{model['name'] or '모델'} {model['alias']}" if model else "앞 단계의 모델"
+        said = f"{who} · {SPLIT_LABEL.get(c.get('split', ''), c.get('split'))}의 라벨 안 한 이미지"
+        return said + (f" · 확신도 {c['accept']} 이상 자동 승인" if c.get("accept") is not None else "")
+    if kind == "label":
+        return "사람이 라벨링 묶음을 끝낼 때까지 기다림"
+    if kind == "confirm":
+        return "작업 중을 새 버전으로 (이름 자동)"
     if kind == "train":
         if c.get("attached"):
             return "따로 시작한 학습"
-        task = catalog.dataset_task(dataset) if dataset else "detect"
-        try:
-            row = registry.template_for(db, project.settings if project else {}, task, str(c.get("template") or ""))
-        except ServiceError:
-            return "삭제된 모델 종류"
-        manifest = registry.manifest_of(row, task)
-        params = c.get("params") or {}
-        parts = [row.title]
-        if manifest.variant:
-            spec = manifest.params.get(manifest.variant)
-            value = params.get(manifest.variant, spec.default if spec else "")
-            if value:
-                parts.append(PurePath(str(value)).stem)
-        epochs = params.get("epochs", manifest.params["epochs"].default if "epochs" in manifest.params else None)
-        if epochs:
-            parts.append(f"epoch {epochs}")
-        return " · ".join(parts)
+        return _train_summary(db, project, dataset, c) + gate
+    if kind == "sweep":
+        tried = ", ".join(c.get("space") or {}) or "시험할 설정 없음"
+        return f"{METHOD_LABEL.get(c.get('method', 'random'), c.get('method'))} {c.get('max_runs', 10)}번 · {tried}{gate}"
     if kind == "eval":
-        where = "그 버전" if c.get("model") else "학습한 버전"  # without training: the version the run is on
+        where = "그 버전" if c.get("model") else "학습한 버전"  # a model made before: on the version it trained on
         if c.get("release_id"):
             ref = _release_ref(db, c["release_id"])
             where = f"{ref['dataset']} {ref['version']}" if ref else "지운 버전"
         said = f"{where} · {SPLIT_LABEL.get(c.get('split', 'auto'), c.get('split'))}"
         if c.get("model"):
-            said = f"{c['model']['name']} {c['model']['alias']} → {said}"
-        return said + (" · 검수에도" if c.get("review") else "")
+            said = f"{c['model']['name'] or '모델'} {c['model']['alias']} → {said}"
+        return said + (" · 검수에도" if c.get("review") else "") + gate
     if kind == "promote":
         gain = f" (+{c['min_delta']} 이상)" if c.get("min_delta") else ""
         return f"더 나으면 {c['alias']}{gain}"
@@ -1046,33 +1661,58 @@ def _step_view(
     db: Session, settings: HubSettings, run: PipelineRun, step: dict[str, Any], names: tuple[Any, Any]
 ) -> dict[str, Any]:
     kind, refs = step["kind"], step.get("refs") or {}
+    running = step["status"] == "running"
     view: dict[str, Any] = {
         "kind": kind,
-        "label": LABEL[kind] + (" · 검수" if kind == "eval" and step["config"].get("review") else ""),
+        "label": _label(step),
         "status": step["status"],
         "message": step.get("message") or "",
         "summary": _summary(db, names[0], names[1], step),
+        "gate": _is_gate(step),
         "config": step["config"],
         "started_at": step.get("started_at"),
         "finished_at": step.get("finished_at"),
     }
-    if kind == "train" and refs.get("run_id"):
+    if refs.get("release_out"):
+        view["made_release"] = _release_ref(db, refs["release_out"])
+    if kind in ("import", "sync") and running:
+        view["job"] = _job_line(db, settings, refs.get("job_id"))
+    elif kind == "check" and refs:
+        view["release"] = _release_ref(db, refs.get("release_id"))
+        view["flagged"] = refs.get("flagged")
+    elif kind in ("autolabel", "label") and refs.get("set_id"):
+        found = db.get(LabelSet, refs["set_id"])
+        view["set"] = {"id": found.id, "name": found.name} if found else None
+        if kind == "label" and found is not None:
+            view["set"]["done"], view["set"]["total"] = _set_progress(db, found)
+        if kind == "autolabel":
+            view["op_id"] = refs.get("op_id")
+            view["model"] = _model_ref(db.get(ModelVersion, refs.get("model_id") or ""))
+            if running:
+                op = db.get(ModelJob, refs.get("op_id") or "")
+                view["job"] = _job_line(db, settings, op.job_id if op else None)
+    elif kind == "train" and refs.get("run_id"):
         made = db.get(Run, refs["run_id"])
         view["run"] = {"id": made.id, "name": made.name, "epoch": made.epoch, "epochs": made.epochs} if made else None
-        view["job"] = _job_line(db, settings, refs.get("job_id")) if step["status"] == "running" else None
+        view["job"] = _job_line(db, settings, refs.get("job_id")) if running else None
+        view["model"] = _model_ref(db.get(ModelVersion, refs["model_id"])) if refs.get("model_id") else None
+    elif kind == "sweep" and refs.get("sweep_id"):
+        found = db.get(Sweep, refs["sweep_id"])
+        if found is not None:
+            runs = sweeps._runs_of(db, found.id)
+            view["sweep"] = {"id": found.id, "name": found.name, "started": len(runs), "total": sweeps.total_of(found)}
         view["model"] = _model_ref(db.get(ModelVersion, refs["model_id"])) if refs.get("model_id") else None
     elif kind == "eval" and refs:
         view["model"] = _model_ref(db.get(ModelVersion, refs.get("model_id")))
         view["release"] = _release_ref(db, refs.get("release_id"))
         view["split"] = refs.get("split")
         view["op_id"] = refs.get("op_id")
-        view["metric"] = {"key": refs.get("metric"), "label": METRIC_LABEL.get(refs.get("metric") or "", refs.get("metric")),
-                          "value": refs.get("value")} if refs.get("metric") else None  # fmt: skip
+        key = refs.get("metric")
+        view["metric"] = {"key": key, "label": METRIC_LABEL.get(key or "", key), "value": refs.get("value")} if key else None
         view["before"] = refs.get("before")
-        # 검수 shows this model's check on the version it trained on (or the version measured, without training)
-        if step["config"].get("review"):
-            view["review_release_id"] = run.release_id
-        if step["status"] == "running":
+        if step["config"].get("review"):  # 검수 shows this model's check on that version
+            view["review_release_id"] = refs.get("review_release_id") or refs.get("release_id")
+        if running:
             op = db.get(ModelJob, refs.get("op_id")) if refs.get("op_id") else None
             view["job"] = _job_line(db, settings, op.job_id if op else None)
     elif kind == "promote" and refs:
@@ -1085,7 +1725,7 @@ def _step_view(
     elif kind == "export" and refs:
         view["op_id"] = refs.get("op_id")
         view["model"] = _model_ref(db.get(ModelVersion, refs.get("model_id")))
-        if step["status"] == "running":
+        if running:
             op = db.get(ModelJob, refs.get("op_id")) if refs.get("op_id") else None
             view["job"] = _job_line(db, settings, op.job_id if op else None)
     return view
@@ -1131,15 +1771,7 @@ def pipeline_view(db: Session, settings: HubSettings, pipeline: Pipeline, detail
         "name": pipeline.name,
         "project_id": pipeline.project_id,
         "dataset": {"id": dataset.id, "name": dataset.name, "task": catalog.dataset_task(dataset)} if dataset else None,
-        "steps": [
-            {
-                "kind": s["kind"],
-                "label": LABEL[s["kind"]] + (" · 검수" if s["kind"] == "eval" and s["config"].get("review") else ""),
-                "summary": _summary(db, project, dataset, s),
-                "config": s["config"],
-            }
-            for s in pipeline.steps
-        ],  # fmt: skip
+        "steps": _steps_view(db, project, dataset, pipeline.steps),
         "trigger": pipeline.trigger,
         "watch_since": iso(pipeline.watch_since),
         "note": pipeline.note,

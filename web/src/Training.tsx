@@ -10,6 +10,7 @@ import {
   type PipelineRunView,
   SaveFields,
   type SaveSpec,
+  type StepSettings,
   followSteps,
   rememberFollow,
   rememberedFollow,
@@ -1271,7 +1272,7 @@ function ParamField({ spec, value, onChange }: { spec: TemplateParam; value: For
   );
 }
 
-/** 새 학습; with ``pipeline``, 새 파이프라인: the same settings, kept with the steps after them. */
+/** 새 학습; with ``settingsFor``, the settings of a pipeline's training or search step (nothing starts). */
 export function NewRun({
   projectId,
   task,
@@ -1280,8 +1281,7 @@ export function NewRun({
   onClose,
   onStarted,
   onSweep,
-  pipeline,
-  onPipeline,
+  settingsFor,
 }: {
   projectId: string;
   task: string;
@@ -1290,14 +1290,11 @@ export function NewRun({
   onClose: () => void;
   onStarted: (runId: string) => void;
   onSweep: (id: string) => void;
-  pipeline?: { trigger: SaveSpec["trigger"] }; // making a pipeline: saved, with when it runs
-  onPipeline?: (pipelineId: string, runId?: string) => void;
+  settingsFor?: StepSettings;
 }) {
-  const making = pipeline !== undefined;
   // "학습 끝나면": the steps the Hub takes after this training (the last choice is offered again)
-  const [follow, setFollow] = useState<FollowSpec>(() => (making ? { ...rememberedFollow(), eval: true, promote: true } : rememberedFollow()));
-  const [save, setSave] = useState<SaveSpec>({ on: making, name: "", trigger: pipeline?.trigger ?? "manual" });
-  const [runNow, setRunNow] = useState(true);
+  const [follow, setFollow] = useState<FollowSpec>(rememberedFollow);
+  const [save, setSave] = useState<SaveSpec>({ on: false, name: "", trigger: "manual" });
   const [tree, setTree] = useState<TreeDataset[] | null>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [environments, setEnvironments] = useState<Environment[]>([]);
@@ -1340,11 +1337,15 @@ export function NewRun({
     setGoalMetric(keyMetrics(runTask)[0]);
     void api<Template[]>(`/templates?task=${encodeURIComponent(runTask)}`).then((list) => {
       setTemplates(list);
-      const first = list.find((t) => t.name === defaultTemplate) ?? list[0];
+      const given = settingsFor?.config ?? {};
+      const wanted = String(given.template ?? "") || defaultTemplate;
+      const first = list.find((t) => t.name === wanted || t.id === wanted) ?? list[0];
       setTemplateName(first?.name ?? "");
-      setValues(initialValues(first));
+      // a step's settings open as they were set (the model kind's own values first)
+      const kept = (given.params ?? {}) as Record<string, FormValue>;
+      setValues({ ...initialValues(first), ...(first?.name === wanted ? kept : {}) });
     });
-  }, [runTask, defaultTemplate]);
+  }, [runTask, defaultTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setChosen([]);
@@ -1463,6 +1464,32 @@ export function NewRun({
       return;
     }
     const nodes = nodeMode === "pick" ? pickedNodes : [];
+    if (settingsFor) {
+      // a pipeline step's settings: the model kind by name, so a template keeps working as kinds get new versions
+      const config: Record<string, unknown> = {
+        template: template.name,
+        environment: extra.environment,
+        params,
+        ...gpuBody,
+        classes: sentClasses,
+        model_name: extra.model_name,
+        base_model_id: extra.base,
+        nodes,
+        data_after: nodes.length ? dataAfter : "",
+      };
+      if (settingsFor.kind === "sweep") {
+        if (trials.length === 0) {
+          setError("시험할 설정을 하나 이상 넣으세요 (여러 설정 시험해 보기).");
+          setBusy(false);
+          return;
+        }
+        Object.assign(config, { space, method: ranged && method === "grid" ? "random" : method, max_runs: drawCount, parallel, metric: goalMetric });
+      }
+      settingsFor.onApply(
+        Object.fromEntries(Object.entries(config).filter(([, v]) => v !== "" && v != null && !(Array.isArray(v) && v.length === 0))),
+      );
+      return;
+    }
     try {
       if (trials.length > 0) {
         const sweep = await api<{ id: string }>("/sweeps", {
@@ -1500,20 +1527,6 @@ export function NewRun({
         data_after: nodes.length ? dataAfter : "",
       };
       const after = followSteps(follow);
-      if (making) {
-        const made = await api<{ id: string; started: PipelineRunView | null }>("/pipelines", {
-          body: {
-            release_id: release,
-            name: save.name,
-            steps: [{ kind: "train", config: settings }, ...after],
-            trigger: save.trigger,
-            run: runNow,
-          },
-        });
-        rememberFollow(follow);
-        onPipeline?.(made.id, made.started?.id);
-        return;
-      }
       if (after.length > 0 || save.on) {
         // the training starts now as usual; the Hub takes the steps after it (and keeps them as a pipeline)
         const save_ = save.on ? { save: { name: save.name, trigger: save.trigger } } : {};
@@ -1535,7 +1548,7 @@ export function NewRun({
   const defaultEnv = template?.environment.default && environments.some((e) => e.name === template.environment.default);
 
   return (
-    <Modal title={making ? "새 파이프라인 — 학습 → 평가 → 승격" : "새 학습"} onClose={onClose}>
+    <Modal title={settingsFor ? (settingsFor.kind === "sweep" ? "탐색 단계 설정" : "학습 단계 설정") : "새 학습"} onClose={onClose}>
       {none ? (
         <>
           <p className="muted">이 프로젝트에는 학습할 버전이 없습니다. 먼저 데이터셋을 가져오세요.</p>
@@ -1618,7 +1631,13 @@ export function NewRun({
             />
           )}
 
-          {trials.length === 0 ? (
+          {settingsFor ? (
+            <p className="muted small">
+              {settingsFor.kind === "sweep"
+                ? "아래 \"여러 설정 시험해 보기\"에 시험할 설정을 넣으세요. 파이프라인이 돌 때 그때의 버전으로 탐색합니다."
+                : "파이프라인이 돌 때 그때의 버전으로 이 설정대로 학습합니다. 여기서는 시작하지 않습니다."}
+            </p>
+          ) : trials.length === 0 ? (
             <>
               <FollowFields
                 spec={follow}
@@ -1626,23 +1645,16 @@ export function NewRun({
                 tree={tree}
                 task={runTask}
                 legend="학습 끝나면"
-                optional={!making}
                 hint={
-                  !making && followSteps(follow).length === 0 ? (
+                  followSteps(follow).length === 0 ? (
                     <span className="pl-hint pl-lead">평가 · 검수 · 승격은 나중에 모델 화면에서도 할 수 있지만, 여기서 고르면 끝나는 대로 Hub가 합니다.</span>
                   ) : undefined
                 }
               />
-              <SaveFields save={save} onChange={setSave} forced={making} />
-              {making && (
-                <div className="pl-check pl-run-now">
-                  <input id="pl-run-now" type="checkbox" checked={runNow} onChange={(e) => setRunNow(e.target.checked)} />
-                  <label htmlFor="pl-run-now">만들고 이 버전으로 바로 한 번 실행</label>
-                </div>
-              )}
+              <SaveFields save={save} onChange={setSave} />
             </>
           ) : (
-            <p className="muted small">탐색에는 아직 "학습 끝나면"을 붙일 수 없습니다. 탐색이 끝나면 가장 좋은 모델을 모델 화면에서 평가하세요.</p>
+            <p className="muted small">탐색 뒤에 이어서 할 일은 파이프라인 화면에서 "탐색 → 최고 모델 평가 → 내보내기"로 만드세요.</p>
           )}
 
           <details className="advanced">
@@ -1741,7 +1753,7 @@ export function NewRun({
             </fieldset>
           </details>
 
-          {template && !making && (
+          {template && (!settingsFor || settingsFor.kind === "sweep") && (
             <SweepFields
               params={fields}
               task={task}
@@ -1777,7 +1789,7 @@ export function NewRun({
               취소
             </button>
             <button className="primary" disabled={busy || !release || !template || blocked || noClass}>
-              {making ? (runNow ? "만들고 실행" : "파이프라인 만들기") : trials.length > 0 ? "탐색 시작" : "학습 시작"}
+              {settingsFor ? "설정 적용" : trials.length > 0 ? "탐색 시작" : "학습 시작"}
             </button>
           </div>
         </form>

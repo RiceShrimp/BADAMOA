@@ -327,7 +327,7 @@ BADAMOA is in 0.x development. Here is what works and what is still to come; the
 | **Build** · data | ✅ Registering in place, versions with fingerprints, version diff, node-to-node transfer and copies per server | 🚧 Image explorer (every dataset's images browsed, found by text or a similar image, picked into a version), curation |
 | **Annotate** · labels | ✅ Fixing boxes, outlines, keypoints and classes; work in progress → version; labeling sets with a board; label checks (rules and model); autolabel | 🚧 CVAT integration |
 | **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates, virtualenv and Docker environments | 🚧 TensorRT |
-| **Automate** · deployment | ✅ Pipelines (train → evaluate · review → promotion gate → export, on each new version) | 🚧 Inference service, deployment, pipelines that wait for people |
+| **Automate** · deployment | ✅ Pipelines composed from import, checks, autolabel, labeling, training, evaluation, promotion gates … with templates, on each new version | 🚧 Inference service, deployment, pipelines that wait for people |
 | **MOA** · operations | ✅ Nodes and GPU assignment, self-updating nodes, MCP agents | 🚧 Approval gates, built-in agent |
 
 > [!NOTE]

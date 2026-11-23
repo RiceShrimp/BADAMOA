@@ -108,16 +108,6 @@ a.pl-step:hover {
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
 }
-.pl-coming {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 16px;
-  margin-top: 10px;
-}
-.pl-coming span[title] {
-  cursor: help;
-}
 .pl-template {
   display: grid;
   align-content: start;
@@ -512,5 +502,162 @@ table.pl-runs .nowrap {
   }
   .pl-tl-time {
     margin-left: 0;
+  }
+}
+
+/* a gate in the chain: the next step goes on only past it */
+.pl-gate-mark {
+  width: 7px;
+  height: 7px;
+  margin-left: -2px;
+  transform: rotate(45deg);
+  border: 1.5px solid currentColor;
+  border-radius: 1px;
+  opacity: 0.7;
+}
+.pl-template-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+a.pl-compose {
+  color: inherit;
+  text-decoration: none;
+  border-style: dashed;
+  box-shadow: none;
+}
+a.pl-compose:hover {
+  border-color: var(--accent);
+}
+.pl-template-pick {
+  display: grid;
+  gap: 4px;
+}
+.pl-template-pick .pl-hint {
+  margin-left: 0;
+}
+
+/* the composer: steps in order, each opening to its settings */
+.pl-compose-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.pl-from {
+  margin: -6px 0 0;
+}
+.pl-compose-steps {
+  display: grid;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pl-compose-step {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pl-compose-step.open {
+  border-color: var(--accent);
+}
+button.pl-compose-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 112px 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+button.pl-compose-head:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.pl-compose-head .ellipsis {
+  min-width: 0;
+  flex: 1;
+}
+.pl-compose-tools {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  gap: 2px;
+}
+.pl-compose-tools button {
+  padding: 3px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.pl-compose-body {
+  display: grid;
+  gap: 10px;
+  padding: 4px 14px 14px 42px;
+}
+.pl-compose-body .form-row,
+.pl-compose-body label {
+  margin-bottom: 0;
+}
+.pl-compose-body p {
+  margin: 0;
+}
+.pl-link {
+  padding: 4px 0 4px 22px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.pl-add {
+  position: relative;
+}
+.pl-add-menu {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px 16px;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.pl-add-menu .eyebrow {
+  margin: 2px 0 4px;
+}
+button.pl-add-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  justify-items: start;
+  gap: 1px;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 7px 10px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+button.pl-add-item:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--border);
+}
+@media (max-width: 760px) {
+  button.pl-compose-head {
+    padding-right: 12px;
+    flex-wrap: wrap;
+  }
+  .pl-compose-tools {
+    position: static;
+    justify-content: flex-end;
+    padding: 0 8px 6px;
+  }
+  .pl-compose-body {
+    padding-left: 14px;
   }
 }

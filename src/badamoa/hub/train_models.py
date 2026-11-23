@@ -280,3 +280,19 @@ class PipelineRun(Base):
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PipelineTemplate(Base):
+    """A pipeline's steps kept to start new pipelines from (and the steps after a new training): no dataset of its
+    own, Hub-wide. The built-in ones are in ``pipelines.BUILTIN_TEMPLATES``."""
+
+    __tablename__ = "pipeline_templates"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text, default="")
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # what it suggests: manual | new_version
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

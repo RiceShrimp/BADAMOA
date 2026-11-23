@@ -38,6 +38,13 @@ class PipelineUpdate(BaseModel):
     steps: list[Step] | None = None
 
 
+class NewTemplate(BaseModel):
+    name: str
+    description: str = ""
+    steps: list[Step]
+    trigger: str = "manual"  # what it suggests: manual | new_version
+
+
 class RunNow(BaseModel):
     release_id: str = ""  # empty: the dataset's newest version
 
@@ -202,3 +209,26 @@ def follow(
 ) -> dict[str, Any]:
     """A training run's way on: the pipeline run it starts, and whether its model was evaluated."""
     return pipelines.follow_view(db, hub.settings, training.get_run(db, run_id))
+
+
+@router.get("/pipeline-templates")
+def list_templates(_: User = Depends(current_user), db: Session = Depends(db_session)) -> list[dict[str, Any]]:
+    """The built-in templates, then the ones people saved: steps to start a pipeline (or 학습 끝나면) from."""
+    return pipelines.list_templates(db)
+
+
+@router.post("/pipeline-templates")
+def create_template(
+    body: NewTemplate, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> list[dict[str, Any]]:
+    pipelines.create_template(
+        db, user, name=body.name, description=body.description, steps=_steps(body.steps), trigger=body.trigger, via="ui"
+    )
+    db.commit()
+    return pipelines.list_templates(db)
+
+
+@router.delete("/pipeline-templates/{template_id}")
+def delete_template(template_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
+    pipelines.delete_template(db, user, template_id, via="ui")
+    return {"ok": True}
