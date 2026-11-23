@@ -318,6 +318,7 @@ export interface ModelOp {
   files: { name: string; kind: "image" | "file"; bytes: number; url: string }[];
   tables?: { name: string; kind: "table"; caption: string; url: string }[]; // per-image results the code recorded
   table_images?: Record<string, string>; // pictures those tables draw on, by name
+  predicted?: number; // images whose predictions an evaluation kept (검수 draws them)
 }
 
 export interface ModelDetail extends ModelInfo {

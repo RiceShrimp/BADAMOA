@@ -563,6 +563,22 @@ def blob_for(db: Session, node: Node, job_id: str, what: str, index: int = 0) ->
     return images[index]["blob"]
 
 
+def _drawn(name: str, media: str, picture: bool, blob: str, storage: Storage | None) -> bool:
+    """A picture an evaluation drew: an image (Ultralytics' plots, sample mosaics), a table's picture, or a table of
+    pictures (the images it got most wrong, with their boxes)."""
+    if picture or media == "table-image":
+        return True
+    if media != "table" or storage is None:
+        return False
+    try:
+        import json
+
+        rows = json.loads(storage.get_blob(blob)).get("rows") or []
+    except (OSError, ValueError, AttributeError):
+        return False
+    return any(isinstance(cell, dict) and "image" in cell for row in rows for cell in row)
+
+
 def add_file(
     db: Session,
     node: Node,
@@ -590,6 +606,11 @@ def add_file(
         return {"name": "predictions.json", "images": matched}
     name = training.clean_file_name(name)
     picture = name.lower().endswith(IMAGE_SUFFIXES)
+    if op.kind == "eval" and _drawn(name, media, picture, blob, storage):
+        # An evaluation keeps its numbers, per-image results and predictions, not pictures: what it found on each
+        # image is seen on 검수 (the dataset's own image under its predictions). The upload is not recorded, and the
+        # cleanup removes it as nothing's.
+        return {"name": name, "kept": False}
     kind = "image" if picture else "file"
     if media == "table" or (media == "table-image" and picture):
         kind = media

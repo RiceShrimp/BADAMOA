@@ -195,7 +195,14 @@ export function EvalView({ opId }: { opId: string }) {
       )}
       {(op.tables?.length ?? 0) + op.files.length > 0 && (
         <section className="card">
-          <h3>결과 파일</h3>
+          <h3>
+            결과 파일
+            {op.kind === "eval" && op.release && (op.predicted ?? 0) > 0 && (
+              <a className="small eval-to-review" href={`#/review/${op.release.id}`} title="틀린 것을 데이터셋 이미지 위에서 봅니다">
+                검수에서 이미지로 보기
+              </a>
+            )}
+          </h3>
           {[...(op.tables ?? [])]
             .sort((a, b) => (a.name.startsWith("failures") ? -1 : 1) - (b.name.startsWith("failures") ? -1 : 1))
             .map((t) => (

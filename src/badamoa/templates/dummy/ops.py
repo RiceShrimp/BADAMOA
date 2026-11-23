@@ -14,7 +14,8 @@ if action == "eval":
     images = len([p for p in (run.data_dir / "images" / run.split).iterdir() if p.is_file()])
     print(f"평가: {run.split} split {images}장 · 학습 때 설정 {run.train_params}")
     per_class = [{"id": i, "name": name, "map50_95": 0.4, "map50": 0.6} for i, name in enumerate(run.classes)]
-    # per-image results as the real templates record them: all images by name, the worst as pictures with boxes
+    # per-image results by name, and (as templates may) the worst as a picture with boxes: the Hub keeps no pictures
+    # of an evaluation
     pictures = sorted(p for p in (run.data_dir / "images" / run.split).iterdir() if p.is_file())
     registered = json.loads((run.data_dir / "files.json").read_text(encoding="utf-8"))
     columns = ["image", "truth", "predicted", "found", "missed", "extra"]

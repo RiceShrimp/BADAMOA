@@ -13,7 +13,6 @@ from train import (
     IMAGE_SUFFIXES,
     MAX_OUTLINE,
     SAMPLE_CONF,
-    SAMPLE_SIDE,
     class_folder_index,
     clean,
     match,
@@ -21,7 +20,6 @@ from train import (
     truth_of,
 )
 
-FAILURES = 48  # images with the most mistakes, kept as pictures with their boxes
 COLUMNS = ["image", "truth", "predicted", "found", "missed", "extra"]
 PREDICT_BATCH = 8
 
@@ -94,10 +92,9 @@ def per_class_image(run, model) -> None:
 
 def per_image(run, model) -> None:
     """Every image of the evaluated split: true, predicted, found, missed and extra boxes (a prediction finds a
-    true box of its class it overlaps by half). The ones with the most mistakes also as pictures with the boxes.
+    true box of its class it overlaps by half). No pictures: 검수 shows each image's mistakes on the dataset's own
+    image, from the predictions kept here.
     """
-    from PIL import Image, ImageOps
-
     task = task_of(run.cfg)
     if task == "classify":
         per_class_image(run, model)
@@ -112,51 +109,24 @@ def per_image(run, model) -> None:
     except (OSError, ValueError):
         registered = {}
     print(f"이미지별 결과: {len(images):,}장을 확신도 {SAMPLE_CONF} 이상으로 예측합니다")
-    rows, scored, predicted = [], [], []
+    rows, predicted = [], []
     settings = {"conf": SAMPLE_CONF, "imgsz": run.train_params.get("imgsz", 640), "device": run.device}
     for image, result in predict_each(model, images, **settings):
-        truth, true_outlines = truth_of(image, task)
-        boxes, outlines = [], []
+        truth, _ = truth_of(image, task)
+        boxes = []
         if result.boxes is not None and len(result.boxes):
             classes, scores = result.boxes.cls.tolist(), result.boxes.conf.tolist()
             boxes = [[int(c), s, *xywh] for c, s, xywh in zip(classes, scores, result.boxes.xywhn.tolist(), strict=True)]
-            if result.masks is not None:
-                for c, s, points in zip(classes, scores, result.masks.xyn, strict=False):
-                    outlines.append([int(c), s, points[:: max(1, -(-len(points) // MAX_OUTLINE))].reshape(-1).tolist()])
         found, missed, extra = match(boxes, truth)
         predicted.append({"image": image.stem, **as_labels(result), "found": found, "missed": missed, "extra": extra})
         name = Path(registered.get(image.stem, image.name)).name
         rows.append([name, len(truth), len(boxes), found, missed, extra])
-        if missed + extra:
-            scored.append((missed + extra, image, name, boxes, truth, outlines, true_outlines, rows[-1]))
     rows.sort(key=lambda r: (-(r[4] + r[5]), r[0]))
     bm.log_table("per_image", COLUMNS, rows)
-    if hasattr(bm, "log_predictions"):  # every image's predictions: the dataset screen sorts by likely wrong labels
+    if hasattr(bm, "log_predictions"):  # every image's predictions: 검수 and the dataset screen draw them
         bm.log_predictions(predicted)
-
-    pictures = run.out / ".badamoa" / "failures"
-    pictures.mkdir(parents=True, exist_ok=True)
-    cells = []
-    for n, (_, image, name, boxes, truth, outlines, true_outlines, row) in enumerate(
-        sorted(scored, key=lambda s: -s[0])[:FAILURES]
-    ):
-        copy = pictures / f"{n:03d}-{Path(name).stem[:40]}.jpg"
-        with Image.open(image) as opened:
-            picture = ImageOps.exif_transpose(opened).convert("RGB")
-            picture.thumbnail((SAMPLE_SIDE, SAMPLE_SIDE))
-            picture.save(copy, quality=85)
-        cell = bm.overlay(
-            copy,
-            boxes=boxes,
-            truth=truth,
-            outlines=outlines if outlines or true_outlines else None,
-            truth_outlines=true_outlines or None,
-        )
-        cells.append([cell, *row[1:]])
-    if cells:
-        bm.log_table("failures", COLUMNS, cells)
     wrong = sum(1 for r in rows if r[4] + r[5])
-    print(f"틀린 것이 있는 이미지 {wrong:,}장 / {len(rows):,}장 (그림으로 남긴 것 {len(cells)}장)")
+    print(f"틀린 것이 있는 이미지 {wrong:,}장 / {len(rows):,}장 (검수 탭에서 이미지별로 봅니다)")
 
 
 def evaluate(run, model) -> None:
@@ -171,7 +141,7 @@ def evaluate(run, model) -> None:
         project=str(run.out),
         name="val",
         exist_ok=True,
-        plots=True,  # confusion matrix, PR curves, sample predictions: kept with the evaluation
+        plots=False,  # no pictures: the numbers and per-class results stay, each image's mistakes are on 검수
     )
     per_class = []
     box = getattr(results, "box", None)

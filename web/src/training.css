@@ -1536,3 +1536,9 @@ label.check {
 .run-rename-form .error {
   flex-basis: 100%;
 }
+
+/* an evaluation's 결과 파일: its mistakes are seen on 검수, over the dataset's own images */
+.eval-to-review {
+  margin-left: 10px;
+  font-weight: 500;
+}
