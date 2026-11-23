@@ -64,10 +64,10 @@ export function Pipelines({ sub, arg }: { sub?: string; arg?: string }) {
   return <PipelineBoard />;
 }
 
-type Making = { template: "train" | "retrain" | "champion" } | null;
+type Making = { template: "train" | "retrain" | "sota" } | null;
 
 interface Template {
-  id: "train" | "retrain" | "champion" | "labeling" | "sweep";
+  id: "train" | "retrain" | "sota" | "labeling" | "sweep";
   title: string;
   steps: string[];
   body: string;
@@ -80,21 +80,21 @@ const TEMPLATES: Template[] = [
     id: "train",
     title: "학습 → 평가 → 승격",
     steps: ["학습", "평가 · 검수", "승격", "내보내기"],
-    body: "고른 버전으로 학습하고, 같은 데이터로 지금 champion과 비교해 더 나을 때만 champion으로 지정합니다. 평가는 검수의 모델 검사로도 쓰입니다.",
+    body: "고른 버전으로 학습하고, 같은 데이터로 지금 SOTA와 비교해 더 나을 때만 SOTA로 지정합니다. 평가는 검수의 모델 검사로도 쓰입니다.",
     ready: true,
   },
   {
     id: "retrain",
     title: "새 버전마다 다시 학습",
     steps: ["새 버전", "학습", "평가", "승격"],
-    body: "데이터셋에 새 버전이 생기면(가져오기 · 작업 중 확정) 같은 설정으로 다시 학습하고, 나을 때만 champion을 옮깁니다.",
+    body: "데이터셋에 새 버전이 생기면(가져오기 · 작업 중 확정) 같은 설정으로 다시 학습하고, 나을 때만 SOTA를 옮깁니다.",
     ready: true,
   },
   {
-    id: "champion",
-    title: "새 버전마다 champion 평가",
-    steps: ["새 버전", "champion 평가 · 검수"],
-    body: "새 버전이 생기면 지금 champion을 그 버전에서 평가합니다. 지난 버전보다 얼마나 달라졌는지 보고, 검수가 그 버전의 틀린 라벨 후보를 바로 찾습니다.",
+    id: "sota",
+    title: "새 버전마다 SOTA 평가",
+    steps: ["새 버전", "SOTA 평가 · 검수"],
+    body: "새 버전이 생기면 지금 SOTA를 그 버전에서 평가합니다. 지난 버전보다 얼마나 달라졌는지 보고, 검수가 그 버전의 틀린 라벨 후보를 바로 찾습니다.",
     ready: true,
   },
   {
@@ -128,7 +128,7 @@ function PipelineBoard() {
   const t = board?.totals;
   const make = (template: Template["id"]) => {
     setPicking(false);
-    if (template === "train" || template === "retrain" || template === "champion") setMaking({ template });
+    if (template === "train" || template === "retrain" || template === "sota") setMaking({ template });
   };
 
   return (
@@ -186,7 +186,7 @@ function PipelineBoard() {
       </section>
 
       {picking && <TemplatePicker onClose={() => setPicking(false)} onMake={make} />}
-      {making && making.template !== "champion" && projectId && (
+      {making && making.template !== "sota" && projectId && (
         <NewRun
           projectId={projectId}
           task={project?.tasks?.[0] ?? "detect"}
@@ -202,8 +202,8 @@ function PipelineBoard() {
           }}
         />
       )}
-      {making?.template === "champion" && projectId && (
-        <ChampionCheck
+      {making?.template === "sota" && projectId && (
+        <SotaCheck
           projectId={projectId}
           onClose={() => setMaking(null)}
           onMade={(id) => {
@@ -665,14 +665,14 @@ const STATE_LABEL: Record<PipelineStepView["status"], string> = {
   held: "그대로 둠",
 };
 
-// ---- the champion, measured on each new version ----------------------------------------------
+// ---- the SOTA, measured on each new version ----------------------------------------------
 
-function ChampionCheck({ projectId, onClose, onMade }: { projectId: string; onClose: () => void; onMade: (id: string) => void }) {
+function SotaCheck({ projectId, onClose, onMade }: { projectId: string; onClose: () => void; onMade: (id: string) => void }) {
   const [tree, setTree] = useState<TreeDataset[] | null>(null);
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [dataset, setDataset] = useState("");
   const [family, setFamily] = useState("");
-  const [alias, setAlias] = useState("champion");
+  const [alias, setAlias] = useState("SOTA");
   const [split, setSplit] = useState("auto");
   const [review, setReview] = useState(true);
   const [watch, setWatch] = useState(true);
@@ -698,7 +698,7 @@ function ChampionCheck({ projectId, onClose, onMade }: { projectId: string; onCl
   function pickFamily(name: string) {
     const aliases = families.get(name) ?? new Set<string>();
     setFamily(name);
-    setAlias(aliases.has("champion") ? "champion" : ([...aliases][0] ?? ""));
+    setAlias(aliases.has("SOTA") ? "SOTA" : ([...aliases][0] ?? ""));
     setDataset("");
   }
   const submit = async () => {
@@ -721,9 +721,9 @@ function ChampionCheck({ projectId, onClose, onMade }: { projectId: string; onCl
     }
   };
   return (
-    <Modal title="새 버전마다 champion 평가" onClose={onClose}>
+    <Modal title="새 버전마다 SOTA 평가" onClose={onClose}>
       {models && families.size === 0 ? (
-        <p className="muted">이 프로젝트에는 alias(champion 등)가 붙은 모델이 없습니다. 모델 화면에서 alias를 붙이거나, "학습 → 평가 → 승격"으로 먼저 만드세요.</p>
+        <p className="muted">이 프로젝트에는 alias(SOTA 등)가 붙은 모델이 없습니다. 모델 화면에서 alias를 붙이거나, "학습 → 평가 → 승격"으로 먼저 만드세요.</p>
       ) : (
         <>
           <div className="form-row">

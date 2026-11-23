@@ -63,6 +63,14 @@ export const RUN_STATUS: Record<PipelineRunView["status"], [string, string]> = {
   failed: ["실패", "failed"],
   stopped: ["멈춤", "idle"],
 };
+/** 와/과 after a word: by its last sound (Hangul by its final consonant; a Latin word ending in l, m, n or ng too). */
+export function wa(word: string): string {
+  const last = word.trim().slice(-1);
+  const code = last.charCodeAt(0) - 0xac00;
+  if (code >= 0 && code < 11172) return code % 28 ? "과" : "와";
+  return /(?:[lmn]|ng)$/i.test(word.trim()) ? "과" : "와";
+}
+
 export const TRIGGER_LABEL: Record<string, string> = { manual: "직접 실행", new_version: "새 버전이 생겨서", training: "새 학습에서" };
 const STEP_STATUS: Record<PipelineStepView["status"], string> = {
   pending: "대기",
@@ -149,7 +157,7 @@ export interface FollowSpec {
 }
 
 const FOLLOW_KEY = "badamoa.follow-ups"; // the last choice, offered again next time (this browser only)
-const NO_FOLLOW: FollowSpec = { eval: false, release: "", split: "auto", review: true, promote: false, alias: "champion", export: false };
+const NO_FOLLOW: FollowSpec = { eval: false, release: "", split: "auto", review: true, promote: false, alias: "SOTA", export: false };
 
 export function rememberedFollow(): FollowSpec {
   try {
@@ -173,7 +181,7 @@ export function rememberFollow(spec: FollowSpec) {
 export function followSteps(spec: FollowSpec): StepSpec[] {
   const steps: StepSpec[] = [];
   if (spec.eval) steps.push({ kind: "eval", config: { release_id: spec.release, split: spec.split, review: spec.review } });
-  if (spec.eval && spec.promote) steps.push({ kind: "promote", config: { alias: spec.alias.trim() || "champion" } });
+  if (spec.eval && spec.promote) steps.push({ kind: "promote", config: { alias: spec.alias.trim() || "SOTA" } });
   if (spec.export) steps.push({ kind: "export", config: { format: "onnx" } });
   return steps;
 }
@@ -266,13 +274,13 @@ export function FollowFields({
           list="fu-aliases"
         />
         <datalist id="fu-aliases">
-          <option value="champion" />
+          <option value="SOTA" />
           <option value="production" />
           <option value="staging" />
         </datalist>
         <span>(으)로 지정</span>
         <span className="pl-hint">
-          {spec.eval ? `지금 ${spec.alias || "champion"}과 같은 데이터로 재서 ${metric}이 더 높을 때만` : "평가가 있어야 비교합니다"}
+          {spec.eval ? `지금 ${spec.alias || "SOTA"}${wa(spec.alias || "SOTA")} 같은 데이터로 재서 ${metric}이 더 높을 때만` : "평가가 있어야 비교합니다"}
         </span>
       </div>
       <div className="pl-check">
@@ -386,7 +394,7 @@ export function FollowBanner({
       <div className="notice pl-nudge-card">
         <div>
           <strong>이 모델은 아직 평가하지 않았습니다.</strong> 평가하면 다른 모델과 같은 데이터로 비교하고, 검수에서 틀렸을 법한 라벨부터 보고, 지금
-          champion보다 나으면 바로 지정할 수 있습니다.
+          SOTA보다 나으면 바로 지정할 수 있습니다.
         </div>
         <button type="button" className="primary small" onClick={() => setAdding(true)}>
           이어서 하기

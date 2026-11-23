@@ -5,12 +5,12 @@ A step is something the Hub already does, started as a person would start it, by
     train    a training run on the run's version (``training.start_run``) → the model it registers
     eval     that model measured on a version's split (``modelops.start_eval``); with ``review`` also every split of
              the version it trained on, so 검수 sorts that version's images by likely wrong labels (its model check)
-    promote  a gate: an alias (champion) moves to the model only if it beats the version holding it, both measured on
+    promote  a gate: an alias (SOTA) moves to the model only if it beats the version holding it, both measured on
              the same version and split; otherwise the alias stays and the run ends ``held``
     export   the model exported (ONNX)
 
 They run in that order, each at most once. Without ``train`` a pipeline is one ``eval`` of the model holding an alias
-(re-measuring the champion on each new version: how it holds up, and a model check for 검수).
+(re-measuring the SOTA on each new version: how it holds up, and a model check for 검수).
 
 A step that fails stops the run and says why; the steps after it are skipped. A run follows one version and is
 started by a person, by a new version of the dataset (``new_version``), or by a new training run ("학습 끝나면").
@@ -141,7 +141,7 @@ def _clean_eval(db: Session, dataset: Dataset, config: dict[str, Any], train: bo
         model = config.get("model") or {}
         name, alias = str(model.get("name") or "").strip(), str(model.get("alias") or "").strip()
         if not name or not alias:
-            raise ServiceError(400, "평가할 모델을 고르세요: 모델 이름과 alias(예: champion).")
+            raise ServiceError(400, "평가할 모델을 고르세요: 모델 이름과 alias(예: SOTA).")
         out["model"] = {"name": name, "alias": _check_alias(alias)}
     return out
 
@@ -154,7 +154,7 @@ def _clean_promote(db: Session, dataset: Dataset, config: dict[str, Any], **_: A
     if min_delta < 0:
         raise ServiceError(400, "min_delta(이만큼 더 나아야 승격)는 0 이상입니다.")
     return {
-        "alias": _check_alias(str(config.get("alias") or "champion")),
+        "alias": _check_alias(str(config.get("alias") or "SOTA")),
         "metric": str(config.get("metric") or "").strip(),
         "min_delta": min_delta,
     }
@@ -747,7 +747,7 @@ def _check(db: Session, owner: User, run: PipelineRun, steps: list[dict[str, Any
         said = (
             f"{METRIC_LABEL.get(key, key)} {_fmt(numbers.get(key))} ({release.version if release else '?'} {refs['split']})"
         )
-        if _step(steps, "train") is None and model is not None:  # the champion on a new version: how it holds up
+        if _step(steps, "train") is None and model is not None:  # the SOTA on a new version: how it holds up
             before = _before(db, model, release, refs["split"], key)
             if before is not None:
                 refs["before"] = before

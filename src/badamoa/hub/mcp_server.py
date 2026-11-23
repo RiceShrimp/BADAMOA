@@ -832,7 +832,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
         단계를 버전에서 돌립니다(release_id + steps). follow_run_id: 이미 있는 학습 실행 뒤에 steps(평가 · 승격 ·
         내보내기)를 붙입니다.
         steps 예: [{"kind": "train", "config": {"template": "yolo", "params": {"epochs": 30}}},
-        {"kind": "eval", "config": {"split": "auto", "review": true}}, {"kind": "promote", "config": {"alias": "champion"}},
+        {"kind": "eval", "config": {"split": "auto", "review": true}}, {"kind": "promote", "config": {"alias": "SOTA"}},
         {"kind": "export", "config": {"format": "onnx"}}]. eval의 split auto는 test가 있으면 test, 없으면 val입니다.
         첫 단계는 바로 시작하고, 나머지는 Hub가 차례로 시작합니다. 진행은 get_pipeline_run으로 봅니다."""
         user = user_of(ctx)
@@ -928,7 +928,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
     @mcp.tool(title="모델 alias 지정", annotations=WRITE)
     @guarded
     def set_model_alias(model_id: str, alias: str, ctx: Context, remove: bool = False) -> dict[str, Any]:
-        """모델 버전에 alias를 붙입니다 (예: champion, challenger, production, staging — 다른 이름도 됨).
+        """모델 버전에 alias를 붙입니다 (예: SOTA, challenger, production, staging — 다른 이름도 됨).
 
         같은 이름의 다른 버전에 있던 같은 alias는 이 버전으로 옮겨집니다. 한 버전에 여러 alias를 붙일 수 있습니다.
         remove=True면 그 alias만 떼고, alias=""이면 이 버전의 alias를 모두 뗍니다.

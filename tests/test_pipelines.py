@@ -29,7 +29,7 @@ def _train_step(ceiling=0.6, **params):
 
 
 EVAL = {"kind": "eval", "config": {"split": "auto", "review": True}}
-PROMOTE = {"kind": "promote", "config": {"alias": "champion"}}
+PROMOTE = {"kind": "promote", "config": {"alias": "SOTA"}}
 EXPORT = {"kind": "export", "config": {"format": "onnx"}}
 
 
@@ -41,7 +41,7 @@ def test_a_new_training_goes_on_to_evaluate_review_promote_and_export(hub, relea
     assert [s["kind"] for s in run["steps"]] == ["train", "eval", "promote", "export"]
     assert run["steps"][0]["status"] == "running" and run["steps"][1]["status"] == "pending"
     assert run["trigger"] == "training" and run["pipeline"] is None and run["name"] == run["steps"][0]["run"]["name"]
-    assert run["steps"][1]["label"] == "평가 · 검수" and run["steps"][2]["summary"] == "더 나으면 champion"
+    assert run["steps"][1]["label"] == "평가 · 검수" and run["steps"][2]["summary"] == "더 나으면 SOTA"
     # the training run's screen knows what follows it
     follow = hub.get(f"/api/runs/{run['train_run_id']}/follow").json()
     assert follow["pipeline"]["id"] == run["id"]
@@ -59,9 +59,9 @@ def test_a_new_training_goes_on_to_evaluate_review_promote_and_export(hub, relea
     assert op["splits"] == ["val", "train"] and op["predicted"] == 8
     checks = hub.get(f"/api/releases/{release['id']}/checks").json()
     assert checks[0]["id"] == evaluated["op_id"]  # 검수's newest model check is this model's
-    # no champion yet: the first good model takes the alias
-    assert promoted["outcome"] == "promoted" and "champion이(가) 없어" in promoted["message"]
-    assert hub.get(f"/api/models/{model['id']}").json()["aliases"] == ["champion"]
+    # no SOTA yet: the first good model takes the alias
+    assert promoted["outcome"] == "promoted" and "SOTA이(가) 없어" in promoted["message"]
+    assert hub.get(f"/api/models/{model['id']}").json()["aliases"] == ["SOTA"]
     assert exported["message"] == "model.onnx 만듦"
     follow = hub.get(f"/api/runs/{run['train_run_id']}/follow").json()
     assert follow["evaluations"] == 1
@@ -74,11 +74,11 @@ def test_a_new_training_goes_on_to_evaluate_review_promote_and_export(hub, relea
     late = hub.post("/api/pipeline-runs", json=after).json()
     assert late["trigger"] == "training" and late["steps"][0]["summary"] == "따로 시작한 학습"
     late = _done(hub, late["id"])
-    # the gate: 0.2 does not beat the champion's 0.4 on the same data, so the alias stays and the run is held
+    # the gate: 0.2 does not beat the SOTA's 0.4 on the same data, so the alias stays and the run is held
     assert late["status"] == "held" and late["steps"][2]["outcome"] == "held"
-    assert late["steps"][2]["message"] == "mAP50-95 0.200 ≤ v1 0.400: champion은(는) v1 그대로"
+    assert late["steps"][2]["message"] == "mAP50-95 0.200 ≤ v1 0.400: SOTA은(는) v1 그대로"
     assert late["steps"][2]["holder"]["version"] == 1
-    assert hub.get(f"/api/models/{model['id']}").json()["aliases"] == ["champion"]
+    assert hub.get(f"/api/models/{model['id']}").json()["aliases"] == ["SOTA"]
     # one going pipeline per training: asking twice while the first goes is refused
     slow, _ = _train_slowly(hub, release)
     first = hub.post("/api/pipeline-runs", json={"run_id": slow["id"], "after": [EVAL]})
@@ -160,11 +160,11 @@ def test_saved_pipelines_run_on_demand_and_on_each_new_version(hub, release):  #
     assert [s["summary"] for s in saved["steps"]] == [
         "테스트 학습 · dummy · epoch 5",
         "학습한 버전 · test (없으면 val) · 검수에도",
-        "더 나으면 champion",
+        "더 나으면 SOTA",
     ]
     first = _done(hub, saved["started"]["id"])
     assert first["status"] == "succeeded" and first["pipeline"]["id"] == saved["id"]
-    champion = first["steps"][0]["model"]
+    sota = first["steps"][0]["model"]
 
     # ---- a better model takes the alias; a worse one leaves it (the gate, both ways)
     def run_with(ceiling):
@@ -175,21 +175,21 @@ def test_saved_pipelines_run_on_demand_and_on_each_new_version(hub, release):  #
         return _done(hub, hub.post(f"/api/pipelines/{saved['id']}/run", json={}).json()["id"])
 
     worse = run_with(0.3)
-    assert worse["status"] == "held" and hub.get(f"/api/models/{champion['id']}").json()["aliases"] == ["champion"]
+    assert worse["status"] == "held" and hub.get(f"/api/models/{sota['id']}").json()["aliases"] == ["SOTA"]
     better = run_with(0.9)
     assert better["status"] == "succeeded" and better["steps"][2]["outcome"] == "promoted"
-    assert better["steps"][2]["message"] == "mAP50-95 0.600 > v1 0.400: champion을(를) v3(으)로 옮김"
-    assert hub.get(f"/api/models/{champion['id']}").json()["aliases"] == []
+    assert better["steps"][2]["message"] == "mAP50-95 0.600 > v1 0.400: SOTA을(를) v3(으)로 옮김"
+    assert hub.get(f"/api/models/{sota['id']}").json()["aliases"] == []
     view = hub.get(f"/api/pipelines/{saved['id']}").json()
     assert view["runs"] == 3 and [r["status"] for r in view["history"]] == ["succeeded", "held", "succeeded"]
 
-    # ---- on each new version: retrain (the champion is measured on the new version too, to compare on the same
-    # data), and the champion alone measured on it (how it holds up; 검수's model check for that version)
+    # ---- on each new version: retrain (the SOTA is measured on the new version too, to compare on the same
+    # data), and the SOTA alone measured on it (how it holds up; 검수's model check for that version)
     hub.patch(f"/api/pipelines/{saved['id']}", json={"trigger": "new_version"})
-    check = {"kind": "eval", "config": {"model": {"name": champion["name"], "alias": "champion"}, "review": True, "gpus": 0}}
+    check = {"kind": "eval", "config": {"model": {"name": sota["name"], "alias": "SOTA"}, "review": True, "gpus": 0}}
     watcher = hub.post("/api/pipelines", json={"release_id": release["id"], "steps": [check], "trigger": "new_version"})
     assert watcher.status_code == 200, watcher.text
-    assert watcher.json()["steps"][0]["summary"] == f"{champion['name']} champion → 그 버전 · test (없으면 val) · 검수에도"
+    assert watcher.json()["steps"][0]["summary"] == f"{sota['name']} SOTA → 그 버전 · test (없으면 val) · 검수에도"
     v2 = hub.post("/api/releases", json={"sources": [release["id"]], "version": "v2"}).json()["release_id"]
     pipelines.wake()
     deadline = time.monotonic() + 30
@@ -200,18 +200,18 @@ def test_saved_pipelines_run_on_demand_and_on_each_new_version(hub, release):  #
     assert len(runs) == 2 and {r["trigger"] for r in runs} == {"new_version"}
     by_pipeline = {r["pipeline"]["id"]: _done(hub, r["id"]) for r in runs}
     retrained, measured = by_pipeline[saved["id"]], by_pipeline[watcher.json()["id"]]
-    # trained as the champion was (ceiling 0.9): as good is not better, so the champion stays
+    # trained as the SOTA was (ceiling 0.9): as good is not better, so the SOTA stays
     assert retrained["status"] == "held", retrained
     gate = retrained["steps"][2]
-    assert gate["message"] == "mAP50-95 0.600 ≤ v3 0.600: champion은(는) v3 그대로"
+    assert gate["message"] == "mAP50-95 0.600 ≤ v3 0.600: SOTA은(는) v3 그대로"
     holder_op = hub.get(f"/api/model-ops/{gate['holder']['op_id']}").json()
     assert holder_op["release"]["version"] == "v2" and gate["holder"]["version"] == 3  # measured on v2 for the gate
     assert measured["status"] == "succeeded", measured
-    champion_check = measured["steps"][0]
-    assert champion_check["model"]["version"] == 3 and champion_check["before"] == {
+    sota_check = measured["steps"][0]
+    assert sota_check["model"]["version"] == 3 and sota_check["before"] == {
         "release_id": release["id"], "version": "v1", "value": 0.6,
     }  # fmt: skip
-    assert champion_check["message"] == "mAP50-95 0.600 (v2 val) · v1보다 +0.000"
+    assert sota_check["message"] == "mAP50-95 0.600 (v2 val) · v1보다 +0.000"
     # a version is taken once: the next passes start nothing more
     pipelines.wake()
     time.sleep(2)
