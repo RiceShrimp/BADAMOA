@@ -80,7 +80,8 @@ def record(db: Session, draft: Release) -> dict[str, Any]:
     newest = checks.newest(db, base) if base is not None else None
     if newest is not None:
         flagged = select(ItemPrediction.item_id).where(
-            ItemPrediction.op_id == newest["id"], or_(ItemPrediction.extra > 0, ItemPrediction.missed > 0)
+            ItemPrediction.op_id == newest["id"],
+            or_(ItemPrediction.extra > 0, ItemPrediction.missed > 0, ItemPrediction.reclass > 0),
         )
         in_draft = select(ReleaseItem.item_id, ReleaseItem.revision_id).where(
             ReleaseItem.release_id == draft.id, ReleaseItem.item_id.in_(flagged)

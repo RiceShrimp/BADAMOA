@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base, utcnow
@@ -215,7 +215,14 @@ class ItemPrediction(Base):
     found: Mapped[int] = mapped_column(Integer, default=0)
     missed: Mapped[int] = mapped_column(Integer, default=0)
     extra: Mapped[int] = mapped_column(Integer, default=0)
-    wrong: Mapped[int] = mapped_column(Integer, default=0)  # missed + extra
+    reclass: Mapped[int] = mapped_column(Integer, default=0)  # labels whose class the model is sure is another
+    wrong: Mapped[int] = mapped_column(Integer, default=0)  # missed + extra + reclass
+    # The same before any threshold (``checks.judge``): the surest prediction no label has, the surest of another
+    # class than its label, the biggest label nothing touches (a share of the image); 0 when none. Counting at any
+    # threshold is then one query (검수's 확신도 · 최소 크기)
+    extra_top: Mapped[float] = mapped_column(Float, default=0.0)
+    reclass_top: Mapped[float] = mapped_column(Float, default=0.0)
+    missed_area: Mapped[float] = mapped_column(Float, default=0.0)
     labels: Mapped[list[list[float]]] = mapped_column(JSON, default=list)
     scores: Mapped[list[float]] = mapped_column(JSON, default=list)
 

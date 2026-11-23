@@ -493,12 +493,14 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     # ---- every evaluated image's predictions: the release's images by likely wrong labels
     assert evaluation["predicted"] == 2 and not any(f["kind"] == "predictions" for f in evaluation["files"])
     offered = hub.get(f"/api/releases/{release['id']}/checks").json()
-    assert [(c["id"], c["split"], c["images"], c["wrong"]) for c in offered] == [(evaluation["id"], "val", 2, 1)]
+    # counted on the Hub from its predictions, FiftyOne's way (not as the template counted): the dummy's one box
+    # (0.9, short of sure) touches two of val_0001's four labels and none of val_0000's one
+    assert [(c["id"], c["split"], c["images"], c["wrong"]) for c in offered] == [(evaluation["id"], "val", 2, 2)]
     suspects = hub.get(f"/api/releases/{release['id']}/items", params={"suspect": evaluation["id"]}).json()
     assert suspects["total"] == 2  # only the images it measured
     assert [i["check"] for i in suspects["items"]] == [
-        {"found": 0, "missed": 2, "extra": 1},
-        {"found": 1, "missed": 0, "extra": 0},
+        {"found": 0, "missed": 2, "extra": 0, "reclass": 0},
+        {"found": 0, "missed": 1, "extra": 0, "reclass": 0},
     ]
     worst_id = suspects["items"][0]["id"]
     seen = hub.get(f"/api/releases/{release['id']}/items/{worst_id}/predictions", params={"op": evaluation["id"]}).json()
@@ -508,9 +510,9 @@ def test_evaluate_export_and_test_a_model(hub, release, tmp_path):
     # a labeling set of the images it got wrong: to check those labels
     recheck = {"release_id": release["id"], "name": "다시 보기", "filter": {"suspect": evaluation["id"]}}
     made = hub.post("/api/label-sets", json=recheck).json()
-    assert made["items"] == 1
+    assert made["items"] == 2
     in_set = hub.get(f"/api/releases/{release['id']}/items", params={"label_set": made["id"]}).json()["items"]
-    assert [i["id"] for i in in_set] == [worst_id]
+    assert [i["id"] for i in in_set][0] == worst_id
 
     # ---- export: the file comes back and can be downloaded
     exported = finished(hub.post(f"/api/models/{model_id}/export", json={"format": "onnx"}).json())

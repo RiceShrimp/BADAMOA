@@ -1688,7 +1688,8 @@ export function ItemViewer({
                       </div>
                       {run.kind === "eval" && (
                         <p className="muted small">
-                          평가할 때 맞춘 라벨 {run.found ?? 0} · 못 찾은 라벨 {run.missed ?? 0} · 라벨에 없는 예측 {run.extra ?? 0}
+                          평가한 버전의 라벨과 맞은 것 {run.found ?? 0} · 못 찾은 라벨 {run.missed ?? 0} · 라벨에 없는 물체{" "}
+                          {run.extra ?? 0} · 클래스 다름 {run.reclass ?? 0} (FiftyOne 방식)
                         </p>
                       )}
                       {missing.length > 0 ? (

@@ -245,7 +245,8 @@ def review_board(db: Session, settings: HubSettings) -> dict[str, Any]:
         if not c["checked"]:
             return (1, 0, c["dataset"]["name"])
         model = c["evaluation"]
-        return (0, -(c["groups"]["any"] + (model["extra"] + model["missed"] if model else 0)), c["dataset"]["name"])
+        found = sum(model.get(kind, 0) for kind in ("extra", "missed", "reclass")) if model else 0
+        return (0, -(c["groups"]["any"] + found), c["dataset"]["name"])
 
     cards.sort(key=rank)
     checked = [c for c in cards if c["checked"]]

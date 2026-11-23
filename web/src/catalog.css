@@ -1740,3 +1740,57 @@ select.active-select {
   vertical-align: 1px;
   white-space: nowrap;
 }
+
+
+/* 검수 → 모델 기준: a model check's thresholds (FiftyOne's to begin with) and the counts at every level */
+.thresholds {
+  margin-top: 8px;
+}
+.thresholds-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+.thresholds-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.threshold-conf input[type="range"] {
+  width: 160px;
+}
+.threshold-levels {
+  margin-top: 8px;
+  border-collapse: collapse;
+  width: 100%;
+}
+.threshold-levels th {
+  padding: 3px 8px 3px 0;
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.threshold-levels td {
+  padding: 2px;
+}
+.threshold-levels .level {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.threshold-levels .level.on {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.review-to-dataset {
+  margin-left: 10px;
+}

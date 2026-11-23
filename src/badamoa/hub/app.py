@@ -20,6 +20,7 @@ from . import (
     boards_api,
     catalog,
     catalog_api,
+    checks,
     cleanup,
     docker_registry,
     docker_registry_api,
@@ -153,6 +154,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     with db.session() as session:
         registry.sync_builtin(session)
         template_checks.mark_legacy(session)
+        checks.recount_if_needed(session)  # model checks counted the way and with the settings the Hub has now
         admin.load_gpu_busy(session, settings)
         address.load(session, settings)
         migration.load(session)

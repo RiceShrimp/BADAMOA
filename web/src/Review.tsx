@@ -37,11 +37,26 @@ interface Rule {
   let_be: number; // images someone judged right ("문제 없음"): not counted in ``images``
 }
 
+/** How 검수 counts a model check (FiftyOne's way): how sure the model must be, how big a label must be. */
+interface ModelRule {
+  conf: number;
+  min_area: number; // a share of the image
+  defaults: { conf: number; min_area: number }; // FiftyOne's
+}
+
+type Limits = { conf: number; min_area: number };
+
+type Mistake = "extra" | "missed" | "reclass";
+
 interface Summary {
   release_id: string;
   computed_at: string;
   checks: Rule[];
-  evaluations: (ReleaseCheck & { extra: number; missed: number; extra_let_be: number; missed_let_be: number })[];
+  evaluations: (ReleaseCheck &
+    Record<Mistake | `${Mistake}_let_be`, number> & {
+      levels: Record<Mistake, [number, number][]>; // the count at each threshold level beside the chosen one
+    })[];
+  rule?: ModelRule;
   pending: { id: string; job_id: string; status: string; split: string; model: CheckModel | null; created_at: string }[];
 }
 
@@ -98,16 +113,18 @@ interface EvalChoices {
 }
 
 /** What the grid shows: a rule, or one side of an evaluated model's view. */
-type Pick = { kind: "rule"; id: string } | { kind: "model"; mistake: "extra" | "missed" };
+type Pick = { kind: "rule"; id: string } | { kind: "model"; mistake: Mistake };
 
 const GROUPS: { id: Rule["group"]; title: string; hint: string }[] = [
   { id: "missing", title: "미라벨", hint: "라벨이 빠진 이미지 · 물체" },
   { id: "wrong", title: "오라벨", hint: "클래스나 박스가 틀렸을 라벨" },
   { id: "boxes", title: "박스 오류", hint: "박스 모양이 이상한 라벨" },
 ];
-const MODEL: Record<"extra" | "missed", { group: Rule["group"]; title: string; hint: string }> = {
-  extra: { group: "missing", title: "라벨에 없는 물체", hint: "모델이 찾았는데 라벨이 없음: 빠뜨린 라벨일 수 있음" },
-  missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "라벨은 있는데 모델이 찾지 못함: 틀린 라벨일 수 있음" },
+// A model's view, counted FiftyOne's way (the Hub's ``checks.judge``): only what the model is sure of
+const MODEL: Record<Mistake, { group: Rule["group"]; title: string; hint: string }> = {
+  extra: { group: "missing", title: "라벨에 없는 물체", hint: "라벨이 없는 곳에 모델이 확신하는 물체: 빠뜨린 라벨일 수 있음" },
+  reclass: { group: "wrong", title: "클래스가 다를 수 있는 라벨", hint: "같은 자리에서 모델은 다른 클래스라고 확신함" },
+  missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "어떤 예측도 닿지 않은 라벨: 없는 물체를 그렸을 수 있음" },
 };
 const PAGE = 60;
 
@@ -124,7 +141,14 @@ interface ReviewCard {
   checks: { id: string; title: string; group: Rule["group"]; images: number }[];
   flagged_shots: boolean; // the pictures are of flagged images
   collage: Shot[];
-  evaluation: { id: string; model: { id: string; name: string; version: number } | null; images: number; extra: number; missed: number } | null;
+  evaluation: {
+    id: string;
+    model: { id: string; name: string; version: number } | null;
+    images: number;
+    extra: number;
+    missed: number;
+    reclass?: number;
+  } | null;
 }
 
 interface ReviewBoardInfo {
@@ -378,7 +402,8 @@ function DatasetReviewCard({ card: c }: { card: ReviewCard }) {
         {c.evaluation ? (
           <div className="small">
             {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨에 없는 물체{" "}
-            <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 못 찾은 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
+            <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 클래스 다름 <strong>{(c.evaluation.reclass ?? 0).toLocaleString()}</strong>장 ·
+            못 찾은 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
           </div>
         ) : (
           <div className="muted small">평가한 모델 없음</div>
@@ -460,7 +485,14 @@ function ReviewPage({ releaseId }: { releaseId: string }) {
 function ReviewRelease({ releaseId }: { releaseId: string }) {
   const { data: release } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 0, [releaseId]);
   const [watching, setWatching] = useState(false); // an evaluation is going: look again until it ends
-  const { data: summary, error, refresh } = usePolling(() => api<Summary>(`/releases/${releaseId}/qa`), watching ? 4000 : 0, [releaseId]);
+  // a model check's thresholds: FiftyOne's until moved here (then the counts, the images and the frames follow)
+  const [limits, setLimits] = useState<Limits | null>(null);
+  const limitQuery = limits ? `?conf=${limits.conf}&min_area=${limits.min_area}` : "";
+  const { data: summary, error, refresh } = usePolling(
+    () => api<Summary>(`/releases/${releaseId}/qa${limitQuery}`),
+    watching ? 4000 : 0,
+    [releaseId, limitQuery],
+  );
   const [op, setOp] = useState("");
   const [choosing, setChoosing] = useState(false);
   // The evaluation started here; ``ended`` once its job is over and the summary has been read again since.
@@ -519,13 +551,17 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     else if (op) {
       params.set("suspect", op);
       params.set("mistake", pick.mistake);
+      if (limits) {
+        params.set("conf", String(limits.conf));
+        params.set("min_area", String(limits.min_area));
+      }
     }
     if (showLetBe) params.set("let_be", "true");
     for (const [key, value] of Object.entries(filter)) {
       if (value) params.set(key, key === "split" && value === "none" ? "" : value);
     }
     return params.toString();
-  }, [pick, op, showLetBe, filter]);
+  }, [pick, op, showLetBe, filter, limits]);
   useEffect(() => setPage(0), [query]);
   const { data: items, refresh: refreshItems } = usePolling(
     () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * PAGE}&limit=${PAGE}`) : Promise.resolve(null)),
@@ -554,7 +590,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   );
   // A model's check is not worked out on the spot like the rules: it needs an evaluation, started from here.
   const going = summary.pending[0];
-  const modelCard = (m: "extra" | "missed") => {
+  const modelCard = (m: Mistake) => {
     const count = evaluation ? evaluation[m] : null;
     const active = pick?.kind === "model" && pick.mistake === m;
     return (
@@ -580,7 +616,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   };
   // Every group's cards share rows: the columns are as tall as each other and their cards line up.
   const slots = Math.max(
-    ...GROUPS.map((g) => summary.checks.filter((c) => c.group === g.id).length + (Object.values(MODEL).some((m) => m.group === g.id) ? 1 : 0)),
+    ...GROUPS.map((g) => summary.checks.filter((c) => c.group === g.id).length + Object.values(MODEL).filter((m) => m.group === g.id).length),
   );
 
   return (
@@ -592,6 +628,9 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
         <button className="link small" onClick={() => void refresh()}>
           다시 검사
         </button>
+        <a className="link small review-to-dataset" href={`#/datasets/${release.id}`} title="이 버전을 데이터셋 탭에서 엽니다">
+          데이터셋에서 보기
+        </a>
       </p>
       <section className="card model-basis">
         <div className="model-basis-head">
@@ -638,6 +677,15 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           </div>
         ))}
         {failed && <div className="error small">{failed}</div>}
+        {summary.rule && (
+          <Thresholds
+            rule={summary.rule}
+            evaluation={evaluation}
+            onChange={(next) =>
+              setLimits(next && (next.conf !== summary.rule?.defaults.conf || next.min_area !== summary.rule?.defaults.min_area) ? next : null)
+            }
+          />
+        )}
         <CheckHistory releaseId={releaseId} nudge={summary} />
       </section>
       <div className="check-groups" style={{ gridTemplateRows: `auto repeat(${slots}, auto)` }}>
@@ -649,7 +697,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
             {summary.checks
               .filter((c) => c.group === g.id)
               .map((c) => card(c.id, c.title, c.hint, c.images, pick?.kind === "rule" && pick.id === c.id, () => setPick({ kind: "rule", id: c.id })))}
-            {(Object.keys(MODEL) as ("extra" | "missed")[]).filter((m) => MODEL[m].group === g.id).map(modelCard)}
+            {(Object.keys(MODEL) as Mistake[]).filter((m) => MODEL[m].group === g.id).map(modelCard)}
           </section>
         ))}
       </div>
@@ -724,7 +772,13 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
                 <span className="thumb-meta">
                   {item.qa?.note && <span className="tag">{item.qa.note}</span>}
                   {item.check && pick.kind === "model" && (
-                    <span className="tag">{pick.mistake === "extra" ? `라벨에 없음 ${item.check.extra}` : `못 찾음 ${item.check.missed}`}</span>
+                    <span className="tag">
+                      {pick.mistake === "extra"
+                        ? `라벨에 없음 ${item.check.extra}`
+                        : pick.mistake === "reclass"
+                          ? `클래스 다름 ${item.check.reclass ?? 0}`
+                          : `못 찾음 ${item.check.missed}`}
+                    </span>
                   )}
                 </span>
               </button>
@@ -903,6 +957,114 @@ function ClassFilter({
 }
 
 /** A model by name and version, with its task and aliases; a link to it. */
+/**
+ * How the model's view is counted (FiftyOne's compute_mistakenness): an unlabelled object or another class only
+ * when the model is surer than ``conf``; a label only when no prediction touches it and it is ``min_area`` of the
+ * image or more. An admin changes them here; every evaluation is counted again.
+ */
+const LEVEL_ROWS: { kind: Mistake; title: string; by: "conf" | "min_area" }[] = [
+  { kind: "extra", title: "라벨에 없는 물체", by: "conf" },
+  { kind: "reclass", title: "클래스가 다를 수 있는 라벨", by: "conf" },
+  { kind: "missed", title: "모델이 못 찾은 라벨", by: "min_area" },
+];
+
+const pct = (share: number) => `${+(share * 100).toFixed(2)}%`;
+
+/**
+ * A model check's thresholds, FiftyOne's to begin with: how sure the model must be (over ``conf``) of an object no
+ * label has or of another class, and how big a label nothing touches must be (``min_area`` of the image). Moving
+ * them counts again on the spot — the cards, the images and their frames — and the counts at every level are laid
+ * out beside, so what a threshold changes is seen before choosing it (a level is clicked to take it).
+ */
+function Thresholds({
+  rule,
+  evaluation,
+  onChange,
+}: {
+  rule: ModelRule;
+  evaluation: Summary["evaluations"][number] | undefined;
+  onChange: (limits: Limits | null) => void;
+}) {
+  const [conf, setConf] = useState(rule.conf);
+  useEffect(() => setConf(rule.conf), [rule.conf]);
+  // the slider moves freely; the count follows once it rests
+  useEffect(() => {
+    if (conf === rule.conf) return;
+    const timer = window.setTimeout(() => onChange({ conf, min_area: rule.min_area }), 300);
+    return () => window.clearTimeout(timer);
+  }, [conf]);
+  const fiftyone = rule.conf === rule.defaults.conf && rule.min_area === rule.defaults.min_area;
+  const areas = evaluation?.levels.missed.map(([v]) => v) ?? [0, 0.0005, 0.001, 0.005, 0.01, 0.02];
+  return (
+    <div className="thresholds">
+      <div className="thresholds-bar small">
+        <span className="muted" title="FiftyOne(compute_mistakenness)처럼 상자끼리 클래스와 상관없이 IoU 0.5로 짝짓고, 모델이 확신하는 것만 셉니다">
+          세는 법: FiftyOne 방식{fiftyone ? " · 기본값" : ""}
+        </span>
+        <label className="threshold-conf">
+          확신도 초과
+          <input type="range" min={0.25} max={0.99} step={0.01} value={conf} onChange={(e) => setConf(Number(e.target.value))} />
+          <strong className="num">{conf.toFixed(2)}</strong>
+        </label>
+        <label>
+          못 찾은 라벨 최소 크기
+          <select value={rule.min_area} onChange={(e) => onChange({ conf: rule.conf, min_area: Number(e.target.value) })}>
+            {areas.map((v) => (
+              <option key={v} value={v}>
+                이미지의 {pct(v)}
+                {v === rule.defaults.min_area ? " (기본)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {!fiftyone && (
+          <button className="link small" onClick={() => onChange(null)} title={`확신도 ${rule.defaults.conf} · 최소 크기 ${pct(rule.defaults.min_area)}`}>
+            FiftyOne 기본값으로
+          </button>
+        )}
+      </div>
+      {evaluation && (
+        <table className="threshold-levels small">
+          <thead>
+            <tr>
+              <th>임계값에 따라</th>
+              <th colSpan={evaluation.levels.extra.length} className="muted">
+                확신도 초과 · 최소 크기 별 이미지 수 (누르면 그 값으로)
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {LEVEL_ROWS.map((row) => (
+              <tr key={row.kind}>
+                <th>{row.title}</th>
+                {evaluation.levels[row.kind].map(([value, count]) => {
+                  const current = row.by === "conf" ? value === rule.conf : value === rule.min_area;
+                  return (
+                    <td key={value}>
+                      <button
+                        className={`level ${current ? "on" : ""}`}
+                        onClick={() =>
+                          row.by === "conf"
+                            ? onChange({ conf: value, min_area: rule.min_area })
+                            : onChange({ conf: rule.conf, min_area: value })
+                        }
+                        title={row.by === "conf" ? `확신도 ${value} 초과로 세기` : `이미지의 ${pct(value)} 이상인 라벨만 세기`}
+                      >
+                        <span className="muted">{row.by === "conf" ? value.toFixed(2) : pct(value)}</span>
+                        <strong className="num">{count.toLocaleString()}</strong>
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 const ENDED_BADLY = ["failed", "canceled", "cancelled"];
 
 /**

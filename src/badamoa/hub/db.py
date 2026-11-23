@@ -51,6 +51,10 @@ _ADDED_COLUMNS = [
     ("users", "template_upload", "BOOLEAN DEFAULT 0"),
     ("templates", "report", "JSON DEFAULT '{}'"),
     ("templates", "memo", "TEXT DEFAULT ''"),
+    ("item_predictions", "reclass", "INTEGER DEFAULT 0"),
+    ("item_predictions", "extra_top", "REAL DEFAULT 0"),
+    ("item_predictions", "reclass_top", "REAL DEFAULT 0"),
+    ("item_predictions", "missed_area", "REAL DEFAULT 0"),
 ]
 
 

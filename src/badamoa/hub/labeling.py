@@ -92,7 +92,7 @@ def create_set(
             ItemPrediction, and_(ItemPrediction.op_id == op.id, ItemPrediction.item_id == ReleaseItem.item_id)
         ).where(ItemPrediction.wrong > 0)
         order = [ItemPrediction.wrong.desc(), ItemPrediction.missed.desc(), ReleaseItem.item_id]
-        if wanted.get("mistake") in ("extra", "missed"):
+        if wanted.get("mistake") in checks.MISTAKES:
             column = getattr(ItemPrediction, wanted["mistake"])
             query = query.where(column > 0)
             order = [column.desc(), ReleaseItem.item_id]

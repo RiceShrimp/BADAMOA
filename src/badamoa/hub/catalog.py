@@ -1188,9 +1188,11 @@ def list_items(
     limit: int = 60,
     pred: str = "",
     classes: list[int] | None = None,
+    counting: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """A page of a release's items. ``pred``: a model run's id (``checks.prediction_runs``): each image also carries
-    what that run predicted for it, to lay over the thumbnail.
+    """A page of a release's items. ``counting``: the thresholds a model check's findings are taken at
+    (``checks.rule``; FiftyOne's by default). ``pred``: a model run's id (``checks.prediction_runs``): each image
+    also carries what that run predicted for it, to lay over the thumbnail.
     ``edited``: only the images the dataset's work in progress changed.
     ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first.
     ``label_set`` (and ``part``): only a labeling set's images, in the set's order.
@@ -1221,10 +1223,9 @@ def list_items(
             ItemPrediction, and_(ItemPrediction.op_id == op.id, ItemPrediction.item_id == ReleaseItem.item_id)
         )
         order = [ItemPrediction.wrong.desc(), ItemPrediction.missed.desc(), ReleaseItem.item_id]
-        if mistake in ("extra", "missed"):
-            column = getattr(ItemPrediction, mistake)
-            query = query.where(column > 0)
-            order = [column.desc(), ReleaseItem.item_id]
+        if mistake in checks.MISTAKES:  # at the thresholds asked for: the surest (or biggest) first
+            query = query.where(checks.over(mistake, counting or checks.rule()))
+            order = [checks.order_of(mistake).desc(), ReleaseItem.item_id]
     picked = {int(c) for c in classes or []}
     of_class: dict[int, list[int]] = {}
     if check:
@@ -1237,7 +1238,8 @@ def list_items(
             of_class = qa.of_classes(db, release.id, check, picked)
             query = query.where(ReleaseItem.item_id.in_(list(of_class)))
     elif picked and suspect and mistake in checks.MISTAKES:
-        query = query.where(ReleaseItem.item_id.in_(list(checks.mistakes_of_classes(db, release, suspect, mistake, picked))))
+        found_of = checks.mistakes_of_classes(db, release, suspect, mistake, picked, counting)
+        query = query.where(ReleaseItem.item_id.in_(list(found_of)))
     elif picked:
         holding = select(RevisionClass.revision_id).where(RevisionClass.class_id.in_(picked))
         query = query.where(ReleaseItem.revision_id.in_(holding))
@@ -1254,22 +1256,21 @@ def list_items(
         order = [LabelSetItem.position]
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = db.execute(query.order_by(*order).offset(max(0, offset)).limit(limit)).all()
+    # an evaluation's findings on each image, at the thresholds asked for, against this version's labels
     mistakes = (
-        {
-            p.item_id: {"found": p.found, "missed": p.missed, "extra": p.extra}
-            for p in db.scalars(
-                select(ItemPrediction).where(
-                    ItemPrediction.op_id == suspect, ItemPrediction.item_id.in_([item.id for _, item in rows])
-                )
-            )
-        }
+        checks.page_counts(db, release, suspect, [item.id for _, item in rows], counting or checks.rule())
         if suspect and rows
         else {}
     )
     fixed = drafts.edited_ids(db, draft, [item.id for _, item in rows]) if draft is not None and rows else set()
     change = drafts.change_counts(db, draft, list(fixed)) if fixed else {}
     in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
-    found = qa.flagged(db, release.id, check, [item.id for _, item in rows]) if check else {}
+    if check:
+        found = qa.flagged(db, release.id, check, [item.id for _, item in rows])
+    elif suspect and mistake in checks.MISTAKES:  # the labels a model check is on, framed as a rule check's
+        found = checks.flagged(db, release, suspect, mistake, [item.id for _, item in rows], counting)
+    else:
+        found = {}
     for item_id, mine in of_class.items():  # only the labels of the chosen classes are marked
         if item_id in found:
             found[item_id] = {**found[item_id], "boxes": mine}

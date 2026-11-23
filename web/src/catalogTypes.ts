@@ -98,7 +98,7 @@ export interface GridItem {
   pred?: { labels: number[][]; scores: number[] }; // what the run picked over the grid predicted for it
   fixed?: boolean; // changed in the work in progress
   change?: ChangeCounts; // how: labels added, removed, moved, reclassed against the base version
-  check?: { found: number; missed: number; extra: number }; // sorted by an evaluation: its mistakes on this image
+  check?: { found: number; missed: number; extra: number; reclass?: number }; // sorted by an evaluation: its mistakes on this image
   set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
   qa?: { check: string; boxes: number[]; note: string }; // flagged by a label check (검수): which labels, why
   let_be?: { note: string; by: string | null; at: string }; // judged right for the check in play ("문제 없음")
@@ -224,6 +224,7 @@ export interface PredictionRun {
   found?: number;
   missed?: number;
   extra?: number;
+  reclass?: number; // labels whose class the model is sure is another
 }
 
 /** A run as the screens name it: od-yolo11n v3 · 평가(val) · 11/19, or … · 오토라벨 · 1차 묶음 · 11/19. */

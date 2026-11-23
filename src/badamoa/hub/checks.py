@@ -14,14 +14,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, select
+from sqlalchemy import and_, delete, func, insert, select, update
 from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
 
-from .catalog_models import Dataset, Item, ItemPrediction, QaDismissal, Release, ReleaseItem
+from .catalog_models import Dataset, Item, ItemPrediction, LabelRevision, QaDismissal, Release, ReleaseItem
 from .db import iso
-from .models import Job
+from .models import HubSetting, Job
 from .services import ServiceError
 from .train_models import ModelJob, ModelVersion
 
@@ -55,11 +55,13 @@ def ingest(db: Session, op: ModelJob, raw: bytes) -> int:
     # split, and its images add up to one basis.
     shas = list(by_sha)
     matched = 0
+    known = set(class_ids)
     for start in range(0, len(shas), CHUNK):
         chunk = shas[start : start + CHUNK]
         items = db.execute(
             select(Item.id, Item.sha256).where(Item.project_id == dataset.project_id, Item.sha256.in_(chunk))
         ).all()
+        truths = _truths(db, release.id, [i for i, _ in items])
         db.execute(
             delete(ItemPrediction).where(ItemPrediction.op_id == op.id, ItemPrediction.item_id.in_([i for i, _ in items]))
         )
@@ -77,9 +79,9 @@ def ingest(db: Session, op: ModelJob, raw: bytes) -> int:
                     continue
                 labels.append([cls, *values])
                 scores.append(round(float(score), 4))
-            counts = {k: max(0, int(entry.get(k) or 0)) for k in ("found", "missed", "extra")}
-            wrong = counts["missed"] + counts["extra"]
-            rows.append({"op_id": op.id, "item_id": item_id, **counts, "wrong": wrong, "labels": labels, "scores": scores})
+            # counted here (FiftyOne's way, ``_pairing``), not as the template counted them
+            counts = _stored(_pairing(labels, scores, truths.get(item_id, []), known))
+            rows.append({"op_id": op.id, "item_id": item_id, **counts, "labels": labels, "scores": scores})
         if rows:
             db.execute(insert(ItemPrediction), rows)
             matched += len(rows)
@@ -105,7 +107,7 @@ def _offered(db: Session, release: Release, kinds: tuple[str, ...] = ("eval",)) 
     return [op for op in ops if op.model_id not in models or task_names.same(models[op.model_id].task or "detect", task)]
 
 
-MISTAKES = ("extra", "missed")  # what an evaluation finds, judged like a rule check's finding
+MISTAKES = ("extra", "missed", "reclass")  # what an evaluation finds (``judge``), judged like a rule check's finding
 
 
 def _iou(a: list[float], b: list[float]) -> float:
@@ -116,40 +118,264 @@ def _iou(a: list[float], b: list[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def unmatched(predicted: list[list[float]], scores: list[float], truth: list[list[float]]) -> tuple[list[int], list[int]]:
-    """The classes of an image's mistakes as an evaluation counts them: predictions no label backs (extra) and
-    labels no prediction found (missed). A prediction finds a label of its class it overlaps by half (IoU 0.5),
-    the surest first; classification (no box): the class given against the image's own."""
-    if any(len(b) < 5 for b in [*predicted, *truth]):
-        given = {int(p[0]) for p in predicted if p}
-        real = {int(t[0]) for t in truth if t}
-        return sorted(given - real), sorted(real - given)
-    left = list(range(len(truth)))
-    extra: list[int] = []
-    order = sorted(range(len(predicted)), key=lambda i: -(scores[i] if i < len(scores) else 0.0))
-    for i in order:
-        box = predicted[i]
-        best, at = 0.5, None
+# ---- counting a model's view of the labels: FiftyOne's way (compute_mistakenness) ----------------------------
+
+RULE_KEY = "qa.model"  # what the stored counts were made with (``recount_if_needed``)
+RULE_VERSION = 2  # 1: FiftyOne's (0.89.0); 2: with the values that count at any threshold. A new one counts again
+DEFAULT_RULE = {"conf": 0.95, "min_area": 0.001}  # FiftyOne's 0.95; labels of 0.1% of the image and up
+MATCH_IOU = 0.5  # a prediction and a label are one object (FiftyOne's _DETECTION_IOU)
+APART_IOU = 0.1  # a label no prediction overlaps this much: the model saw nothing there
+# What 검수 shows the counts at besides the one chosen: how they change with the threshold
+CONF_LEVELS = (0.5, 0.7, 0.8, 0.9, 0.95, 0.99)
+AREA_LEVELS = (0.0, 0.0005, 0.001, 0.005, 0.01, 0.02)
+
+
+def rule(conf: float | None = None, min_area: float | None = None) -> dict[str, float]:
+    """How sure the model must be (``conf``) and how big a label must be (``min_area``, a share of the image):
+    FiftyOne's by default; a screen may ask for others (predictions are kept from 0.25 up)."""
+    picked = {
+        "conf": DEFAULT_RULE["conf"] if conf is None else min(0.99, max(0.25, float(conf))),
+        "min_area": DEFAULT_RULE["min_area"] if min_area is None else min(0.1, max(0.0, float(min_area))),
+    }
+    return picked
+
+
+def _pairing(
+    predicted: list[list[float]], scores: list[float], truth: list[list[float]], known: set[int] | None = None
+) -> dict[str, list[Any]]:
+    """An image's predictions against its labels before any threshold, FiftyOne's way: each prediction is paired
+    with the label its box overlaps most (IoU 0.5, whatever the classes, the surest prediction first).
+    ``found``: labels paired with their class; ``extra``: (prediction, score) paired with none; ``reclass``:
+    (label, score) paired with another class; ``missed``: (label, its share of the image) no prediction even
+    touches (IoU under 0.1). ``known``: the classes the model learned, a label of another is not its to judge.
+    Classification (no box): the class it gives against the image's own."""
+    out: dict[str, list[Any]] = {"found": [], "extra": [], "reclass": [], "missed": []}
+    mine = [j for j, b in enumerate(truth) if b and (not known or int(b[0]) in known)]
+    score = [scores[i] if i < len(scores) else 0.0 for i in range(len(predicted))]
+    if any(len(b) < 5 for b in [*predicted, *(truth[j] for j in mine)]):
+        if predicted and mine:
+            top = max(range(len(predicted)), key=lambda i: score[i])
+            held = [j for j in mine if int(truth[j][0]) == int(predicted[top][0])]
+            if held:
+                out["found"] = held[:1]
+            else:
+                out["reclass"] = [(mine[0], score[top])]
+        return out
+    left = list(mine)
+    for i in sorted(range(len(predicted)), key=lambda i: -score[i]):
+        best, at = MATCH_IOU, None
         for j in left:
-            if int(truth[j][0]) == int(box[0]) and (overlap := _iou(box[1:5], truth[j][1:5])) >= best:
+            if (overlap := _iou(predicted[i][1:5], truth[j][1:5])) >= best:
                 best, at = overlap, j
         if at is None:
-            extra.append(int(box[0]))
+            out["extra"].append((i, score[i]))
+            continue
+        left.remove(at)
+        if int(predicted[i][0]) == int(truth[at][0]):
+            out["found"].append(at)
         else:
-            left.remove(at)
-    return extra, [int(truth[j][0]) for j in left]
+            out["reclass"].append((at, score[i]))
+    for j in left:
+        box = truth[j]
+        if not any(_iou(p[1:5], box[1:5]) >= APART_IOU for p in predicted):
+            out["missed"].append((j, box[3] * box[4]))
+    return out
 
 
-def mistakes_of_classes(db: Session, release: Release, op_id: str, mistake: str, classes: set[int]) -> set[int]:
-    """The images an evaluation found ``mistake`` (extra or missed) on for one of ``classes``: its predictions
-    against each image's labels in this release."""
+def judge(
+    predicted: list[list[float]],
+    scores: list[float],
+    truth: list[list[float]],
+    counting: dict[str, float] | None = None,
+    known: set[int] | None = None,
+) -> dict[str, list[int]]:
+    """An image's mistakes as FiftyOne counts them (``_pairing``), at a threshold:
+    ``extra``    a prediction paired with no label, the model sure of it (over ``conf``): a label may be missing;
+    ``reclass``  a pair whose classes differ, the model sure of its own: the label's class may be wrong;
+    ``missed``   a label no prediction even touches, big enough to see (``min_area`` of the image): it may be
+                 spurious (FiftyOne flags every unpaired label; most are objects too small for the model);
+    ``found``    pairs of the same class.
+    Indices: ``extra`` into the predictions, the rest into the labels."""
+    counting = counting or DEFAULT_RULE
+    conf, min_area = counting["conf"], counting["min_area"]
+    paired = _pairing(predicted, scores, truth, known)
+    return {
+        "found": paired["found"],
+        "extra": [i for i, s in paired["extra"] if s > conf],
+        "reclass": [j for j, s in paired["reclass"] if s > conf],
+        "missed": [j for j, area in paired["missed"] if area >= min_area],
+    }
+
+
+def _stored(paired: dict[str, list[Any]]) -> dict[str, Any]:
+    """What a row keeps: the counts at FiftyOne's settings (sorting, boards) and the values any threshold counts by."""
+    conf, min_area = DEFAULT_RULE["conf"], DEFAULT_RULE["min_area"]
+    counts = {
+        "found": len(paired["found"]),
+        "extra": sum(1 for _, s in paired["extra"] if s > conf),
+        "reclass": sum(1 for _, s in paired["reclass"] if s > conf),
+        "missed": sum(1 for _, area in paired["missed"] if area >= min_area),
+    }
+    return {
+        **counts,
+        "wrong": counts["extra"] + counts["missed"] + counts["reclass"],
+        "extra_top": max((s for _, s in paired["extra"]), default=0.0),
+        "reclass_top": max((s for _, s in paired["reclass"]), default=0.0),
+        "missed_area": max((area for _, area in paired["missed"]), default=0.0),
+    }
+
+
+def over(kind: str, counting: dict[str, float]) -> Any:
+    """SQL: an image an evaluation found ``kind`` on, at these thresholds."""
+    if kind == "extra":
+        return ItemPrediction.extra_top > counting["conf"]
+    if kind == "reclass":
+        return ItemPrediction.reclass_top > counting["conf"]
+    return and_(ItemPrediction.missed_area > 0, ItemPrediction.missed_area >= counting["min_area"])
+
+
+def order_of(kind: str) -> Any:
+    """SQL: the surest (or, for labels nothing touches, the biggest) first, as FiftyOne sorts by mistakenness."""
+    return {"extra": ItemPrediction.extra_top, "reclass": ItemPrediction.reclass_top}.get(kind, ItemPrediction.missed_area)
+
+
+def levels(kind: str) -> tuple[float, ...]:
+    return AREA_LEVELS if kind == "missed" else CONF_LEVELS
+
+
+def _truths(db: Session, release_id: str, item_ids: list[int]) -> dict[int, list[list[float]]]:
+    """Each image's labels in a version."""
+    out: dict[int, list[list[float]]] = {}
+    for start in range(0, len(item_ids), CHUNK):
+        rows = db.execute(
+            select(ReleaseItem.item_id, LabelRevision.boxes)
+            .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id)
+            .where(ReleaseItem.release_id == release_id, ReleaseItem.item_id.in_(item_ids[start : start + CHUNK]))
+        )
+        out.update({item_id: boxes or [] for item_id, boxes in rows})
+    return out
+
+
+def _known(db: Session, op: ModelJob) -> set[int]:
+    job = db.get(Job, op.job_id) if op.job_id else None
+    return {int(c) for c in ((job.params or {}).get("class_ids") or [])} if job is not None else set()
+
+
+def recount(db: Session, op: ModelJob) -> int:
+    """An evaluation's stored values, made again from its predictions and the evaluated version's labels."""
+    known = _known(db, op)
+    rows = db.execute(
+        select(ItemPrediction.item_id, ItemPrediction.labels, ItemPrediction.scores).where(ItemPrediction.op_id == op.id)
+    ).all()
+    truths = _truths(db, op.release_id or "", [item_id for item_id, *_ in rows])
+    changed = []
+    for item_id, labels, scores in rows:
+        paired = _pairing(labels or [], scores or [], truths.get(item_id, []), known)
+        changed.append({"op_id": op.id, "item_id": item_id, **_stored(paired)})
+    for start in range(0, len(changed), CHUNK):
+        db.execute(update(ItemPrediction), changed[start : start + CHUNK])
+    return len(changed)
+
+
+def recount_all(db: Session) -> int:
+    """Every evaluation counted again; marked done with the way it was counted."""
+    total = 0
+    for op in db.scalars(select(ModelJob).where(ModelJob.kind == "eval", ModelJob.release_id.is_not(None))):
+        if db.scalar(select(ItemPrediction.item_id).where(ItemPrediction.op_id == op.id).limit(1)) is not None:
+            total += recount(db, op)
+    row = db.get(HubSetting, RULE_KEY)
+    if row is None:
+        row = HubSetting(key=RULE_KEY, value={})
+        db.add(row)
+    row.value = {"counted": {"version": RULE_VERSION}}
+    db.flush()
+    return total
+
+
+def recount_if_needed(db: Session) -> int:
+    """At the Hub's start: stored counts made another way (before 0.89.0, or without the threshold values), again."""
+    row = db.get(HubSetting, RULE_KEY)
+    counted = ((row.value or {}) if row is not None else {}).get("counted") or {}
+    if counted == {"version": RULE_VERSION}:
+        return 0
+    import logging
+
+    total = recount_all(db)
+    logging.getLogger("badamoa.hub").info("검수: 모델 검사 %d장을 FiftyOne 방식으로 다시 셌습니다", total)
+    return total
+
+
+def page_counts(
+    db: Session, release: Release, op_id: str, item_ids: list[int], counting: dict[str, float]
+) -> dict[int, dict[str, int]]:
+    """For a page of images: an evaluation's findings at these thresholds against this version's labels."""
+    op = db.get(ModelJob, op_id)
+    if op is None or not item_ids:
+        return {}
+    truths, known = _truths(db, release.id, item_ids), _known(db, op)
+    out = {}
+    for row in db.scalars(select(ItemPrediction).where(ItemPrediction.op_id == op.id, ItemPrediction.item_id.in_(item_ids))):
+        found = judge(row.labels or [], row.scores or [], truths.get(row.item_id, []), counting, known)
+        out[row.item_id] = {kind: len(found[kind]) for kind in ("found", "missed", "extra", "reclass")}
+    return out
+
+
+def flagged(
+    db: Session, release: Release, op_id: str, mistake: str, item_ids: list[int], counting: dict[str, float] | None = None
+) -> dict[int, dict[str, Any]]:
+    """For a page of images: the labels an evaluation's ``mistake`` (missed or reclass) is on, against this
+    version's labels, and what the model said of them — 검수 frames them as it frames a rule check's."""
+    if mistake not in ("missed", "reclass") or not item_ids:
+        return {}
+    from .catalog_models import LabelSpace
+
+    op = db.get(ModelJob, op_id)
+    if op is None:
+        return {}
+    space = db.get(LabelSpace, release.label_space_id)
+    names = {int(c["id"]): str(c["name"]) for c in (space.classes if space else [])}
+    truths = _truths(db, release.id, item_ids)
+    counting, known = counting or rule(), _known(db, op)
+    out: dict[int, dict[str, Any]] = {}
+    for row in db.scalars(select(ItemPrediction).where(ItemPrediction.op_id == op.id, ItemPrediction.item_id.in_(item_ids))):
+        truth = truths.get(row.item_id, [])
+        found = judge(row.labels or [], row.scores or [], truth, counting, known)
+        boxes = found[mistake]
+        if not boxes:
+            continue
+        if mistake == "reclass":  # what the model is sure each one is
+            said = []
+            for j in boxes:
+                theirs = max(
+                    (
+                        (s, int(p[0]))
+                        for p, s in zip(row.labels or [], row.scores or [], strict=False)
+                        if len(p) < 5 or _iou(p[1:5], truth[j][1:5]) >= MATCH_IOU
+                    ),
+                    default=None,
+                )
+                if theirs is not None:
+                    label, model = names.get(int(truth[j][0]), truth[j][0]), names.get(theirs[1], theirs[1])
+                    said.append(f"{label} → 모델 {model} {theirs[0]:.2f}")
+            note = " · ".join(said)
+        else:
+            note = "모델이 아무것도 찾지 못한 자리"
+        out[row.item_id] = {"boxes": boxes, "note": note}
+    return out
+
+
+def mistakes_of_classes(
+    db: Session, release: Release, op_id: str, mistake: str, classes: set[int], counting: dict[str, float] | None = None
+) -> set[int]:
+    """The images an evaluation found ``mistake`` (extra, missed or reclass) on for one of ``classes``: its
+    predictions against each image's labels in this release (``judge``)."""
     from .catalog_models import LabelRevision, ReleaseItem
 
-    column = getattr(ItemPrediction, mistake)
+    counting = counting or rule()
     rows = db.execute(
         select(ItemPrediction.item_id, ItemPrediction.labels, ItemPrediction.scores, ReleaseItem.revision_id)
         .join(ReleaseItem, and_(ReleaseItem.release_id == release.id, ReleaseItem.item_id == ItemPrediction.item_id))
-        .where(ItemPrediction.op_id == op_id, column > 0)
+        .where(ItemPrediction.op_id == op_id, over(mistake, counting))
     ).all()
     revisions: dict[str, list[list[float]]] = {}
     ids = list({rid for *_, rid in rows if rid})
@@ -159,13 +385,23 @@ def mistakes_of_classes(db: Session, release: Release, op_id: str, mistake: str,
         )
         revisions.update({rid: boxes or [] for rid, boxes in found})
     op = db.get(ModelJob, op_id)
-    job = db.get(Job, op.job_id) if op is not None and op.job_id else None
-    known = {int(c) for c in ((job.params or {}).get("class_ids") or [])} if job is not None else set()
+    known = _known(db, op) if op is not None else set()
     picked = set()
     for item_id, labels, scores, revision_id in rows:
-        truth = [b for b in revisions.get(revision_id, []) if not known or (b and int(b[0]) in known)]
-        extra, missed = unmatched(labels or [], scores or [], truth)  # labels of classes it never learned: not its
-        if classes & set(extra if mistake == "extra" else missed):
+        truth = revisions.get(revision_id, [])
+        found = judge(labels or [], scores or [], truth, counting, known)  # labels of classes it never learned: not its
+        if mistake == "extra":
+            of = {int((labels or [])[i][0]) for i in found["extra"]}
+        else:  # the label's class (and, when it is another, the one the model gives it)
+            of = {int(truth[j][0]) for j in found[mistake]}
+            if mistake == "reclass":
+                of |= {
+                    int(p[0])
+                    for p in labels or []
+                    for j in found["reclass"]
+                    if len(p) < 5 or _iou(p[1:5], truth[j][1:5]) >= MATCH_IOU
+                }
+        if classes & of:
             picked.add(item_id)
     return picked
 
@@ -246,7 +482,7 @@ def item_prediction_runs(db: Session, release: Release, item_id: int) -> list[di
             continue
         run = {**run_ref(db, op, sets), "labels": row.labels or [], "scores": row.scores or []}
         if op.kind == "eval":
-            run.update(found=row.found, missed=row.missed, extra=row.extra)
+            run.update(found=row.found, missed=row.missed, extra=row.extra, reclass=row.reclass)
         out.append(run)
     return out
 
@@ -437,4 +673,5 @@ def item_predictions(db: Session, release: Release, item_id: int, op_id: str) ->
         "found": row.found if row else 0,
         "missed": row.missed if row else 0,
         "extra": row.extra if row else 0,
+        "reclass": row.reclass if row else 0,
     }

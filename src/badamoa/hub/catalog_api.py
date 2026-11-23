@@ -325,6 +325,8 @@ def list_items(
     limit: int = 60,
     pred: str = "",
     classes: str = "",  # 검수: class ids, comma separated (the findings of these classes)
+    conf: float | None = None,  # 검수: a model check's thresholds (FiftyOne's when left out)
+    min_area: float | None = None,
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -351,6 +353,7 @@ def list_items(
         offset=offset,
         limit=limit,
         classes=picked,
+        counting=checks.rule(conf, min_area),
         pred=pred,
     )
 
@@ -490,9 +493,16 @@ def draft_changes(release_id: str, _: User = Depends(current_user), db: Session 
 
 
 @router.get("/releases/{release_id}/qa")
-def label_checks(release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session)) -> dict:
-    """검수: how many images each label check flags (``items?check=<id>``), and the model's view per evaluation."""
-    result = qa.summary(db, catalog.get_release(db, release_id))
+def label_checks(
+    release_id: str,
+    conf: float | None = None,
+    min_area: float | None = None,
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+) -> dict:
+    """검수: how many images each label check flags (``items?check=<id>``), and the model's view per evaluation,
+    counted FiftyOne's way at these thresholds (FiftyOne's own when left out), and at the levels around them."""
+    result = qa.summary(db, catalog.get_release(db, release_id), checks.rule(conf, min_area))
     db.commit()
     return result
 

@@ -244,9 +244,11 @@ def check_counts(db: Session, release_id: str) -> dict[str, tuple[int, int]]:
     return {check: (total - (gone or 0), gone or 0) for check, total, gone in rows}
 
 
-def summary(db: Session, release: Release) -> dict[str, Any]:
+def summary(db: Session, release: Release, counting: dict[str, float] | None = None) -> dict[str, Any]:
     """The checks of a release: how many images each found (and how many were let be), and the evaluations that
-    can add the model's view."""
+    can add the model's view: counted at ``counting`` (FiftyOne's thresholds unless asked for others), and at each of
+    ``checks.levels`` beside, so the screen shows how the counts move with the threshold."""
+    counting = counting or checks.rule()
     done = run(db, release)
     counts = check_counts(db, release.id)
     evaluations = []
@@ -255,12 +257,21 @@ def summary(db: Session, release: Release) -> dict[str, Any]:
         base = (
             select(func.count()).select_from(ItemPrediction).join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
         )
-        found = {}
-        for kind in checks.MISTAKES:  # extra: objects no label has; missed: labels it did not find
+        found: dict[str, Any] = {"levels": {}}
+        for kind in checks.MISTAKES:  # extra: objects no label has; reclass: another class; missed: labels untouched
             judged = checks.let_be(kind, ItemPrediction.item_id, ReleaseItem.revision_id)
-            flagged = base.where(*mine, getattr(ItemPrediction, kind) > 0)
+            flagged = base.where(*mine, checks.over(kind, counting))
             found[kind] = db.scalar(flagged.where(~judged)) or 0
             found[f"{kind}_let_be"] = db.scalar(flagged.where(judged)) or 0
+            steps = checks.levels(kind)
+            at = {**counting, "conf": 0.0, "min_area": 0.0}
+            row = db.execute(
+                select(*[func.sum(case((checks.over(kind, {**at, "conf": v, "min_area": v}), 1), else_=0)) for v in steps])
+                .select_from(ItemPrediction)
+                .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
+                .where(*mine, ~judged)
+            ).one()
+            found["levels"][kind] = [[v, int(n or 0)] for v, n in zip(steps, row, strict=True)]
         evaluations.append({**check, **found})
     return {
         "release_id": release.id,
@@ -271,6 +282,7 @@ def summary(db: Session, release: Release) -> dict[str, Any]:
         ],
         "evaluations": evaluations,
         "pending": checks.pending(db, release),  # evaluations still going: the model's view comes when they end
+        "rule": {**counting, "defaults": checks.DEFAULT_RULE},  # the thresholds counted at, and FiftyOne's
     }
 
 

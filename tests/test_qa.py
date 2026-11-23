@@ -146,14 +146,34 @@ def test_the_class_filter_narrows_findings_by_their_own_class(hub, tmp_path):  #
     assert {"train_0000.jpg", "train_0001.jpg", "train_0003.jpg"} <= names(classes="1,2")
 
 
-def test_a_models_mistakes_have_the_classes_of_what_it_missed_or_added():
-    from badamoa.hub.checks import unmatched
+def test_a_model_check_counts_as_fiftyone_does():
+    """FiftyOne's compute_mistakenness: boxes paired whatever their classes (IoU 0.5, the surest first); an unpaired
+    prediction counts only when the model is sure (over 0.95), a pair of other classes only when it is sure of its
+    own, and a label only when no prediction even touches it and it is big enough to see."""
+    from badamoa.hub.checks import judge
 
-    truth = [[0, 0.5, 0.5, 0.2, 0.2], [1, 0.2, 0.2, 0.1, 0.1]]
-    assert unmatched([[0, 0.5, 0.5, 0.2, 0.2]], [0.9], truth) == ([], [1])
-    assert unmatched([[0, 0.5, 0.5, 0.2, 0.2], [2, 0.8, 0.8, 0.1, 0.1]], [0.9, 0.4], truth) == ([2], [1])
-    assert unmatched([[1, 0.5, 0.5, 0.2, 0.2]], [0.9], truth[:1]) == ([1], [0])  # the right box, the wrong class
-    assert unmatched([[3]], [0.8], [[1]]) == ([3], [1])  # classification
+    rule = {"conf": 0.95, "min_area": 0.001}
+    person, bike = [0, 0.5, 0.5, 0.2, 0.2], [1, 0.2, 0.2, 0.1, 0.1]
+    truth = [person, bike]
+
+    # the same box, the same class: found; the other label nothing touches: missed
+    assert judge([person], [0.9], truth, rule) == {"found": [0], "extra": [], "missed": [1], "reclass": []}
+    # an object no label has: only a sure one is a missing label (0.97), an unsure one (0.6) is the model's own error
+    assert judge([person, bike, [2, 0.8, 0.8, 0.1, 0.1]], [0.9, 0.9, 0.97], truth, rule)["extra"] == [2]
+    assert judge([person, bike, [2, 0.8, 0.8, 0.1, 0.1]], [0.9, 0.9, 0.6], truth, rule)["extra"] == []
+    # the right box, another class: the label's class may be wrong only when the model is sure; never missed twice
+    other = [1, 0.5, 0.5, 0.2, 0.2]
+    assert judge([other], [0.98], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": [0]}
+    assert judge([other], [0.7], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": []}
+    # a label a prediction touches (an imprecise box) or too small to see (under 0.1% of the image) is not missed
+    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], rule)["missed"] == []
+    assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], rule)["missed"] == []
+    assert judge([], [], [[0, 0.5, 0.5, 0.05, 0.05]], rule)["missed"] == [0]
+    # a class the model never learned is not its to judge
+    assert judge([], [], truth, rule, known={0})["missed"] == [0]
+    # classification: the class it gives against the image's own, when it is sure
+    assert judge([[3]], [0.99], [[1]], rule)["reclass"] == [0] and judge([[3]], [0.8], [[1]], rule)["reclass"] == []
+    assert judge([[1]], [0.6], [[1]], rule)["found"] == [0]
 
 
 def test_model_checks_stay_on_the_review_screen_after_they_end(hub, settings, tmp_path):  # noqa: F811
@@ -221,3 +241,62 @@ def test_model_checks_stay_on_the_review_screen_after_they_end(hub, settings, tm
     assert newest["sent"]["duration_s"] == 120 and older["sent"] is None
     assert older["basis"] is False  # it kept no per-image predictions: no model basis
     assert hub.get(f"/api/jobs/{newest['job_id']}/logs").status_code == 200
+
+
+def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path):  # noqa: F811
+    """Counts an older Hub stored as the template gave them are counted again at the start. FiftyOne's thresholds
+    count by default; a screen asks for others and sees the counts at each level beside: an object no label has at
+    0.9 is not one at FiftyOne's 0.95, it is at 0.8."""
+    from sqlalchemy import select
+
+    from badamoa.hub import checks
+    from badamoa.hub.catalog_models import ItemPrediction, LabelRevision, ReleaseItem
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import HubSetting
+    from badamoa.hub.train_models import ModelJob, ModelVersion
+
+    root = make_yolo(tmp_path / "ds")
+    project = hub.post("/api/projects", json={"name": "셈"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+    database = Database(settings.database_url)
+    with database.session() as db:
+        rows = db.execute(
+            select(ReleaseItem.item_id, LabelRevision.boxes)
+            .join(LabelRevision, LabelRevision.id == ReleaseItem.revision_id)
+            .where(ReleaseItem.release_id == v1)
+        ).all()
+        item_id, boxes = next((i, b) for i, b in rows if b)
+        model = ModelVersion(project_id=project["id"], name="m", version=1, blob="0" * 64, trainer="yolo", task="detect")
+        db.add(model)
+        db.flush()
+        op = ModelJob(model_id=model.id, kind="eval", release_id=v1, params={"split": "val"})
+        db.add(op)
+        db.flush()
+        away = [0, 0.01, 0.01, 0.01, 0.01]  # a corner no label is at
+        touching = [[b[0], *b[1:5]] for b in boxes]  # every label touched (paired, same class)
+        db.add(ItemPrediction(op_id=op.id, item_id=item_id, labels=[*touching, away], scores=[0.99] * len(boxes) + [0.9],
+                              found=0, missed=7, extra=7, wrong=14))  # fmt: skip
+        op_id = op.id
+    with database.session() as db:
+        marked = db.get(HubSetting, checks.RULE_KEY)  # this Hub counted at its start: as a Hub before 0.89.0, it had not
+        if marked is not None:
+            db.delete(marked)
+        db.flush()
+        assert checks.recount_if_needed(db) == 1 and checks.recount_if_needed(db) == 0  # once, then it is counted
+        row = db.get(ItemPrediction, (op_id, item_id))
+        assert (row.found, row.missed, row.extra, row.reclass, row.wrong) == (len(boxes), 0, 0, 0, 0)
+        assert (row.extra_top, row.reclass_top, row.missed_area) == (0.9, 0.0, 0.0)  # the values any threshold counts by
+    database.engine.dispose()
+
+    fiftyone = hub.get(f"/api/releases/{v1}/qa").json()
+    assert fiftyone["rule"] == {"conf": 0.95, "min_area": 0.001, "defaults": {"conf": 0.95, "min_area": 0.001}}
+    first = fiftyone["evaluations"][0]
+    assert (first["extra"], first["reclass"], first["missed"]) == (0, 0, 0)
+    # beside the chosen threshold, the count at each level: the corner box (0.9) counts below 0.9, not from it
+    assert dict(map(tuple, first["levels"]["extra"])) == {0.5: 1, 0.7: 1, 0.8: 1, 0.9: 0, 0.95: 0, 0.99: 0}
+    lower = hub.get(f"/api/releases/{v1}/qa", params={"conf": 0.8}).json()
+    assert lower["rule"]["conf"] == 0.8 and lower["evaluations"][0]["extra"] == 1
+    found = hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra", "conf": 0.8}).json()
+    assert [i["id"] for i in found["items"]] == [item_id] and found["items"][0]["check"]["extra"] == 1
+    assert hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra"}).json()["total"] == 0
+    assert hub.get(f"/api/releases/{v1}/qa", params={"conf": 0.01}).json()["rule"]["conf"] == 0.25  # kept from 0.25
