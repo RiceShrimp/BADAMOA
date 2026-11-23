@@ -107,7 +107,7 @@ def test_let_be_follows_the_labels_and_versions_keep_their_review(hub, tmp_path)
     assert listed["v2"] == {"recorded": True, "open": 3} and listed["v1"]["recorded"] is False
 
     # ---- labels changed later: the judgement no longer holds, the check counts the image again
-    moved = [[0, 0.5, 0.5, 0.3, 0.3], [0, 0.505, 0.505, 0.3, 0.3]]
+    moved = [[0, 0.5, 0.5, 0.3, 0.3], [0, 0.502, 0.502, 0.3, 0.3]]  # IoU 0.97: the same object (0.95 and up)
     again = hub.put(f"/api/releases/{draft}/items/{twice}/labels", json={"boxes": moved}).json()["release_id"]
     assert check(again, "duplicate")["images"] == 1 and check(draft, "duplicate")["images"] == 0
 
@@ -300,3 +300,31 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
     assert [i["id"] for i in found["items"]] == [item_id] and found["items"][0]["check"]["extra"] == 1
     assert hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra"}).json()["total"] == 0
     assert hub.get(f"/api/releases/{v1}/qa", params={"conf": 0.01}).json()["rule"]["conf"] == 0.25  # kept from 0.25
+
+
+def test_box_checks_count_at_the_thresholds_asked_for(hub, tmp_path):  # noqa: F811
+    """The box checks count at the thresholds 검수 asks for (IoU 0.95 · 3 px · 98% by default), with the counts at
+    each level beside; the images and the labels framed follow."""
+    root = make_yolo(tmp_path / "ds")
+    for name, text in LABELS.items():
+        (root / "labels" / name.split("_")[0] / f"{name}.txt").write_text(text, encoding="utf-8")
+    project = hub.post("/api/projects", json={"name": "임계값"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+
+    def checks_at(rules=""):
+        return {c["id"]: c for c in hub.get(f"/api/releases/{v1}/qa", params={"rules": rules}).json()["checks"]}
+
+    plain = checks_at()  # train_0000: two boxes of a class at IoU 0.97; train_0004: 1.6 px wide; train_0005: all of it
+    assert (plain["duplicate"]["limit"], plain["duplicate"]["images"]) == (0.95, 1) and "0.95" in plain["duplicate"]["hint"]
+    assert (plain["tiny"]["images"], plain["huge"]["images"]) == (1, 1)
+    assert dict(map(tuple, plain["duplicate"]["levels"]))[0.99] == 0 and dict(map(tuple, plain["tiny"]["levels"]))[1] == 0
+    strict = checks_at("duplicate:0.99,tiny:1,huge:0.999")
+    assert (strict["duplicate"]["images"], strict["tiny"]["images"], strict["huge"]["images"]) == (0, 0, 1)
+    assert "IoU 0.99" in strict["duplicate"]["hint"] and checks_at("duplicate:7")["duplicate"]["limit"] == 0.99  # bounded
+
+    def listed(rules):
+        return hub.get(f"/api/releases/{v1}/items", params={"check": "duplicate", "rules": rules}).json()
+
+    assert listed("duplicate:0.99")["total"] == 0
+    loose = listed("duplicate:0.9")
+    assert loose["total"] == 1 and loose["items"][0]["qa"]["boxes"] == [0, 1] and "겹침" in loose["items"][0]["qa"]["note"]

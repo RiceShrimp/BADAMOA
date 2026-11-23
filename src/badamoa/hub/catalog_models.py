@@ -303,6 +303,21 @@ class QaResult(Base):
     note: Mapped[str] = mapped_column(String(255), default="")
 
 
+class QaScore(Base):
+    """A box check a threshold decides (``qa.DEFAULTS``), before any threshold: the image's value (the most two
+    boxes overlap, the shortest side in pixels, the biggest share of the image) and each label's, from a loose bound
+    (``qa.LOOSE``). 검수 counts at whatever threshold it asks for from these; ``QaResult`` keeps the defaults."""
+
+    __tablename__ = "qa_scores"
+    __table_args__ = (Index("ix_qa_scores_check", "release_id", "check", "score"),)
+
+    release_id: Mapped[str] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True)
+    check: Mapped[str] = mapped_column(String(24), primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    labels: Mapped[list[list[float]]] = mapped_column(JSON, default=list)  # [[label index, value, partner or -1]]
+
+
 class QaDismissal(Base):
     """Someone looked at what a check flagged and found the labels right ("문제 없음").
 

@@ -1189,6 +1189,7 @@ def list_items(
     pred: str = "",
     classes: list[int] | None = None,
     counting: dict[str, float] | None = None,
+    at: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """A page of a release's items. ``counting``: the thresholds a model check's findings are taken at
     (``checks.rule``; FiftyOne's by default). ``pred``: a model run's id (``checks.prediction_runs``): each image
@@ -1232,10 +1233,15 @@ def list_items(
         if check not in qa.CHECKS:
             raise ServiceError(400, "그런 검사가 없습니다.")
         qa.run(db, release)
-        joined = and_(QaResult.release_id == release.id, QaResult.check == check, QaResult.item_id == ReleaseItem.item_id)
-        query = query.join(QaResult, joined)
+        if check in qa.DEFAULTS and at is not None and at[check] != qa.DEFAULTS[check]:  # a box check at another threshold
+            query = query.where(ReleaseItem.item_id.in_(qa.scored_items(release.id, check, at[check])))
+        else:
+            joined = and_(
+                QaResult.release_id == release.id, QaResult.check == check, QaResult.item_id == ReleaseItem.item_id
+            )
+            query = query.join(QaResult, joined)
         if picked:
-            of_class = qa.of_classes(db, release.id, check, picked)
+            of_class = qa.of_classes(db, release.id, check, picked, at)
             query = query.where(ReleaseItem.item_id.in_(list(of_class)))
     elif picked and suspect and mistake in checks.MISTAKES:
         found_of = checks.mistakes_of_classes(db, release, suspect, mistake, picked, counting)
@@ -1266,7 +1272,7 @@ def list_items(
     change = drafts.change_counts(db, draft, list(fixed)) if fixed else {}
     in_set = labeling.item_states(db, label_set, [item.id for _, item in rows]) if label_set else {}
     if check:
-        found = qa.flagged(db, release.id, check, [item.id for _, item in rows])
+        found = qa.flagged(db, release.id, check, [item.id for _, item in rows], at)
     elif suspect and mistake in checks.MISTAKES:  # the labels a model check is on, framed as a rule check's
         found = checks.flagged(db, release, suspect, mistake, [item.id for _, item in rows], counting)
     else:

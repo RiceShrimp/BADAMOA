@@ -327,6 +327,7 @@ def list_items(
     classes: str = "",  # 검수: class ids, comma separated (the findings of these classes)
     conf: float | None = None,  # 검수: a model check's thresholds (FiftyOne's when left out)
     min_area: float | None = None,
+    rules: str = "",  # 검수: the box checks' thresholds, e.g. duplicate:0.9,tiny:5 (the defaults when left out)
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -354,6 +355,7 @@ def list_items(
         limit=limit,
         classes=picked,
         counting=checks.rule(conf, min_area),
+        at=qa.limits(rules),
         pred=pred,
     )
 
@@ -497,12 +499,14 @@ def label_checks(
     release_id: str,
     conf: float | None = None,
     min_area: float | None = None,
+    rules: str = "",
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
 ) -> dict:
-    """검수: how many images each label check flags (``items?check=<id>``), and the model's view per evaluation,
-    counted FiftyOne's way at these thresholds (FiftyOne's own when left out), and at the levels around them."""
-    result = qa.summary(db, catalog.get_release(db, release_id), checks.rule(conf, min_area))
+    """검수: how many images each label check flags (``items?check=<id>``; the box checks at the thresholds in
+    ``rules``, e.g. ``duplicate:0.9,tiny:5``), and the model's view per evaluation, counted FiftyOne's way at these
+    thresholds (FiftyOne's own when left out); each with the counts at the levels around its threshold."""
+    result = qa.summary(db, catalog.get_release(db, release_id), checks.rule(conf, min_area), qa.limits(rules))
     db.commit()
     return result
 

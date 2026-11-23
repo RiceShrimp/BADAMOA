@@ -35,6 +35,10 @@ interface Rule {
   hint: string;
   images: number;
   let_be: number; // images someone judged right ("문제 없음"): not counted in ``images``
+  // a box check a threshold decides: the one counted at, its default, the count at each level
+  limit?: number;
+  default?: number;
+  levels?: [number, number][];
 }
 
 /** How 검수 counts a model check (FiftyOne's way): how sure the model must be, how big a label must be. */
@@ -487,7 +491,22 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const [watching, setWatching] = useState(false); // an evaluation is going: look again until it ends
   // a model check's thresholds: FiftyOne's until moved here (then the counts, the images and the frames follow)
   const [limits, setLimits] = useState<Limits | null>(null);
-  const limitQuery = limits ? `?conf=${limits.conf}&min_area=${limits.min_area}` : "";
+  // the box checks' thresholds moved here (the rest at their defaults): duplicate:0.9,tiny:5
+  const [ruleLimits, setRuleLimits] = useState<Record<string, number>>({});
+  const rulesParam = Object.entries(ruleLimits)
+    .map(([check, value]) => `${check}:${value}`)
+    .join(",");
+  const limitQuery = (() => {
+    const params = new URLSearchParams();
+    if (limits) {
+      params.set("conf", String(limits.conf));
+      params.set("min_area", String(limits.min_area));
+    }
+    if (rulesParam) params.set("rules", rulesParam);
+    const text = params.toString();
+    return text ? `?${text}` : "";
+  })();
+  const [tuning, setTuning] = useState<string | null>(null); // the box check whose threshold dialog is open
   const { data: summary, error, refresh } = usePolling(
     () => api<Summary>(`/releases/${releaseId}/qa${limitQuery}`),
     watching ? 4000 : 0,
@@ -547,7 +566,10 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const query = useMemo(() => {
     if (!pick) return "";
     const params = new URLSearchParams();
-    if (pick.kind === "rule") params.set("check", pick.id);
+    if (pick.kind === "rule") {
+      params.set("check", pick.id);
+      if (ruleLimits[pick.id] != null) params.set("rules", rulesParam);
+    }
     else if (op) {
       params.set("suspect", op);
       params.set("mistake", pick.mistake);
@@ -561,7 +583,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
       if (value) params.set(key, key === "split" && value === "none" ? "" : value);
     }
     return params.toString();
-  }, [pick, op, showLetBe, filter, limits]);
+  }, [pick, op, showLetBe, filter, limits, ruleLimits]);
   useEffect(() => setPage(0), [query]);
   const { data: items, refresh: refreshItems } = usePolling(
     () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * PAGE}&limit=${PAGE}`) : Promise.resolve(null)),
@@ -696,7 +718,23 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
             </header>
             {summary.checks
               .filter((c) => c.group === g.id)
-              .map((c) => card(c.id, c.title, c.hint, c.images, pick?.kind === "rule" && pick.id === c.id, () => setPick({ kind: "rule", id: c.id })))}
+              .map((c) =>
+                c.levels ? (
+                  <div key={c.id} className="check-card-wrap">
+                    {card(c.id, c.title, c.hint, c.images, pick?.kind === "rule" && pick.id === c.id, () => setPick({ kind: "rule", id: c.id }))}
+                    <button
+                      className={`icon-btn card-gear ${c.limit !== c.default ? "moved" : ""}`}
+                      onClick={() => setTuning(c.id)}
+                      title={`임계값 설정 (지금 ${c.limit}${c.limit !== c.default ? ` · 기본 ${c.default}` : ""})`}
+                      aria-label={`${c.title} 임계값 설정`}
+                    >
+                      <Icon name="settings" size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  card(c.id, c.title, c.hint, c.images, pick?.kind === "rule" && pick.id === c.id, () => setPick({ kind: "rule", id: c.id }))
+                ),
+              )}
             {(Object.keys(MODEL) as Mistake[]).filter((m) => MODEL[m].group === g.id).map(modelCard)}
           </section>
         ))}
@@ -807,6 +845,24 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           onClose={() => setViewing(null)}
         />
       )}
+      {tuning &&
+        (() => {
+          const rule = summary.checks.find((c) => c.id === tuning);
+          return rule ? (
+            <RuleThreshold
+              rule={rule}
+              onChange={(value) => {
+                setRuleLimits((was) => {
+                  const next = { ...was };
+                  if (value == null || value === rule.default) delete next[rule.id];
+                  else next[rule.id] = value;
+                  return next;
+                });
+              }}
+              onClose={() => setTuning(null)}
+            />
+          ) : null;
+        })()}
       {choosing && (
         <CheckWithModel
           release={release}
@@ -962,6 +1018,86 @@ function ClassFilter({
  * when the model is surer than ``conf``; a label only when no prediction touches it and it is ``min_area`` of the
  * image or more. An admin changes them here; every evaluation is counted again.
  */
+/** How a box check's threshold reads: IoU as is, pixels, a share of the image as a percentage. */
+function thresholdText(check: string, value: number): string {
+  if (check === "tiny") return `${value}px`;
+  if (check === "huge") return `${+(value * 100).toFixed(1)}%`;
+  return value.toFixed(2);
+}
+
+const RULE_RANGES: Record<string, { min: number; max: number; step: number; what: string }> = {
+  duplicate: { min: 0.5, max: 0.99, step: 0.01, what: "같은 클래스 두 박스의 IoU가 이 값 이상" },
+  class_overlap: { min: 0.5, max: 0.99, step: 0.01, what: "다른 클래스 두 박스의 IoU가 이 값 이상" },
+  tiny: { min: 1, max: 16, step: 1, what: "박스의 가로나 세로가 이 픽셀 미만" },
+  huge: { min: 0.8, max: 0.999, step: 0.001, what: "박스가 이미지 넓이의 이 비율 이상" },
+};
+
+/**
+ * A box check's threshold, set from its card's gear: a slider, the count at each level (a level is clicked to take
+ * it), and back to the default. The card, the images and their frames count at it on the spot; it lasts while this
+ * version is open here (nothing is saved for anyone else).
+ */
+function RuleThreshold({ rule, onChange, onClose }: { rule: Rule; onChange: (value: number | null) => void; onClose: () => void }) {
+  const range = RULE_RANGES[rule.id];
+  const [value, setValue] = useState(rule.limit ?? rule.default ?? range.min);
+  useEffect(() => {
+    if (value === rule.limit) return;
+    const timer = window.setTimeout(() => onChange(value), 250);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+  if (!range || rule.levels == null) return null;
+  return (
+    <Modal title={`${rule.title} · 임계값`} onClose={onClose}>
+      <p className="muted small">{range.what}이면 걸립니다. 바꾸면 카드 · 이미지 목록 · 노란 테두리가 바로 이 값으로 다시 셉니다(이 화면에서만).</p>
+      <label className="rule-threshold">
+        <input
+          type="range"
+          min={range.min}
+          max={range.max}
+          step={range.step}
+          value={value}
+          onChange={(e) => setValue(Number(e.target.value))}
+          aria-label={`${rule.title} 임계값`}
+        />
+        <strong className="num">{thresholdText(rule.id, value)}</strong>
+        <span className="muted small">걸린 이미지 {rule.images.toLocaleString()}장</span>
+      </label>
+      <table className="threshold-levels small">
+        <tbody>
+          <tr>
+            <th>임계값별 이미지 수</th>
+            {rule.levels.map(([level, count]) => (
+              <td key={level}>
+                <button className={`level ${level === rule.limit ? "on" : ""}`} onClick={() => setValue(level)}>
+                  <span className="muted">{thresholdText(rule.id, level)}</span>
+                  <strong className="num">{count.toLocaleString()}</strong>
+                </button>
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+      <div className="modal-actions">
+        {rule.default != null && rule.limit !== rule.default && (
+          <button
+            type="button"
+            className="push-left"
+            onClick={() => {
+              setValue(rule.default as number);
+              onChange(null);
+            }}
+          >
+            기본값으로 ({thresholdText(rule.id, rule.default)})
+          </button>
+        )}
+        <button type="button" className="primary" onClick={onClose}>
+          닫기
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 const LEVEL_ROWS: { kind: Mistake; title: string; by: "conf" | "min_area" }[] = [
   { kind: "extra", title: "라벨에 없는 물체", by: "conf" },
   { kind: "reclass", title: "클래스가 다를 수 있는 라벨", by: "conf" },

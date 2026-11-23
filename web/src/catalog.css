@@ -1794,3 +1794,35 @@ select.active-select {
 .review-to-dataset {
   margin-left: 10px;
 }
+
+/* 검수: a box check's card with its threshold gear in the top-right corner, and the gear's dialog */
+.check-card-wrap {
+  position: relative;
+  display: grid;
+}
+.check-card-wrap .check-card {
+  padding-right: 34px;
+}
+.card-gear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0.55;
+}
+.card-gear:hover,
+.card-gear:focus-visible,
+.card-gear.moved {
+  opacity: 1;
+}
+.card-gear.moved {
+  color: var(--accent);
+}
+.rule-threshold {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+.rule-threshold input[type="range"] {
+  flex: 1 1 auto;
+}
