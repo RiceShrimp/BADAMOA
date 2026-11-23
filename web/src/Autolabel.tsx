@@ -228,7 +228,7 @@ function AutolabelBoard() {
         <div>
           <h1>오토라벨</h1>
           <p className="muted">
-            모델이 라벨을 먼저 그리고 사람은 고치기만 합니다. 라벨링 묶음의 아직 안 한 이미지나 데이터셋의 아직 안 한 이미지에 돌리고, 돌린 기록과
+            모델이 라벨을 먼저 그리고 사람은 고치기만 합니다. 라벨링 묶음의 라벨 안 한 이미지나 데이터셋의 라벨 안 한 이미지에 돌리고, 돌린 기록과
             결과를 프로젝트별로 봅니다. 프로젝트 카드는 끌어서 순서를 바꿀 수 있습니다.
           </p>
         </div>
@@ -243,7 +243,7 @@ function AutolabelBoard() {
         <Stat icon="bot" label="오토라벨" value={t?.runs ?? "–"} sub={t?.going ? `도는 중 ${t.going}` : "도는 것 없음"} />
         <Stat icon="images" label="예측한 이미지" value={n(t?.images)} sub={`라벨 ${n(t?.labels)}개`} />
         <Stat icon="check" label="자동 승인" value={n(t?.accepted)} sub="확신도가 높아 바로 저장한 이미지" />
-        <Stat icon="edit" label="라벨링 기다림" value={n(t?.todo)} sub={`묶음 ${t?.sets_waiting ?? 0}개의 아직 안 한 이미지`} />
+        <Stat icon="edit" label="라벨링 기다림" value={n(t?.todo)} sub={`묶음 ${t?.sets_waiting ?? 0}개의 라벨 안 한 이미지`} />
         <Stat icon="x" label="실패" value={t?.failed ?? "–"} sub="기록에서 로그를 봅니다" />
       </div>
 
@@ -375,7 +375,7 @@ function ProjectBoardCard({ card: c }: { card: ProjectCard }) {
               <span className="ellipsis">
                 {s.name} <span className="muted">{s.dataset}</span>
               </span>
-              <span className="num" title={s.autolabeled ? "오토라벨을 돌린 묶음의 아직 안 한 이미지" : "아직 안 한 이미지"}>
+              <span className="num" title={s.autolabeled ? "오토라벨을 돌린 묶음의 라벨 안 한 이미지" : "라벨 안 한 이미지"}>
                 {n(s.todo)}장{s.autolabeled ? "" : " · 오토라벨 전"}
               </span>
             </a>
@@ -451,11 +451,11 @@ function ProjectRuns({ projectId }: { projectId: string }) {
 
       <section className="board-section">
         <h2>
-          라벨링 묶음 <span className="muted small">아직 안 한 이미지가 있는 묶음에 돌립니다</span>
+          라벨링 묶음 <span className="muted small">라벨 안 한 이미지가 있는 묶음에 돌립니다</span>
         </h2>
         {targets && targets.sets.length === 0 && (
           <div className="card empty">
-            아직 라벨링 묶음이 없습니다. "새 오토라벨"에서 데이터셋의 아직 안 한 이미지를 고르면 묶음을 만들어 돌립니다.
+            아직 라벨링 묶음이 없습니다. "새 오토라벨"에서 데이터셋의 라벨 안 한 이미지를 고르면 묶음을 만들어 돌립니다.
           </div>
         )}
         {targets && targets.sets.length > 0 && (
@@ -498,7 +498,7 @@ function ProjectRuns({ projectId }: { projectId: string }) {
                       <button
                         className="small"
                         disabled={s.todo === 0 || GOING.includes(s.autolabel?.status ?? "")}
-                        title={s.todo === 0 ? "아직 안 한 이미지가 없습니다" : undefined}
+                        title={s.todo === 0 ? "라벨 안 한 이미지가 없습니다" : undefined}
                         onClick={() => setStarting({ setId: s.id })}
                       >
                         <Icon name="bot" size={12} /> 오토라벨
@@ -651,7 +651,7 @@ function RunPage({ opId }: { opId: string }) {
           <p className="muted">
             {run.dataset && run.release ? (
               <>
-                {run.dataset.name} <a href={`#/datasets/${run.release.id}`}>{run.release.version}</a>의 아직 안 한 이미지 {n(run.items)}장 ·{" "}
+                {run.dataset.name} <a href={`#/datasets/${run.release.id}`}>{run.release.version}</a>의 라벨 안 한 이미지 {n(run.items)}장 ·{" "}
               </>
             ) : null}
             {run.started_by ?? "?"} · {timeAgo(run.created_at)}
@@ -675,7 +675,7 @@ function RunPage({ opId }: { opId: string }) {
             </button>
           )}
           {!going && run.set && run.model && !run.model.deleted && (
-            <button className="primary" onClick={() => setAgain(true)} title="같은 모델과 확신도로 이 묶음의 아직 안 한 이미지에 다시 돌립니다">
+            <button className="primary" onClick={() => setAgain(true)} title="같은 모델과 확신도로 이 묶음의 라벨 안 한 이미지에 다시 돌립니다">
               <Icon name="refresh" size={14} /> 다시 돌리기
             </button>
           )}
@@ -703,7 +703,7 @@ function RunPage({ opId }: { opId: string }) {
       {run.status === "succeeded" && run.set && (
         <div className="notice small">
           {run.current
-            ? `"${run.set.name}"에서 아직 안 한 이미지를 열면 이 기록의 예측에서 시작합니다${run.accept != null ? ` · 자동 승인한 이미지는 ${run.set.review ? "검수" : "완료"}로 갔습니다` : ""}.`
+            ? `"${run.set.name}"에서 라벨 안 한 이미지를 열면 이 기록의 예측에서 시작합니다${run.accept != null ? ` · 자동 승인한 이미지는 ${run.set.review ? "검수" : "완료"}로 갔습니다` : ""}.`
             : `"${run.set.name}"에는 이후 다른 오토라벨이 돌았습니다. 라벨링은 가장 최근 것의 예측에서 시작합니다.`}
         </div>
       )}
@@ -819,7 +819,7 @@ export function StartAutolabel({
   const [split, setSplit] = useState("");
   const [name, setName] = useState("");
   const [partSize, setPartSize] = useState(50);
-  const [review, setReview] = useState(true);
+  const [review, setReview] = useState(false); // approving · sending back: asked for, not by default
   // Where to begin: the set given, else a set with images to label, else a dataset with some.
   useEffect(() => {
     if (!targets || fixedSet) return;
@@ -930,12 +930,12 @@ export function StartAutolabel({
                 라벨링 묶음
               </button>
               <button type="button" className={mode === "dataset" ? "active" : ""} onClick={() => setMode("dataset")}>
-                데이터셋의 아직 안 한 이미지
+                데이터셋의 라벨 안 한 이미지
               </button>
             </div>
             {mode === "set" ? (
               targets && targets.sets.length === 0 ? (
-                <p className="muted small">이 프로젝트에는 라벨링 묶음이 없습니다. "데이터셋의 아직 안 한 이미지"로 묶음을 만들어 돌리세요.</p>
+                <p className="muted small">이 프로젝트에는 라벨링 묶음이 없습니다. "데이터셋의 라벨 안 한 이미지"로 묶음을 만들어 돌리세요.</p>
               ) : (
                 <label>
                   묶음
@@ -943,12 +943,12 @@ export function StartAutolabel({
                     <option value="">고르세요</option>
                     {targets?.sets.map((s) => (
                       <option key={s.id} value={s.id} disabled={s.todo === 0}>
-                        {s.name} · {s.dataset?.name ?? ""} · 아직 안 함 {n(s.todo)}/{n(s.items)}
+                        {s.name} · {s.dataset?.name ?? ""} · 라벨 안 함 {n(s.todo)}/{n(s.items)}장
                         {s.autolabel ? ` · 오토라벨 ${STATUS_LABEL[s.autolabel.status] ?? s.autolabel.status}` : ""}
                       </option>
                     ))}
                   </select>
-                  <span className="muted small">묶음의 아직 안 한 이미지에만 돌립니다. 사람이 라벨링했거나 돌려받은 이미지는 건드리지 않습니다.</span>
+                  <span className="muted small">묶음의 라벨 안 한 이미지에만 돌립니다. 사람이 라벨링했거나 돌려받은 이미지는 건드리지 않습니다.</span>
                 </label>
               )
             ) : targets && targets.datasets.length === 0 ? (
@@ -961,7 +961,7 @@ export function StartAutolabel({
                     <select value={datasetId} onChange={(e) => setDatasetId(e.target.value)} aria-label="데이터셋">
                       {targets?.datasets.map((d) => (
                         <option key={d.id} value={d.id}>
-                          {d.name} {d.release.version} · 아직 안 함 {n(unlabelled(d, ""))}
+                          {d.name} {d.release.version} · 라벨 안 한 이미지 {n(unlabelled(d, ""))}장
                         </option>
                       ))}
                     </select>
@@ -988,14 +988,20 @@ export function StartAutolabel({
                 <div className="form-row">
                   <label>
                     일감 하나에 이미지
-                    <input type="number" min={1} max={10000} value={partSize} onChange={(e) => setPartSize(Number(e.target.value) || 1)} />
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.max(1, images)}
+                      value={partSize}
+                      onChange={(e) => setPartSize(Math.min(Math.max(1, images), Math.max(1, Math.floor(Number(e.target.value)) || 1)))}
+                    />
                   </label>
                   <label className="check" style={{ alignSelf: "end" }}>
                     <input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> 검수하기 (승인 · 돌려보내기)
                   </label>
                 </div>
                 <p className="muted small">
-                  {dataset?.release.draft ? "작업 중" : dataset?.release.version}의 라벨 상태 "아직 안 함" 이미지 {n(images)}장으로 라벨링 묶음을 만든 뒤
+                  {dataset?.release.draft ? "작업 중" : dataset?.release.version}에서 라벨 안 한 이미지 {n(images)}장으로 라벨링 묶음을 만든 뒤
                   오토라벨을 돌립니다. 라벨은 데이터셋의 작업 중에 모입니다.
                 </p>
               </>
@@ -1004,7 +1010,7 @@ export function StartAutolabel({
         )}
         {fixedSet && (
           <p className="muted">
-            등록한 모델이 이 묶음의 아직 안 한 이미지 {offer ? n(offer.todo) : "…"}장에 라벨을 먼저 그립니다. 라벨링하는 사람은 이미지를 열면 모델이 그린 것에서
+            등록한 모델이 이 묶음의 라벨 안 한 이미지 {offer ? n(offer.todo) : "…"}장에 라벨을 먼저 그립니다. 라벨링하는 사람은 이미지를 열면 모델이 그린 것에서
             시작해 고치기만 합니다. 이미 라벨링했거나 돌려받은 이미지는 건드리지 않습니다.
           </p>
         )}

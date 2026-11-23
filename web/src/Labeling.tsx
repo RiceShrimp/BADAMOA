@@ -329,7 +329,7 @@ function SetBoard({ id, arg }: { id: string; arg?: string }) {
             <input type="checkbox" checked={mineOnly} onChange={(e) => setMineOnly(e.target.checked)} /> 내 일감만
           </label>
           {openId && (
-            <button onClick={() => setAutolabeling(true)} disabled={busy} title="등록한 모델로 아직 안 한 이미지에 라벨을 먼저 그립니다">
+            <button onClick={() => setAutolabeling(true)} disabled={busy} title="등록한 모델로 라벨 안 한 이미지에 라벨을 먼저 그립니다">
               <Icon name="bot" size={14} /> 오토라벨
             </button>
           )}
@@ -459,7 +459,7 @@ export function NewSetDialog({
   const most = Math.max(1, filtered);
   const [partText, setPartText] = useState(String(Math.min(50, most)));
   const partSize = Math.min(most, Math.max(1, Math.floor(Number(partText)) || 1));
-  const [review, setReview] = useState(true);
+  const [review, setReview] = useState(false); // approving · sending back: asked for, not by default
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const parts = Math.ceil(filtered / Math.max(1, partSize));
