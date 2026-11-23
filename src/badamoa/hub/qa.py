@@ -46,7 +46,7 @@ CHECKS: dict[str, dict[str, str]] = {
     "class_overlap": {
         "group": "wrong",
         "title": "한 물체에 클래스 둘",
-        "hint": "다른 클래스 박스가 거의 겹침: 둘 중 하나가 틀렸을 수 있음",
+        "hint": "다른 클래스 박스가 거의 겹침(IoU 0.95 이상): 둘 중 하나가 틀렸을 수 있음",
     },
     "rare_class": {
         "group": "wrong",
@@ -58,12 +58,12 @@ CHECKS: dict[str, dict[str, str]] = {
 }
 RARE = 2
 CHUNK = 2000
-RULES = "3"  # bumped when what the checks find or how they word it changes: results are worked out again
+RULES = "4"  # bumped when what the checks find or how they word it changes: results are worked out again
 
 # The box checks a threshold decides. ``QaResult`` keeps what they find at ``DEFAULTS`` (boards, labeling sets,
 # the review record); ``QaScore`` keeps each image's value from the ``LOOSE`` bound up, so 검수 counts at any
 # threshold it asks for (within ``BOUNDS``) and shows the counts at ``LEVELS`` beside.
-DEFAULTS: dict[str, float] = {"duplicate": 0.95, "class_overlap": 0.85, "tiny": 3, "huge": 0.98}
+DEFAULTS: dict[str, float] = {"duplicate": 0.95, "class_overlap": 0.95, "tiny": 3, "huge": 0.98}
 LOOSE: dict[str, float] = {"duplicate": 0.5, "class_overlap": 0.5, "tiny": 16, "huge": 0.8}
 BOUNDS: dict[str, tuple[float, float]] = {
     "duplicate": (0.5, 0.99),

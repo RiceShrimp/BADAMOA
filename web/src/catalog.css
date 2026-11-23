@@ -1742,24 +1742,7 @@ select.active-select {
 }
 
 
-/* 검수 → 모델 기준: a model check's thresholds (FiftyOne's to begin with) and the counts at every level */
-.thresholds {
-  margin-top: 8px;
-}
-.thresholds-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 16px;
-}
-.thresholds-bar label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.threshold-conf input[type="range"] {
-  width: 160px;
-}
+/* 검수: a threshold dialog's counts at every level (a box check's, the model's confidence) */
 .threshold-levels {
   margin-top: 8px;
   border-collapse: collapse;
@@ -1825,4 +1808,15 @@ select.active-select {
 }
 .rule-threshold input[type="range"] {
   flex: 1 1 auto;
+}
+.rule-threshold strong {
+  white-space: nowrap;
+}
+
+/* the pager under an image list (데이터셋 · 검수); the one above is brought back below the sticky top bar */
+.pager.pager-bottom {
+  margin: 16px 0 4px;
+}
+.pager {
+  scroll-margin-top: 72px;
 }

@@ -1,5 +1,5 @@
 import { ReviewRecordCard } from "./ReviewRecord";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   FOLDER_HINT,
   FolderPicker,
@@ -16,6 +16,7 @@ import { ChangeSummary, DraftActions, DraftLine, DraftNotice } from "./DraftBar"
 import { CHANGE_LABEL } from "./labelDiff";
 import { ItemViewer } from "./ItemViewer";
 import { NewSetDialog } from "./Labeling";
+import { Pager, usePaging } from "./Pager";
 import { Fingerprint, ReleaseCopies } from "./NodeCopies";
 import { ExportDialog, type ItemFilter, NewReleaseDialog, describeFilter } from "./ReleaseMaker";
 import { ChartsTab, ClassesTab, ModelsTab, ReleasesTab, colorFor } from "./ReleaseTabs";
@@ -42,47 +43,6 @@ import {
   runName,
 } from "./catalogTypes";
 import { Badge, Icon, Modal, Stat, timeAgo, usePolling } from "./ui";
-
-const PAGE_SIZES = [30, 60, 100, 200]; // the Hub sends at most 200 at a time
-const PAGE_SIZE_KEY = "badamoa.pageSize";
-
-function rememberedPageSize(): number {
-  try {
-    const n = Number(localStorage.getItem(PAGE_SIZE_KEY));
-    return PAGE_SIZES.includes(n) ? n : 60;
-  } catch {
-    return 60;
-  }
-}
-
-/** The page number typed in: Enter or leaving the box goes there (kept within 1 … pages). */
-function PageJump({ page, pages, onGo }: { page: number; pages: number; onGo: (page: number) => void }) {
-  const [typed, setTyped] = useState(String(page + 1));
-  useEffect(() => setTyped(String(page + 1)), [page]);
-  const go = () => {
-    const n = Math.round(Number(typed));
-    if (!Number.isFinite(n) || typed.trim() === "") return setTyped(String(page + 1));
-    const target = Math.min(pages, Math.max(1, n)) - 1;
-    setTyped(String(target + 1));
-    if (target !== page) onGo(target);
-  };
-  return (
-    <span className="page-jump">
-      <input
-        type="number"
-        min={1}
-        max={pages}
-        value={typed}
-        onChange={(e) => setTyped(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && go()}
-        onBlur={go}
-        aria-label="페이지 번호"
-        style={{ width: `${Math.max(5, String(pages).length + 3)}ch` }}
-      />
-      <span className="num">/ {pages.toLocaleString()}</span>
-    </span>
-  );
-}
 
 /**
  * The data screens: projects as cards (``#/datasets``), a project's datasets as cards
@@ -211,17 +171,8 @@ function ReleaseView({
   const [fixedOnly, setFixedOnly] = useState(false); // only the images the work in progress changed
   const [changeKind, setChangeKind] = useState<ChangeKind | "">(""); // and only those changed this way
   const [suspect, setSuspect] = useState(""); // an evaluation: its images, likely wrong labels first
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSizeState] = useState(rememberedPageSize);
-  const setPageSize = (n: number) => {
-    setPage(Math.floor((page * pageSize) / n)); // stay near the images being looked at
-    setPageSizeState(n);
-    try {
-      localStorage.setItem(PAGE_SIZE_KEY, String(n));
-    } catch {
-      /* not remembered */
-    }
-  };
+  const { page, setPage, pageSize, setPageSize } = usePaging();
+  const listTop = useRef<HTMLDivElement>(null); // the pager above the images: the one under them brings it back
   const [viewing, setViewing] = useState<number | null>(null);
   const [compareWith, setCompareWith] = useState("");
   const [making, setMaking] = useState<"" | "items" | "classes">("");
@@ -561,28 +512,7 @@ function ReleaseView({
           열면 예측을 겹쳐 보고 라벨로 넣을 수 있습니다.
         </div>
       )}
-      <div className="pager">
-        <button onClick={() => setPage(0)} disabled={page === 0} aria-label="첫 페이지">
-          «
-        </button>
-        <button onClick={() => setPage(page - 1)} disabled={page === 0} aria-label="이전 페이지">
-          ‹
-        </button>
-        <PageJump page={page} pages={pages} onGo={setPage} />
-        <button onClick={() => setPage(page + 1)} disabled={page >= pages - 1} aria-label="다음 페이지">
-          ›
-        </button>
-        <button onClick={() => setPage(pages - 1)} disabled={page >= pages - 1} aria-label="마지막 페이지">
-          »
-        </button>
-        <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} aria-label="한 페이지에 보일 수">
-          {PAGE_SIZES.map((n) => (
-            <option key={n} value={n}>
-              {n}개씩
-            </option>
-          ))}
-        </select>
-      </div>
+      <Pager page={page} pages={pages} onGo={setPage} pageSize={pageSize} onPageSize={setPageSize} innerRef={listTop} />
 
       {items && items.items.length === 0 && <div className="card empty">조건에 맞는 항목이 없습니다.</div>}
       {view === "list" ? (
@@ -658,7 +588,7 @@ function ReleaseView({
               {item.check && item.check.missed + item.check.extra + (item.check.reclass ?? 0) > 0 && (
                 <span
                   className="check-mark"
-                  title={`모델이 못 찾은 라벨 ${item.check.missed} · 라벨에 없는 물체 ${item.check.extra} · 클래스 다름 ${item.check.reclass ?? 0} (FiftyOne 방식, 평가한 버전의 라벨 기준)`}
+                  title={`모델이 못 찾은 라벨 ${item.check.missed} · 라벨에 없는 물체 ${item.check.extra} · 클래스 다름 ${item.check.reclass ?? 0} (평가한 버전의 라벨 기준)`}
                 >
                   {[
                     item.check.missed > 0 && `놓침 ${item.check.missed}`,
@@ -687,6 +617,9 @@ function ReleaseView({
           </button>
         ))}
       </div>
+      )}
+      {pages > 1 && (items?.items.length ?? 0) > 0 && (
+        <Pager page={page} pages={pages} onGo={setPage} pageSize={pageSize} onPageSize={setPageSize} bottom top={listTop} />
       )}
         </>
       )}
@@ -1010,6 +943,8 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
     unlabelled: "auto", // an image without a label file: auto | background | unlabelled
     classes: "", // class names for a folder of images to label, "car, person"
   });
+  // read every file, even those the project holds unchanged (same path, size and modification time)
+  const [fullRead, setFullRead] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
   const [lastLog, setLastLog] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1076,7 +1011,7 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
         .split(/[,\n]/)
         .map((c) => c.trim())
         .filter(Boolean);
-      setJob(await api<Job>(`/projects/${projectId}/imports`, { body: { ...form, classes, task } }));
+      setJob(await api<Job>(`/projects/${projectId}/imports`, { body: { ...form, classes, task, full_read: fullRead } }));
       announceImport();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1265,6 +1200,19 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
             메모 (선택)
             <input value={form.note} onChange={set("note")} placeholder="이 버전에서 달라진 점" />
           </label>
+          {live.length > 0 && (
+            <div className="full-read">
+              <label className="check inline-check">
+                <input type="checkbox" checked={fullRead} onChange={(e) => setFullRead(e.target.checked)} />
+                바뀌지 않은 파일도 모두 다시 읽기
+              </label>
+              <p className="muted small">
+                {fullRead
+                  ? "폴더의 이미지를 전부 다시 읽습니다. 파일 내용이 바뀌었는데 수정 시각이 그대로일 때만 필요합니다."
+                  : "이 프로젝트에 예전에 등록한 것과 경로 · 크기 · 수정 시각이 같은 이미지는 다시 읽지 않습니다(라벨은 새로 읽음). 복사한 폴더도 rsync -a, cp -p처럼 시각을 지켜 복사했으면 해당됩니다."}
+              </p>
+            </div>
+          )}
           {error && <div className="error">{error}</div>}
           <div className="modal-actions">
             <button type="button" onClick={onClose}>

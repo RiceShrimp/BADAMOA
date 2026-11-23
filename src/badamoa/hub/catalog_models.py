@@ -81,7 +81,11 @@ class Batch(Base):
 
 class Item(Base):
     __tablename__ = "items"
-    __table_args__ = (UniqueConstraint("project_id", "sha256"), Index("ix_items_project_name", "project_id", "file_name"))
+    __table_args__ = (
+        UniqueConstraint("project_id", "sha256"),
+        Index("ix_items_project_name", "project_id", "file_name"),
+        Index("ix_items_project_path", "project_id", "rel_path"),  # a later import finds unchanged files by path
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -94,6 +98,9 @@ class Item(Base):
     camera: Mapped[str] = mapped_column(String(64), default="")
     location_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     rel_path: Mapped[str] = mapped_column(String(1024), default="")
+    # the file's modification time when registered (ns; 0 not known): with the path and size, a later import of a
+    # copy (rsync -a, cp -p) or the same folder knows the file unchanged and does not read it again
+    mtime_ns: Mapped[int] = mapped_column(Integer, default=0)
     thumb_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The thumbnail's size on the Hub: 0 not known yet (filled in the background), -1 the file is gone
     thumb_bytes: Mapped[int] = mapped_column(Integer, default=0)

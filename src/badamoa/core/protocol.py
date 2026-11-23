@@ -114,6 +114,14 @@ class ImportItem(BaseModel):
     # [class_id, cx, cy, w, h] normalised to 0..1 (YOLO convention)
     boxes: list[list[float]] = Field(default_factory=list)
     thumb_b64: str | None = None
+    mtime_ns: int = 0  # the file's modification time (0: not known), to know it unchanged on a later import
+
+
+class ImportSame(BaseModel):
+    """Files of an import's folder ([path in the folder, size, modification time ns]): which the project holds
+    unchanged already."""
+
+    files: list[list[Any]] = Field(default_factory=list)
 
 
 class ImportChunk(BaseModel):
@@ -122,8 +130,9 @@ class ImportChunk(BaseModel):
 
 
 class ImportProgress(BaseModel):
-    """How far an import got before its version exists: "find" (images found so far) or "labels" (label files
-    read of ``total``). Reading and sending the images (the third step) the Hub counts from what it is sent."""
+    """How far an import got before its version exists: "find" (images found so far), "labels" (label files
+    read of ``total``) or "same" (files looked up of ``total``: which the project holds unchanged). Reading and
+    sending the images (the last step) the Hub counts from what it is sent."""
 
     step: str = Field(max_length=20)
     done: int = 0

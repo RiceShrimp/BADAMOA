@@ -10,6 +10,10 @@ every call per file is a round trip. Folders are listed with ``os.scandir`` (the
 file type comes with the listing, so no call per image), label files are read
 many at a time, and how far each step got goes to the Hub as it goes:
 finding the images, reading their labels, then reading and sending the images.
+
+A file the project holds already — the same path in the folder, size and modification time as when an earlier
+import read it (a new version copied with ``rsync -a`` or ``cp -p``, the same folder again) — is not read again:
+the Hub says which, and only its labels are taken anew. ``full_read`` reads every file all the same.
 """
 
 from __future__ import annotations
@@ -37,14 +41,30 @@ from badamoa.core import tasks as task_names
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SPLIT_ALIASES = {"train": "train", "val": "val", "valid": "val", "validation": "val", "test": "test"}
 CHUNK = 200
-WORKERS = min(16, os.cpu_count() or 4)  # images read at once: decoding and hashing let go of the GIL
+
+
+def _workers() -> int:
+    """Images read at once. On a network folder each read mostly waits on its round trip, so many more than the
+    cores (decoding and hashing let go of the GIL); BADAMOA_IMPORT_READERS sets it on a node."""
+    try:
+        wanted = int(os.environ.get("BADAMOA_IMPORT_READERS") or 0)
+    except ValueError:
+        wanted = 0
+    if wanted > 0:
+        return min(wanted, 256)
+    return min(64, max(16, (os.cpu_count() or 4) * 2))
+
+
+WORKERS = _workers()
 REPORT_EVERY_S = 5.0
 # The thumbnail kept on the Hub for each image (a preview in lists; opening an image reads the original):
 # 256 px WebP at quality 60 since 0.61.0, about 4 KB (320 px JPEG at 75 before, about 11 KB)
 THUMB_SIDE = 256
 THUMB_QUALITY = 60
-# Label files read at once: each is a small read, so on a network folder the round trip is most of the time.
-LABEL_READERS = 32
+# Label files read (and files looked at) at once: each is a small read, so on a network folder the round trip is
+# most of the time.
+LABEL_READERS = 64
+SAME_PAGE = 2000  # files the Hub is asked about at once: which it holds unchanged
 PROGRESS_EVERY_S = 2.0  # how often the Hub hears how far finding images and reading labels got
 LOG_EVERY_S = 30.0  # and the job's log
 
@@ -507,7 +527,9 @@ def describe(entry: Entry, root: Path) -> dict[str, Any] | None:
     from PIL import Image, UnidentifiedImageError
 
     try:
-        raw = entry.path.read_bytes()
+        with open(entry.path, "rb") as f:  # its time from the open file: no second round trip on a network folder
+            mtime_ns = os.fstat(f.fileno()).st_mtime_ns
+            raw = f.read()
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
             # JPEG: decode at 1/2 … 1/8 scale straight away, enough for a thumbnail and many times faster
@@ -532,13 +554,43 @@ def describe(entry: Entry, root: Path) -> dict[str, Any] | None:
         "state": entry.state,
         "boxes": entry.boxes,
         "thumb_b64": base64.b64encode(out.getvalue()).decode(),
+        "mtime_ns": mtime_ns,
     }
 
 
-def chunks(scan_result: Scan, root: Path, workers: int = WORKERS) -> Iterator[tuple[list[dict[str, Any]], int]]:
-    """Yield (items, skipped) batches of CHUNK described images, read ``workers`` at a time, in order."""
+def as_registered(entry: Entry, rel: str, known: dict[str, Any]) -> dict[str, Any]:
+    """A file the project holds unchanged, described from what the Hub has (no read): its labels are this scan's."""
+    return {
+        "sha256": known["sha256"],
+        "file_name": entry.path.name,
+        "rel_path": rel,
+        "width": known["width"],
+        "height": known["height"],
+        "bytes": known["bytes"],
+        "split": entry.split,
+        "state": entry.state,
+        "boxes": entry.boxes,
+        "thumb_b64": None,  # the Hub has its thumbnail
+        "mtime_ns": known["mtime_ns"],
+    }
+
+
+def chunks(
+    scan_result: Scan, root: Path, workers: int = WORKERS, unchanged: dict[str, dict[str, Any]] | None = None
+) -> Iterator[tuple[list[dict[str, Any]], int]]:
+    """Yield (items, skipped) batches of CHUNK described images, read ``workers`` at a time, in order. Files in
+    ``unchanged`` ({path in the folder: what the Hub has}) are not read."""
+    same = unchanged or {}
+
+    def read(entry: Entry) -> dict[str, Any] | None:
+        if same:
+            rel = _relative(entry.path, root)
+            if rel in same:
+                return as_registered(entry, rel, same[rel])
+        return describe(entry, root)
+
     with ThreadPoolExecutor(max(1, workers)) as pool:
-        yield from _batches(_ordered(pool, lambda entry: describe(entry, root), scan_result.entries, workers * 4))
+        yield from _batches(_ordered(pool, read, scan_result.entries, workers * 4))
 
 
 def _ordered(pool: ThreadPoolExecutor, fn: Any, items: list[Any], ahead: int) -> Iterator[Any]:
@@ -572,7 +624,11 @@ class Progress:
 
     Reading and sending the images needs none of this: the Hub counts what it is sent."""
 
-    WORDS = {"find": "이미지 찾는 중: {done:,}장", "labels": "라벨 읽는 중: {done:,} / {total:,}"}
+    WORDS = {
+        "find": "이미지 찾는 중: {done:,}장",
+        "labels": "라벨 읽는 중: {done:,} / {total:,}",
+        "same": "바뀌지 않은 파일 찾는 중: {done:,} / {total:,}",
+    }
 
     def __init__(self, client: httpx.Client, url: str) -> None:
         self.client, self.url = client, url
@@ -598,6 +654,45 @@ def _relative(path: Path, root: Path) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _stat(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
+def _unchanged(
+    client: httpx.Client, base: str, entries: list[Entry], root: Path, report: Report = _quiet
+) -> dict[str, dict[str, Any]]:
+    """The files the project holds unchanged — the same path in the folder, size and modification time as when an
+    earlier import read them: {path: what the Hub has}. Empty when it can hold none (nothing registered with its
+    time yet, "모든 파일 다시 읽기", or a Hub older than this): then every file is read."""
+    try:
+        first = client.post(base + "/same", json={"files": []})
+    except httpx.HTTPError:
+        return {}
+    if first.status_code != 200 or not first.json().get("may_know"):
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(LABEL_READERS) as pool:
+        for start in range(0, len(entries), SAME_PAGE):
+            page = entries[start : start + SAME_PAGE]
+            files: dict[str, tuple[int, int]] = {}
+            for entry, st in zip(page, pool.map(lambda e: _stat(e.path), page), strict=True):
+                if st is not None:
+                    files[_relative(entry.path, root)] = st
+            resp = client.post(base + "/same", json={"files": [[rel, size, t] for rel, (size, t) in files.items()]})
+            if resp.status_code != 200:
+                raise RuntimeError(f"바뀌지 않은 파일을 묻지 못했습니다 ({resp.status_code}): {resp.text[:200]}")
+            for rel, (sha, width, height) in (resp.json().get("found") or {}).items():
+                if rel in files:
+                    size, t = files[rel]
+                    found[rel] = {"sha256": sha, "width": width, "height": height, "bytes": size, "mtime_ns": t}
+            report("same", start + len(page), len(entries))
+    return found
 
 
 def _known_paths(client: httpx.Client, base: str) -> set[str]:
@@ -644,6 +739,19 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             print(f"라벨 파일이 없는 이미지 {waiting:,}장은 '아직 라벨 안 함'으로 등록합니다.")
         if total == 0:
             raise RuntimeError("이미지를 찾지 못했습니다. 경로와 형식을 확인하세요.")
+        # Files the project holds unchanged are not read again (before the version exists: its own step)
+        unchanged: dict[str, dict[str, Any]] = {}
+        if params.get("full_read"):
+            print("모든 파일을 다시 읽습니다 (바뀌지 않은 파일도).", flush=True)
+        else:
+            looked = time.monotonic()
+            unchanged = _unchanged(client, base, found.entries, root, report)
+            if unchanged:
+                print(
+                    f"바뀌지 않은 파일 {len(unchanged):,}장은 다시 읽지 않습니다"
+                    f" (예전에 등록한 것과 경로 · 크기 · 수정 시각이 같음, 확인 {time.monotonic() - looked:,.0f}초).",
+                    flush=True,
+                )
 
         def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
             resp = client.post(base + path, json=body)
@@ -704,8 +812,11 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
 
         sender = threading.Thread(target=send, name="import-send", daemon=True)
         sender.start()
-        print(f"이미지 {WORKERS}장씩 동시에 읽습니다.", flush=True)
-        for piece in chunks(found, root):
+        to_read = len(found.entries)
+        if unchanged:
+            to_read -= sum(1 for e in found.entries if _relative(e.path, root) in unchanged)
+        print(f"이미지 {to_read:,}장을 {WORKERS}장씩 동시에 읽습니다.", flush=True)
+        for piece in chunks(found, root, unchanged=unchanged):
             if failure:
                 break
             outbox.put(piece)
@@ -719,4 +830,4 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
     if skipped:
         print(f"읽을 수 없는 파일 {skipped}개는 건너뛰었습니다.")
     print(f"완료: 버전 {result.get('version')} · 항목 {result.get('items'):,}개")
-    return {**result, "skipped": skipped, "format": found.format}
+    return {**result, "skipped": skipped, "format": found.format, "unchanged": len(unchanged)}

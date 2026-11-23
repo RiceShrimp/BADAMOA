@@ -6,6 +6,7 @@ import { PlacePicker, placeReady, usePlaces } from "./ModelOps";
 import type { ItemFilter } from "./ReleaseMaker";
 import { NewSetDialog } from "./Labeling";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
+import { Pager, usePaging } from "./Pager";
 import { useProject } from "./ProjectPicker";
 import { colorFor } from "./ReleaseTabs";
 import { api } from "./api";
@@ -41,14 +42,11 @@ interface Rule {
   levels?: [number, number][];
 }
 
-/** How 검수 counts a model check (FiftyOne's way): how sure the model must be, how big a label must be. */
+/** How 검수 counts a model check (FiftyOne's way): how sure the model must be of what it finds. */
 interface ModelRule {
   conf: number;
-  min_area: number; // a share of the image
-  defaults: { conf: number; min_area: number }; // FiftyOne's
+  defaults: { conf: number }; // FiftyOne's
 }
-
-type Limits = { conf: number; min_area: number };
 
 type Mistake = "extra" | "missed" | "reclass";
 
@@ -130,7 +128,6 @@ const MODEL: Record<Mistake, { group: Rule["group"]; title: string; hint: string
   reclass: { group: "wrong", title: "클래스가 다를 수 있는 라벨", hint: "같은 자리에서 모델은 다른 클래스라고 확신함" },
   missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "어떤 예측도 닿지 않은 라벨: 없는 물체를 그렸을 수 있음" },
 };
-const PAGE = 60;
 
 /** A dataset's newest labels as 검수's screens show them. */
 interface ReviewCard {
@@ -489,8 +486,9 @@ function ReviewPage({ releaseId }: { releaseId: string }) {
 function ReviewRelease({ releaseId }: { releaseId: string }) {
   const { data: release } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 0, [releaseId]);
   const [watching, setWatching] = useState(false); // an evaluation is going: look again until it ends
-  // a model check's thresholds: FiftyOne's until moved here (then the counts, the images and the frames follow)
-  const [limits, setLimits] = useState<Limits | null>(null);
+  // how sure the model must be: FiftyOne's until moved from a model card's gear (the counts, images, frames follow)
+  const [conf, setConf] = useState<number | null>(null);
+  const [confTuning, setConfTuning] = useState(false);
   // the box checks' thresholds moved here (the rest at their defaults): duplicate:0.9,tiny:5
   const [ruleLimits, setRuleLimits] = useState<Record<string, number>>({});
   const rulesParam = Object.entries(ruleLimits)
@@ -498,10 +496,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     .join(",");
   const limitQuery = (() => {
     const params = new URLSearchParams();
-    if (limits) {
-      params.set("conf", String(limits.conf));
-      params.set("min_area", String(limits.min_area));
-    }
+    if (conf != null) params.set("conf", String(conf));
     if (rulesParam) params.set("rules", rulesParam);
     const text = params.toString();
     return text ? `?${text}` : "";
@@ -544,7 +539,8 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     });
   }, [started, summary]);
   const [pick, setPick] = useState<Pick | null>(null);
-  const [page, setPage] = useState(0);
+  const { page, setPage, pageSize, setPageSize } = usePaging();
+  const listTop = useRef<HTMLDivElement>(null); // the pager above the images: the one under them brings it back
   const [viewing, setViewing] = useState<number | null>(null);
   const [making, setMaking] = useState(false);
   useEffect(() => {
@@ -573,22 +569,19 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     else if (op) {
       params.set("suspect", op);
       params.set("mistake", pick.mistake);
-      if (limits) {
-        params.set("conf", String(limits.conf));
-        params.set("min_area", String(limits.min_area));
-      }
+      if (conf != null) params.set("conf", String(conf));
     }
     if (showLetBe) params.set("let_be", "true");
     for (const [key, value] of Object.entries(filter)) {
       if (value) params.set(key, key === "split" && value === "none" ? "" : value);
     }
     return params.toString();
-  }, [pick, op, showLetBe, filter, limits, ruleLimits]);
+  }, [pick, op, showLetBe, filter, conf, ruleLimits]);
   useEffect(() => setPage(0), [query]);
   const { data: items, refresh: refreshItems } = usePolling(
-    () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * PAGE}&limit=${PAGE}`) : Promise.resolve(null)),
+    () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * pageSize}&limit=${pageSize}`) : Promise.resolve(null)),
     0,
-    [releaseId, query, page],
+    [releaseId, query, page, pageSize],
   );
 
   if (error && !summary) return <div className="error">{error}</div>;
@@ -602,7 +595,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   // what someone judged right for the check in view: listed apart
   const letBeCount = rule ? rule.let_be : pick?.kind === "model" && evaluation ? evaluation[`${pick.mistake}_let_be`] : 0;
   const total = items?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / PAGE));
+  const pages = Math.max(1, Math.ceil(total / pageSize));
   const card = (key: string, name: string, hint: string, count: number, active: boolean, onClick: () => void) => (
     <button key={key} className={`check-card ${active ? "active" : ""} ${count ? "" : "zero"}`} onClick={onClick} title={hint}>
       <span className="check-count">{count.toLocaleString()}</span>
@@ -615,6 +608,26 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const modelCard = (m: Mistake) => {
     const count = evaluation ? evaluation[m] : null;
     const active = pick?.kind === "model" && pick.mistake === m;
+    const rule = summary.rule;
+    if (count != null && rule && m !== "missed") {
+      const moved = rule.conf !== rule.defaults.conf;
+      return (
+        <div key={m} className="check-card-wrap">
+          {modelButton(m, count, active)}
+          <button
+            className={`icon-btn card-gear ${moved ? "moved" : ""}`}
+            onClick={() => setConfTuning(true)}
+            title={`확신도 설정 (지금 ${rule.conf} 초과${moved ? ` · 기본 ${rule.defaults.conf}` : ""})`}
+            aria-label={`${MODEL[m].title} 확신도 설정`}
+          >
+            <Icon name="settings" size={14} />
+          </button>
+        </div>
+      );
+    }
+    return modelButton(m, count, active);
+  };
+  const modelButton = (m: Mistake, count: number | null, active: boolean) => {
     return (
       <button
         key={m}
@@ -699,15 +712,6 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
           </div>
         ))}
         {failed && <div className="error small">{failed}</div>}
-        {summary.rule && (
-          <Thresholds
-            rule={summary.rule}
-            evaluation={evaluation}
-            onChange={(next) =>
-              setLimits(next && (next.conf !== summary.rule?.defaults.conf || next.min_area !== summary.rule?.defaults.min_area) ? next : null)
-            }
-          />
-        )}
         <CheckHistory releaseId={releaseId} nudge={summary} />
       </section>
       <div className="check-groups" style={{ gridTemplateRows: `auto repeat(${slots}, auto)` }}>
@@ -774,23 +778,13 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               </label>
             )}
           </div>
-          {pages > 1 && (
-            <div className="pager">
-              <button onClick={() => setPage(page - 1)} disabled={page === 0} aria-label="이전 페이지">
-                ‹
-              </button>
-              <span className="num">
-                {page + 1} / {pages}
-              </span>
-              <button onClick={() => setPage(page + 1)} disabled={page >= pages - 1} aria-label="다음 페이지">
-                ›
-              </button>
-            </div>
+          {total > 0 && (
+            <Pager page={page} pages={pages} onGo={setPage} pageSize={pageSize} onPageSize={setPageSize} innerRef={listTop} />
           )}
           {items && items.items.length === 0 && <div className="card empty">찾은 이미지가 없습니다.</div>}
           <div className="thumb-grid medium">
             {items?.items.map((item, i) => (
-              <button key={item.id} className="thumb" onClick={() => setViewing(page * PAGE + i)}>
+              <button key={item.id} className="thumb" onClick={() => setViewing(page * pageSize + i)}>
                 <span className="thumb-image">
                   {item.thumb_url ? (
                     <Shot
@@ -822,6 +816,9 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               </button>
             ))}
           </div>
+          {pages > 1 && (items?.items.length ?? 0) > 0 && (
+            <Pager page={page} pages={pages} onGo={setPage} pageSize={pageSize} onPageSize={setPageSize} bottom top={listTop} />
+          )}
         </section>
       )}
 
@@ -863,6 +860,14 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
             />
           ) : null;
         })()}
+      {confTuning && summary.rule && evaluation && (
+        <ConfThreshold
+          rule={summary.rule}
+          evaluation={evaluation}
+          onChange={(value) => setConf(value == null || value === summary.rule?.defaults.conf ? null : value)}
+          onClose={() => setConfTuning(false)}
+        />
+      )}
       {choosing && (
         <CheckWithModel
           release={release}
@@ -1012,12 +1017,6 @@ function ClassFilter({
   );
 }
 
-/** A model by name and version, with its task and aliases; a link to it. */
-/**
- * How the model's view is counted (FiftyOne's compute_mistakenness): an unlabelled object or another class only
- * when the model is surer than ``conf``; a label only when no prediction touches it and it is ``min_area`` of the
- * image or more. An admin changes them here; every evaluation is counted again.
- */
 /** How a box check's threshold reads: IoU as is, pixels, a share of the image as a percentage. */
 function thresholdText(check: string, value: number): string {
   if (check === "tiny") return `${value}px`;
@@ -1098,106 +1097,88 @@ function RuleThreshold({ rule, onChange, onClose }: { rule: Rule; onChange: (val
   );
 }
 
-const LEVEL_ROWS: { kind: Mistake; title: string; by: "conf" | "min_area" }[] = [
-  { kind: "extra", title: "라벨에 없는 물체", by: "conf" },
-  { kind: "reclass", title: "클래스가 다를 수 있는 라벨", by: "conf" },
-  { kind: "missed", title: "모델이 못 찾은 라벨", by: "min_area" },
+const CONF_ROWS: { kind: Mistake; title: string }[] = [
+  { kind: "extra", title: "라벨에 없는 물체" },
+  { kind: "reclass", title: "클래스가 다를 수 있는 라벨" },
 ];
 
-const pct = (share: number) => `${+(share * 100).toFixed(2)}%`;
-
 /**
- * A model check's thresholds, FiftyOne's to begin with: how sure the model must be (over ``conf``) of an object no
- * label has or of another class, and how big a label nothing touches must be (``min_area`` of the image). Moving
- * them counts again on the spot — the cards, the images and their frames — and the counts at every level are laid
- * out beside, so what a threshold changes is seen before choosing it (a level is clicked to take it).
+ * How sure the model must be (over ``conf``) of an object no label has or of another class, set from those two
+ * cards' gear: one value for both. Moving it counts again on the spot — the cards, the images and their frames — and
+ * the counts at every level are laid out, so what it changes is seen before choosing it (a level is clicked to take
+ * it). It lasts while this version is open here.
  */
-function Thresholds({
+function ConfThreshold({
   rule,
   evaluation,
   onChange,
+  onClose,
 }: {
   rule: ModelRule;
-  evaluation: Summary["evaluations"][number] | undefined;
-  onChange: (limits: Limits | null) => void;
+  evaluation: Summary["evaluations"][number];
+  onChange: (conf: number | null) => void;
+  onClose: () => void;
 }) {
-  const [conf, setConf] = useState(rule.conf);
-  useEffect(() => setConf(rule.conf), [rule.conf]);
+  const [value, setValue] = useState(rule.conf);
   // the slider moves freely; the count follows once it rests
   useEffect(() => {
-    if (conf === rule.conf) return;
-    const timer = window.setTimeout(() => onChange({ conf, min_area: rule.min_area }), 300);
+    if (value === rule.conf) return;
+    const timer = window.setTimeout(() => onChange(value), 300);
     return () => window.clearTimeout(timer);
-  }, [conf]);
-  const fiftyone = rule.conf === rule.defaults.conf && rule.min_area === rule.defaults.min_area;
-  const areas = evaluation?.levels.missed.map(([v]) => v) ?? [0, 0.0005, 0.001, 0.005, 0.01, 0.02];
+  }, [value]);
   return (
-    <div className="thresholds">
-      <div className="thresholds-bar small">
-        <span className="muted" title="FiftyOne(compute_mistakenness)처럼 상자끼리 클래스와 상관없이 IoU 0.5로 짝짓고, 모델이 확신하는 것만 셉니다">
-          세는 법: FiftyOne 방식{fiftyone ? " · 기본값" : ""}
-        </span>
-        <label className="threshold-conf">
-          확신도 초과
-          <input type="range" min={0.25} max={0.99} step={0.01} value={conf} onChange={(e) => setConf(Number(e.target.value))} />
-          <strong className="num">{conf.toFixed(2)}</strong>
-        </label>
-        <label>
-          못 찾은 라벨 최소 크기
-          <select value={rule.min_area} onChange={(e) => onChange({ conf: rule.conf, min_area: Number(e.target.value) })}>
-            {areas.map((v) => (
-              <option key={v} value={v}>
-                이미지의 {pct(v)}
-                {v === rule.defaults.min_area ? " (기본)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!fiftyone && (
-          <button className="link small" onClick={() => onChange(null)} title={`확신도 ${rule.defaults.conf} · 최소 크기 ${pct(rule.defaults.min_area)}`}>
-            FiftyOne 기본값으로
+    <Modal title="모델 확신도 · 임계값" onClose={onClose}>
+      <p className="muted small">
+        모델이 이 값보다 확신한 것만 셉니다. <b>라벨에 없는 물체</b>와 <b>클래스가 다를 수 있는 라벨</b>에 함께 쓰입니다. 바꾸면 카드 · 이미지 목록 ·
+        노란 테두리가 바로 이 값으로 다시 셉니다(이 화면에서만).
+      </p>
+      <label className="rule-threshold">
+        <input
+          type="range"
+          min={0.25}
+          max={0.99}
+          step={0.01}
+          value={value}
+          onChange={(e) => setValue(Number(e.target.value))}
+          aria-label="모델 확신도 임계값"
+        />
+        <strong className="num">{value.toFixed(2)} 초과</strong>
+      </label>
+      <table className="threshold-levels small">
+        <tbody>
+          {CONF_ROWS.map((row) => (
+            <tr key={row.kind}>
+              <th>{row.title}</th>
+              {evaluation.levels[row.kind].map(([level, count]) => (
+                <td key={level}>
+                  <button className={`level ${level === rule.conf ? "on" : ""}`} onClick={() => setValue(level)} title={`확신도 ${level} 초과로 세기`}>
+                    <span className="muted">{level.toFixed(2)}</span>
+                    <strong className="num">{count.toLocaleString()}</strong>
+                  </button>
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="modal-actions">
+        {rule.conf !== rule.defaults.conf && (
+          <button
+            type="button"
+            className="push-left"
+            onClick={() => {
+              setValue(rule.defaults.conf);
+              onChange(null);
+            }}
+          >
+            기본값으로 ({rule.defaults.conf})
           </button>
         )}
+        <button type="button" className="primary" onClick={onClose}>
+          닫기
+        </button>
       </div>
-      {evaluation && (
-        <table className="threshold-levels small">
-          <thead>
-            <tr>
-              <th>임계값에 따라</th>
-              <th colSpan={evaluation.levels.extra.length} className="muted">
-                확신도 초과 · 최소 크기 별 이미지 수 (누르면 그 값으로)
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {LEVEL_ROWS.map((row) => (
-              <tr key={row.kind}>
-                <th>{row.title}</th>
-                {evaluation.levels[row.kind].map(([value, count]) => {
-                  const current = row.by === "conf" ? value === rule.conf : value === rule.min_area;
-                  return (
-                    <td key={value}>
-                      <button
-                        className={`level ${current ? "on" : ""}`}
-                        onClick={() =>
-                          row.by === "conf"
-                            ? onChange({ conf: value, min_area: rule.min_area })
-                            : onChange({ conf: rule.conf, min_area: value })
-                        }
-                        title={row.by === "conf" ? `확신도 ${value} 초과로 세기` : `이미지의 ${pct(value)} 이상인 라벨만 세기`}
-                      >
-                        <span className="muted">{row.by === "conf" ? value.toFixed(2) : pct(value)}</span>
-                        <strong className="num">{count.toLocaleString()}</strong>
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
+    </Modal>
   );
 }
 

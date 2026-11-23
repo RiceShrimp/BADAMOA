@@ -11,12 +11,13 @@ export interface ImportInfo {
   version: string;
   release_id: string | null;
   node: string;
-  /** Of the step it is on: images found (find, no total), label files read (labels), images sent (read). */
+  /** Of the step it is on: images found (find, no total), label files read (labels), files looked up (same:
+   * which the project holds unchanged), images sent (read). */
   done: number;
   total: number;
   skipped: number;
   /** "" while waiting or once ended. */
-  step: "" | "find" | "labels" | "read";
+  step: "" | "find" | "labels" | "same" | "read";
   step_started_at: string | null;
   /** Of the images read and sent so far. */
   bytes: number;
@@ -125,13 +126,15 @@ function size(bytes: number): string {
   return gb >= 1 ? `${gb.toFixed(gb >= 100 ? 0 : 1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-const STEPS = { find: "이미지 찾는 중", labels: "라벨 읽는 중", read: "이미지 읽고 등록" } as const;
+const STEPS = { find: "이미지 찾는 중", labels: "라벨 읽는 중", same: "바뀌지 않은 파일 찾는 중", read: "이미지 읽고 등록" } as const;
+// "same" (only when the project may hold files of this folder unchanged) belongs to the third step: what to read
+const STEP_NO = { find: 1, labels: 2, same: 3, read: 3 } as const;
 
 /** What a running import is doing and how fast, e.g. 이미지 읽고 등록 (3/3) · 12,000 / 600,000장 · 2% · 15 GB 읽음 ·
  * 초당 34장 · 21 MB/s · 약 4.7시간 남음. */
 function runningWords(info: ImportInfo, pct: number): string {
   const step = info.step || (info.total > 0 ? "read" : "find");
-  const head = `${STEPS[step]} (${["find", "labels", "read"].indexOf(step) + 1}/3)`;
+  const head = `${STEPS[step]} (${STEP_NO[step]}/3)`;
   const speed = pace(info);
   if (step === "find") {
     const parts = [head];
@@ -153,7 +156,7 @@ function shortWords(info: ImportInfo): string {
   if (info.status === "queued") return "대기";
   if (info.step === "find" || (!info.step && !info.total)) return "찾는 중";
   const pct = info.total ? Math.floor((info.done / info.total) * 100) : 0;
-  return info.step === "labels" ? `라벨 ${pct}%` : `${pct}%`;
+  return info.step === "labels" ? `라벨 ${pct}%` : info.step === "same" ? `확인 ${pct}%` : `${pct}%`;
 }
 
 /** One import's bar and words: n / total, speed-based time left, or how it ended. */

@@ -535,9 +535,12 @@ def start_import(
     task: str = "",
     unlabelled: str = "auto",
     classes: list[str] | None = None,
+    full_read: bool = False,
     via: str = "api",
 ) -> Job:
-    """Import a node's folder as a dataset version. ``task``: Det/Seg/Kpt/Cls, a named task, or "" (from the data).
+    """Import a node's folder as a dataset version. ``full_read``: read every file, even those the project holds
+    unchanged (by default they are taken as registered: same path in the folder, size and modification time).
+    ``task``: Det/Seg/Kpt/Cls, a named task, or "" (from the data).
 
     ``unlabelled``: what an image without a label file is — "background", "unlabelled" (to be labelled), or
     "auto": not labelled yet when the folder has no label files at all, else background (the YOLO custom).
@@ -579,6 +582,7 @@ def start_import(
         "base_release_id": base_release_id,
         "unlabelled": unlabelled,
         "classes": list(dict.fromkeys(c.strip() for c in classes or [] if c.strip())),
+        "full_read": bool(full_read),
     }
     return services.create_job(db, user, "data.import", params, node_id, via=via)
 
@@ -621,7 +625,9 @@ def _space_for(db: Session, project_id: str, classes: list[dict[str, Any]], want
     return space
 
 
-IMPORT_STEPS = ("find", "labels", "read")  # finding images, reading their labels, reading and sending the images
+# finding images, reading their labels, looking up which files the project holds unchanged (only when it may),
+# reading and sending the images
+IMPORT_STEPS = ("find", "labels", "same", "read")
 
 
 def import_progress(db: Session, node: Node, job_id: str, body: ImportProgress) -> None:
@@ -733,6 +739,46 @@ def import_begin(
     db.add(release)
     db.flush()
     return {"release_id": release.id, **room}
+
+
+def _may_know(db: Session, job: Job) -> bool:
+    """Whether files of this import may be known unchanged: the project holds files whose modification time is
+    known, and the import was not asked to read every file."""
+    if (job.params or {}).get("full_read"):
+        return False
+    project_id = (job.params or {}).get("project_id")
+    return db.scalar(select(Item.id).where(Item.project_id == project_id, Item.mtime_ns > 0).limit(1)) is not None
+
+
+def import_same(db: Session, node: Node, job_id: str, files: list[list[Any]]) -> dict[str, Any]:
+    """The files of an import's folder the project holds unchanged — the same path in the folder, size and
+    modification time as when an earlier import registered them (a new version copied with ``rsync -a`` or
+    ``cp -p``, the same folder again): {"found": {path: [sha256, width, height]}, "may_know": …}. The node takes
+    these as they are instead of reading them again; their labels it reads anew. It asks first with no files: on
+    "may_know" false (a project new to this, or "모든 파일 다시 읽기") it reads every file without looking them up."""
+    job = _import_job(db, node, job_id)
+    if not _may_know(db, job):
+        return {"found": {}, "may_know": False}
+    project_id = job.params["project_id"]
+    wanted: dict[str, tuple[int, int]] = {}
+    for entry in files:
+        try:
+            if len(entry) >= 3 and int(entry[2]) > 0:
+                wanted[str(entry[0])] = (int(entry[1]), int(entry[2]))
+        except (TypeError, ValueError):
+            continue
+    found: dict[str, list[Any]] = {}
+    paths = list(wanted)
+    for start in range(0, len(paths), 900):  # SQLite takes up to 999 values at once
+        rows = db.execute(
+            select(Item.rel_path, Item.bytes, Item.mtime_ns, Item.sha256, Item.width, Item.height).where(
+                Item.project_id == project_id, Item.rel_path.in_(paths[start : start + 900])
+            )
+        )
+        for rel, size, mtime, sha, width, height in rows:
+            if wanted.get(rel) == (size, mtime):
+                found[rel] = [sha, width, height]
+    return {"found": found, "may_know": True}
 
 
 KNOWN_PAGE = 50_000
@@ -880,6 +926,7 @@ def import_items(
                 "camera": camera,
                 "location_id": batch.location_id,
                 "rel_path": data.rel_path,
+                "mtime_ns": data.mtime_ns,
                 "thumb_key": thumb_key,
                 "thumb_bytes": thumb_bytes,
                 "thumb_v": thumb_v,
@@ -892,6 +939,12 @@ def import_items(
     write_lock(db)
     insert_new(db, Item, rows, ["project_id", "sha256"])
     items = {i.sha256: i for i in db.scalars(in_project())}
+    for sha, data in incoming.items():  # registered before modification times were kept: learnt at the same path
+        item = items.get(sha)
+        if item is None or not data.mtime_ns or item.mtime_ns:
+            continue
+        if (item.rel_path, item.bytes) == (data.rel_path, data.bytes):
+            item.mtime_ns = data.mtime_ns
 
     item_ids = [i.id for i in items.values()]
     revisions: dict[int, list[LabelRevision]] = {}
@@ -1032,7 +1085,7 @@ def imports(db: Session) -> list[dict[str, Any]]:
                 "done": done,
                 "total": total,
                 "skipped": int(progress.get("skipped") or (job.result or {}).get("skipped") or 0),
-                "step": step,  # "" (waiting or ended) | find | labels | read
+                "step": step,  # "" (waiting or ended) | find | labels | same | read
                 "step_started_at": since,
                 "bytes": int(progress.get("bytes") or 0),  # of the images read and sent so far
                 "created_at": iso(job.created_at),

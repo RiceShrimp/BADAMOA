@@ -121,8 +121,12 @@ def _iou(a: list[float], b: list[float]) -> float:
 # ---- counting a model's view of the labels: FiftyOne's way (compute_mistakenness) ----------------------------
 
 RULE_KEY = "qa.model"  # what the stored counts were made with (``recount_if_needed``)
-RULE_VERSION = 2  # 1: FiftyOne's (0.89.0); 2: with the values that count at any threshold. A new one counts again
-DEFAULT_RULE = {"conf": 0.95, "min_area": 0.001}  # FiftyOne's 0.95; labels of 0.1% of the image and up
+# 1: FiftyOne's (0.89.0); 2: with the values that count at any threshold; 3: no size cut for a label the model
+# did not find (0.95.0). A new one counts again
+RULE_VERSION = 3
+# FiftyOne's 0.95; every label no prediction touches, however small (FiftyOne has no size cut either). ``min_area``
+# is still taken from an older screen's query
+DEFAULT_RULE = {"conf": 0.95, "min_area": 0.0}
 MATCH_IOU = 0.5  # a prediction and a label are one object (FiftyOne's _DETECTION_IOU)
 APART_IOU = 0.1  # a label no prediction overlaps this much: the model saw nothing there
 # What 검수 shows the counts at besides the one chosen: how they change with the threshold

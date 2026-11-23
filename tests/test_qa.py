@@ -149,8 +149,8 @@ def test_the_class_filter_narrows_findings_by_their_own_class(hub, tmp_path):  #
 def test_a_model_check_counts_as_fiftyone_does():
     """FiftyOne's compute_mistakenness: boxes paired whatever their classes (IoU 0.5, the surest first); an unpaired
     prediction counts only when the model is sure (over 0.95), a pair of other classes only when it is sure of its
-    own, and a label only when no prediction even touches it and it is big enough to see."""
-    from badamoa.hub.checks import judge
+    own, and a label only when no prediction even touches it, however small (a size cut only when asked for)."""
+    from badamoa.hub.checks import DEFAULT_RULE, judge
 
     rule = {"conf": 0.95, "min_area": 0.001}
     person, bike = [0, 0.5, 0.5, 0.2, 0.2], [1, 0.2, 0.2, 0.1, 0.1]
@@ -165,8 +165,10 @@ def test_a_model_check_counts_as_fiftyone_does():
     other = [1, 0.5, 0.5, 0.2, 0.2]
     assert judge([other], [0.98], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": [0]}
     assert judge([other], [0.7], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": []}
-    # a label a prediction touches (an imprecise box) or too small to see (under 0.1% of the image) is not missed
+    # a label a prediction touches (an imprecise box) is not missed; one nothing touches is, however small (by
+    # default), unless a size cut is asked for (under 0.1% of the image)
     assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], rule)["missed"] == []
+    assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], DEFAULT_RULE)["missed"] == [0]
     assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], rule)["missed"] == []
     assert judge([], [], [[0, 0.5, 0.5, 0.05, 0.05]], rule)["missed"] == [0]
     # a class the model never learned is not its to judge
@@ -289,7 +291,8 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
     database.engine.dispose()
 
     fiftyone = hub.get(f"/api/releases/{v1}/qa").json()
-    assert fiftyone["rule"] == {"conf": 0.95, "min_area": 0.001, "defaults": {"conf": 0.95, "min_area": 0.001}}
+    # FiftyOne's: no size cut for a label the model did not find (0.95.0)
+    assert fiftyone["rule"] == {"conf": 0.95, "min_area": 0.0, "defaults": {"conf": 0.95, "min_area": 0.0}}
     first = fiftyone["evaluations"][0]
     assert (first["extra"], first["reclass"], first["missed"]) == (0, 0, 0)
     # beside the chosen threshold, the count at each level: the corner box (0.9) counts below 0.9, not from it

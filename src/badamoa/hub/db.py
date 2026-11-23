@@ -55,6 +55,7 @@ _ADDED_COLUMNS = [
     ("item_predictions", "extra_top", "REAL DEFAULT 0"),
     ("item_predictions", "reclass_top", "REAL DEFAULT 0"),
     ("item_predictions", "missed_area", "REAL DEFAULT 0"),
+    ("items", "mtime_ns", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -150,6 +151,8 @@ class Database:
                 if column not in {c["name"] for c in inspector.get_columns(table)}:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
                     added.add((table, column))
+            # indexes newer versions added to a table that was there already (create_all makes only new tables)
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_items_project_path ON items (project_id, rel_path)"))
             if ("model_versions", "aliases") in added:  # the one alias a version could have had before
                 conn.execute(text("""UPDATE model_versions SET aliases = '["' || alias || '"]' WHERE alias != ''"""))
             if ("datasets", "task") in added:  # 0.34.0: the task moved from the project to each dataset

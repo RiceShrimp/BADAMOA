@@ -100,6 +100,8 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "classes": {"type": "array", "default": []},  # class names for a folder that names none
                     # going on with a paused import: its version (the files it holds are not read again)
                     "resume": {"type": "string", "default": ""},
+                    # read every file, even those the project holds unchanged (same path, size and modification time)
+                    "full_read": {"type": "boolean", "default": False},
                 },
             },
         ),

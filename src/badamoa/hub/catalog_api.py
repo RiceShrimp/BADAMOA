@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from badamoa.core.protocol import ImportBegin, ImportChunk, ImportProgress
+from badamoa.core.protocol import ImportBegin, ImportChunk, ImportProgress, ImportSame
 
 from . import catalog, checks, drafts, originals, overview, purge, qa, review, services
 from . import trash as trash_box
@@ -248,6 +248,7 @@ class ImportRequest(BaseModel):
     # An image without a label file: "background", "unlabelled" (to label), or "auto" (unlabelled when no file has labels)
     unlabelled: str = "auto"
     classes: list[str] = []  # class names for a folder that names none (images to label)
+    full_read: bool = False  # read every file, even those the project holds unchanged
 
 
 @router.post("/projects/{project_id}/imports")
@@ -269,6 +270,7 @@ def start_import(
         fmt=body.format,
         unlabelled=body.unlabelled,
         classes=body.classes,
+        full_read=body.full_read,
         label_space=body.label_space,
         note=body.note,
         base_release_id=body.base_release_id,
@@ -307,6 +309,14 @@ def import_known(
 ) -> dict[str, Any]:
     """The files the version of a resumed import holds already (a page in path order): the node skips them."""
     return catalog.import_known(db, node, job_id, after, limit)
+
+
+@agent_router.post("/same")
+def import_same(
+    job_id: str, body: ImportSame, node: Node = Depends(current_node), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Which of these files the project holds unchanged (path, size, modification time): the node does not read them."""
+    return catalog.import_same(db, node, job_id, body.files)
 
 
 @agent_router.post("/items")

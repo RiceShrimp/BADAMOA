@@ -874,3 +874,30 @@ def test_project_ranks_each_task_by_its_own_metric(client, admin):
 
     card = next(c for c in client.get("/api/project-cards", headers=admin).json() if c["id"] == project["id"])
     assert (card["best"]["name"], card["best"]["metric"], card["best"]["value"]) == ("det-big v1", "map50_95", 0.52)
+
+
+def test_a_copied_folder_is_not_read_again(hub, tmp_path):
+    """A new version copied with its files' times kept (rsync -a, cp -p): the files the project holds unchanged are
+    not read again, their labels are; a file touched since is read; "모든 파일 다시 읽기" reads every one."""
+    project = hub.post("/api/projects", json={"name": "복사본", "task": "detect"}).json()
+    a = make_yolo(tmp_path / "a")
+    v1 = _start_import(hub, project["id"], a, "v1")
+    first = hub.get(f"/api/releases/{_wait_import(hub, v1)}").json()["stats"]
+    assert not hub.get(f"/api/jobs/{v1['id']}").json()["result"].get("unchanged")
+
+    b = tmp_path / "b"
+    shutil.copytree(a, b)  # copy2: times kept
+    (b / "labels" / "train" / "train_0003.txt").write_text("", encoding="utf-8")  # a label changed: read anew
+    touched = b / "images" / "val" / "val_0000.jpg"
+    os.utime(touched, ns=(touched.stat().st_atime_ns, touched.stat().st_mtime_ns + 10**9))  # touched since
+    v2 = _start_import(hub, project["id"], b, "v2")
+    second = hub.get(f"/api/releases/{_wait_import(hub, v2)}").json()["stats"]
+    logs = "\n".join(line["text"] for line in hub.get(f"/api/jobs/{v2['id']}/logs").json())
+    assert hub.get(f"/api/jobs/{v2['id']}").json()["result"]["unchanged"] == 7, logs
+    assert "바뀌지 않은 파일 7장은 다시 읽지 않습니다" in logs and "이미지 1장을" in logs
+    assert second["items"] == first["items"] == 8
+    assert second["states"]["background"] == first["states"]["background"] + 1
+
+    v3 = _start_import(hub, project["id"], b, "v3", full_read=True)
+    _wait_import(hub, v3)
+    assert hub.get(f"/api/jobs/{v3['id']}").json()["result"]["unchanged"] == 0
