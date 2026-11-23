@@ -328,8 +328,10 @@ def flagged(
     db: Session, release: Release, op_id: str, mistake: str, item_ids: list[int], counting: dict[str, float] | None = None
 ) -> dict[int, dict[str, Any]]:
     """For a page of images: the labels an evaluation's ``mistake`` (missed or reclass) is on, against this
-    version's labels, and what the model said of them — 검수 frames them as it frames a rule check's."""
-    if mistake not in ("missed", "reclass") or not item_ids:
+    version's labels, and what the model said of them — 검수 frames them as it frames a rule check's. For
+    ``extra`` (objects no label has) the model's own boxes instead: ``predicted`` with their ``scores``, the surest
+    first, which 검수 frames and numbers the same way (and can take as labels)."""
+    if mistake not in MISTAKES or not item_ids:
         return {}
     from .catalog_models import LabelSpace
 
@@ -346,6 +348,14 @@ def flagged(
         found = judge(row.labels or [], row.scores or [], truth, counting, known)
         boxes = found[mistake]
         if not boxes:
+            continue
+        if mistake == "extra":  # the predictions: no label is there, and the model is sure of each
+            scores = row.scores or []
+            picks = sorted(boxes, key=lambda i: -(scores[i] if i < len(scores) else 0.0))
+            predicted = [list(row.labels[i]) for i in picks]
+            sure = [round(float(scores[i]), 4) if i < len(scores) else 0.0 for i in picks]
+            note = " · ".join(f"{names.get(int(b[0]), b[0])} {v:.2f}" for b, v in zip(predicted, sure, strict=True))
+            out[row.item_id] = {"boxes": [], "predicted": predicted, "scores": sure, "note": note}
             continue
         if mistake == "reclass":  # what the model is sure each one is
             said = []

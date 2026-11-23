@@ -187,7 +187,8 @@ export function ItemViewer({
 
   // ---- a labeling set's part: this image's state in it, and how far the part got
   const [inSet, setInSet] = useState<{ state: SetState; note: string } | null>(null);
-  const [flagged, setFlagged] = useState<{ boxes: number[]; note: string } | null>(null); // what a label check found
+  // what a label check found: labels (indices), or for 라벨에 없는 물체 the model's own boxes and how sure it was
+  const [flagged, setFlagged] = useState<{ boxes: number[]; note: string; predicted?: number[][]; scores?: number[] } | null>(null);
   const [letBe, setLetBe] = useState<{ note: string; by: string | null; at: string } | null>(null); // "문제 없음"
   const [letBeNote, setLetBeNote] = useState("");
   const [judging, setJudging] = useState(false);
@@ -220,6 +221,10 @@ export function ItemViewer({
   const [showFlagged, setShowFlagged] = useState(true); // 검수's frames round the labels it flagged (Q)
   const [flaggedOff, setFlaggedOff] = useState<Set<number>>(new Set()); // single frames turned off (label indices)
   const [hoverFlagged, setHoverFlagged] = useState<number | null>(null); // the frame pointed at in the 검수 list
+  const [predictedOff, setPredictedOff] = useState<Set<number>>(new Set()); // 라벨에 없는 물체: frames turned off
+  const [hoverPredicted, setHoverPredicted] = useState<number | null>(null); // and the one pointed at
+  // a prediction pointed at in "지금 라벨에 없는 예측": where it is ([class, cx, cy, w, h] and a tag)
+  const [hoverMissing, setHoverMissing] = useState<{ box: number[]; tag: string } | null>(null);
   const [showDiff, setShowDiff] = useState(true); // what the work in progress changed, over the image
 
   // ---- zoom: 1 fits the image; pan is where the zoomed image sits inside its frame (screen pixels)
@@ -334,7 +339,8 @@ export function ItemViewer({
         if (!alive) return;
         setItem(detail);
         setInSet(page.items[0].set ? { state: page.items[0].set.state, note: page.items[0].set.note } : null);
-        setFlagged(page.items[0].qa ? { boxes: page.items[0].qa.boxes, note: page.items[0].qa.note } : null);
+        const qa = page.items[0].qa;
+        setFlagged(qa ? { boxes: qa.boxes, note: qa.note, predicted: qa.predicted, scores: qa.scores } : null);
         setLetBe(page.items[0].let_be ?? null);
         setLetBeNote("");
         setFull(detail.image_url ? "loading" : "error");
@@ -342,6 +348,9 @@ export function ItemViewer({
         setHoverBox(null);
         setFlaggedOff(new Set());
         setHoverFlagged(null);
+        setPredictedOff(new Set());
+        setHoverPredicted(null);
+        setHoverMissing(null);
         setFocusBox(null);
         setRevisionId(detail.revision_id);
         setCompareId(null);
@@ -989,18 +998,34 @@ export function ItemViewer({
   const className = (id: number) => classes.find((c) => c.id === id)?.name ?? String(id);
   /** The labels a check flagged: a thick yellow frame around each with its number and class over it (on the
    * version's own labels only); the panel lists the same numbers. */
-  const drawFlagged = (labels: number[][], indices: number[]) => {
+  const drawFlagged = (labels: number[][], indices: number[]) =>
+    drawFrames(
+      indices.flatMap((i, n) => {
+        const b = labels[i];
+        return b && b.length >= 5 && !flaggedOff.has(i) ? [{ key: i, box: b, tag: `${n + 1} ${className(b[0])}` }] : [];
+      }),
+      hoverFlagged,
+    );
+  /** 라벨에 없는 물체: the model's boxes no label has, framed and numbered as a check's labels are. */
+  const drawFlaggedPredictions = (predicted: number[][], scores: number[]) =>
+    drawFrames(
+      predicted.flatMap((b, n) =>
+        b.length >= 5 && !predictedOff.has(n)
+          ? [{ key: n, box: b, tag: `${n + 1} ${className(b[0])} ${Math.round((scores[n] ?? 0) * 100)}%` }]
+          : [],
+      ),
+      hoverPredicted,
+    );
+  /** Thick yellow frames, each with its tag ([class, cx, cy, w, h] boxes); the one ``lit`` stands out. */
+  const drawFrames = (frames: { key: number; box: number[]; tag: string }[], litKey: number | null) => {
     // Flagged labels often lie on each other (that is what some checks find): their tags go side by side.
     const placed: { x: number; y: number; width: number }[] = [];
     const tall = font * 1.25;
     return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="flagged">
-      {indices.map((i, n) => {
-        const b = labels[i];
-        if (!b || b.length < 5 || flaggedOff.has(i)) return null;
-        const lit = hoverFlagged === i;
+      {frames.map(({ key: i, box: b, tag: text }) => {
+        const lit = litKey === i;
         const box = { x: (b[1] - b[3] / 2) * w, y: (b[2] - b[4] / 2) * h, width: b[3] * w, height: b[4] * h };
-        const text = `${n + 1} ${className(b[0])}`;
         const width = text.length * font * 0.6 + font * 0.7;
         // under the box (the label's own name is on its top edge); inside it at the image's bottom edge
         let top = box.y + box.height + tall <= h ? box.y + box.height : box.y + box.height - tall;
@@ -1017,7 +1042,7 @@ export function ItemViewer({
         placed.push({ x: left, y: top, width });
         // the one pointed at in the list stands out, the others step back
         return (
-          <g key={i} opacity={hoverFlagged != null && !lit ? 0.3 : 1}>
+          <g key={i} opacity={litKey != null && !lit ? 0.3 : 1}>
             <rect {...box} fill="none" stroke="rgb(0 0 0 / 0.6)" strokeWidth={lit ? 9 : 6} vectorEffect="non-scaling-stroke" />
             <rect {...box} fill="none" stroke="#ffd400" strokeWidth={lit ? 5 : 3} vectorEffect="non-scaling-stroke" />
             <rect x={left} y={top} width={width} height={tall} fill="#ffd400" stroke="rgb(0 0 0 / 0.6)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
@@ -1195,6 +1220,14 @@ export function ItemViewer({
                       item &&
                       r.id === item.revision_id &&
                       drawFlagged(r.boxes, flagged.boxes)}
+                    {flagged?.predicted &&
+                      flagged.predicted.length > 0 &&
+                      showFlagged &&
+                      !editing &&
+                      n === 0 &&
+                      task !== "classify" &&
+                      drawFlaggedPredictions(flagged.predicted, flagged.scores ?? [])}
+                    {hoverMissing && !editing && n === 0 && task !== "classify" && drawFrames([{ key: 0, box: hoverMissing.box, tag: hoverMissing.tag }], 0)}
                     {showDiff && changeCount > 0 && n === 0 && baseRevision && afterLabels && drawChanges(baseRevision.boxes, afterLabels)}
                     {editing && shapes && fitWidth > 0 && (
                       <EditLayer
@@ -1305,6 +1338,74 @@ export function ItemViewer({
               <strong>{qaTitle}</strong>
               {flagged?.note && <span className="muted"> · {flagged.note}</span>}
             </div>
+            {flagged?.predicted && flagged.predicted.length > 0 && (
+              <>
+                <ol className="qa-labels" onMouseLeave={() => setHoverPredicted(null)}>
+                  {flagged.predicted.map((b, n) => {
+                    const off = predictedOff.has(n);
+                    const score = flagged.scores?.[n] ?? 0;
+                    return (
+                      <li
+                        key={n}
+                        className={`${off ? "off" : ""} ${hoverPredicted === n ? "lit" : ""}`}
+                        onMouseEnter={() => setHoverPredicted(n)}
+                      >
+                        <span className="qa-number">{n + 1}</span>
+                        <i className="class-dot" style={{ background: colorOf(b[0]) }} />
+                        <strong>{className(b[0])}</strong>
+                        <span className="muted small">{Math.round(score * 100)}%</span>
+                        {b.length >= 5 && (
+                          <span className="muted small qa-where">
+                            {placeOf(b[1], b[2])} · {Math.round(b[3] * w)}×{Math.round(b[4] * h)}
+                          </span>
+                        )}
+                        {item.edit.allowed && (
+                          <button className="small" onClick={() => takePredictions([b])} title="이 예측을 라벨로 넣습니다">
+                            라벨로
+                          </button>
+                        )}
+                        <button
+                          className="icon-btn label-eye"
+                          onClick={() =>
+                            setPredictedOff((was) => {
+                              const next = new Set(was);
+                              if (next.has(n)) next.delete(n);
+                              else next.add(n);
+                              return next;
+                            })
+                          }
+                          aria-pressed={!off}
+                          title={off ? "이 테두리 보이기" : "이 테두리만 끄기"}
+                          aria-label={`검수 ${n + 1} ${off ? "보이기" : "끄기"}`}
+                        >
+                          <Icon name={off ? "eye-off" : "eye"} size={15} />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ol>
+                <p className="muted small">
+                  모델이 확신하는데 라벨이 없는 자리입니다. 이미지 위에 같은 번호로 노란 테두리를 쳤고, 줄에 마우스를 올리면 그 자리가 보입니다.
+                  라벨이 빠졌으면 "라벨로"로 넣고, 없는 물체면 "문제 없음"으로 둡니다.
+                  {flagged.predicted.length > 1 && item.edit.allowed && (
+                    <>
+                      {" "}
+                      <button className="link small" onClick={() => takePredictions(flagged.predicted ?? [])}>
+                        모두 라벨로 넣기
+                      </button>
+                    </>
+                  )}
+                  {predictedOff.size > 0 && (
+                    <>
+                      {" "}
+                      <button className="link small" onClick={() => setPredictedOff(new Set())}>
+                        끈 {predictedOff.size}개 다시 보이기
+                      </button>
+                    </>
+                  )}
+                </p>
+              </>
+            )}
             {flagged && flagged.boxes.length > 0 && (
               <>
                 <ol
@@ -1703,12 +1804,25 @@ export function ItemViewer({
                       {missing.length > 0 ? (
                         <>
                           <div className="muted small">지금 라벨에 없는 예측 {missing.length}개</div>
-                          <div className="prediction-list">
+                          <div className="prediction-list" onMouseLeave={() => setHoverMissing(null)}>
                             {missing.map(({ label, score }, i) => (
-                              <div key={i} className="prediction-row">
+                              <div
+                                key={i}
+                                className="prediction-row"
+                                onMouseEnter={() =>
+                                  label.length >= 5 && setHoverMissing({ box: label, tag: `${className(label[0])} ${Math.round(score * 100)}%` })
+                                }
+                                title="마우스를 올리면 이미지에서 이 예측의 자리를 노란 테두리로 보입니다"
+                              >
                                 <i style={{ borderColor: colorOf(label[0]) }} />
                                 <span>
                                   {className(label[0])} · {Math.round(score * 100)}%
+                                  {label.length >= 5 && (
+                                    <span className="muted">
+                                      {" "}
+                                      · {placeOf(label[1], label[2])} · {Math.round(label[3] * w)}×{Math.round(label[4] * h)}
+                                    </span>
+                                  )}
                                 </span>
                                 {item.edit.allowed && (
                                   <button onClick={() => takePredictions([label])}>{task === "classify" ? "이 클래스로" : "라벨로 넣기"}</button>
@@ -1752,8 +1866,8 @@ export function ItemViewer({
               <span>박스 채우기</span>
               <kbd>F</kbd>
             </label>
-            {flagged && flagged.boxes.length > 0 && (
-              <label className="check" title="검수가 걸린 라벨에 두른 노란 테두리와 번호">
+            {flagged && (flagged.boxes.length > 0 || (flagged.predicted?.length ?? 0) > 0) && (
+              <label className="check" title="검수가 걸린 라벨(또는 모델의 박스)에 두른 노란 테두리와 번호">
                 <input type="checkbox" checked={showFlagged} onChange={(e) => setShowFlagged(e.target.checked)} />
                 <span>검수 표시</span>
                 <kbd>Q</kbd>

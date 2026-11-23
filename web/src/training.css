@@ -1473,7 +1473,20 @@ label.check {
 .class-filter-list label.check {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
+  margin: 0;
+  padding: 3px 4px;
+  border-radius: 6px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.class-filter-list label.check:hover {
+  background: var(--surface-2);
+}
+.class-filter-list input[type="checkbox"] {
+  flex: none;
+  margin: 0;
 }
 .class-filter-list .class-dot {
   width: 10px;

@@ -180,12 +180,13 @@ button.mini {
 }
 .compare-row select,
 .filters select,
-.filters input {
+.filters input:not([type="checkbox"]):not([type="radio"]) {
   width: auto;
   margin: 0;
   min-width: 130px;
 }
-.filters input {
+/* the file-name box; a checkbox in the bar (or in a picker opened from it) stays a checkbox */
+.filters input:not([type="checkbox"]):not([type="radio"]) {
   flex: 1;
   max-width: 260px;
 }

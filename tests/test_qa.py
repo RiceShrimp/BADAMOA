@@ -301,6 +301,9 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
     assert lower["rule"]["conf"] == 0.8 and lower["evaluations"][0]["extra"] == 1
     found = hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra", "conf": 0.8}).json()
     assert [i["id"] for i in found["items"]] == [item_id] and found["items"][0]["check"]["extra"] == 1
+    # the object no label has, framed in 검수 as a rule check's labels are: the model's box, how sure, its class
+    framed = {"boxes": [], "predicted": [[0, 0.01, 0.01, 0.01, 0.01]], "scores": [0.9], "note": "person 0.90"}
+    assert found["items"][0]["qa"] == framed
     assert hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra"}).json()["total"] == 0
     assert hub.get(f"/api/releases/{v1}/qa", params={"conf": 0.01}).json()["rule"]["conf"] == 0.25  # kept from 0.25
 

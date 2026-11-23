@@ -100,7 +100,8 @@ export interface GridItem {
   change?: ChangeCounts; // how: labels added, removed, moved, reclassed against the base version
   check?: { found: number; missed: number; extra: number; reclass?: number }; // sorted by an evaluation: its mistakes on this image
   set?: { state: SetState; note: string; part: number }; // in a labeling set: how far it got
-  qa?: { check: string; boxes: number[]; note: string }; // flagged by a label check (검수): which labels, why
+  // flagged by a label check (검수): which labels, why; for 라벨에 없는 물체 the model's boxes and how sure
+  qa?: { check: string; boxes: number[]; note: string; predicted?: number[][]; scores?: number[] };
   let_be?: { note: string; by: string | null; at: string }; // judged right for the check in play ("문제 없음")
 }
 
