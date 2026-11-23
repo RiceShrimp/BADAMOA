@@ -98,6 +98,8 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     # an image without a label file: auto | background | unlabelled (not labelled yet)
                     "unlabelled": {"type": "string", "default": "auto"},
                     "classes": {"type": "array", "default": []},  # class names for a folder that names none
+                    # going on with a paused import: its version (the files it holds are not read again)
+                    "resume": {"type": "string", "default": ""},
                 },
             },
         ),

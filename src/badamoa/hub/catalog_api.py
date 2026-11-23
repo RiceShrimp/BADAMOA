@@ -209,6 +209,32 @@ def imports(_: User = Depends(current_user), db: Session = Depends(db_session)) 
     return catalog.imports(db)
 
 
+@router.post("/imports/{job_id}/pause")
+def pause_import(job_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """Stop an import and keep what it registered, to go on with later (only the files not in it yet are read)."""
+    result = catalog.pause_import(db, user, job_id, via="ui")
+    db.commit()
+    return result
+
+
+@router.post("/imports/{job_id}/resume")
+def resume_import(job_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
+    """Go on with a paused import, on the same server and into the same version."""
+    job = catalog.resume_import(db, user, job_id, via="ui")
+    db.commit()
+    return {"job_id": job.id}
+
+
+@router.post("/imports/{job_id}/discard")
+def discard_import(
+    job_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """Throw a paused import away with what only it registered."""
+    result = catalog.discard_import(db, user, hub.settings, job_id, via="ui")
+    db.commit()
+    return result
+
+
 class ImportRequest(BaseModel):
     node_id: str
     path: str
@@ -273,6 +299,14 @@ def import_begin(
     result = catalog.import_begin(db, node, job_id, body, hub.settings)
     db.commit()
     return result
+
+
+@agent_router.get("/known")
+def import_known(
+    job_id: str, after: str = "", limit: int = 50_000, node: Node = Depends(current_node), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """The files the version of a resumed import holds already (a page in path order): the node skips them."""
+    return catalog.import_known(db, node, job_id, after, limit)
 
 
 @agent_router.post("/items")

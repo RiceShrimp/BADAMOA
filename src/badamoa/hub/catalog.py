@@ -643,6 +643,18 @@ def import_begin(
     release = db.scalar(select(Release).where(Release.job_id == job.id))
     if release is not None:
         return {"release_id": release.id}
+    if (job.params or {}).get("resume"):  # going on from a paused import: its version, as far as it got
+        release = db.get(Release, job.params["resume"])
+        if release is None or release.status != "building" or release.deleted_at is not None:
+            raise ServiceError(409, "이어서 등록할 버전이 없습니다 (버렸거나 이미 끝났습니다).")
+        release.job_id = job.id
+        stats = dict(release.stats or {})
+        progress = dict(stats.get("import") or {})
+        progress["total"] = int(body.total or progress.get("total") or 0)
+        release.stats = {**stats, "import": progress}
+        db.flush()
+        # "resume": how many it holds; the node asks which files (``import_known``) and reads only the rest
+        return {"release_id": release.id, "resume": int(progress.get("done") or 0)}
     room = hub_storage.check_room(db, settings, int(body.total or 0)) if settings is not None else {}
     # Imports into one project begin one at a time: two at once would both find no dataset or label space
     # with these classes and both make one.
@@ -721,6 +733,96 @@ def import_begin(
     db.add(release)
     db.flush()
     return {"release_id": release.id, **room}
+
+
+KNOWN_PAGE = 50_000
+
+
+def import_known(db: Session, node: Node, job_id: str, after: str = "", limit: int = KNOWN_PAGE) -> dict[str, Any]:
+    """The files of the import's folder its version holds already, a page at a time in path order: a resumed import
+    reads only the rest. Images registered before from another folder are not listed (their path is another's)."""
+    job = _import_job(db, node, job_id)
+    release = db.scalar(select(Release).where(Release.job_id == job.id))
+    if release is None:
+        return {"paths": [], "next": None}
+    batch = db.get(Batch, release.batch_id)
+    limit = max(1, min(limit, KNOWN_PAGE))
+    paths = list(
+        db.scalars(
+            select(Item.rel_path)
+            .join(ReleaseItem, ReleaseItem.item_id == Item.id)
+            .where(ReleaseItem.release_id == release.id, Item.location_id == batch.location_id, Item.rel_path > after)
+            .order_by(Item.rel_path)
+            .limit(limit)
+        )
+    )
+    return {"paths": paths, "next": paths[-1] if len(paths) == limit else None}
+
+
+def _kept(job: Job) -> bool:
+    """An import stopped whose version stays to go on from: paused, or a resumed one that failed (not thrown away).
+    One gone on with stays kept until its new job takes the version (``import_begin``): if that job fails first,
+    the version waits again."""
+    params = job.params or {}
+    if params.get("discarded"):
+        return False
+    return bool(params.get("paused")) or (bool(params.get("resume")) and job.status == "failed")
+
+
+def _resuming(db: Session, job: Job) -> bool:
+    """A paused import's job that goes on with it is queued or running."""
+    after = db.get(Job, (job.params or {}).get("resumed_by") or "")
+    return after is not None and after.status in ACTIVE
+
+
+def pause_import(db: Session, user: User, job_id: str, via: str = "api") -> dict[str, Any]:
+    """Stop an import and keep what it registered: its version stays (unfinished) to go on from with
+    ``resume_import``, which reads only the files not in it yet. Before the version exists (finding the images,
+    reading the labels) there is nothing to keep: it stops."""
+    job = services.get_job(db, job_id)
+    if job.type != "data.import":
+        raise ServiceError(400, "데이터셋 등록이 아닙니다.")
+    if job.status not in ACTIVE:
+        raise ServiceError(409, "이미 끝난 등록입니다.")
+    release = db.scalar(select(Release).where(Release.job_id == job.id))
+    if release is not None:
+        job.params = {**(job.params or {}), "paused": True}
+    services.cancel_job(db, user, job.id, via=via)
+    services.audit(db, user.id, via, "import.pause", job.id, kept=release is not None)
+    return {"job_id": job.id, "kept": release is not None}
+
+
+def _paused_release(db: Session, job_id: str) -> tuple[Job, Release]:
+    job = services.get_job(db, job_id)
+    release = db.scalar(select(Release).where(Release.job_id == job.id))
+    if job.type != "data.import" or release is None or release.status != "building" or not _kept(job):
+        raise ServiceError(409, "일시정지한 등록이 아닙니다.")
+    if job.status in ACTIVE:
+        raise ServiceError(409, "아직 멈추는 중입니다. 잠시 뒤에 다시 하세요.")
+    if _resuming(db, job):
+        raise ServiceError(409, "이미 이어서 등록하고 있습니다.")
+    return job, release
+
+
+def resume_import(db: Session, user: User, job_id: str, via: str = "api") -> Job:
+    """Go on with a paused import: a new job on the same server, into the same version."""
+    old, release = _paused_release(db, job_id)
+    params = {k: v for k, v in (old.params or {}).items() if k not in ("paused", "resume", "resumed_by")}
+    node_id = old.node_id or old.target_node_id
+    job = services.create_job(db, user, "data.import", {**params, "resume": release.id}, node_id, via=via)
+    old.params = {**(old.params or {}), "resumed_by": job.id}
+    services.audit(db, user.id, via, "import.resume", job.id, release=release.id, after=old.id)
+    return job
+
+
+def discard_import(db: Session, user: User, settings: HubSettings, job_id: str, via: str = "api") -> dict[str, Any]:
+    """Throw a paused import away: its version and what only it held go, as a stopped import's do."""
+    job, _ = _paused_release(db, job_id)
+    job.params = {**(job.params or {}), "discarded": True}
+    db.flush()
+    gone = drop_unfinished_imports(db, settings)
+    services.audit(db, user.id, via, "import.discard", job.id)
+    return {"job_id": job.id, "dropped": gone}
 
 
 def _digest(space_id: str, state: str, boxes: list[list[float]]) -> str:
@@ -882,6 +984,14 @@ def imports(db: Session) -> list[dict[str, Any]]:
         .order_by(Job.created_at.desc())
         .limit(20)
     ).all()
+    # and the paused ones, however long ago: their versions wait to be gone on with or thrown away
+    paused = db.scalars(
+        select(Job)
+        .join(Release, Release.job_id == Job.id)
+        .where(Job.type == "data.import", Job.status.in_(("failed", "canceled")), Release.status == "building")
+    ).all()
+    # (one being gone on with shows as its new job)
+    jobs = [*jobs, *(job for job in paused if _kept(job) and not _resuming(db, job) and job not in jobs)]
     # a waiting import has no server yet: the one it was sent to
     targets = [j.node_id or j.target_node_id for j in jobs if j.node_id or j.target_node_id]
     nodes = {n.id: n.name for n in db.scalars(select(Node).where(Node.id.in_(targets)))}
@@ -895,6 +1005,10 @@ def imports(db: Session) -> list[dict[str, Any]]:
         stats = (release.stats if release else None) or {}
         progress = stats.get("import") or {}
         status = {"succeeded": "done"}.get(job.status, job.status)  # queued | running | done | failed | canceled
+        if release is not None and release.status == "building" and job.status not in ACTIVE and _kept(job):
+            if _resuming(db, job):
+                continue  # its new job, queued, is listed instead
+            status = "paused"  # its version kept, to go on from
         total = int(progress.get("total") or stats.get("items") or 0)
         done = total if status == "done" else int(progress.get("done") or 0)
         # The step it is on: the first two (finding images, reading labels) come before the version exists.
@@ -935,11 +1049,15 @@ def drop_unfinished_imports(db: Session, settings: HubSettings) -> int:
     image records only they held and those thumbnails, so the name can be used again and the dataset deleted."""
     from . import purge
 
-    stale = db.scalars(
-        select(Release)
-        .join(Job, Job.id == Release.job_id)
-        .where(Release.status == "building", Job.status.in_(("failed", "canceled")))
-    ).all()
+    stale = [
+        release
+        for release, job in db.execute(
+            select(Release, Job)
+            .join(Job, Job.id == Release.job_id)
+            .where(Release.status == "building", Job.status.in_(("failed", "canceled")))
+        ).all()
+        if not _kept(job)  # paused: kept to go on from
+    ]
     thumbs: set[str] = set()
     for release in stale:
         thumbs |= purge._drop_release(db, release)

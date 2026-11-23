@@ -26,7 +26,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -592,6 +592,29 @@ class Progress:
             print(self.WORDS.get(step, step).format(done=done, total=total), flush=True)
 
 
+def _relative(path: Path, root: Path) -> str:
+    """A file's path in the folder as the Hub keeps it (``describe``), without asking the disk again."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _known_paths(client: httpx.Client, base: str) -> set[str]:
+    """The files the version of a resumed import holds already, page by page."""
+    known: set[str] = set()
+    after = ""
+    while True:
+        resp = client.get(base + "/known", params={"after": after})
+        if resp.status_code != 200:
+            raise RuntimeError(f"이미 등록된 파일 목록을 받지 못했습니다 ({resp.status_code}): {resp.text[:200]}")
+        page = resp.json()
+        known.update(page.get("paths") or [])
+        if not page.get("next"):
+            return known
+        after = page["next"]
+
+
 def run(params: dict[str, Any]) -> dict[str, Any]:
     """Job entry point (``data.import``)."""
     hub, token, job_id = (os.environ.get(k) for k in ("BADAMOA_HUB_URL", "BADAMOA_NODE_TOKEN", "BADAMOA_JOB_ID"))
@@ -645,6 +668,13 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             print(f"Hub에 썸네일 · 기록으로 약 {need:,.1f} GB가 쌓입니다 (Hub 남은 공간 {free:,.0f} GB).", flush=True)
         if found.keypoints:
             print(f"키포인트 {found.keypoints['count']}개 (연결선 {len(found.keypoints['skeleton'])}개)", flush=True)
+        held = 0
+        if began_import.get("resume"):  # going on from a paused import: the files it holds are not read again
+            known = _known_paths(client, base)
+            rest = [e for e in found.entries if _relative(e.path, root) not in known]
+            held = total - len(rest)
+            print(f"이어서 등록: 이미 등록된 {held:,}장은 건너뛰고 {len(rest):,}장을 읽습니다.", flush=True)
+            found = replace(found, entries=rest)
         # Reading the next batch goes on while the Hub stores the last one.
         outbox: queue.Queue[tuple[list[dict[str, Any]], int] | None] = queue.Queue(maxsize=2)
         failure: list[BaseException] = []
@@ -664,11 +694,13 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                     continue
                 sent, skipped = sent + len(batch), skipped + bad
                 now = time.monotonic()
-                if now - last >= REPORT_EVERY_S or sent + skipped >= total:
+                if now - last >= REPORT_EVERY_S or held + sent + skipped >= total:
                     last = now
                     rate = sent / max(now - started, 1e-6)
-                    left = (total - sent - skipped) / rate if rate else 0
-                    print(f"등록 {sent:,} / {total:,} · 초당 {rate:,.0f}장 · 남은 시간 약 {left / 60:.0f}분", flush=True)
+                    left = (total - held - sent - skipped) / rate if rate else 0
+                    print(
+                        f"등록 {held + sent:,} / {total:,} · 초당 {rate:,.0f}장 · 남은 시간 약 {left / 60:.0f}분", flush=True
+                    )
 
         sender = threading.Thread(target=send, name="import-send", daemon=True)
         sender.start()

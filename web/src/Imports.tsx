@@ -5,7 +5,7 @@ import { Icon, timeAgo } from "./ui";
 /** A dataset import, as the Hub tracks it: it keeps going whatever screen is open. */
 export interface ImportInfo {
   job_id: string;
-  status: "queued" | "running" | "done" | "failed" | "canceled";
+  status: "queued" | "running" | "done" | "failed" | "canceled" | "paused"; // paused: its version kept to go on from
   project: { id: string; name: string };
   dataset: string;
   version: string;
@@ -166,6 +166,8 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
         ? `실패${info.error ? ` — ${info.error}` : ""}`
         : info.status === "canceled"
           ? "중지함 · 남긴 것 없음"
+          : info.status === "paused"
+            ? `일시정지 · ${info.done.toLocaleString()} / ${info.total.toLocaleString()}장 등록함 (${Math.floor(pct)}%) · 이어서 하면 나머지만 읽습니다`
           : info.status === "done"
             ? `완료 · ${info.total.toLocaleString()}장${info.skipped ? ` (읽지 못한 파일 ${info.skipped}개 건너뜀)` : ""}`
             : runningWords(info, pct);
@@ -178,7 +180,9 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
       </div>
       <div className="import-progress-line">
         <span className="small">{words}</span>
+        {info.status === "running" && info.step === "read" && <PauseImport info={info} />}
         {(info.status === "queued" || info.status === "running") && <StopImport info={info} />}
+        {info.status === "paused" && <PausedActions info={info} />}
       </div>
     </div>
   );
@@ -194,7 +198,7 @@ export function StopImport({ info }: { info: Pick<ImportInfo, "job_id" | "status
     const ask =
       info.status === "queued"
         ? `기다리는 ${name} 등록을 취소할까요?`
-        : `${name} 등록을 멈출까요?\n지금까지 읽은 것은 남지 않고, 같은 이름으로 다시 가져올 수 있습니다.`;
+        : `${name} 등록을 멈출까요?\n지금까지 읽은 것은 남지 않고, 같은 이름으로 다시 가져올 수 있습니다.\n(나중에 이어서 하려면 "일시정지")`;
     if (!window.confirm(ask)) return;
     setStopping(true);
     try {
@@ -212,15 +216,72 @@ export function StopImport({ info }: { info: Pick<ImportInfo, "job_id" | "status
   );
 }
 
+/** Pause an import under way: what it registered stays, and going on reads only the files not in it yet. */
+export function PauseImport({ info }: { info: Pick<ImportInfo, "job_id" | "dataset" | "version"> }) {
+  const [pausing, setPausing] = useState(false);
+  const pause = async (e: { preventDefault: () => void; stopPropagation: () => void }) => {
+    e.preventDefault(); // it may sit inside a card that is a link
+    e.stopPropagation();
+    setPausing(true);
+    try {
+      await api(`/imports/${info.job_id}/pause`, { method: "POST" });
+      announceImport();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+      setPausing(false);
+    }
+  };
+  return (
+    <button
+      className="link small import-pause"
+      onClick={(e) => void pause(e)}
+      disabled={pausing}
+      title="지금까지 등록한 것은 남기고 멈춥니다. 이어서 하면 아직 안 읽은 파일만 읽습니다"
+    >
+      {pausing ? "멈추는 중…" : "일시정지"}
+    </button>
+  );
+}
+
+/** A paused import: go on with it (on the same server, only the files not registered yet), or throw it away. */
+function PausedActions({ info }: { info: ImportInfo }) {
+  const [busy, setBusy] = useState(false);
+  const act = async (e: { preventDefault: () => void; stopPropagation: () => void }, what: "resume" | "discard") => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (what === "discard" && !window.confirm(`${info.dataset} ${info.version} 등록을 버릴까요?\n지금까지 등록한 ${info.done.toLocaleString()}장이 함께 지워집니다.`)) return;
+    setBusy(true);
+    try {
+      await api(`/imports/${info.job_id}/${what}`, { method: "POST" });
+      announceImport();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="import-paused-actions">
+      <button className="link small" disabled={busy} onClick={(e) => void act(e, "resume")} title={`${info.node || "같은 서버"}에서 나머지만 읽어 이어 갑니다`}>
+        이어하기
+      </button>
+      <button className="link small import-stop" disabled={busy} onClick={(e) => void act(e, "discard")}>
+        버리기
+      </button>
+    </span>
+  );
+}
+
 /** Top bar: imports under way (from any screen), the ones just finished until looked at. */
 export function ImportTray() {
   const all = useImports();
   const [seen, setSeen] = useState<string[]>(dismissed);
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
-  const shown = all.filter((i) => i.status === "queued" || i.status === "running" || !seen.includes(i.job_id));
+  // paused ones stay until gone on with or thrown away
+  const shown = all.filter((i) => i.status === "queued" || i.status === "running" || i.status === "paused" || !seen.includes(i.job_id));
   const running = shown.filter((i) => i.status === "queued" || i.status === "running");
   const failed = shown.filter((i) => i.status === "failed");
+  const paused = shown.filter((i) => i.status === "paused");
 
   useEffect(() => {
     if (!open) return;
@@ -244,7 +305,9 @@ export function ImportTray() {
     ? `등록 중 ${running.length}${first ? ` · ${shortWords(first)}` : ""}`
     : failed.length
       ? `등록 실패 ${failed.length}`
-      : shown.some((i) => i.status === "done")
+      : paused.length
+        ? `등록 일시정지 ${paused.length}`
+        : shown.some((i) => i.status === "done")
         ? `등록 완료 ${shown.filter((i) => i.status === "done").length}`
         : `등록 중지 ${shown.length}`;
   return (
@@ -271,7 +334,7 @@ export function ImportTray() {
               </div>
               <ImportProgress info={i} compact />
               <div className="row-links">
-                {i.release_id && (i.status === "done" || i.status === "running") && (
+                {i.release_id && (i.status === "done" || i.status === "running" || i.status === "paused") && (
                   <a className="small" href={`#/datasets/${i.release_id}`} onClick={() => setOpen(false)}>
                     {i.status === "done" ? "열기" : "지금까지 본 것 보기"}
                   </a>

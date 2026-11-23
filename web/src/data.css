@@ -1390,3 +1390,19 @@ tr.clickable:hover td {
   gap: 4px;
   min-width: 0;
 }
+
+/* a running import's 일시정지 beside 중지, and a paused one's 이어하기 · 버리기 */
+.import-pause {
+  margin-left: auto;
+}
+.import-progress-line .import-pause + .import-stop {
+  margin-left: 10px;
+}
+.import-paused-actions {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+}
+.import-progress.paused .bar i {
+  background: var(--warn, #d9a400);
+}
