@@ -418,7 +418,12 @@ def library_versions(db: Session, row: Template, manifest: TemplateManifest) -> 
         version = version_in((info or {}).get("packages") or [])
         if version and (node_id or "") not in seen:
             node = db.get(Node, node_id) if node_id else None
-            seen[node_id or ""] = {"node": node.name if node else "", "version": version, "at": iso(at)}
+            seen[node_id or ""] = {
+                "node": node.name if node else "",
+                "node_id": node_id or "",
+                "version": version,
+                "at": iso(at),
+            }
     trial = row.trial or {}
     if not seen and version_in(trial.get("installed") or []):
         seen["trial"] = {"node": str(trial.get("node") or ""), "version": version_in(trial["installed"]), "trial": True}

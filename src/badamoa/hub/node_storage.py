@@ -122,22 +122,40 @@ def _templates(db: Session) -> list[tuple[Template, dict[str, Any] | None]]:
     return out
 
 
-def _names(rows: list[Template]) -> list[str]:
-    """Model types by title, each once, newest version first."""
+def _version_of(db: Session, row: Template, node_id: str) -> str:
+    """A model kind's version as people know it. One an admin added goes by its own (1.0.5). A built-in one goes
+    by its library's version, as on Settings → 모델 종류: on this server when it ran here, else the newest any
+    server runs, else what installing it now gets. Its own number only counts changes to its code, and next to
+    its name it reads like a model (Ultralytics YOLO 12 → YOLO12); nothing known, it is left out."""
+    if not row.builtin:
+        return row.version
+    try:
+        library = registry.library_versions(db, row, registry.manifest_of(row))
+    except Exception:  # noqa: BLE001 - a broken declaration only means no version to show
+        library = None
+    if not library:
+        return ""
+    here = next((s["version"] for s in library["installed"] if s.get("node_id") == node_id), "")
+    return here or library["newest"] or library["available"]
+
+
+def _names(db: Session, rows: list[Template], node_id: str) -> list[str]:
+    """Model types by title, each once (its newest version), with their version as people know it."""
     seen: dict[str, str] = {}
     for row in sorted(rows, key=lambda r: r.created_at, reverse=True):
-        seen.setdefault(row.name, f"{row.title or row.name} {row.version}")
+        if row.name not in seen:
+            seen[row.name] = f"{row.title or row.name} {_version_of(db, row, node_id)}".strip()
     return list(seen.values())
 
 
-def _describe(db: Session, kind: str, items: list[dict[str, Any]]) -> None:
+def _describe(db: Session, kind: str, items: list[dict[str, Any]], node_id: str = "") -> None:
     """Add ``label`` (what it is) and ``users`` (the model types it serves) to each item, in place."""
     if kind in ("envs", "containers"):
         templates = _templates(db)
         docker_envs = db.scalars(select(Environment).where(Environment.kind == "docker")).all()
         for item in items:
             rows = [row for row, spec in templates if spec is not None and registry._same_env(item, spec)]
-            item["users"] = _names(rows)
+            item["users"] = _names(db, rows, node_id)
             if kind == "containers":
                 item["label"] = item.get("image") or ""
                 item["environments"] = [e.name for e in docker_envs if e.image == item.get("image")]
@@ -161,7 +179,7 @@ def _describe(db: Session, kind: str, items: list[dict[str, Any]]) -> None:
         by_sha = {r.blob: r for r in rows}
         for item in items:
             row = by_sha.get(item.get("id"))
-            item["label"] = f"{row.title or row.name} {row.version}" if row else "Hub에 없는 코드"
+            item["label"] = f"{row.title or row.name} {_version_of(db, row, node_id)}".strip() if row else "Hub에 없는 코드"
             item["gone"] = row is None or row.deleted_at is not None
     elif kind == "template_data":
         names = [i.get("id") for i in items]
@@ -234,7 +252,7 @@ def view(db: Session, node: Node) -> dict[str, Any]:
                 entry["in_use"] = uses["uv"]
         else:
             items = [dict(i) for i in items]
-            _describe(db, kind, items)
+            _describe(db, kind, items, node.id)
             for item in items:
                 item["in_use"] = _user_of(kind, item, uses)
             items.sort(key=lambda i: -(int(i.get("bytes") or 0)))
