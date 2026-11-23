@@ -48,9 +48,13 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
         JobTypeSpec(
             type="data.sync",
             title="이미지 받기",
-            description="학습할 노드가 버전의 이미지를 그 이미지가 있는 노드에서 직접 받아 둡니다(Hub를 거치지 않음).",
+            description=(
+                "학습 · 평가 · 오토라벨할 노드가 버전의 이미지(오토라벨은 그 묶음의 아직 안 한 이미지만)를 그 이미지가 있는 "
+                "노드에서 직접 받아 둡니다(Hub를 거치지 않음)."
+            ),
             hidden=True,
-            params_schema={"type": "object", "properties": {"release_id": {"type": "string"}}},
+            # set_id: only a labeling set's images not labelled yet (a 오토라벨's)
+            params_schema={"type": "object", "properties": {"release_id": {"type": "string"}, "set_id": {"type": "string"}}},
         ),
         JobTypeSpec(
             type="data.check",

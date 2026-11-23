@@ -55,7 +55,7 @@ def models(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    """The models that can label a set's (or a dataset version's) images, and the server it runs on."""
+    """The models that can label a set's (or a dataset version's) images, and the servers it can run on."""
     if not set_id and not release_id:
         raise ServiceError(400, "라벨링 묶음이나 데이터셋 버전을 고르세요.")
     return autolabel.offer(db, hub.settings, set_id, release_id)
@@ -73,13 +73,16 @@ class Start(BaseModel):
     keep: float = autolabel.KEEP  # predictions below are dropped
     accept: float | None = None  # images whose predictions all reach it are saved and sent on at once
     gpus: int | None = None  # 0: on the CPU (by default a GPU when the server has one)
+    node_id: str = ""  # where it runs ("" the server holding the images); another one receives the images first
 
 
 @router.post("")
 def start(body: Start, user: User = Depends(current_user), db: Session = Depends(db_session)) -> dict[str, Any]:
     """Start one: over a set, or over a dataset's images nobody labelled yet (a set of them is made first)."""
     if body.set_id:
-        op = autolabel.start(db, user, body.set_id, body.model_id, keep=body.keep, accept=body.accept, gpus=body.gpus)
+        op = autolabel.start(
+            db, user, body.set_id, body.model_id, keep=body.keep, accept=body.accept, gpus=body.gpus, node_id=body.node_id
+        )
         set_id = body.set_id
     elif body.release_id:
         found, op = autolabel.start_on_images(
@@ -94,6 +97,7 @@ def start(body: Start, user: User = Depends(current_user), db: Session = Depends
             keep=body.keep,
             accept=body.accept,
             gpus=body.gpus,
+            node_id=body.node_id,
         )
         set_id = found.id
     else:

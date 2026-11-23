@@ -114,12 +114,18 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             config["params"] = {k: v for k, v in config["params"].items() if k != "images"}
         elif action == "autolabel":  # the template's predict code, over a labeling set's images
             header, items = trainer.manifest_stream(client, base)
-            roots = [root for root in header["locations"].values() if root]
+            # images registered on another server were received into this one's cache first (``data.sync``)
+            received = Path(os.environ.get("BADAMOA_CACHE_DIR") or node_home / "cache")
+            roots = [root for root in [*header["locations"].values(), str(received)] if root]
             source = work / "inputs"
             source.mkdir(parents=True, exist_ok=True)
             placed = missing = 0
             for item in items:
-                image = Path(header["locations"].get(str(item.get("location_id")), "")).expanduser() / item["rel_path"]
+                root = header["locations"].get(str(item.get("location_id")))
+                if root:
+                    image = Path(root).expanduser() / item["rel_path"]
+                else:  # registered elsewhere: the copy received by its hash
+                    image = received / image_cache.rel_of(item["sha256"], Path(item["rel_path"]).suffix)
                 try:
                     ok = image.is_file() and image.stat().st_size == item["bytes"]
                 except OSError:

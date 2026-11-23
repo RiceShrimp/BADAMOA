@@ -146,9 +146,21 @@
   background: var(--surface-2);
   font-size: 13px;
 }
-.al-server > span {
+.al-server-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1;
-  min-width: 220px;
+  min-width: 260px;
+  font-weight: 600;
+}
+.al-server-pick select {
+  flex: 1;
+  min-width: 0;
+  font-weight: 400;
+}
+.al-server-note {
+  flex-basis: 100%;
 }
 .al-server.bad {
   border-color: var(--bad);

@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
 
-from . import asks, catalog, drafts, labeling, modelops, registry, services, training
+from . import asks, catalog, drafts, labeling, modelops, registry, services, training, transfers
 from .catalog_models import (
     Dataset,
     ItemPrediction,
@@ -42,6 +42,7 @@ from .services import ServiceError
 from .train_models import ModelJob, ModelVersion
 
 SINCE = (0, 52, 0)  # node versions from here on run a template's predict in autolabel mode
+RECEIVED_SINCE = (0, 93, 0)  # and from here on over images received from another server (kept in its cache)
 KEEP = 0.25  # predictions below this are dropped
 ALIASES = ("production", "champion")
 
@@ -136,9 +137,11 @@ def start(
     accept: float | None = None,
     gpus: int | None = None,
     via: str = "ui",
+    node_id: str = "",
 ) -> ModelJob:
-    """Run the model over the set's images not labelled yet, on the server that has them (on a GPU when it has
-    one, unless ``gpus=0``)."""
+    """Run the model over the set's images not labelled yet, on the server that has them or on ``node_id``, which
+    receives them first when it has none (only the set's images still to label, like a training's or an evaluation's
+    transfer). On a GPU when the server has one, unless ``gpus=0``."""
     found = labeling.get_set(db, set_id)
     release = _open(db, found)
     job = _job_of(db, found)
@@ -158,7 +161,16 @@ def start(
     todo = _todo(db, found)
     if not todo:
         raise ServiceError(400, "이 묶음에는 아직 라벨링하지 않은 이미지가 없습니다.")
-    node: Node = training.data_node(db, release.id)
+    holder: Node = training.data_node(db, release.id)
+    node, after = holder, None
+    if node_id and node_id != holder.id:
+        node = modelops._picked(db, node_id)
+        if node.id not in transfers.holders(db, release.id):  # the set's images come to it first
+            if not asks.answers_questions(node.agent_version or "", RECEIVED_SINCE):
+                need = ".".join(str(n) for n in RECEIVED_SINCE)
+                raise ServiceError(400, f"{node.name}에서 다른 서버의 이미지로 오토라벨하려면 {need} 이상이어야 합니다.")
+            transfers.check_route(holder, node)
+            after = transfers.sync_job(db, user, release.id, node, via, set_id=found.id).id
     if not asks.answers_questions(node.agent_version or "", SINCE):
         need = ".".join(str(n) for n in SINCE)
         raise ServiceError(409, f"{node.name}의 MOA를 {need} 이상으로 업데이트해야 오토라벨을 돌릴 수 있습니다.")
@@ -167,7 +179,9 @@ def start(
     gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else max(0, min(int(gpus), 1))
     params = {"conf": keep, "keep": keep, "accept": accept, "set_id": found.id}
     extra = {"class_ids": class_ids}
-    op = modelops._start(db, user, model, "autolabel", node, params, release_id=release.id, extra=extra, gpus=gpus, via=via)
+    op = modelops._start(
+        db, user, model, "autolabel", node, params, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after
+    )
     found.autolabel = {
         "op_id": op.id,
         "model": {"id": model.id, "name": model.name, "version": model.version},
@@ -521,31 +535,54 @@ def targets(db: Session, project_id: str) -> dict[str, Any]:
     return {"sets": sets, "datasets": datasets}
 
 
-def _server(db: Session, settings: HubSettings, release: Release) -> dict[str, Any]:
-    """The server it runs on (the one holding the images), what stops it there and what slows it."""
+def _servers(db: Session, settings: HubSettings, release: Release) -> dict[str, Any]:
+    """The servers it can run on, as for an evaluation: the one holding the images, or another one, which receives
+    the set's images first. Each with whether it can and why not; the one picked unless another is: the holder when it
+    can, else the first that can (one that has the images first)."""
     try:
-        node = training.data_node(db, release.id)
+        holder = training.data_node(db, release.id)
     except ServiceError as e:
-        return {"id": None, "name": "", "status": "", "gpus": 0, "problems": [e.message], "notes": []}
-    problems, notes = [], []
-    if not node.enabled:
-        problems.append(f"{node.name}은(는) 작업을 받지 않도록 되어 있습니다.")
-    elif not registry.has_role(node, registry.AUTOLABELS):
-        problems.append(f"{node.name}은(는) 오토라벨용 서버가 아닙니다. 노드 설정에서 '오토라벨용'을 켜세요.")
-    if not asks.answers_questions(node.agent_version or "", SINCE):
-        need = ".".join(str(n) for n in SINCE)
-        problems.append(f"{node.name}의 MOA를 {need} 이상으로 업데이트해야 합니다.")
-    now = services.node_status(node, settings)
-    if now != "online":
-        notes.append(f"{node.name}이(가) 지금 응답이 없습니다. 켜지면 시작합니다.")
-    return {
-        "id": node.id,
-        "name": node.name,
-        "status": now,
-        "gpus": len((node.info or {}).get("gpus") or []),
-        "problems": problems,
-        "notes": notes,
-    }
+        return {"default": "", "holder": None, "nodes": [], "problem": e.message}
+    have = transfers.holders(db, release.id)
+    found = []
+    for node in db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)):
+        why: list[str] = []
+        status_now = services.node_status(node, settings)
+        if status_now != "online":
+            why.append("응답 없음")
+        if not registry.has_role(node, registry.AUTOLABELS):
+            why.append("오토라벨용 서버가 아님 (노드 설정에서 '오토라벨용'을 켭니다)")
+        if not asks.answers_questions(node.agent_version or "", SINCE):
+            why.append(f"MOA {'.'.join(str(n) for n in SINCE)} 이상 필요")
+        transfer = node.id not in have
+        if transfer:
+            if not asks.answers_questions(node.agent_version or "", RECEIVED_SINCE):
+                need = ".".join(str(n) for n in RECEIVED_SINCE)
+                why.append(f"다른 서버의 이미지로 오토라벨하려면 MOA {need} 이상 필요")
+            else:
+                try:
+                    transfers.check_route(holder, node)
+                except ServiceError as e:
+                    why.append(e.message)
+        found.append(
+            {
+                "id": node.id,
+                "name": node.name,
+                "status": status_now,
+                "gpus": len((node.info or {}).get("gpus") or []),
+                "fits": not why,
+                "why": " · ".join(dict.fromkeys(why)),
+                "transfer": transfer,  # the set's images are sent there first
+                "holds_images": node.id == holder.id,
+            }
+        )
+    fitting = [f for f in found if f["fits"]]
+    first = next((f for f in fitting if f["id"] == holder.id), None) or next(
+        (f for f in fitting if not f["transfer"]), None
+    )
+    default = (first or (fitting[0] if fitting else None) or {"id": holder.id})["id"]
+    found.sort(key=lambda f: (f["id"] != default, not f["fits"], f["name"]))
+    return {"default": default, "holder": {"id": holder.id, "name": holder.name}, "nodes": found, "problem": ""}
 
 
 def offer(db: Session, settings: HubSettings, set_id: str = "", release_id: str = "") -> dict[str, Any]:
@@ -564,7 +601,7 @@ def offer(db: Session, settings: HubSettings, set_id: str = "", release_id: str 
         "todo": todo,
         "keep": KEEP,
         "models": _models(db, project_id, release),
-        "server": _server(db, settings, release),
+        "servers": _servers(db, settings, release),
     }
 
 
@@ -582,6 +619,7 @@ def start_on_images(
     accept: float | None = None,
     gpus: int | None = None,
     via: str = "ui",
+    node_id: str = "",
 ) -> tuple[LabelSet, ModelJob]:
     """A dataset's images nobody labelled yet (of one split, or all): a labeling set of them, labelled by the model
     first. People take its parts as with any set."""
@@ -603,4 +641,4 @@ def start_on_images(
             where = f"{split}에 " if split else ""
             raise ServiceError(400, f"이 데이터셋의 {where}아직 라벨링하지 않은 이미지가 없습니다.") from e
         raise
-    return found, start(db, user, found.id, model_id, keep=keep, accept=accept, gpus=gpus, via=via)
+    return found, start(db, user, found.id, model_id, keep=keep, accept=accept, gpus=gpus, via=via, node_id=node_id)

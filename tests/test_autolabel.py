@@ -10,6 +10,7 @@ import shutil
 
 from sample_data import CLASSES, make_yolo
 from test_training import _logs, _train, _wait, hub, release  # noqa: F401 (fixtures)
+from test_transfer import two_nodes  # noqa: F401 (fixture)
 
 
 def _raw(client, project_id, tmp_path):
@@ -47,7 +48,10 @@ def test_autolabel_screen_runs_targets_and_starting_from_a_dataset(hub, release,
     # ---- the models for a dataset's images (before its set is made) and the server holding them
     offered = hub.get("/api/autolabel/models", params={"release_id": raw}).json()
     assert [(m["id"], m["problem"]) for m in offered["models"]] == [(model["id"], "")]
-    assert offered["server"]["id"] == hub.node_id and offered["server"]["problems"] == []
+    servers = offered["servers"]
+    assert servers["default"] == hub.node_id and servers["holder"]["id"] == hub.node_id
+    (only,) = servers["nodes"]
+    assert only["fits"] and only["holds_images"] and not only["transfer"], only["why"]
     assert offered["todo"] is None
     assert hub.get("/api/autolabel/models").status_code == 400
 
@@ -101,3 +105,56 @@ def test_autolabel_screen_runs_targets_and_starting_from_a_dataset(hub, release,
     assert board["totals"]["runs"] == 2 and board["totals"]["todo"] == 5
     sets = hub.get("/api/autolabel/targets", params={"project_id": project}).json()["sets"]
     assert [(s["id"], s["todo"], s["items"]) for s in sets] == [(first["set_id"], 5, 8)]
+
+
+def test_autolabel_runs_on_a_server_picked_which_receives_the_images_first(two_nodes, tmp_path):  # noqa: F811
+    """As a training or an evaluation: the images stay where they were registered (a storage server here, not one
+    for 오토라벨), and the server picked receives the set's images still to label before it runs."""
+    client = two_nodes
+    data, worker = client.data.config.node_id, client.train.config.node_id
+    client.patch(f"/api/nodes/{data}", json={"roles": ["compute", "storage"]})  # trains, holds images, no 오토라벨
+    client.patch(f"/api/nodes/{worker}", json={"roles": ["autolabel"]})
+    project = client.post("/api/projects", json={"name": "어디서 오토라벨"}).json()
+    body = {"node_id": data, "path": str(make_yolo(tmp_path / "ds")), "dataset": "street", "version": "v1"}
+    labelled = _wait(client, client.post(f"/api/projects/{project['id']}/imports", json=body).json()["id"])
+    run = client.post(
+        "/api/runs", json={"release_id": labelled["result"]["release_id"], "template": "dummy", "gpus": 0}
+    ).json()
+    assert _wait(client, run["job_id"])["status"] == "succeeded", _logs(client, run["job_id"])
+    model = client.get(f"/api/runs/{run['id']}").json()["model"]
+    root = make_yolo(tmp_path / "raw")
+    shutil.rmtree(root / "labels")
+    (root / "data.yaml").unlink()
+    body = {"node_id": data, "path": str(root), "dataset": "raw", "version": "v1", "classes": CLASSES}
+    imported = _wait(client, client.post(f"/api/projects/{project['id']}/imports", json=body).json()["id"])
+    raw = imported["result"]["release_id"]
+
+    # ---- where it can run: not where the images are (no 오토라벨 role), so the other server, which receives them
+    servers = client.get("/api/autolabel/models", params={"release_id": raw}).json()["servers"]
+    by = {s["id"]: s for s in servers["nodes"]}
+    assert servers["default"] == worker and servers["holder"]["id"] == data
+    assert by[data]["holds_images"] and not by[data]["fits"] and "오토라벨용" in by[data]["why"]
+    assert by[worker]["transfer"] and by[worker]["fits"], by[worker]["why"]
+    refused = client.post("/api/autolabel", json={"release_id": raw, "model_id": model["id"], "gpus": 0})
+    assert refused.status_code == 400 and "오토라벨용 서버가 아닙니다" in refused.json()["detail"]
+    assert client.get("/api/label-sets", params={"project_id": project["id"]}).json() == []
+    wrong = {"release_id": raw, "model_id": model["id"], "node_id": "nope"}
+    assert client.post("/api/autolabel", json=wrong).status_code == 404
+
+    # ---- on the server picked: the set's images come first (only those), then it labels them
+    body = {"release_id": raw, "model_id": model["id"], "accept": 0.9, "gpus": 0, "node_id": worker, "split": "train"}
+    started = client.post("/api/autolabel", json=body)
+    assert started.status_code == 200, started.text
+    first = started.json()
+    done = _wait(client, first["job_id"])
+    assert done["status"] == "succeeded", _logs(client, first["job_id"])
+    assert done["node_id"] == worker
+    (sync,) = [j for j in client.get("/api/jobs?limit=30").json() if j["type"] == "data.sync"]
+    assert sync["status"] == "succeeded" and sync["node_id"] == worker and sync["params"]["set_id"] == first["set_id"]
+    made = client.get(f"/api/label-sets/{first['set_id']}").json()
+    assert sync["result"]["items"] == made["items"] < 8  # the train split's only, not the whole version
+    (row,) = client.get("/api/autolabel/runs", params={"set_id": first["set_id"]}).json()
+    assert row["node_name"] == "train-node" and row["result"]["images"] == made["items"]
+    # some of the version's images: the server does not count as holding the version
+    again = client.get("/api/autolabel/models", params={"set_id": first["set_id"]}).json()["servers"]
+    assert next(s for s in again["nodes"] if s["id"] == worker)["transfer"]

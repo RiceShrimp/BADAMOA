@@ -102,20 +102,23 @@ interface Targets {
   datasets: TargetDataset[];
 }
 
+/** A server it can run on: the one holding the images, or another one, which receives the set's images first. */
 interface Server {
-  id: string | null;
+  id: string;
   name: string;
   status: string;
   gpus: number;
-  problems: string[];
-  notes: string[];
+  fits: boolean;
+  why: string;
+  transfer: boolean;
+  holds_images: boolean;
 }
 
 interface Offer {
   todo: number | null;
   keep: number;
   models: AutolabelModel[];
-  server: Server;
+  servers: { default: string; holder: { id: string; name: string } | null; nodes: Server[]; problem: string };
 }
 
 const STATUS_KIND: Record<string, string> = {
@@ -776,7 +779,8 @@ const unlabelled = (d: TargetDataset | undefined, split: string) => {
 
 /**
  * Start a 오토라벨: what it runs over (a labeling set's images not labelled yet, or a dataset's, made into a set
- * first), the model (the fitting ones first, an alias first), the server holding the images and how sure it must be.
+ * first), the model (the fitting ones first, an alias first), the server (the one holding the images, or another
+ * that receives them first) and how sure it must be.
  * ``setId`` alone (from a set's screen): that set, no choosing. ``pickTarget`` with it: that set first, others too.
  */
 export function StartAutolabel({
@@ -858,23 +862,29 @@ export function StartAutolabel({
   const [accepting, setAccepting] = useState(startAccept != null);
   const [accept, setAccept] = useState(startAccept ?? 0.8);
   const [cpu, setCpu] = useState(false);
+  const [nodeId, setNodeId] = useState("");
+  useEffect(() => {
+    if (offer && !offer.servers.nodes.some((s) => s.id === nodeId && s.fits)) setNodeId(offer.servers.default);
+  }, [offer]); // eslint-disable-line react-hooks/exhaustive-deps
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const server = offer?.server;
+  const servers = offer?.servers;
+  const server = servers?.nodes.find((s) => s.id === nodeId);
   const reviewOf = fixedSet
     ? (setReviews ?? true)
     : mode === "set"
       ? (targets?.sets.find((s) => s.id === chosenSet)?.review ?? true)
       : review;
   const images = fixedSet || mode === "set" ? (offer?.todo ?? targets?.sets.find((s) => s.id === chosenSet)?.todo ?? 0) : unlabelled(dataset, split);
-  const blocked = !query || !modelId || images === 0 || (server?.problems.length ?? 0) > 0 || (accepting && accept < keep);
+  const blocked = !query || !modelId || images === 0 || !server?.fits || (accepting && accept < keep);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const common = { model_id: modelId, keep, accept: accepting ? accept : null, gpus: cpu ? 0 : null };
+    const gpus = cpu || !server?.gpus ? 0 : null;
+    const common = { model_id: modelId, keep, accept: accepting ? accept : null, gpus, node_id: nodeId };
     const body =
       fixedSet || mode === "set"
         ? { ...common, set_id: chosenSet }
@@ -1028,39 +1038,51 @@ export function StartAutolabel({
           </div>
         )}
 
-        {server && (
-          <div className={`al-server ${server.problems.length ? "bad" : ""}`}>
+        {servers && (
+          <div className={`al-server ${server?.fits ? "" : "bad"}`}>
             <Icon name="server" size={14} />
-            <span>
-              {server.id ? (
-                <>
-                  이미지가 있는 <strong>{server.name}</strong>에서 돕니다 ({server.gpus ? `GPU ${server.gpus}개` : "GPU 없음"}).
-                </>
-              ) : (
-                "돌릴 서버를 찾지 못했습니다."
-              )}
-              {server.problems.map((p) => (
-                <span key={p} className="bad-text">
-                  {" "}
-                  {p}
+            {servers.problem ? (
+              <span className="bad-text">{servers.problem}</span>
+            ) : (
+              <>
+                <label className="al-server-pick">
+                  서버
+                  <select value={nodeId} onChange={(e) => setNodeId(e.target.value)} aria-label="돌릴 서버">
+                    {servers.nodes.map((s) => (
+                      <option key={s.id} value={s.id} disabled={!s.fits}>
+                        {s.name} · {s.gpus ? `GPU ${s.gpus}개` : "CPU"} · {s.holds_images ? "이미지 있음" : s.transfer ? "이미지를 먼저 받음" : "받아 둔 이미지 있음"}
+                        {s.fits ? "" : ` — ${s.why}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {server?.gpus ? (
+                  <div className="segmented" role="radiogroup" aria-label="계산">
+                    <button type="button" className={cpu ? "" : "active"} onClick={() => setCpu(false)}>
+                      GPU
+                    </button>
+                    <button type="button" className={cpu ? "active" : ""} onClick={() => setCpu(true)}>
+                      CPU
+                    </button>
+                  </div>
+                ) : null}
+                <span className="al-server-note small">
+                  {!server ? (
+                    <span className="bad-text">돌릴 수 있는 서버가 없습니다. 노드 설정에서 '오토라벨용'을 켜세요.</span>
+                  ) : !server.fits ? (
+                    <span className="bad-text">{server.why}</span>
+                  ) : server.transfer ? (
+                    <span className="muted">
+                      이미지가 있는 {servers.holder?.name}에서 대상 이미지 {n(images)}장을 먼저 받은 뒤 돕니다 (받아 둔 것은 다시 받지 않음).
+                    </span>
+                  ) : (
+                    <span className="muted">
+                      {server.holds_images ? "이미지가 있는 서버라 받을 것 없이 바로 돕니다." : "이 버전의 이미지를 받아 둔 서버라 바로 돕니다."}
+                      {server.status !== "online" ? " 지금 응답이 없어 켜지면 시작합니다." : ""}
+                    </span>
+                  )}
                 </span>
-              ))}
-              {server.notes.map((p) => (
-                <span key={p} className="muted">
-                  {" "}
-                  {p}
-                </span>
-              ))}
-            </span>
-            {server.gpus > 0 && (
-              <div className="segmented" role="radiogroup" aria-label="계산">
-                <button type="button" className={cpu ? "" : "active"} onClick={() => setCpu(false)}>
-                  GPU
-                </button>
-                <button type="button" className={cpu ? "active" : ""} onClick={() => setCpu(true)}>
-                  CPU
-                </button>
-              </div>
+              </>
             )}
           </div>
         )}

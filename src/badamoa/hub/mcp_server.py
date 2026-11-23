@@ -556,18 +556,24 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
     @mcp.tool(title="라벨링 묶음 오토라벨", annotations=WRITE)
     @guarded
     def autolabel_label_set(
-        set_id: str, ctx: Context, model_id: str = "", keep: float = autolabel.KEEP, accept: float | None = None
+        set_id: str,
+        ctx: Context,
+        model_id: str = "",
+        keep: float = autolabel.KEEP,
+        accept: float | None = None,
+        node_id: str = "",
     ) -> dict[str, Any]:
         """등록한 모델로 라벨링 묶음의 "아직 안 함" 이미지에 라벨을 먼저 그립니다(오토라벨). model_id를 비우면 쓸 수 있는
         모델 목록(problem이 비어 있는 것이 쓸 수 있는 것)을 돌려줍니다. keep: 이보다 낮은 확신도의 예측은 버림(기본 0.25).
         accept: 주면 예측이 모두 이 확신도 이상인 이미지는 바로 작업 중에 저장하고 검수(검수 없는 묶음은 완료)로 보냅니다.
         나머지는 라벨링하는 사람이 그 이미지를 열 때 모델이 그린 것에서 시작합니다. 사람이 라벨링한 이미지는 건드리지
-        않습니다. 진행은 get_label_set의 autolabel(status · result)로 봅니다."""
+        않습니다. node_id: 돌릴 서버(servers.nodes 중 fits인 것, 비우면 이미지가 있는 서버). 이미지가 없는 서버면 묶음의
+        아직 안 한 이미지를 먼저 받은 뒤 돕니다. 진행은 get_label_set의 autolabel(status · result)로 봅니다."""
         user = user_of(ctx)
         with hub.db.session() as db:
             if not model_id:
-                return autolabel.choices(db, set_id)
-            autolabel.start(db, user, set_id, model_id, keep=keep, accept=accept, via="mcp")
+                return autolabel.offer(db, hub.settings, set_id=set_id)
+            autolabel.start(db, user, set_id, model_id, keep=keep, accept=accept, via="mcp", node_id=node_id)
             return labeling.set_view(db, user, set_id)
 
     @mcp.tool(title="라벨 의심 평가 목록", annotations=READ_ONLY)

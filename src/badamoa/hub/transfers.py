@@ -28,7 +28,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from . import services
-from .catalog_models import Item, Release, ReleaseItem, StorageLocation
+from .catalog_models import Item, LabelSetItem, Release, ReleaseItem, StorageLocation
 from .db import utcnow
 from .models import Job, Node, NodeRelease, TransferGrant, User
 from .services import ServiceError
@@ -59,13 +59,16 @@ def holders(db: Session, release_id: str) -> set[str]:
     return have
 
 
-def release_bytes(db: Session, release_id: str) -> tuple[int, int]:
-    """How many images a version has and how many bytes they take."""
-    count, size = db.execute(
+def release_bytes(db: Session, release_id: str, only: Any = None) -> tuple[int, int]:
+    """How many images a version has (of ``only``, a query of item ids, when given) and how many bytes they take."""
+    query = (
         select(func.count(Item.id), func.coalesce(func.sum(Item.bytes), 0))
         .join(ReleaseItem, ReleaseItem.item_id == Item.id)
         .where(ReleaseItem.release_id == release_id)
-    ).one()
+    )
+    if only is not None:
+        query = query.where(Item.id.in_(only))
+    count, size = db.execute(query).one()
     return int(count or 0), int(size or 0)
 
 
@@ -129,12 +132,26 @@ def check_route(source: Node, receiver: Node) -> None:
         raise ServiceError(400, f"이미지가 있는 {source.name}가 다른 노드로 이미지를 보낼 수 없습니다: {why}.")
 
 
-def sync_job(db: Session, user: User, release_id: str, node: Node, via: str = "api") -> Job:
-    """The job that brings a version's images to a node, one at a time per version and node."""
+def sync_job(db: Session, user: User, release_id: str, node: Node, via: str = "api", set_id: str = "") -> Job:
+    """The job that brings a version's images to a node, one at a time per version and node.
+
+    ``set_id``: only a labeling set's images not labelled yet (what a 오토라벨 needs); a transfer of the whole
+    version on its way to the node serves too."""
     for job in db.scalars(select(Job).where(Job.type == "data.sync", Job.status.in_(ACTIVE))):
-        if job.target_node_id == node.id and (job.params or {}).get("release_id") == release_id:
-            return job
-    return services.create_job(db, user, "data.sync", {"release_id": release_id}, node.id, via=via, gpus=0)
+        params = job.params or {}
+        if job.target_node_id == node.id and params.get("release_id") == release_id:
+            if not params.get("set_id") or params.get("set_id") == set_id:
+                return job
+    params = {"release_id": release_id, **({"set_id": set_id} if set_id else {})}
+    return services.create_job(db, user, "data.sync", params, node.id, via=via, gpus=0)
+
+
+def _only(job: Job) -> Any:
+    """The images a transfer is limited to (a labeling set's not labelled yet), or None for the whole version."""
+    set_id = str((job.params or {}).get("set_id") or "")
+    if not set_id:
+        return None
+    return select(LabelSetItem.item_id).where(LabelSetItem.set_id == set_id, LabelSetItem.state == "todo")
 
 
 # ---- the receiving node --------------------------------------------------------------------
@@ -160,13 +177,15 @@ def plan(db: Session, node: Node, job_id: str, after: int = 0, limit: int = PLAN
         raise ServiceError(404, "버전을 찾을 수 없습니다.")
     source = training.data_node(db, release.id)
     limit = max(1, min(limit, PLAN_MAX))
-    rows = db.execute(
+    only = _only(job)
+    query = (
         select(Item.id, Item.sha256, Item.bytes, Item.rel_path)
         .join(ReleaseItem, ReleaseItem.item_id == Item.id)
         .where(ReleaseItem.release_id == release.id, Item.id > after)
-        .order_by(Item.id)
-        .limit(limit)
-    ).all()
+    )
+    if only is not None:
+        query = query.where(Item.id.in_(only))
+    rows = db.execute(query.order_by(Item.id).limit(limit)).all()
     page: dict[str, Any] = {
         "items": [
             {"id": i, "sha256": sha, "bytes": size, "ext": PurePosixPath(rel).suffix.lower()} for i, sha, size, rel in rows
@@ -174,7 +193,7 @@ def plan(db: Session, node: Node, job_id: str, after: int = 0, limit: int = PLAN
         "next": rows[-1][0] if len(rows) == limit else None,
     }
     if after == 0:
-        count, size = release_bytes(db, release.id)
+        count, size = release_bytes(db, release.id, only)
         page["total"] = {"items": count, "bytes": size}
         page["local"] = source.id == node.id  # the images are registered here: nothing to fetch
         if not page["local"]:
@@ -243,6 +262,8 @@ def on_job_finished(db: Session, job: Job) -> None:
     if job.type != "data.sync":
         return
     release_id = str((job.params or {}).get("release_id") or "")
+    if job.status == "succeeded" and job.node_id and (job.params or {}).get("set_id"):
+        return  # some of the version's images (a 오토라벨's): the node does not hold the version
     if job.status == "succeeded" and job.node_id:
         result = job.result or {}
         row = db.get(NodeRelease, (job.node_id, release_id))
@@ -255,12 +276,16 @@ def on_job_finished(db: Session, job: Job) -> None:
         if row.state == "removing":
             row.state, row.job_id = "", None
         return
-    # It failed or was stopped: the trainings waiting for it cannot start.
+    if job.status == "succeeded":
+        return
+    # It failed or was stopped: the trainings (evaluations, 오토라벨) waiting for it cannot start.
     reason = job.error or ("취소되었습니다." if job.status == "canceled" else "실패했습니다.")
-    for waiting in db.scalars(select(Job).where(Job.type == "train.run", Job.status == "queued")):
+    for waiting in db.scalars(select(Job).where(Job.type.in_(("train.run", "model.run")), Job.status == "queued")):
         if (waiting.requirements or {}).get("after") == job.id:
+            action = (waiting.params or {}).get("action")
+            what = "학습을" if waiting.type == "train.run" else "오토라벨을" if action == "autolabel" else "작업을"
             waiting.status, waiting.finished_at = "failed", utcnow()
-            waiting.error = f"이미지를 받지 못해 학습을 시작하지 못했습니다: {reason}"
+            waiting.error = f"이미지를 받지 못해 {what} 시작하지 못했습니다: {reason}"
 
 
 def waiting_for(db: Session, job: Job) -> Job | None:
