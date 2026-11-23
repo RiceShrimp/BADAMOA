@@ -11,7 +11,8 @@ uv it found) in ``autostart.json`` in its data folder, and registers the machine
   ``@reboot`` in the account's crontab (no sudo, or no systemd: a container, WSL).
 
 The machine runs ``python -m badamoa.hub.autostart run --home <folder>``: no console window (pythonw on
-Windows), output in ``hub.log`` there.
+Windows, which serves the Hub from python.exe started with no window: the program the firewall lets in), output in
+``hub.log`` there.
 """
 
 from __future__ import annotations
@@ -254,12 +255,89 @@ def run(home: Path) -> None:
     log = home / LOG
     if log.is_file() and log.stat().st_size > LOG_KEEP:
         log.replace(home / f"{LOG}.1")
+    console = _console_python()
+    if console:
+        raise SystemExit(_serve_from_console(console, launch["args"], home, log))
     out = open(log, "a", encoding="utf-8", buffering=1)  # noqa: SIM115  (the Hub's output for its whole life)
     sys.stdout = sys.stderr = out
     os.chdir(home)
     from badamoa.cli import app
 
     app(launch["args"], prog_name="badamoa")
+
+
+def _console_python() -> str | None:
+    """On Windows the task starts pythonw (no window); the Hub itself is served by python.exe beside it, as a start
+    from a terminal is. Windows' firewall lets other machines reach the program it was allowed for — commonly
+    python.exe, from the first terminal start — and pythonw.exe is another program: served from it, the Hub
+    answered only this PC and every remote node went unanswered (2026-11-23)."""
+    if not WINDOWS:
+        return None
+    exe = Path(sys.executable)
+    console = exe.with_name("python.exe")
+    return str(console) if exe.name.lower() == "pythonw.exe" and console.is_file() else None
+
+
+def _serve_from_console(console: str, args: list[str], home: Path, log: Path) -> int:
+    """Run the Hub in python.exe with no window (output in ``hub.log``) and wait for it. Both are in one job that
+    ends with this process: the task's End, a sign-out, stop the Hub too instead of leaving it on the port."""
+    _end_with_me()
+    with open(log, "a", encoding="utf-8", buffering=1) as out:
+        child = subprocess.Popen(
+            [console, "-m", "badamoa.cli", *args],
+            cwd=home,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+        return child.wait()
+
+
+_job: list[int] = []  # the job's handle, open for this process's life
+
+
+def _end_with_me() -> None:
+    """This process and everything it starts in a job that is killed when this process ends (its handle closes)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        class Basic(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", Basic),
+                ("IoInfo", ctypes.c_ulonglong * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        job = kernel32.CreateJobObjectW(None, None)
+        info = Extended()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        kernel32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+        if kernel32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(kernel32.GetCurrentProcess())):
+            _job.append(job)
+    except (AttributeError, OSError):
+        pass  # the Hub still runs; only a forced End may leave it behind (the redeploy stops it by its command line)
 
 
 def main(argv: list[str] | None = None) -> int:

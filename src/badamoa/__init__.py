@@ -1,3 +1,10 @@
 """BADAMOA — Build · Annotate · Develop · Automate / MLOps Orchestration & Agents."""
 
-__version__ = "0.83.1"
+__version__ = "0.83.2"
+
+import sys as _sys
+
+if _sys.platform == "win32":  # pythonw (the Hub's task, a node's service): no console window flashing per program
+    from badamoa.core.winproc import hide_child_consoles as _hide
+
+    _hide()
