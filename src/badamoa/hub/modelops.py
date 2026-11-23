@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core import tasks as task_names
 from badamoa.core.storage import Storage
-from badamoa.core.templates import reads_weights
+from badamoa.core.templates import TemplateManifest, reads_weights
 
 from . import catalog, checks, drafts, registry, services, training, transfers
 from .catalog_models import Dataset, ItemPrediction, LabelSpace, Release
@@ -55,15 +55,24 @@ def _does(row: Template, kind: str) -> bool:
     return ENTRY.get(kind, kind) in manifest.entrypoints and (kind != "autolabel" or manifest.autolabel)
 
 
+def _installs_env(row: Template) -> bool:
+    """The version installs a virtual environment (it names packages), whether or not it declares an image too."""
+    return bool(registry.manifest_of(row).environment.requirements)
+
+
 def code_for(db: Session, model: ModelVersion, kind: str) -> Template | None:
     """The template version whose code does ``kind`` (eval · export · predict · autolabel) for this model: the
     version that trained it when that has the code, else the newest version offered to everyone that has it and
-    declares it reads this model's weights (``reads_weights_from``). None when no version can."""
+    declares it reads this model's weights (``reads_weights_from``). None when no version can.
+
+    가상환경 먼저: when the version that trained it runs only in a Docker image (it names no packages), such a newer
+    version that installs a virtual environment does it instead (a model trained with DCL 1.0.3, image only, is
+    evaluated with 1.0.6's code in its virtual environment, as 1.0.6 says it reads 1.0.x weights)."""
     own = _template_of(db, model)
-    if _does(own, kind):
-        return own
     if own.builtin:
-        return None
+        return own if _does(own, kind) else None
+    if _does(own, kind) and _installs_env(own):
+        return own
     from . import template_checks
 
     newer = db.scalars(
@@ -72,9 +81,27 @@ def code_for(db: Session, model: ModelVersion, kind: str) -> Template | None:
         .order_by(Template.created_at.desc(), Template.id)
     )
     for row in newer:
-        if template_checks.offered(row) and _does(row, kind) and reads_weights(registry.manifest_of(row), own.version):
-            return row
-    return None
+        if not (template_checks.offered(row) and _does(row, kind) and reads_weights(registry.manifest_of(row), own.version)):
+            continue
+        if _does(own, kind) and not _installs_env(row):
+            continue  # the own code does it already: another version only to get a virtual environment
+        return row
+    return own if _does(own, kind) else None
+
+
+def environment_choice(manifest: TemplateManifest, run: Run | None) -> str:
+    """The environment a model's evaluation, export, test or auto-label asks for (``environment_for_run``'s
+    ``wanted``). 가상환경 먼저, as for training: code that names packages runs in the virtual environment it installs
+    (or the environment its template names as default) even when it declares a Docker image too, whatever the model
+    was trained in; code that names none runs where the model was trained (a registered environment, or the image
+    the code declares)."""
+    if manifest.environment.requirements:
+        return ""
+    wanted = (run.environment or {}) if run else {}
+    same = wanted.get("id") or {"auto": "auto", "docker": registry.DECLARED_IMAGE}.get(wanted.get("kind", ""), "")
+    if same == registry.DECLARED_IMAGE and not manifest.environment.image:
+        same = ""
+    return same
 
 
 def actions(db: Session, model: ModelVersion) -> list[str]:
@@ -126,12 +153,7 @@ def _start(
     if node is None:
         raise ServiceError(409, "이 모델을 학습한 서버가 연결되어 있지 않아 실행할 곳이 없습니다.")
     run = db.get(Run, model.run_id) if model.run_id else None
-    wanted = (run.environment or {}) if run else {}
-    # the environment it was trained in: a registered one, the one the template installs, or its declared image
-    same = wanted.get("id") or {"auto": "auto", "docker": registry.DECLARED_IMAGE}.get(wanted.get("kind", ""), "")
-    if same == registry.DECLARED_IMAGE and not manifest.environment.image:
-        same = ""
-    env = registry.environment_for_run(db, manifest, same, node, row)
+    env = registry.environment_for_run(db, manifest, environment_choice(manifest, run), node, row)
     role = registry.AUTOLABELS if kind == "autolabel" else registry.TRAINS
     _, unfit = training.fitting([node], env, gpus, role)
     if unfit:
@@ -281,10 +303,7 @@ def places(db: Session, settings: HubSettings, model_id: str, kind: str, release
         raise ServiceError(400, f"{own.title} {own.version}에는 {ACTIONS[kind]} 코드가 없습니다.")
     manifest = registry.manifest_of(row, model.task or "")
     run = db.get(Run, model.run_id) if model.run_id else None
-    wanted = (run.environment or {}) if run else {}
-    same = wanted.get("id") or {"auto": "auto", "docker": registry.DECLARED_IMAGE}.get(wanted.get("kind", ""), "")
-    if same == registry.DECLARED_IMAGE and not manifest.environment.image:
-        same = ""
+    same = environment_choice(manifest, run)
     trained = _training_node(db, model)
     holder = holders = None
     if kind == "eval":

@@ -590,3 +590,88 @@ def test_a_kinds_description_and_each_versions_memo_are_written_on_the_hub(clien
     # cleared: what the bundle says again
     cleared = client.put(f"/api/templates/{second['id']}/description", json={"text": ""}, headers=admin)
     assert cleared.json()["description"] == declared
+
+
+def test_model_jobs_run_in_a_virtual_environment_first(client, admin, settings, tmp_path):
+    """가상환경 먼저: a model's evaluation, export, test and auto-label run in the virtual environment its code installs,
+    even when the code declares a Docker image too and the model was trained in it. A model whose own version runs
+    only in an image is done with a newer version that installs one and reads its weights (DCL 1.0.3 → 1.0.6)."""
+    from sqlalchemy import select
+
+    from badamoa import __version__
+    from badamoa.hub import modelops, registry
+    from badamoa.hub.catalog_models import Project
+    from badamoa.hub.db import Database
+    from badamoa.hub.models import Job, Node, User
+    from badamoa.hub.train_models import ModelVersion, Run
+
+    image = 'image = "registry.local/dcl:v4"'
+    packages = 'requirements = ["onnx>=1.12"]'
+
+    def upload(name, version, environment, reads=""):
+        folder = tmp_path / f"{name}-{version}"
+        shutil.copytree(shipped.builtin()["dummy"], folder, ignore=shutil.ignore_patterns("__pycache__"))
+        text = (folder / "badamoa.toml").read_text(encoding="utf-8")
+        text = text.replace('name = "dummy"', f'name = "{name}"').replace('version = "3"', f'version = "{version}"')
+        if reads:
+            text = text.replace("resume = true\n", f'resume = true\nreads_weights_from = "{reads}"\n')
+        (folder / "badamoa.toml").write_text(text + f"\n[environment]\n{environment}\n", encoding="utf-8")
+        resp = client.post("/api/templates", content=template_format.bundle(folder), headers=admin)
+        assert resp.status_code == 200, resp.text
+        allowed = client.post(f"/api/templates/{resp.json()['id']}/allow", json={"reason": "시험"}, headers=admin)
+        assert allowed.status_code == 200, allowed.text
+        return resp.json()
+
+    old = upload("dcl", "1.0.3", image)
+    new = upload("dcl", "1.0.6", f"{packages}\n{image}", reads="1.*")
+    lone = upload("solo", "1.0.0", image)
+    upload("solo", "1.1.0", packages)  # installs one but says nothing about older weights
+
+    token = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()["token"]
+    reg = client.post("/api/agent/register", json={"join_token": token, "agent_version": __version__, "info": {}}).json()
+    database = Database(settings.database_url)
+    with database.session() as db:
+        project = Project(name="p")
+        db.add(project)
+        db.flush()
+        boss = db.scalar(select(User).where(User.username == "admin"))
+        in_image = {"kind": "docker", "name": "Docker 이미지", "image": "registry.local/dcl:v4"}
+
+        def model_of(row, environment):
+            job = Job(type="train.run", params={}, status="succeeded")
+            db.add(job)
+            db.flush()
+            run = Run(project_id=project.id, name=f"{row['name']}-{row['version']}", release_id="r",
+                      trainer=row["name"], job_id=job.id, environment=environment,
+                      template={"id": row["id"], "name": row["name"], "version": row["version"]})  # fmt: skip
+            db.add(run)
+            db.flush()
+            made = ModelVersion(
+                project_id=project.id, name=run.name, version=1, blob="0" * 64, trainer=row["name"], run_id=run.id
+            )
+            made.template = {"id": row["id"], "name": row["name"], "version": row["version"]}
+            db.add(made)
+            db.flush()
+            return made, run
+
+        def environment(model, run, kind):
+            row = modelops.code_for(db, model, kind)
+            return row.version, modelops.environment_choice(registry.manifest_of(row), run)
+
+        # trained with 1.0.3 in its image: 1.0.6's code in the virtual environment it installs
+        older, older_run = model_of(old, in_image)
+        assert environment(older, older_run, "export") == ("1.0.6", "")
+        assert environment(older, older_run, "predict") == ("1.0.6", "")
+        op = modelops._start(db, boss, older, "export", db.get(Node, reg["node_id"]), {"format": "onnx"})
+        params = db.get(Job, op.job_id).params
+        assert (params["template"]["version"], params["template"]["trained_with"]) == ("1.0.6", "1.0.3")
+        assert params["environment"]["kind"] == "auto" and params["environment"]["requirements"] == ["onnx>=1.12"]
+
+        # trained with 1.0.6 but in its image (picked in the training form): still the virtual environment
+        newer, newer_run = model_of(new, in_image)
+        assert environment(newer, newer_run, "export") == ("1.0.6", "")
+
+        # no version installs one and reads its weights: where it was trained, its own image
+        alone, alone_run = model_of(lone, {**in_image, "image": "registry.local/solo:v1"})
+        assert environment(alone, alone_run, "export") == ("1.0.0", registry.DECLARED_IMAGE)
+    database.engine.dispose()
