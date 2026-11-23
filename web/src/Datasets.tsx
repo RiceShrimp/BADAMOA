@@ -567,7 +567,7 @@ function ReleaseView({
               {item.check && item.check.missed + item.check.extra + (item.check.reclass ?? 0) > 0 && (
                 <span
                   className="check-mark"
-                  title={`모델이 못 찾은 라벨 ${item.check.missed} · 라벨에 없는 물체 ${item.check.extra} · 클래스 다름 ${item.check.reclass ?? 0} (평가한 버전의 라벨 기준)`}
+                  title={`물체가 없을 수 있는 라벨 ${item.check.missed} · 라벨이 없는 물체 ${item.check.extra} · 클래스 다름 ${item.check.reclass ?? 0} (평가한 버전의 라벨 기준)`}
                 >
                   {[
                     item.check.missed > 0 && `놓침 ${item.check.missed}`,

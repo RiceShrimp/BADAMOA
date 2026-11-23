@@ -122,23 +122,39 @@ def _iou(a: list[float], b: list[float]) -> float:
 
 RULE_KEY = "qa.model"  # what the stored counts were made with (``recount_if_needed``)
 # 1: FiftyOne's (0.89.0); 2: with the values that count at any threshold; 3: no size cut for a label the model
-# did not find (0.95.0). A new one counts again
-RULE_VERSION = 3
+# did not find (0.95.0); 4: how near the nearest prediction came to each such label, any IoU (0.100.1). A new one
+# counts again
+RULE_VERSION = 4
 # FiftyOne's 0.95; every label no prediction touches, however small (FiftyOne has no size cut either). ``min_area``
 # is still taken from an older screen's query
-DEFAULT_RULE = {"conf": 0.95, "min_area": 0.0}
+# ``conf``: how sure the model must be of an object no label has (extra); ``reclass_conf``: of another class on a
+# label (reclass), set apart on 검수 since 0.100.1
+# ``missed_iou``: a label paired with no prediction counts as not found when none overlaps it by this much (0.95:
+# about every unpaired label, as FiftyOne flags them)
+DEFAULT_RULE = {"conf": 0.95, "reclass_conf": 0.95, "missed_iou": 0.95, "min_area": 0.0}
 MATCH_IOU = 0.5  # a prediction and a label are one object (FiftyOne's _DETECTION_IOU)
-APART_IOU = 0.1  # a label no prediction overlaps this much: the model saw nothing there
+MISSED_IOU_LEVELS = (0.1, 0.3, 0.5, 0.7, 0.9, 0.95)  # 물체가 없을 수 있는 라벨: the counts beside the one chosen
 # What 검수 shows the counts at besides the one chosen: how they change with the threshold
 CONF_LEVELS = (0.5, 0.7, 0.8, 0.9, 0.95, 0.99)
-AREA_LEVELS = (0.0, 0.0005, 0.001, 0.005, 0.01, 0.02)
 
 
-def rule(conf: float | None = None, min_area: float | None = None) -> dict[str, float]:
-    """How sure the model must be (``conf``) and how big a label must be (``min_area``, a share of the image):
-    FiftyOne's by default; a screen may ask for others (predictions are kept from 0.25 up)."""
+def rule(
+    conf: float | None = None,
+    min_area: float | None = None,
+    reclass_conf: float | None = None,
+    missed_iou: float | None = None,
+) -> dict[str, float]:
+    """How sure the model must be of an object no label has (``conf``) and of another class on a label
+    (``reclass_conf``), and how big a label must be (``min_area``, a share of the image): FiftyOne's by default; a
+    screen may ask for others (predictions are kept from 0.25 up)."""
+
+    def sure(value: float | None, default: float) -> float:
+        return default if value is None else min(0.99, max(0.25, float(value)))
+
     picked = {
-        "conf": DEFAULT_RULE["conf"] if conf is None else min(0.99, max(0.25, float(conf))),
+        "conf": sure(conf, DEFAULT_RULE["conf"]),
+        "reclass_conf": sure(reclass_conf, DEFAULT_RULE["reclass_conf"]),
+        "missed_iou": DEFAULT_RULE["missed_iou"] if missed_iou is None else min(0.99, max(0.01, float(missed_iou))),
         "min_area": DEFAULT_RULE["min_area"] if min_area is None else min(0.1, max(0.0, float(min_area))),
     }
     return picked
@@ -179,10 +195,10 @@ def _pairing(
             out["found"].append(at)
         else:
             out["reclass"].append((at, score[i]))
-    for j in left:
+    for j in left:  # labels paired with none: how near the nearest prediction came (IoU, any class)
         box = truth[j]
-        if not any(_iou(p[1:5], box[1:5]) >= APART_IOU for p in predicted):
-            out["missed"].append((j, box[3] * box[4]))
+        near = max((_iou(p[1:5], box[1:5]) for p in predicted if len(p) >= 5), default=0.0)
+        out["missed"].append((j, box[3] * box[4], near))
     return out
 
 
@@ -195,19 +211,22 @@ def judge(
 ) -> dict[str, list[int]]:
     """An image's mistakes as FiftyOne counts them (``_pairing``), at a threshold:
     ``extra``    a prediction paired with no label, the model sure of it (over ``conf``): a label may be missing;
-    ``reclass``  a pair whose classes differ, the model sure of its own: the label's class may be wrong;
+    ``reclass``  a pair whose classes differ, the model sure of its own (over ``reclass_conf``): the label's class
+                 may be wrong;
     ``missed``   a label no prediction even touches, big enough to see (``min_area`` of the image): it may be
                  spurious (FiftyOne flags every unpaired label; most are objects too small for the model);
     ``found``    pairs of the same class.
     Indices: ``extra`` into the predictions, the rest into the labels."""
     counting = counting or DEFAULT_RULE
     conf, min_area = counting["conf"], counting["min_area"]
+    reclass_conf = counting.get("reclass_conf", conf)
+    missed_iou = counting.get("missed_iou", DEFAULT_RULE["missed_iou"])
     paired = _pairing(predicted, scores, truth, known)
     return {
         "found": paired["found"],
         "extra": [i for i, s in paired["extra"] if s > conf],
-        "reclass": [j for j, s in paired["reclass"] if s > conf],
-        "missed": [j for j, area in paired["missed"] if area >= min_area],
+        "reclass": [j for j, s in paired["reclass"] if s > reclass_conf],
+        "missed": [j for j, area, near in paired["missed"] if area >= min_area and near < missed_iou],
     }
 
 
@@ -217,15 +236,19 @@ def _stored(paired: dict[str, list[Any]]) -> dict[str, Any]:
     counts = {
         "found": len(paired["found"]),
         "extra": sum(1 for _, s in paired["extra"] if s > conf),
-        "reclass": sum(1 for _, s in paired["reclass"] if s > conf),
-        "missed": sum(1 for _, area in paired["missed"] if area >= min_area),
+        "reclass": sum(1 for _, s in paired["reclass"] if s > DEFAULT_RULE["reclass_conf"]),
+        "missed": sum(1 for _, area, near in paired["missed"] if area >= min_area and near < DEFAULT_RULE["missed_iou"]),
     }
     return {
         **counts,
         "wrong": counts["extra"] + counts["missed"] + counts["reclass"],
         "extra_top": max((s for _, s in paired["extra"]), default=0.0),
         "reclass_top": max((s for _, s in paired["reclass"]), default=0.0),
-        "missed_area": max((area for _, area in paired["missed"]), default=0.0),
+        "missed_area": max(
+            (area for _, area, near in paired["missed"] if near < DEFAULT_RULE["missed_iou"]), default=0.0
+        ),
+        # the least any unpaired label was overlapped (1: none unpaired): under a threshold, the image has one
+        "missed_near": min((near for *_, near in paired["missed"]), default=1.0),
     }
 
 
@@ -234,8 +257,11 @@ def over(kind: str, counting: dict[str, float]) -> Any:
     if kind == "extra":
         return ItemPrediction.extra_top > counting["conf"]
     if kind == "reclass":
-        return ItemPrediction.reclass_top > counting["conf"]
-    return and_(ItemPrediction.missed_area > 0, ItemPrediction.missed_area >= counting["min_area"])
+        return ItemPrediction.reclass_top > counting.get("reclass_conf", counting["conf"])
+    near = ItemPrediction.missed_near < counting.get("missed_iou", DEFAULT_RULE["missed_iou"])
+    if counting.get("min_area"):  # a size cut an older screen asks for
+        return and_(near, ItemPrediction.missed_area >= counting["min_area"])
+    return near
 
 
 def order_of(kind: str) -> Any:
@@ -244,7 +270,13 @@ def order_of(kind: str) -> Any:
 
 
 def levels(kind: str) -> tuple[float, ...]:
-    return AREA_LEVELS if kind == "missed" else CONF_LEVELS
+    return MISSED_IOU_LEVELS if kind == "missed" else CONF_LEVELS
+
+
+def at_level(kind: str, counting: dict[str, float], value: float) -> dict[str, float]:
+    """``counting`` with ``kind``'s own threshold at ``value`` (the counts at each level beside the chosen one)."""
+    key = {"extra": "conf", "reclass": "reclass_conf", "missed": "missed_iou"}[kind]
+    return {**counting, key: value, "min_area": 0.0}
 
 
 def _truths(db: Session, release_id: str, item_ids: list[int]) -> dict[int, list[list[float]]]:
@@ -373,7 +405,7 @@ def flagged(
                     said.append(f"{label} → 모델 {model} {theirs[0]:.2f}")
             note = " · ".join(said)
         else:
-            note = "모델이 아무것도 찾지 못한 자리"
+            note = "모델이 찾지 못한 라벨"
         out[row.item_id] = {"boxes": boxes, "note": note}
     return out
 

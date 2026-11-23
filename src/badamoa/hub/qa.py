@@ -451,9 +451,9 @@ def summary(
             found[kind] = db.scalar(flagged.where(~judged)) or 0
             found[f"{kind}_let_be"] = db.scalar(flagged.where(judged)) or 0
             steps = checks.levels(kind)
-            at = {**counting, "conf": 0.0, "min_area": 0.0}
+            each = [checks.at_level(kind, counting, v) for v in steps]
             row = db.execute(
-                select(*[func.sum(case((checks.over(kind, {**at, "conf": v, "min_area": v}), 1), else_=0)) for v in steps])
+                select(*[func.sum(case((checks.over(kind, level), 1), else_=0)) for level in each])
                 .select_from(ItemPrediction)
                 .join(ReleaseItem, ReleaseItem.item_id == ItemPrediction.item_id)
                 .where(*mine, ~judged)

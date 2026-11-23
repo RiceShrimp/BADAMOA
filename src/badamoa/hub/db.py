@@ -55,6 +55,7 @@ _ADDED_COLUMNS = [
     ("item_predictions", "extra_top", "REAL DEFAULT 0"),
     ("item_predictions", "reclass_top", "REAL DEFAULT 0"),
     ("item_predictions", "missed_area", "REAL DEFAULT 0"),
+    ("item_predictions", "missed_near", "REAL DEFAULT 1"),
     ("items", "mtime_ns", "INTEGER DEFAULT 0"),
     ("model_versions", "source", "JSON DEFAULT '{}'"),
 ]

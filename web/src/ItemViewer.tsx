@@ -187,7 +187,7 @@ export function ItemViewer({
 
   // ---- a labeling set's part: this image's state in it, and how far the part got
   const [inSet, setInSet] = useState<{ state: SetState; note: string } | null>(null);
-  // what a label check found: labels (indices), or for 라벨에 없는 물체 the model's own boxes and how sure it was
+  // what a label check found: labels (indices), or for 라벨이 없는 물체 the model's own boxes and how sure it was
   const [flagged, setFlagged] = useState<{ boxes: number[]; note: string; predicted?: number[][]; scores?: number[] } | null>(null);
   const [letBe, setLetBe] = useState<{ note: string; by: string | null; at: string } | null>(null); // "문제 없음"
   const [letBeNote, setLetBeNote] = useState("");
@@ -221,7 +221,7 @@ export function ItemViewer({
   const [showFlagged, setShowFlagged] = useState(true); // 검수's frames round the labels it flagged (Q)
   const [flaggedOff, setFlaggedOff] = useState<Set<number>>(new Set()); // single frames turned off (label indices)
   const [hoverFlagged, setHoverFlagged] = useState<number | null>(null); // the frame pointed at in the 검수 list
-  const [predictedOff, setPredictedOff] = useState<Set<number>>(new Set()); // 라벨에 없는 물체: frames turned off
+  const [predictedOff, setPredictedOff] = useState<Set<number>>(new Set()); // 라벨이 없는 물체: frames turned off
   const [hoverPredicted, setHoverPredicted] = useState<number | null>(null); // and the one pointed at
   // a prediction pointed at in "지금 라벨에 없는 예측": where it is ([class, cx, cy, w, h] and a tag)
   const [hoverMissing, setHoverMissing] = useState<{ box: number[]; tag: string } | null>(null);
@@ -1006,7 +1006,7 @@ export function ItemViewer({
       }),
       hoverFlagged,
     );
-  /** 라벨에 없는 물체: the model's boxes no label has, framed and numbered as a check's labels are. */
+  /** 라벨이 없는 물체: the model's boxes no label has, framed and numbered as a check's labels are. */
   const drawFlaggedPredictions = (predicted: number[][], scores: number[]) =>
     drawFrames(
       predicted.flatMap((b, n) =>
@@ -1797,7 +1797,7 @@ export function ItemViewer({
                       </div>
                       {run.kind === "eval" && (
                         <p className="muted small">
-                          평가한 버전의 라벨과 맞은 것 {run.found ?? 0} · 못 찾은 라벨 {run.missed ?? 0} · 라벨에 없는 물체{" "}
+                          평가한 버전의 라벨과 맞은 것 {run.found ?? 0} · 물체가 없을 수 있는 라벨 {run.missed ?? 0} · 라벨이 없는 물체{" "}
                           {run.extra ?? 0} · 클래스 다름 {run.reclass ?? 0}
                         </p>
                       )}

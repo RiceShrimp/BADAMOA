@@ -382,7 +382,8 @@
   opacity: 1;
 }
 
-.table-wrap {
+/* the manual's tables only: other screens' .table-wrap cards keep their own look (this once moved 최근 학습 on 홈) */
+.markdown .table-wrap {
   margin: 12px 0 20px;
   overflow-x: auto;
   border: 1px solid var(--border);
@@ -604,7 +605,7 @@
   .markdown h3 {
     break-after: avoid;
   }
-  .table-wrap,
+  .markdown .table-wrap,
   .code-block,
   .markdown blockquote {
     break-inside: avoid;

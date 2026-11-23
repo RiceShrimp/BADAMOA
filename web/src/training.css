@@ -1626,3 +1626,13 @@ label.check {
 .upload-progress progress {
   width: 100%;
 }
+
+/* 검수 → 모델로 검사하기: a model this dataset was checked with already */
+.eval-choice .used-tag {
+  background: var(--warn-soft, rgb(255 180 0 / 0.15));
+  color: var(--warn, #d99a00);
+}
+.eval-choice .used-tag.going {
+  background: var(--accent-soft, rgb(80 160 255 / 0.15));
+  color: var(--accent);
+}

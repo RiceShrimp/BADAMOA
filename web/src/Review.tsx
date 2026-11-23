@@ -44,9 +44,14 @@ interface Rule {
 
 /** How 검수 counts a model check (FiftyOne's way): how sure the model must be of what it finds. */
 interface ModelRule {
-  conf: number;
-  defaults: { conf: number }; // FiftyOne's
+  conf: number; // 라벨이 없는 물체: how sure of an object no label has
+  reclass_conf: number; // 클래스가 다를 수 있는 라벨: how sure of another class on a label
+  missed_iou: number; // 물체가 없을 수 있는 라벨: no prediction overlaps it this much
+  defaults: { conf: number; reclass_conf: number; missed_iou: number }; // FiftyOne's
 }
+
+type ConfKind = Mistake; // each model card's own threshold
+const CONF_KEY: Record<ConfKind, "conf" | "reclass_conf" | "missed_iou"> = { extra: "conf", reclass: "reclass_conf", missed: "missed_iou" };
 
 type Mistake = "extra" | "missed" | "reclass";
 
@@ -125,9 +130,9 @@ const GROUPS: { id: Rule["group"]; title: string; hint: string }[] = [
 ];
 // A model's view, counted FiftyOne's way (the Hub's ``checks.judge``): only what the model is sure of
 const MODEL: Record<Mistake, { group: Rule["group"]; title: string; hint: string }> = {
-  extra: { group: "missing", title: "라벨에 없는 물체", hint: "라벨이 없는 곳에 모델이 확신하는 물체: 빠뜨린 라벨일 수 있음" },
+  extra: { group: "missing", title: "라벨이 없는 물체", hint: "라벨이 없는 곳에 모델이 확신하는 물체: 빠뜨린 라벨일 수 있음" },
   reclass: { group: "wrong", title: "클래스가 다를 수 있는 라벨", hint: "같은 자리에서 모델은 다른 클래스라고 확신함" },
-  missed: { group: "wrong", title: "모델이 못 찾은 라벨", hint: "라벨은 있는데 어떤 예측도 닿지 않음: 없는 물체를 그렸거나, 모델이 놓친 것(라벨이 맞으면 문제 없음)" },
+  missed: { group: "wrong", title: "물체가 없을 수 있는 라벨", hint: "라벨은 있는데 모델은 이 물체를 찾지 못함: 없는 물체를 그렸거나, 모델이 놓친 것(라벨이 맞으면 문제 없음)" },
 };
 
 /** A dataset's newest labels as 검수's screens show them. */
@@ -403,9 +408,9 @@ function DatasetReviewCard({ card: c }: { card: ReviewCard }) {
         )}
         {c.evaluation ? (
           <div className="small">
-            {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨에 없는 물체{" "}
+            {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨이 없는 물체{" "}
             <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 클래스 다름 <strong>{(c.evaluation.reclass ?? 0).toLocaleString()}</strong>장 ·
-            못 찾은 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
+            물체가 없을 수 있는 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
           </div>
         ) : (
           <div className="muted small">평가한 모델 없음</div>
@@ -488,8 +493,13 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
   const { data: release } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 0, [releaseId]);
   const [watching, setWatching] = useState(false); // an evaluation is going: look again until it ends
   // how sure the model must be: FiftyOne's until moved from a model card's gear (the counts, images, frames follow)
-  const [conf, setConf] = useState<number | null>(null);
-  const [confTuning, setConfTuning] = useState(false);
+  const [confs, setConfs] = useState<Partial<Record<ConfKind, number>>>({});
+  const [confTuning, setConfTuning] = useState<ConfKind | null>(null); // the card whose confidence dialog is open
+  const confQuery = (params: URLSearchParams) => {
+    if (confs.extra != null) params.set("conf", String(confs.extra));
+    if (confs.reclass != null) params.set("reclass_conf", String(confs.reclass));
+    if (confs.missed != null) params.set("missed_iou", String(confs.missed));
+  };
   // the box checks' thresholds moved here (the rest at their defaults): duplicate:0.9,tiny:5
   const [ruleLimits, setRuleLimits] = useState<Record<string, number>>({});
   const rulesParam = Object.entries(ruleLimits)
@@ -497,7 +507,7 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     .join(",");
   const limitQuery = (() => {
     const params = new URLSearchParams();
-    if (conf != null) params.set("conf", String(conf));
+    confQuery(params);
     if (rulesParam) params.set("rules", rulesParam);
     const text = params.toString();
     return text ? `?${text}` : "";
@@ -570,14 +580,14 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     else if (op) {
       params.set("suspect", op);
       params.set("mistake", pick.mistake);
-      if (conf != null) params.set("conf", String(conf));
+      confQuery(params);
     }
     if (showLetBe) params.set("let_be", "true");
     for (const [key, value] of Object.entries(filter)) {
       if (value) params.set(key, key === "split" && value === "none" ? "" : value);
     }
     return params.toString();
-  }, [pick, op, showLetBe, filter, conf, ruleLimits]);
+  }, [pick, op, showLetBe, filter, confs, ruleLimits]);
   useEffect(() => setPage(0), [query]);
   const { data: items, refresh: refreshItems } = usePolling(
     () => (query ? api<ItemPage>(`/releases/${releaseId}/items?${query}&offset=${page * pageSize}&limit=${pageSize}`) : Promise.resolve(null)),
@@ -610,16 +620,21 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
     const count = evaluation ? evaluation[m] : null;
     const active = pick?.kind === "model" && pick.mistake === m;
     const rule = summary.rule;
-    if (count != null && rule && m !== "missed") {
-      const moved = rule.conf !== rule.defaults.conf;
+    if (count != null && rule) {
+      const key = CONF_KEY[m];
+      const moved = rule[key] !== rule.defaults[key];
       return (
         <div key={m} className="check-card-wrap">
           {modelButton(m, count, active)}
           <button
             className={`icon-btn card-gear ${moved ? "moved" : ""}`}
-            onClick={() => setConfTuning(true)}
-            title={`확신도 설정 (지금 ${rule.conf} 초과${moved ? ` · 기본 ${rule.defaults.conf}` : ""})`}
-            aria-label={`${MODEL[m].title} 확신도 설정`}
+            onClick={() => setConfTuning(m)}
+            title={
+              m === "missed"
+                ? `IoU 기준 설정 (지금 ${rule[key]} 미만${moved ? ` · 기본 ${rule.defaults[key]}` : ""})`
+                : `확신도 설정 (지금 ${rule[key]} 초과${moved ? ` · 기본 ${rule.defaults[key]}` : ""})`
+            }
+            aria-label={`${MODEL[m].title} ${m === "missed" ? "IoU 기준" : "확신도"} 설정`}
           >
             <Icon name="settings" size={14} />
           </button>
@@ -863,15 +878,31 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
         })()}
       {confTuning && summary.rule && evaluation && (
         <ConfThreshold
+          kind={confTuning}
           rule={summary.rule}
           evaluation={evaluation}
-          onChange={(value) => setConf(value == null || value === summary.rule?.defaults.conf ? null : value)}
-          onClose={() => setConfTuning(false)}
+          onChange={(value) =>
+            setConfs((was) => {
+              const next = { ...was };
+              if (value == null || value === summary.rule?.defaults[CONF_KEY[confTuning]]) delete next[confTuning];
+              else next[confTuning] = value;
+              return next;
+            })
+          }
+          onClose={() => setConfTuning(null)}
         />
       )}
       {choosing && (
         <CheckWithModel
           release={release}
+          done={[
+            ...summary.evaluations.map((e) => ({
+              model_id: e.model?.id ?? "",
+              words: `${e.release?.version ?? ""} ${e.split} · ${e.created_at.slice(0, 10)}`,
+              going: false,
+            })),
+            ...summary.pending.map((p) => ({ model_id: p.model?.id ?? "", words: `${p.split} · 지금 검사 중`, going: true })),
+          ]}
           onClose={() => setChoosing(false)}
           onStarted={(started) => {
             setChoosing(false);
@@ -1098,61 +1129,84 @@ function RuleThreshold({ rule, onChange, onClose }: { rule: Rule; onChange: (val
   );
 }
 
-const CONF_ROWS: { kind: Mistake; title: string }[] = [
-  { kind: "extra", title: "라벨에 없는 물체" },
-  { kind: "reclass", title: "클래스가 다를 수 있는 라벨" },
-];
+const CONF_WORDS: Record<ConfKind, { title: string; what: string; of: string; min: number; max: number; shown: (v: number) => string }> = {
+  extra: {
+    title: "라벨이 없는 물체 · 확신도",
+    what: "라벨이 없는 자리에서 모델이 이 값보다 확신한 물체만 셉니다.",
+    of: "확신도별 이미지 수",
+    min: 0.25,
+    max: 0.99,
+    shown: (v) => `${v.toFixed(2)} 초과`,
+  },
+  reclass: {
+    title: "클래스가 다를 수 있는 라벨 · 확신도",
+    what: "같은 자리에서 모델이 다른 클래스라고 이 값보다 확신한 라벨만 셉니다.",
+    of: "확신도별 이미지 수",
+    min: 0.25,
+    max: 0.99,
+    shown: (v) => `${v.toFixed(2)} 초과`,
+  },
+  missed: {
+    title: "물체가 없을 수 있는 라벨 · IoU 기준",
+    what: "예측과 짝이 안 된(IoU 0.5) 라벨 가운데, 모델의 어떤 예측과도 IoU가 이 값 이상 겹치지 않는 라벨을 셉니다. 낮추면 모델이 근처에 아무것도 내지 않은 라벨만 남습니다.",
+    of: "IoU 기준별 이미지 수",
+    min: 0.01,
+    max: 0.99,
+    shown: (v) => `IoU ${v.toFixed(2)} 미만`,
+  },
+};
 
 /**
- * How sure the model must be (over ``conf``) of an object no label has or of another class, set from those two
- * cards' gear: one value for both. Moving it counts again on the spot — the cards, the images and their frames — and
- * the counts at every level are laid out, so what it changes is seen before choosing it (a level is clicked to take
- * it). It lasts while this version is open here.
+ * How sure the model must be for one model card — of an object no label has (라벨이 없는 물체, ``conf``) or of
+ * another class on a label (클래스가 다를 수 있는 라벨, ``reclass_conf``) — set from that card's gear. Moving it counts
+ * again on the spot — the card, the images and their frames — and the counts at every level are laid out, so what it
+ * changes is seen before choosing it (a level is clicked to take it). It lasts while this version is open here.
  */
 function ConfThreshold({
+  kind,
   rule,
   evaluation,
   onChange,
   onClose,
 }: {
+  kind: ConfKind;
   rule: ModelRule;
   evaluation: Summary["evaluations"][number];
   onChange: (conf: number | null) => void;
   onClose: () => void;
 }) {
-  const [value, setValue] = useState(rule.conf);
+  const key = CONF_KEY[kind];
+  const [value, setValue] = useState(rule[key]);
   // the slider moves freely; the count follows once it rests
   useEffect(() => {
-    if (value === rule.conf) return;
+    if (value === rule[key]) return;
     const timer = window.setTimeout(() => onChange(value), 300);
     return () => window.clearTimeout(timer);
   }, [value]);
+  const words = CONF_WORDS[kind];
   return (
-    <Modal title="모델 확신도 · 임계값" onClose={onClose}>
-      <p className="muted small">
-        모델이 이 값보다 확신한 것만 셉니다. <b>라벨에 없는 물체</b>와 <b>클래스가 다를 수 있는 라벨</b>에 함께 쓰입니다. 바꾸면 카드 · 이미지 목록 ·
-        노란 테두리가 바로 이 값으로 다시 셉니다(이 화면에서만).
-      </p>
+    <Modal title={words.title} onClose={onClose}>
+      <p className="muted small">{words.what} 바꾸면 카드 · 이미지 목록 · 노란 테두리가 바로 이 값으로 다시 셉니다(이 화면에서만).</p>
       <label className="rule-threshold">
         <input
           type="range"
-          min={0.25}
-          max={0.99}
+          min={words.min}
+          max={words.max}
           step={0.01}
           value={value}
           onChange={(e) => setValue(Number(e.target.value))}
-          aria-label="모델 확신도 임계값"
+          aria-label={words.title}
         />
-        <strong className="num">{value.toFixed(2)} 초과</strong>
+        <strong className="num">{words.shown(value)}</strong>
       </label>
       <table className="threshold-levels small">
         <tbody>
-          {CONF_ROWS.map((row) => (
-            <tr key={row.kind}>
-              <th>{row.title}</th>
-              {evaluation.levels[row.kind].map(([level, count]) => (
+          {[kind].map((row) => (
+            <tr key={row}>
+              <th>{words.of}</th>
+              {evaluation.levels[row].map(([level, count]) => (
                 <td key={level}>
-                  <button className={`level ${level === rule.conf ? "on" : ""}`} onClick={() => setValue(level)} title={`확신도 ${level} 초과로 세기`}>
+                  <button className={`level ${level === rule[key] ? "on" : ""}`} onClick={() => setValue(level)} title={`${words.shown(level)}로 세기`}>
                     <span className="muted">{level.toFixed(2)}</span>
                     <strong className="num">{count.toLocaleString()}</strong>
                   </button>
@@ -1163,16 +1217,16 @@ function ConfThreshold({
         </tbody>
       </table>
       <div className="modal-actions">
-        {rule.conf !== rule.defaults.conf && (
+        {rule[key] !== rule.defaults[key] && (
           <button
             type="button"
             className="push-left"
             onClick={() => {
-              setValue(rule.defaults.conf);
+              setValue(rule.defaults[key]);
               onChange(null);
             }}
           >
-            기본값으로 ({rule.defaults.conf})
+            기본값으로 ({rule.defaults[key]})
           </button>
         )}
         <button type="button" className="primary" onClick={onClose}>
@@ -1352,10 +1406,13 @@ function ModelName({ model }: { model: CheckModel | null }) {
  */
 function CheckWithModel({
   release,
+  done,
   onClose,
   onStarted,
 }: {
   release: ReleaseInfo;
+  // the models this dataset was checked with already (or is being): marked, so one is not run twice by mistake
+  done: { model_id: string; words: string; going: boolean }[];
   onClose: () => void;
   onStarted: (op: { id: string; job_id: string }) => void;
 }) {
@@ -1365,7 +1422,9 @@ function CheckWithModel({
   const [nodeId, setNodeId] = useState(""); // "": the server holding the version's images
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fitting = choices?.models.filter((m) => m.fits) ?? [];
+  const usedBy = (id: string) => done.filter((d) => d.model_id === id);
+  // the ones not used here yet first
+  const fitting = [...(choices?.models.filter((m) => m.fits) ?? [])].sort((a, b) => Number(usedBy(a.id).length > 0) - Number(usedBy(b.id).length > 0));
   const others = choices?.models.filter((m) => !m.fits) ?? [];
   const splits = ["train", "val", "test"].filter((k) => choices?.splits[k]);
   // Every split by default: a label check wants to see as many images as it can.
@@ -1375,7 +1434,8 @@ function CheckWithModel({
   const images = chosenSplits.reduce((n, k) => n + (choices?.splits[k] ?? 0), 0);
   useEffect(() => {
     if (!choices) return;
-    setModel((current) => current || (choices.models.find((m) => m.fits)?.id ?? ""));
+    const fresh = choices.models.find((m) => m.fits && !done.some((d) => d.model_id === m.id));
+    setModel((current) => current || (fresh ?? choices.models.find((m) => m.fits))?.id || "");
   }, [choices]);
   useEffect(() => setNodeId(""), [model]); // another model: its own servers, from the default
   const chosen = choices?.models.find((m) => m.id === model);
@@ -1422,6 +1482,16 @@ function CheckWithModel({
                 <input type="radio" name="model" value={m.id} checked={model === m.id} onChange={() => setModel(m.id)} />
                 <ModelName model={m} />
                 <span className={`tag relation-${m.relation}`}>{RELATION[m.relation]}</span>
+                {usedBy(m.id).length > 0 && (
+                  <span
+                    className={`tag used-tag ${usedBy(m.id).some((d) => d.going) ? "going" : ""}`}
+                    title={`이 데이터셋을 이 모델로 검사한 기록: ${usedBy(m.id)
+                      .map((d) => d.words)
+                      .join(", ")}`}
+                  >
+                    {usedBy(m.id).some((d) => d.going) ? "검사 중" : `이미 검사함${usedBy(m.id).length > 1 ? ` ${usedBy(m.id).length}번` : ""}`}
+                  </span>
+                )}
                 <span className="muted small">
                   {m.arch ? `${m.arch} · ` : ""}
                   {METRIC_LABEL[m.metric] ?? m.metric} {metric(m.value)} · {timeAgo(m.created_at)}
@@ -1465,6 +1535,15 @@ function CheckWithModel({
         {chosen?.fits && chosen.warning && (
           <div className={`notice small ${chosen.relation === "same_dataset" ? "" : "warn"}`} role="alert">
             {chosen.warning}
+          </div>
+        )}
+        {chosen && usedBy(chosen.id).length > 0 && (
+          <div className="notice small warn" role="alert">
+            {usedBy(chosen.id).some((d) => d.going)
+              ? "이 모델로 지금 이 데이터셋을 검사하고 있습니다. 끝나면 모델 기준에 나옵니다."
+              : `이 모델로 이미 검사했습니다(${usedBy(chosen.id)
+                  .map((d) => d.words)
+                  .join(", ")}). 다시 하면 결과가 하나 더 생기니, 라벨을 많이 고친 뒤 다시 볼 때만 하세요.`}
           </div>
         )}
         {chosen?.fits && chosen.classes > 0 && chosen.classes < release.label_space.classes.length && (

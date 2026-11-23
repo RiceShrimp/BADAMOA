@@ -149,7 +149,8 @@ def test_the_class_filter_narrows_findings_by_their_own_class(hub, tmp_path):  #
 def test_a_model_check_counts_as_fiftyone_does():
     """FiftyOne's compute_mistakenness: boxes paired whatever their classes (IoU 0.5, the surest first); an unpaired
     prediction counts only when the model is sure (over 0.95), a pair of other classes only when it is sure of its
-    own, and a label only when no prediction even touches it, however small (a size cut only when asked for)."""
+    own (each with its own threshold), and a label paired with none when no prediction overlaps it by the IoU asked
+    (0.95 by default: about every unpaired label, as FiftyOne flags them), however small."""
     from badamoa.hub.checks import DEFAULT_RULE, judge
 
     rule = {"conf": 0.95, "min_area": 0.001}
@@ -165,9 +166,12 @@ def test_a_model_check_counts_as_fiftyone_does():
     other = [1, 0.5, 0.5, 0.2, 0.2]
     assert judge([other], [0.98], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": [0]}
     assert judge([other], [0.7], truth[:1], rule) == {"found": [], "extra": [], "missed": [], "reclass": []}
-    # a label a prediction touches (an imprecise box) is not missed; one nothing touches is, however small (by
-    # default), unless a size cut is asked for (under 0.1% of the image)
-    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], rule)["missed"] == []
+    # an imprecise box (IoU 0.39 with the label, too little to pair): the label is not found at 0.95 (the default),
+    # it is at 0.1 (the prediction came near enough); one nothing touches is missed however small, unless a size
+    # cut is asked for (under 0.1% of the image)
+    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], rule)["missed"] == [0]
+    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], {**rule, "missed_iou": 0.1})["missed"] == []
+    assert judge([[0, 0.55, 0.55, 0.2, 0.2]], [0.5], [person], {**rule, "missed_iou": 0.4})["missed"] == [0]
     assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], DEFAULT_RULE)["missed"] == [0]
     assert judge([], [], [[0, 0.5, 0.5, 0.02, 0.02]], rule)["missed"] == []
     assert judge([], [], [[0, 0.5, 0.5, 0.05, 0.05]], rule)["missed"] == [0]
@@ -175,6 +179,9 @@ def test_a_model_check_counts_as_fiftyone_does():
     assert judge([], [], truth, rule, known={0})["missed"] == [0]
     # classification: the class it gives against the image's own, when it is sure
     assert judge([[3]], [0.99], [[1]], rule)["reclass"] == [0] and judge([[3]], [0.8], [[1]], rule)["reclass"] == []
+    # another class has its own threshold: sure enough of it at 0.7, not at 0.95, whatever ``conf`` is
+    assert judge([other], [0.8], truth[:1], {**rule, "reclass_conf": 0.7})["reclass"] == [0]
+    assert judge([other], [0.8], truth[:1], {**rule, "conf": 0.5, "reclass_conf": 0.95})["reclass"] == []
     assert judge([[1]], [0.6], [[1]], rule)["found"] == [0]
 
 
@@ -292,13 +299,18 @@ def test_a_model_checks_counts_move_with_the_thresholds(hub, settings, tmp_path)
 
     fiftyone = hub.get(f"/api/releases/{v1}/qa").json()
     # FiftyOne's: no size cut for a label the model did not find (0.95.0)
-    assert fiftyone["rule"] == {"conf": 0.95, "min_area": 0.0, "defaults": {"conf": 0.95, "min_area": 0.0}}
+    defaults = {"conf": 0.95, "reclass_conf": 0.95, "missed_iou": 0.95, "min_area": 0.0}
+    assert fiftyone["rule"] == {**defaults, "defaults": defaults}
     first = fiftyone["evaluations"][0]
     assert (first["extra"], first["reclass"], first["missed"]) == (0, 0, 0)
     # beside the chosen threshold, the count at each level: the corner box (0.9) counts below 0.9, not from it
     assert dict(map(tuple, first["levels"]["extra"])) == {0.5: 1, 0.7: 1, 0.8: 1, 0.9: 0, 0.95: 0, 0.99: 0}
     lower = hub.get(f"/api/releases/{v1}/qa", params={"conf": 0.8}).json()
     assert lower["rule"]["conf"] == 0.8 and lower["evaluations"][0]["extra"] == 1
+    # each card its own threshold: another class's confidence and the IoU a label must be overlapped by
+    apart = hub.get(f"/api/releases/{v1}/qa", params={"reclass_conf": 0.3, "missed_iou": 0.2}).json()["rule"]
+    assert (apart["conf"], apart["reclass_conf"], apart["missed_iou"]) == (0.95, 0.3, 0.2)
+    assert [v for v, _ in first["levels"]["missed"]] == [0.1, 0.3, 0.5, 0.7, 0.9, 0.95]
     found = hub.get(f"/api/releases/{v1}/items", params={"suspect": op_id, "mistake": "extra", "conf": 0.8}).json()
     assert [i["id"] for i in found["items"]] == [item_id] and found["items"][0]["check"]["extra"] == 1
     # the object no label has, framed in 검수 as a rule check's labels are: the model's box, how sure, its class

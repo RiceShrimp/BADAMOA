@@ -230,6 +230,9 @@ class ItemPrediction(Base):
     extra_top: Mapped[float] = mapped_column(Float, default=0.0)
     reclass_top: Mapped[float] = mapped_column(Float, default=0.0)
     missed_area: Mapped[float] = mapped_column(Float, default=0.0)
+    # the least the nearest prediction overlapped any label paired with none (IoU; 1 when every label is paired):
+    # 물체가 없을 수 있는 라벨 at any IoU threshold is one query
+    missed_near: Mapped[float] = mapped_column(Float, default=1.0)
     labels: Mapped[list[list[float]]] = mapped_column(JSON, default=list)
     scores: Mapped[list[float]] = mapped_column(JSON, default=list)
 

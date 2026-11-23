@@ -487,7 +487,7 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
     def get_label_checks(release_id: str, ctx: Context) -> dict[str, Any]:
         """릴리스의 라벨 검사 결과: 규칙 검사(unlabelled 라벨 안 한 이미지, duplicate 같은 물체에 박스 둘, class_overlap 한
         물체에 클래스 둘, rare_class 드문 클래스, tiny 아주 작은 박스, huge 이미지를 거의 덮는 박스)마다 이미지 수, 그리고
-        평가한 모델마다 extra(라벨에 없는 물체) · missed(모델이 못 찾은 라벨) 이미지 수. 이미지는 list_release_items의
+        평가한 모델마다 extra(라벨이 없는 물체) · missed(물체가 없을 수 있는 라벨) 이미지 수. 이미지는 list_release_items의
         check=<검사 id>, 또는 suspect=<평가 id> + mistake=extra|missed로 봅니다. "문제 없음"으로 둔 이미지는 세지 않고
         따로 let_be(규칙) · extra_let_be · missed_let_be(모델)로 셉니다."""
         user_of(ctx)
