@@ -1542,3 +1542,55 @@ label.check {
   margin-left: 10px;
   font-weight: 500;
 }
+
+/* the class table's headers sort it (내림차순 → 올림차순 → 기본순) */
+.class-table th .sort-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.class-table th.right .sort-head {
+  justify-content: flex-end;
+}
+.class-table th .sort-mark {
+  opacity: 0.4;
+  font-size: 10px;
+}
+.class-table th .sort-head.on .sort-mark,
+.class-table th .sort-head:hover .sort-mark {
+  opacity: 1;
+}
+
+/* an evaluation's splits: rows dragged by their grip; the top one is what the cards show */
+.split-rows {
+  display: grid;
+  font-size: 13.5px;
+}
+.split-rows .sort-item,
+.split-rows .split-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+.split-row {
+  align-items: center;
+  padding: 9px 8px;
+  border-top: 1px solid var(--border);
+}
+.split-row.split-head {
+  border-top: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.split-row.top > span:nth-child(2) {
+  font-weight: 600;
+}
+.split-row .right {
+  text-align: right;
+}

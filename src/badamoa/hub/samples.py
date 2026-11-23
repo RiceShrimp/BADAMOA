@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from . import catalog
 from .config import HubSettings
+from .db import write_lock
 from .models import Job, Node, User
 
 log = logging.getLogger("badamoa.hub")
@@ -115,6 +116,10 @@ def seed(db: Session, user: User, settings: HubSettings) -> list[Job]:
 def safely(db: Session, user: User, settings: HubSettings) -> dict[str, Any]:
     """``seed``, never in the way of the first admin's account: what went wrong is logged."""
     try:
+        # The write lock first: ``seed`` reads (this PC's node), copies the sample folders, then writes; this PC's
+        # node beats meanwhile, and a transaction that read before another's write cannot write after it (SQLite
+        # says "database is locked" at once — every new Hub's samples failed so). The beats wait the copy out.
+        write_lock(db)
         with db.begin_nested():
             jobs = seed(db, user, settings)
         return {"project": PROJECT if jobs else "", "imports": len(jobs)}

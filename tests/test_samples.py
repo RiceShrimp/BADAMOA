@@ -61,3 +61,34 @@ def test_the_first_admin_finds_samples_and_a_review_example(live_hub, settings, 
 def test_a_hub_without_its_own_node_starts_without_samples(client):
     made = client.post("/api/setup", json=ADMIN).json()
     assert made["samples"] == {"project": "", "imports": 0}
+
+
+def test_samples_go_in_while_this_pcs_node_beats(client, settings, monkeypatch):
+    """The node of the Hub's own PC writes its heartbeat while the samples are copied: the samples still go in
+    (they used to fail with "database is locked", a write after a read another connection's write came between)."""
+    import sqlite3
+
+    database = Database(settings.database_url)
+    with database.session() as db:
+        services.ensure_local_node(db, {"hostname": "hubpc"}, "0.80.0")
+        user = services.create_user(db, "admin", "admin-pass-1", role="admin")
+        user_id = user.id
+    path = settings.database_url.removeprefix("sqlite:///")
+    copy = samples._copy
+
+    def beating(target):
+        copy(target)
+        beat = sqlite3.connect(path, timeout=0.3)
+        try:
+            beat.execute("UPDATE nodes SET last_seen_at = CURRENT_TIMESTAMP")
+            beat.commit()
+        except sqlite3.OperationalError:
+            pass  # it waits for the samples' write lock (a real node tries again on its next beat)
+        finally:
+            beat.close()
+
+    monkeypatch.setattr(samples, "_copy", beating)
+    with database.session() as db:
+        made = samples.safely(db, db.get(services.User, user_id), settings)
+    database.engine.dispose()
+    assert made == {"project": samples.PROJECT, "imports": 4}

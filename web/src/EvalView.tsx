@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { FileList } from "./Files";
+import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { LoggedTable } from "./Media";
 import { PlacePicker, usePlaces } from "./ModelOps";
 import { ClassTable, LogTail } from "./Training";
@@ -62,6 +63,9 @@ const modelName = (m: ModelRef | null) => (m ? `${m.name} v${m.version}` : "지�
  */
 export function EvalView({ opId }: { opId: string }) {
   const { data: op, error, refresh } = usePolling(() => api<OpDetail>(`/model-ops/${opId}`), 3000, [opId]);
+  // The splits in the order this person dragged them into, the same on every evaluation: the first one's numbers
+  // are the cards on top (val above train: val's)
+  const splitOrder = useOrder("eval-splits", op ? Object.keys(op.split_metrics) : null, (s: string) => s);
   const [again, setAgain] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
@@ -83,6 +87,9 @@ export function EvalView({ opId }: { opId: string }) {
   const what = op.kind === "eval" ? "평가" : op.kind === "export" ? "내보내기" : "테스트";
   const where = op.release ? `${op.release.dataset} ${op.release.version}` : "삭제된 버전";
   const splits = op.splits.map(splitName).join(" · ");
+  // the cards on top: the split first in this person's order (the evaluation's own first split by default)
+  const topSplit = splitOrder.ordered[0] ?? op.splits[0] ?? "";
+  const topMetrics = (splitOrder.ordered.length > 1 ? op.split_metrics[topSplit] : null) ?? op.result.metrics ?? {};
 
   const stop = async () => {
     if (!op.job_id || !window.confirm(`이 ${what}를 중단할까요? 지금까지 한 것은 남지 않습니다.`)) return;
@@ -150,38 +157,43 @@ export function EvalView({ opId }: { opId: string }) {
       {op.kind === "eval" && op.result.metrics && (
         <div className="stats metrics">
           {keyMetrics(task).map((k) => (
-            <Stat key={k} icon="chart" label={METRIC_LABEL[k] ?? k} value={metric(op.result.metrics?.[k])} sub={op.splits[0] ? splitName(op.splits[0]) : ""} />
+            <Stat key={k} icon="chart" label={METRIC_LABEL[k] ?? k} value={metric(topMetrics[k])} sub={topSplit ? splitName(topSplit) : ""} />
           ))}
         </div>
       )}
-      {Object.keys(op.split_metrics).length > 1 && (
+      {splitOrder.ordered.length > 1 && (
         <section className="card">
-          <h3>split별</h3>
-          <div className="table-wrap">
-            <table className="plain">
-              <thead>
-                <tr>
-                  <th>split</th>
-                  {keyMetrics(task).map((k) => (
-                    <th key={k} className="right">
-                      {METRIC_LABEL[k] ?? k}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(op.split_metrics).map(([s, numbers]) => (
-                  <tr key={s}>
-                    <td>{splitName(s)}</td>
+          <div className="card-head">
+            <h3>split별</h3>
+            <span className="muted small">행을 끌어 순서를 바꿉니다 · 맨 위 split이 위 카드에 보입니다</span>
+            <span className="spacer" />
+            <OrderReset order={splitOrder} />
+          </div>
+          <div className="split-rows" style={{ gridTemplateColumns: `22px minmax(90px, 1fr) repeat(${keyMetrics(task).length}, minmax(80px, 1fr))` }}>
+            <div className="split-row split-head">
+              <span />
+              <span>split</span>
+              {keyMetrics(task).map((k) => (
+                <span key={k} className="right">
+                  {METRIC_LABEL[k] ?? k}
+                </span>
+              ))}
+            </div>
+            <Sortable ids={splitOrder.ordered} onMove={(ids) => splitOrder.move(ids)} list>
+              {splitOrder.ordered.map((s) => (
+                <SortItem key={s} id={s}>
+                  <div className={`split-row${s === topSplit ? " top" : ""}`}>
+                    <SortHandle />
+                    <span>{splitName(s)}</span>
                     {keyMetrics(task).map((k) => (
-                      <td key={k} className="num right">
-                        {metric(numbers[k])}
-                      </td>
+                      <span key={k} className="num right">
+                        {metric(op.split_metrics[s]?.[k])}
+                      </span>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  </div>
+                </SortItem>
+              ))}
+            </Sortable>
           </div>
         </section>
       )}

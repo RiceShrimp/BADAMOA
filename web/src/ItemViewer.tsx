@@ -1321,12 +1321,20 @@ export function ItemViewer({
                     return (
                       <li
                         key={i}
-                        className={`${off ? "off" : ""} ${hoverFlagged === i ? "lit" : ""}`}
+                        className={`${off ? "off" : ""} ${hoverFlagged === i ? "lit" : ""} ${
+                          (editing ? selected : focusBox) === i ? "picked" : ""
+                        }`}
                         onMouseEnter={() => {
                           // on the image: this frame (and its label) stands out
                           setHoverFlagged(i);
                           setHoverBox(i);
                         }}
+                        onClick={() => {
+                          // the same label picked in the label list below (it scrolls there), as a click there does
+                          if (editing) select(i);
+                          else setFocusBox(focusBox === i ? null : i);
+                        }}
+                        title="아래 라벨 목록에서 이 라벨을 고릅니다 (다시 누르면 풀기)"
                       >
                         <span className="qa-number">{n + 1}</span>
                         <i className="class-dot" style={{ background: colorOf(b[0]) }} />
@@ -1338,14 +1346,15 @@ export function ItemViewer({
                         )}
                         <button
                           className="icon-btn label-eye"
-                          onClick={() =>
+                          onClick={(e) => {
+                            e.stopPropagation(); // the eye turns the frame off; it picks nothing
                             setFlaggedOff((was) => {
                               const next = new Set(was);
                               if (next.has(i)) next.delete(i);
                               else next.add(i);
                               return next;
-                            })
-                          }
+                            });
+                          }}
                           aria-pressed={!off}
                           title={off ? "이 테두리 보이기" : "이 테두리만 끄기"}
                           aria-label={`검수 ${n + 1} ${off ? "보이기" : "끄기"}`}
@@ -1358,7 +1367,7 @@ export function ItemViewer({
                 </ol>
                 <p className="muted small">
                   이미지 위에 같은 번호와 클래스로 노란 테두리를 쳤습니다(이 버전의 라벨을 볼 때). 줄에 마우스를 올리면 그 자리가
-                  보이고, 눈으로 하나씩 끕니다.
+                  보이고, 누르면 아래 라벨 목록에서 골라지며, 눈으로 하나씩 끕니다.
                   {flaggedOff.size > 0 && (
                     <>
                       {" "}
@@ -1777,6 +1786,11 @@ export function ItemViewer({
             editing={editing}
             onHover={setHoverBox}
             onPick={(i) => (editing ? select(i) : setFocusBox(focusBox === i ? null : i))}
+            flagged={
+              flagged && item && shownRevision.id === item.revision_id
+                ? new Map(flagged.boxes.map((index, n) => [index, n + 1]))
+                : undefined
+            }
             onToggle={(i) => {
               const key = `${shownRevision.id}:${i}`;
               const next = new Set(hiddenBoxes);
@@ -1905,6 +1919,7 @@ function LabelList({
   onPick,
   onToggle,
   onShowAll,
+  flagged,
 }: {
   revision: Revision;
   order: string[]; // classes as the chips list them
@@ -1920,8 +1935,15 @@ function LabelList({
   onPick: (index: number) => void;
   onToggle: (index: number) => void;
   onShowAll: () => void;
+  flagged?: Map<number, number>; // the labels 검수 flagged, by their number in its list (this version's labels)
 }) {
   const names = Object.fromEntries(revision.classes.map((c) => [c.id, c.name])) as Record<number, string>;
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // a label picked elsewhere (a 검수 row, the image): its row comes into view
+    if (picked == null) return;
+    list.current?.querySelector(`[data-label="${picked}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [picked]);
   const rows = revision.boxes
     .map((b, i) => ({ b, i, name: names[b[0]] ?? String(b[0]) }))
     .filter(({ b }) => b.length >= 5)
@@ -1943,7 +1965,7 @@ function LabelList({
           </button>
         )}
       </div>
-      <div className="label-list" onMouseLeave={() => onHover(null)}>
+      <div className="label-list" ref={list} onMouseLeave={() => onHover(null)}>
         {numbered.map(({ b, i, name, n }) => {
           const [, cx, cy, bw, bh] = b;
           const classOff = classHidden(name);
@@ -1952,6 +1974,7 @@ function LabelList({
           return (
             <div
               key={i}
+              data-label={i}
               className={`label-row ${isOff ? "off" : ""} ${active === i ? "lit" : ""} ${picked === i ? "picked" : ""}`}
               onMouseEnter={() => onHover(i)}
             >
@@ -1959,6 +1982,11 @@ function LabelList({
                 <i style={{ background: color }} />
                 <span className="label-name">
                   {name} <span className="muted">{n}</span>
+                  {flagged?.has(i) && (
+                    <span className="label-qa" title={`검수가 걸린 라벨: 위 검수 목록의 ${flagged.get(i)}번`}>
+                      검수 {flagged.get(i)}
+                    </span>
+                  )}
                 </span>
                 <span className="muted small label-where">
                   {placeOf(cx, cy)} · {Math.round(bw * width)}×{Math.round(bh * height)}

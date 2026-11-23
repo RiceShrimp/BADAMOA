@@ -1718,3 +1718,25 @@ select.active-select {
 .check-history-log {
   margin-top: 6px;
 }
+
+/* 검수 rows pick their label in the label list; that list marks the labels 검수 flagged by their number */
+.qa-labels li {
+  cursor: pointer;
+}
+.qa-labels li.picked {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.label-qa {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #ffd400;
+  color: #1a1a1a;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  vertical-align: 1px;
+  white-space: nowrap;
+}

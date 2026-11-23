@@ -1013,27 +1013,55 @@ function RunView({ runId }: { runId: string }) {
   );
 }
 
+/** A class table's order: by a column, high (or Z) first or low (or A) first; none is the order reported. */
+type ClassSort = { key: keyof ClassMetric; down: boolean } | null;
+
 export function ClassTable({ rows }: { rows: ClassMetric[] }) {
   // Columns follow what the template reported: mAP for detection, F1 for classification.
   const detection = rows.some((c) => c.map50_95 != null);
   const columns: [keyof ClassMetric, string][] = detection
     ? [["map50_95", "mAP50-95"], ["map50", "mAP50"], ["precision", "Precision"], ["recall", "Recall"]]
     : [["f1", "F1"], ["precision", "Precision"], ["recall", "Recall"]];
+  const [sort, setSort] = useState<ClassSort>(null);
+  // a click: 내림차순 → 올림차순 → 기본순 (as reported)
+  const next = (key: keyof ClassMetric) =>
+    setSort((was) => (was?.key !== key ? { key, down: true } : was.down ? { key, down: false } : null));
+  const shown = useMemo(() => {
+    if (!sort) return rows;
+    const value = (c: ClassMetric) => c[sort.key];
+    return [...rows].sort((a, b) => {
+      const x = value(a);
+      const y = value(b);
+      if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1; // no number: last either way
+      const by = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "ko");
+      return sort.down ? -by : by;
+    });
+  }, [rows, sort]);
+  const head = (key: keyof ClassMetric, label: string, right: boolean) => {
+    const on = sort?.key === key;
+    const state = on ? (sort.down ? "내림차순" : "올림차순") : "기본순";
+    return (
+      <th key={key} className={right ? "right" : ""} aria-sort={on ? (sort.down ? "descending" : "ascending") : "none"}>
+        <button type="button" className={`sort-head${on ? " on" : ""}`} onClick={() => next(key)} title={`${label}: ${state} (누를 때마다 내림차순 → 올림차순 → 기본순)`}>
+          {label}
+          <span className="sort-mark" aria-hidden>
+            {on ? (sort.down ? "▼" : "▲") : "↕"}
+          </span>
+        </button>
+      </th>
+    );
+  };
   return (
     <div className="table-wrap class-table">
       <table>
         <thead>
           <tr>
-            <th>클래스</th>
-            {columns.map(([key, label]) => (
-              <th key={key} className="right">
-                {label}
-              </th>
-            ))}
+            {head("name", "클래스", false)}
+            {columns.map(([key, label]) => head(key, label, true))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((c) => (
+          {shown.map((c) => (
             <tr key={c.id}>
               <td>{c.name}</td>
               {columns.map(([key], i) => (
