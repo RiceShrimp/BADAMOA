@@ -32,6 +32,7 @@ COLLAGE_BOXES = 12
 GRID = 20
 RECENT_PROJECTS = 4
 RECENT_RUNS = 6
+RECENT_DATASETS = 3  # lines under a project's card: its datasets with the newest version first
 
 
 # ---- pieces ------------------------------------------------------------------------
@@ -192,6 +193,32 @@ def _labelled_classes(db: Session, project: Project) -> list[dict[str, Any]]:
     return sorted((e for e in found.values() if e["labels"] > 0), key=lambda e: (-e["labels"], e["name"]))
 
 
+def _recent_datasets(db: Session, project: Project) -> tuple[list[dict[str, Any]], int]:
+    """The project's datasets by their newest version, the newest first: the first few as lines, and how many
+    datasets have a version. Only the columns a line needs are read (a version's stats can be large)."""
+    rows = db.execute(
+        select(Release.id, Release.dataset_id, Release.version, Release.created_at, Dataset.name, Dataset.task)
+        .join(Dataset, Dataset.id == Release.dataset_id)
+        .where(Dataset.project_id == project.id, Release.deleted_at.is_(None), Release.status == "ready")
+        .order_by(Release.created_at.desc(), Release.id.desc())
+    ).all()
+    newest: dict[str, Any] = {}
+    for row in rows:
+        newest.setdefault(row.dataset_id, row)  # the first seen is the newest version
+    shown = list(newest.values())[:RECENT_DATASETS]
+    stats = dict(db.execute(select(Release.id, Release.stats).where(Release.id.in_([r.id for r in shown]))).all())
+    return [
+        {
+            "id": row.dataset_id,
+            "name": row.name,
+            "task": row.task or "detect",
+            "release": {"id": row.id, "version": row.version, "created_at": iso(row.created_at)},
+            "items": (stats.get(row.id) or {}).get("items", 0),
+        }
+        for row in shown
+    ], len(newest)
+
+
 def _project_card(db: Session, settings: HubSettings, project: Project, counts: dict[str, dict[str, int]]) -> dict[str, Any]:
     newest = db.scalar(
         select(Release)
@@ -201,7 +228,9 @@ def _project_card(db: Session, settings: HubSettings, project: Project, counts: 
         .limit(1)
     )
     moments = [project.created_at, newest.created_at if newest else None]
-    moments.append(db.scalar(select(func.max(Run.created_at)).where(Run.project_id == project.id)))
+    last_run = db.scalar(select(func.max(Run.created_at)).where(Run.project_id == project.id, Run.deleted_at.is_(None)))
+    moments.append(last_run)
+    recent, with_version = _recent_datasets(db, project)
     return {
         "id": project.id,
         "name": project.name,
@@ -211,6 +240,8 @@ def _project_card(db: Session, settings: HubSettings, project: Project, counts: 
         "description": project.description,
         "created_at": iso(project.created_at),
         "updated_at": iso(max(m for m in moments if m is not None)),
+        "version_at": iso(newest.created_at) if newest else None,  # its newest version
+        "run_at": iso(last_run),  # its newest training
         "datasets": counts["datasets"].get(project.id, 0),
         "releases": counts["releases"].get(project.id, 0),
         "items": counts["items"].get(project.id, 0),
@@ -219,6 +250,8 @@ def _project_card(db: Session, settings: HubSettings, project: Project, counts: 
         "best": _best_model(db, project, tasks or ["detect"]),  # the same order as the project page
         "collage": _collage(db, settings, newest),
         "classes": _labelled_classes(db, project),
+        "recent": recent,  # its datasets, the newest version first: a line each under the card
+        "recent_total": with_version,  # how many datasets have a version (the lines say "N개 더" past them)
     }
 
 
@@ -237,7 +270,7 @@ def _counts(db: Session) -> dict[str, dict[str, int]]:
             db.execute(
                 select(Dataset.project_id, func.count(Release.id))
                 .join(Release, Release.dataset_id == Dataset.id)
-                .where(alive)
+                .where(alive, Release.status != "draft")  # fixes not made a version yet are not a version
                 .group_by(Dataset.project_id)
             ).all()
         ),

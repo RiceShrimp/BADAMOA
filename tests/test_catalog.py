@@ -644,7 +644,9 @@ def test_home_totals(hub, tmp_path):
     assert home["runs"] == []
 
 
-def test_cards_and_release_tabs(hub, tmp_path):
+def test_cards_and_release_tabs(hub, tmp_path, monkeypatch):
+    from badamoa.hub import overview
+
     project = hub.post("/api/projects", json={"name": "카드", "task": "detect", "folder": "감시"}).json()
     v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")
 
@@ -660,6 +662,12 @@ def test_cards_and_release_tabs(hub, tmp_path):
     labels = [c["labels"] for c in card["classes"]]
     assert {c["name"] for c in card["classes"]} <= set(CLASSES) and labels == sorted(labels, reverse=True)
     assert sum(labels) == hub.get(f"/api/releases/{v1}").json()["stats"]["boxes"]
+    # a line for each dataset under the card: its newest version, the image count
+    (line,) = card["recent"]
+    assert (line["name"], line["task"], line["items"], line["release"]["id"], line["release"]["version"]) == (
+        "street", "detect", 8, v1, "v1"
+    )
+    assert card["recent_total"] == 1 and line["release"]["created_at"] == card["version_at"]
 
     # ---- moved to another folder, renamed
     moved = hub.patch(f"/api/projects/{project['id']}", json={"folder": "공장", "name": "카드-2"})
@@ -698,6 +706,9 @@ def test_cards_and_release_tabs(hub, tmp_path):
     assert hub.put(f"/api/releases/{draft}/items/{background['id']}/labels", json=body).status_code == 200
     assert hub.get(f"/api/releases/{draft}/charts").json()["boxes"]["boxes"] == boxes + 1
     assert hub.get(f"/api/releases/{v1}/charts").json() == charts  # the version itself is as it was
+    # the fixes are not a version yet: the project still counts one, and its card's line is still v1
+    page = hub.get(f"/api/projects/{project['id']}/overview").json()
+    assert page["releases"] == 1 and [r["release"]["id"] for r in page["recent"]] == [v1]
 
     # ---- a class's colour, kept with the label space
     assert hub.put(f"/api/releases/{v1}/classes/1", json={"color": "#FF0000"}).json() == {"id": 1, "color": "#ff0000"}
@@ -709,6 +720,15 @@ def test_cards_and_release_tabs(hub, tmp_path):
     # ---- grid items carry their boxes
     items = hub.get(f"/api/releases/{v1}/items").json()["items"]
     assert any(i["boxes"] for i in items) and all(len(i["boxes"]) == i["box_count"] for i in items if i["box_count"] <= 30)
+
+    # ---- the card's lines: the dataset with the newest version first, a few of them, and how many there are
+    road = _import(hub, project["id"], make_yolo(tmp_path / "b"), "v1", dataset="road")
+    card = next(c for c in hub.get("/api/project-cards").json() if c["id"] == project["id"])
+    assert [(r["name"], r["release"]["id"]) for r in card["recent"]] == [("road", road), ("street", v1)]
+    assert card["recent_total"] == 2
+    monkeypatch.setattr(overview, "RECENT_DATASETS", 1)
+    card = next(c for c in hub.get("/api/project-cards").json() if c["id"] == project["id"])
+    assert [r["name"] for r in card["recent"]] == ["road"] and card["recent_total"] == 2
 
 
 def test_project_trash_and_restore(hub, tmp_path):

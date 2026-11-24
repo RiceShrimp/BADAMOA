@@ -16,7 +16,7 @@ import {
 import { MoveDatasetDialog } from "./DatasetMove";
 import { ImportProgress, useImports } from "./Imports";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
-import { Icon, Modal, timeAgo, usePolling } from "./ui";
+import { Icon, Modal, Stat, timeAgo, usePolling } from "./ui";
 
 // ---- what the Hub sends ---------------------------------------------------------------
 
@@ -36,6 +36,8 @@ export interface ProjectCardInfo {
   description: string;
   created_at: string;
   updated_at: string;
+  version_at: string | null; // its newest version
+  run_at: string | null; // its newest training
   datasets: number;
   releases: number;
   items: number;
@@ -45,6 +47,17 @@ export interface ProjectCardInfo {
   collage: Shot[];
   /** Classes with labels in the newest version of each dataset, most labels first. */
   classes: { name: string; labels: number; images: number }[];
+  /** A few of its datasets, the one with the newest version first: a line each under the card. */
+  recent: RecentDataset[];
+  recent_total: number; // datasets with a version
+}
+
+interface RecentDataset {
+  id: string;
+  name: string;
+  task: string;
+  release: { id: string; version: string; created_at: string };
+  items: number;
 }
 
 interface DatasetCardInfo {
@@ -903,11 +916,46 @@ export function ProjectCard({
           {body}
         </a>
       )}
+      {card.recent?.length > 0 && <DatasetLines card={card} onPick={picking?.onToggle} />}
       {onEdit && !picking && (
         <button className="icon-btn data-card-menu" onClick={onEdit} title="이름 · 폴더 · 설명" aria-label={`${card.name} 설정`}>
           <Icon name="settings" size={14} />
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Under a project's card, as 학습 lists its latest runs: its datasets, the one with the newest version first,
+ * each opening that version. While cards are picked a line picks its card instead.
+ */
+function DatasetLines({ card, onPick }: { card: ProjectCardInfo; onPick?: () => void }) {
+  const more = card.recent_total - card.recent.length;
+  return (
+    <div className="board-lines" onClick={onPick}>
+      {card.recent.map((d) => {
+        const line = (
+          <>
+            <span className="tag task-tag">{taskLabel(d.task)}</span>
+            <span className="ellipsis">
+              {d.name} <span className="muted">{d.release.version}</span>
+            </span>
+            <span className="num muted">{d.items.toLocaleString()}장</span>
+          </>
+        );
+        const title = `${d.name} ${d.release.version} · 이미지 ${d.items.toLocaleString()}장 · ${timeAgo(d.release.created_at)} 등록`;
+        return onPick ? (
+          <div key={d.id} className="board-line" title={title}>
+            {line}
+          </div>
+        ) : (
+          <a key={d.id} href={`#/datasets/${d.release.id}`} className="board-line" title={title} onClick={() => rememberProject(card.id)}>
+            {line}
+          </a>
+        );
+      })}
+      {more > 0 && <div className="muted small board-foot">데이터셋 {more}개 더</div>}
     </div>
   );
 }
@@ -1128,12 +1176,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
           <h1 className="with-badge">
             {page.name}
           </h1>
-          <p className="muted">
-            데이터셋 {page.datasets}
-            {page.dataset_cards.length > 0 && ` (${tasksCounted(page.dataset_cards.map((d) => d.task))})`} · 버전 {page.releases} · 이미지{" "}
-            {page.items.toLocaleString()} · 학습 {page.runs} · 모델 {page.models} · {timeAgo(page.updated_at)} 수정
-          </p>
-          {page.description && <p className="note">{page.description}</p>}
+          <p className="muted note">{page.description || "카드를 누르면 그 데이터셋의 최신 버전을 엽니다. 끌어서 순서를 바꿀 수 있습니다."}</p>
         </div>
         <div className="head-actions">
           <button className="icon-btn" onClick={() => setEditing(true)} title="이름 · 폴더 · 설명 · 휴지통" aria-label={`${page.name} 설정`}>
@@ -1155,6 +1198,29 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
             데이터셋 가져오기
           </button>
         </div>
+      </div>
+
+      <div className="stats five">
+        <Stat
+          icon="database"
+          label="데이터셋"
+          value={page.datasets}
+          sub={page.dataset_cards.length > 0 ? tasksCounted(page.dataset_cards.map((d) => d.task)) : "아직 없음"}
+        />
+        <Stat icon="tag" label="버전" value={page.releases} sub={page.version_at ? `마지막 버전 ${timeAgo(page.version_at)}` : "아직 없음"} />
+        <Stat
+          icon="images"
+          label="이미지"
+          value={page.items.toLocaleString()}
+          sub={`라벨 ${page.dataset_cards.reduce((n, d) => n + d.boxes, 0).toLocaleString()}개`}
+        />
+        <Stat icon="chart" label="학습" value={page.runs} sub={page.run_at ? `마지막 학습 ${timeAgo(page.run_at)}` : "아직 없음"} />
+        <Stat
+          icon="box"
+          label="모델"
+          value={page.models}
+          sub={page.best ? `최고 ${METRIC_NAME[page.best.metric] ?? page.best.metric} ${page.best.value.toFixed(3)}` : "학습이 끝나면 등록됩니다"}
+        />
       </div>
 
       {failed && <div className="error lines">{failed}</div>}
