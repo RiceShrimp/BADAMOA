@@ -13,6 +13,7 @@ import {
   keypointsOf,
   taskLabel,
 } from "./catalogTypes";
+import { MoveDatasetDialog } from "./DatasetMove";
 import { ImportProgress, useImports } from "./Imports";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { Icon, Modal, timeAgo, usePolling } from "./ui";
@@ -1079,6 +1080,8 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
   const { data: page, error, refresh } = usePolling(() => api<ProjectPageInfo>(`/projects/${projectId}/overview`), 15000, [projectId]);
   const [editing, setEditing] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  const [moving, setMoving] = useState<DatasetCardInfo | null>(null); // 다른 프로젝트로 옮기기
+  const [notice, setNotice] = useState<{ text: string; href: string } | null>(null);
   const picking = usePicking();
   const { data: folderList } = useFolders();
   const importing = useImports().filter(
@@ -1145,6 +1148,11 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
       </div>
 
       {failed && <div className="error lines">{failed}</div>}
+      {notice && (
+        <div className="notice ok">
+          {notice.text} <a href={notice.href}>열기</a>
+        </div>
+      )}
       {picking.on && (
         <PickBar
           count={picking.ids.length}
@@ -1225,9 +1233,19 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
                       {body}
                     </div>
                   ) : (
-                    <a className="data-card data-card-link" href={`#/datasets/${d.release.id}`}>
-                      {body}
-                    </a>
+                    <div className="data-card">
+                      <a className="data-card-link" href={`#/datasets/${d.release.id}`}>
+                        {body}
+                      </a>
+                      <button
+                        className="icon-btn data-card-menu"
+                        onClick={() => setMoving(d)}
+                        title="다른 프로젝트로 옮기기"
+                        aria-label={`${d.name} 다른 프로젝트로 옮기기`}
+                      >
+                        <Icon name="arrow" size={14} />
+                      </button>
+                    </div>
                   )}
                 </SortItem>
               );
@@ -1281,6 +1299,19 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
           </a>
         </aside>
       </div>
+      {moving && (
+        <MoveDatasetDialog
+          dataset={moving}
+          projectId={page.id}
+          onClose={() => setMoving(null)}
+          onMoved={(moved) => {
+            setMoving(null);
+            void refresh();
+            const href = moved.release_id ? `#/datasets/${moved.release_id}` : `#/datasets/project/${moved.project.id}`;
+            setNotice({ text: `${moved.name} 데이터셋을 ${moved.project.name} 프로젝트로 옮겼습니다.`, href });
+          }}
+        />
+      )}
       {editing && (
         <EditProject
           card={page}

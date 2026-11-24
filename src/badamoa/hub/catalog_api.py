@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.protocol import ImportBegin, ImportChunk, ImportProgress, ImportSame
 
-from . import catalog, checks, drafts, originals, overview, purge, qa, review, services
+from . import catalog, checks, dataset_move, drafts, originals, overview, purge, qa, review, services
 from . import trash as trash_box
 from .catalog_models import Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
@@ -71,6 +71,30 @@ def rename_dataset(
     dataset = catalog.rename_dataset(db, user, dataset_id, body.name)
     db.commit()
     return {"id": dataset.id, "name": dataset.name}
+
+
+class DatasetMove(BaseModel):
+    project_id: str
+    name: str = ""  # what it is called there, when that project has a dataset of its name already
+
+
+@router.get("/datasets/{dataset_id}/move")
+def dataset_move_plan(
+    dataset_id: str, project_id: str = "", _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """What moving a dataset to another project takes along and leaves, and what holds it now."""
+    return dataset_move.plan(db, dataset_id, project_id)
+
+
+@router.post("/datasets/{dataset_id}/move")
+def move_dataset(
+    dataset_id: str, body: DatasetMove, user: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """Move a dataset, every version of it and its labeling sets, to another project (the maker of both or an
+    admin); training runs and models stay where they were made."""
+    moved = dataset_move.move(db, user, dataset_id, body.project_id, body.name)
+    db.commit()
+    return moved
 
 
 class ReleasePatch(BaseModel):

@@ -10,6 +10,7 @@ import {
   rememberProject,
   useFolders,
 } from "./DataBoard";
+import { MoveDatasetDialog } from "./DatasetMove";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
 import { ChangeSummary, DraftActions, DraftLine, DraftNotice } from "./DraftBar";
@@ -177,6 +178,7 @@ function ReleaseView({
   const [labelingSet, setLabelingSet] = useState(false); // making a labeling set of the filtered images
   const [exporting, setExporting] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [moving, setMoving] = useState(false); // 다른 프로젝트로 옮기기
 
   const filterQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -324,6 +326,11 @@ function ReleaseView({
             <a className="btn primary-link" href={`#/training/new/${release.id}`} onClick={() => rememberProject(release.project_id)}>
               이 버전으로 학습
             </a>
+          )}
+          {release.status !== "building" && (
+            <button onClick={() => setMoving(true)} title="이 데이터셋의 모든 버전 · 작업 중 · 라벨링 묶음을 다른 프로젝트로 옮깁니다">
+              다른 프로젝트로
+            </button>
           )}
           {isAdmin && (
             <button className="danger" onClick={remove}>
@@ -604,6 +611,17 @@ function ReleaseView({
       )}
 
       {exporting && <ExportDialog release={release} task={task} onClose={() => setExporting(false)} />}
+      {moving && (
+        <MoveDatasetDialog
+          dataset={release.dataset}
+          projectId={release.project_id}
+          onClose={() => setMoving(false)}
+          onMoved={() => {
+            setMoving(false);
+            void refresh(); // the same version, now in the other project
+          }}
+        />
+      )}
       {renaming && (
         <RenameDialog
           release={release}
