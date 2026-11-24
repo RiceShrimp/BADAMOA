@@ -268,6 +268,34 @@
 .markdown p {
   margin: 0 0 14px;
 }
+
+/* a screen of the Hub, with its caption under it */
+.guide-picture {
+  display: block;
+  margin: 18px 0 22px;
+}
+.guide-picture a {
+  display: block;
+  line-height: 0;
+}
+.guide-picture img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, var(--border));
+}
+.guide-picture a:hover img {
+  border-color: var(--accent);
+}
+.guide-picture-caption {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 .markdown strong {
   font-weight: 650;
 }

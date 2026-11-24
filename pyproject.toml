@@ -52,6 +52,7 @@ artifacts = ["src/badamoa/hub/static/**"]
 # The guides the Hub shows (hub/guides.py): the user manual and the template guide.
 "docs/MANUAL.md" = "badamoa/docs/MANUAL.md"
 "docs/TEMPLATE_GUIDE.md" = "badamoa/docs/TEMPLATE_GUIDE.md"
+"docs/img/manual" = "badamoa/docs/img/manual"  # the manual's pictures
 
 [dependency-groups]
 dev = ["pytest>=8.3", "ruff>=0.8"]

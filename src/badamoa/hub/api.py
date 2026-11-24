@@ -215,6 +215,13 @@ def guide_list(_: User = Depends(current_user)) -> list[dict[str, Any]]:
     return guides.listing()
 
 
+@router.get("/guides/images/{file}")
+def guide_image(file: str) -> FileResponse:
+    """A picture in the manual. Plain <img> tags fetch it, so no sign-in: it shows the sample Hub's screens only."""
+    path = guides.image_path(file)
+    return FileResponse(path, media_type=guides.IMAGE_TYPES[path.suffix], headers={"Cache-Control": "public, max-age=86400"})
+
+
 @router.get("/guides/{name}")
 def guide(name: str, _: User = Depends(current_user)) -> dict[str, Any]:
     return guides.read(name)

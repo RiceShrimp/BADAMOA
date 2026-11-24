@@ -18,6 +18,26 @@ interface GuideText {
   title: string;
   file: string;
   markdown: string;
+  images?: Record<string, [number, number]>; // the manual's pictures: name → width, height
+}
+
+/** The manual's pictures (img/manual/x.png) come from the Hub; the rest of a src stays as written. */
+const PICTURES = "img/manual/";
+
+/** A screen in the manual: fetched only when scrolled near, its size kept so the page does not jump while it loads,
+ *  its alt text as the caption, and a click opens it full size. */
+function Picture({ src = "", alt = "", sizes }: { src?: string; alt?: string; sizes: GuideText["images"] }) {
+  const name = src.startsWith(PICTURES) ? src.slice(PICTURES.length) : "";
+  const url = name ? `/api/guides/images/${name}` : src;
+  const [width, height] = (name && sizes?.[name]) || [];
+  return (
+    <span className="guide-picture">
+      <a href={url} target="_blank" rel="noreferrer" title="크게 보기">
+        <img src={url} alt={alt} width={width} height={height} loading="lazy" decoding="async" />
+      </a>
+      {alt && <span className="guide-picture-caption">{alt}</span>}
+    </span>
+  );
 }
 
 /** A heading of the guide on screen, for the table of contents, the reading position and the search. */
@@ -340,6 +360,7 @@ export function GuidesPage({ name, section }: { name?: string; section?: string 
       a: link,
       pre: CodeBlock,
       table: Table,
+      img: ({ src, alt }) => <Picture src={typeof src === "string" ? src : ""} alt={alt} sizes={shown.images} />,
     };
     return (
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkAlerts]} rehypePlugins={[rehypeHeadingIds]} components={components}>
