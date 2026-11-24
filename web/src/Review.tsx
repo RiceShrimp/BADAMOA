@@ -439,10 +439,8 @@ function ModelCheck({ evaluation: e }: { evaluation: ReviewCard["evaluation"] })
     <div className="review-model">
       <div className="card-line small" title={`${name}로 검사 · 이미지 ${e.images.toLocaleString()}장 · ${timeAgo(e.created_at)}`}>
         <Icon name="box" size={12} />
-        <span className="ellipsis">
-          <span className="muted">모델 검사</span>
-          {e.model && ` ${e.model.name}`}
-        </span>
+        <span className="muted">모델 검사</span>
+        {e.model && <MiddleCut text={e.model.name} />}
         <span className="card-when muted">
           {e.model && `v${e.model.version} · `}
           {timeAgo(e.created_at)}
@@ -459,6 +457,24 @@ function ModelCheck({ evaluation: e }: { evaluation: ReviewCard["evaluation"] })
         })}
       </div>
     </div>
+  );
+}
+
+/** A long name cut in the middle when it does not fit, so its end stays: od_mlops_e…-yolov8s-custom. The end is from the
+ * first - _ . or space that leaves at most 16 characters (the last 12 when there is none). */
+function MiddleCut({ text }: { text: string }) {
+  if (text.length <= 20) return <span className="ellipsis">{text}</span>;
+  let cut = Math.max(1, text.length - 12);
+  for (let i = Math.max(1, text.length - 16); i < text.length; i++)
+    if ("-_. ".includes(text[i])) {
+      cut = i;
+      break;
+    }
+  return (
+    <span className="middle-cut">
+      <span>{text.slice(0, cut)}</span>
+      <span>{text.slice(cut)}</span>
+    </span>
   );
 }
 

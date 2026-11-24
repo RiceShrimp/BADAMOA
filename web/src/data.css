@@ -1215,13 +1215,29 @@ tr.clickable:hover td {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  white-space: nowrap;
 }
 .card-line > svg {
   flex: none;
   color: var(--muted);
 }
-.card-line > .ellipsis {
+.card-line > .ellipsis,
+.card-line > .middle-cut {
   flex: 1;
+}
+/* a name cut in the middle: its start gives way first (down to a few letters), then its end */
+.middle-cut {
+  display: flex;
+  min-width: 0;
+}
+.middle-cut > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.middle-cut > :first-child {
+  flex: 0 1000 auto;
+  min-width: 2.2em;
 }
 .card-when {
   flex: none;
