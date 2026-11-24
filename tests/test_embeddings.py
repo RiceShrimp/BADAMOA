@@ -102,6 +102,13 @@ def test_explore_finds_the_nearest_images(hub, release):  # noqa: F811
     assert one.status_code == 200 and len(one.json()["items"]) == 7
     words = hub.get(f"/api/projects/{project}/explore/search", params={"text": "a cat"})
     assert words.status_code == 409 and "글 검색" in words.json()["detail"]
+    # a result opens as on the version screen: the version's list of just the results, in their order
+    order = [found["items"][2]["id"], found["items"][0]["id"], found["items"][4]["id"]]
+    url = f"/api/releases/{release['id']}/items"
+    page = hub.get(url, params={"ids": ",".join(map(str, order)), "offset": 1, "limit": 1}).json()
+    assert page["total"] == 3 and [i["id"] for i in page["items"]] == [order[1]]
+    every = hub.get(url, params={"ids": ",".join(map(str, order))}).json()["items"]
+    assert [i["id"] for i in every] == order
 
 
 def test_vectors_without_a_training_and_as_a_pipeline_step(hub, release, tmp_path):  # noqa: F811

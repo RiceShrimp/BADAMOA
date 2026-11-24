@@ -145,3 +145,17 @@ details.embed-history > summary .badge {
   gap: 10px;
   white-space: nowrap;
 }
+
+/* a result opens as on the version screen */
+.explore-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+.explore-open.opening {
+  opacity: 0.6;
+  cursor: progress;
+}

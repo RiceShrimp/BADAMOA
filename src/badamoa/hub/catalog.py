@@ -1368,6 +1368,9 @@ def _item_filter(release_id: str, split, state, class_id, site, camera, q):
     return query.where(*conditions)
 
 
+MAX_IDS = 500  # images named one by one (``list_items`` ids)
+
+
 def list_items(
     db: Session,
     settings: HubSettings,
@@ -1394,8 +1397,10 @@ def list_items(
     counting: dict[str, float] | None = None,
     at: dict[str, float] | None = None,
     picks: list[str] | None = None,
+    ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """A page of a release's items. ``picks`` (검수, several checks at once): ``rule:<check>`` and ``model:<mistake>``
+    """A page of a release's items. ``ids``: only these, in this order (이미지 탐색's results, opened one by one).
+    ``picks`` (검수, several checks at once): ``rule:<check>`` and ``model:<mistake>``
     (with ``suspect``): the images any of them found, the ones most of them found first; each image says what each
     found on it (``qa_by``, as ``qa`` for one). ``counting``: the thresholds a model check's findings are taken at
     (``checks.rule``; FiftyOne's by default). ``pred``: a model run's id (``checks.prediction_runs``): each image
@@ -1425,6 +1430,10 @@ def list_items(
             query = query.where(ReleaseItem.item_id.in_(drafts.items_changed(db, draft, changed)))
     limit = max(1, min(limit, MAX_PAGE))
     order = [ReleaseItem.item_id]
+    if ids:
+        wanted = list(dict.fromkeys(int(i) for i in ids))[:MAX_IDS]
+        query = query.where(ReleaseItem.item_id.in_(wanted))
+        order = [case({item_id: n for n, item_id in enumerate(wanted)}, value=ReleaseItem.item_id), ReleaseItem.item_id]
     if suspect:
         op = checks.check_of(db, release, suspect)
         query = query.join(

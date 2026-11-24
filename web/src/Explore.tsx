@@ -1,12 +1,14 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { useBoardFilter } from "./Boards";
+import { ItemViewer } from "./ItemViewer";
+import { colorFor } from "./ReleaseTabs";
 import { TaskTags, rememberProject } from "./DataBoard";
 import { type Order, OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { DataAfterChoice, type GpuChoice, GpuChips, ImagesNote, PlaceGrid, PlaceRow, type PlaceServer, ServerSelect, copiedTo, gpuBody, spaceShort } from "./ServerPlace";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { LogTail } from "./Training";
 import { api } from "./api";
-import type { TreeDataset } from "./catalogTypes";
+import type { ReleaseInfo, TreeDataset } from "./catalogTypes";
 import type { NodeGpu } from "./trainTypes";
 import { Badge, Icon, Modal, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
 import "./autolabel.css";
@@ -758,6 +760,23 @@ function ExploreProject({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState<{ releaseId?: string } | null>(null);
   const [nudge, setNudge] = useState(0); // a job started: read the versions and the records again
+  // a result opened as on the version screen: the version it is in, and the results of that version in their order
+  const [viewing, setViewing] = useState<{ release: ReleaseInfo; ids: number[]; start: number } | null>(null);
+  const [opening, setOpening] = useState<number | null>(null);
+  const open = async (item: Found) => {
+    if (!item.release || !found) return;
+    const ids = found.items.filter((f) => f.release?.id === item.release?.id).map((f) => f.id);
+    (document.activeElement as HTMLElement | null)?.blur(); // ← → go to the viewer, not the search box
+    setOpening(item.id);
+    try {
+      const release = await api<ReleaseInfo>(`/releases/${item.release.id}`);
+      setViewing({ release, ids, start: Math.max(0, ids.indexOf(item.id)) });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOpening(null);
+    }
+  };
 
   const loadStatus = () => void api<ExploreStatus>(`/projects/${projectId}/explore`).then(setStatus).catch((e) => setError(String(e)));
   useEffect(() => {
@@ -900,9 +919,15 @@ function ExploreProject({ projectId }: { projectId: string }) {
               <div className="thumb-grid explore-grid">
                 {found.items.map((item) => (
                   <div key={item.id} className="thumb explore-thumb">
-                    <a className="thumb-image" href={item.image_url ?? undefined} target="_blank" rel="noreferrer" title="원본 보기">
+                    <button
+                      type="button"
+                      className={`thumb-image explore-open${opening === item.id ? " opening" : ""}`}
+                      onClick={() => void open(item)}
+                      disabled={!item.release}
+                      title={item.release ? "크게 보기 (라벨 · 버전별 라벨 · 이미지 정보)" : "버전에 없는 이미지"}
+                    >
                       {item.thumb_url ? <img src={item.thumb_url} alt={item.file_name} loading="lazy" /> : <Icon name="images" />}
-                    </a>
+                    </button>
                     <div className="explore-meta">
                       <span className="tag">{item.score.toFixed(3)}</span>
                       {item.release ? (
@@ -928,6 +953,19 @@ function ExploreProject({ projectId }: { projectId: string }) {
       )}
 
       <EmbedHistory projectId={projectId} nudge={nudge} />
+
+      {viewing && (
+        <ItemViewer
+          releaseId={viewing.release.id}
+          filterQuery={`ids=${viewing.ids.join(",")}`}
+          start={viewing.start}
+          total={viewing.ids.length}
+          classes={viewing.release.label_space.classes}
+          colorOf={colorFor(viewing.release.label_space.classes)}
+          task={viewing.release.task ?? "detect"}
+          onClose={() => setViewing(null)}
+        />
+      )}
 
       {starting && (
         <NewEmbedding

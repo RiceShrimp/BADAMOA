@@ -399,6 +399,7 @@ def list_items(
     missed_iou: float | None = None,
     rules: str = "",  # 검수: the box checks' thresholds, e.g. duplicate:0.9,tiny:5 (the defaults when left out)
     picks: str = "",  # 검수: several checks at once, e.g. rule:duplicate,model:extra (with suspect for a model's)
+    ids: str = "",  # only these images, in this order (comma separated): 이미지 탐색's results
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -429,6 +430,7 @@ def list_items(
         at=qa.limits(rules),
         picks=[p for p in picks.split(",") if p.strip()],
         pred=pred,
+        ids=[int(i) for i in ids.split(",") if i.strip().isdigit()],
     )
 
 
