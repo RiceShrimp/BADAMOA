@@ -103,6 +103,12 @@ def model_run(params: dict[str, Any]) -> dict[str, Any]:
     return modelops.run(params)
 
 
+def model_embed(params: dict[str, Any]) -> dict[str, Any]:
+    from badamoa.node import embedder
+
+    return embedder.run(params)
+
+
 def env_check(params: dict[str, Any]) -> dict[str, Any]:
     from badamoa.node import containers, envs
 
@@ -239,6 +245,7 @@ HANDLERS = {
     "data.check": data_check,
     "train.run": train_run,
     "model.run": model_run,
+    "model.embed": model_embed,
     "template.check": template_check,
     "env.check": env_check,
     "env.prepare": env_prepare,

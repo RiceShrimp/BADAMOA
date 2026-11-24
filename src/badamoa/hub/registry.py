@@ -645,6 +645,7 @@ def environment_view(db: Session, settings: HubSettings, env: Environment) -> di
 TRAINS = "compute"  # 학습용: training runs only there
 AUTOLABELS = "autolabel"  # 오토라벨용: a set's images are auto-labelled on the server holding them only with this role
 STORES = "storage"  # 데이터 서버용: datasets are imported (registered where they lie) only on these
+EMBEDS = "embedding"  # 임베딩용: image vectors (이미지 탐색) are made only on these
 REMOVE_SINCE = (0, 47, 0)  # nodes from here on remove an installed environment (``env.remove``)
 NOT_FOR_MODELS = "학습용·오토라벨용 아님"
 

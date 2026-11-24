@@ -206,6 +206,34 @@ class ReleaseItem(Base):
     box_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class EmbeddingPart(Base):
+    """Image vectors a node made with a model and sent in one file (``blob`` in the Hub's storage): a JSON header
+    line ``{"model", "dim", "shas"}``, then a float16 vector a row, L2-normalised, in ``shas``' order."""
+
+    __tablename__ = "embedding_parts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    model: Mapped[str] = mapped_column(String(64), index=True)
+    dim: Mapped[int] = mapped_column(Integer)
+    count: Mapped[int] = mapped_column(Integer)
+    blob: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    release_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ImageEmbedding(Base):
+    """An image's vector by a model, found by the image's content (the same picture in any version, dataset or
+    project has one): which part file holds it and at which row."""
+
+    __tablename__ = "image_embeddings"
+
+    model: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    part_id: Mapped[str] = mapped_column(ForeignKey("embedding_parts.id", ondelete="CASCADE"), index=True)
+    row: Mapped[int] = mapped_column(Integer)
+
+
 class ItemPrediction(Base):
     """What a model predicted for one image in one evaluation (``model_jobs.id``), and how it compared with the
     labels then: found, missed (labels it did not find) and extra (predictions no label backs). Many mistakes

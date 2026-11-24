@@ -1278,6 +1278,70 @@ function ParamField({ spec, value, onChange }: { spec: TemplateParam; value: For
   );
 }
 
+/** How far a version's images have their 이미지 탐색 vectors (``/releases/{id}/embeddings``). */
+interface EmbedInfo {
+  model: string;
+  title: string;
+  total: number;
+  done: number;
+  todo: number;
+  going: string | null;
+}
+
+/** 학습하면서 이미지 임베딩도 만들기: the server it trains on makes the vectors the version's images lack, from the
+ * copy it has anyway. Only on servers with the 임베딩용 role; none to make when every image has one. */
+function EmbedField({
+  info,
+  on,
+  onChange,
+  roleless,
+  later,
+}: {
+  info: EmbedInfo | null;
+  on: boolean;
+  onChange: (on: boolean) => void;
+  roleless: NodeChoice[];
+  later: boolean; // a pipeline step: on the version it runs on then
+}) {
+  const done = !later && info !== null && info.todo === 0;
+  const blocked = roleless.length > 0 || done;
+  const n = (v: number) => v.toLocaleString();
+  let say: ReactNode;
+  if (roleless.length > 0) {
+    say = (
+      <>
+        {roleless.map((r) => r.name).join(", ")}에는 &quot;임베딩용&quot; 역할이 없어 고를 수 없습니다. <a href="#/nodes">노드</a> 화면에서 그
+        노드의 설정 → 역할에 &quot;임베딩용&quot;을 켜세요.
+      </>
+    );
+  } else if (later) {
+    say = "파이프라인이 돌 때의 버전에서, 벡터가 없는 이미지만 학습할 서버가 받은 이미지로 만듭니다.";
+  } else if (!info) {
+    say = "학습할 서버가 이 버전의 이미지를 받는 김에 벡터를 만들어 Hub에 둡니다.";
+  } else if (info.going) {
+    say = "이 버전의 벡터를 지금 만들고 있습니다. 끝나지 않은 것만 이어서 만들려면 끝난 뒤 다시 켜세요.";
+  } else if (done) {
+    say = `이 버전의 이미지 ${n(info.total)}장은 모두 벡터가 있어(다른 버전 · 데이터셋에서 만든 것 포함) 건너뜁니다.`;
+  } else if (info.done > 0) {
+    say = `이미지 ${n(info.total)}장 중 ${n(info.done)}장은 이미 벡터가 있어(같은 이미지는 다른 버전 · 데이터셋에서 만든 것도) 나머지 ${n(info.todo)}장만 만듭니다.`;
+  } else {
+    say = `이미지 ${n(info.total)}장의 벡터를 학습할 서버가 받은 이미지로 만들어 Hub에 둡니다. 따로 옮기지 않습니다.`;
+  }
+  return (
+    <div className="embed-field">
+      <label className="check">
+        <input type="checkbox" checked={on && !blocked} disabled={blocked || Boolean(info?.going && !later)} onChange={(e) => onChange(e.target.checked)} />
+        학습하면서 이미지 임베딩도 만들기
+        <span className="muted small">이미지 탐색용{info ? ` · ${info.title}` : ""}</span>
+      </label>
+      <p className={`small ${roleless.length > 0 ? "bad-text" : "muted"}`}>
+        {say}
+        {on && !blocked && !later && info && info.todo > 0 ? " GPU가 하나면 학습이 끝난 뒤 이어서 만듭니다." : ""}
+      </p>
+    </div>
+  );
+}
+
 /** A search step's settings to try as typed in 여러 설정 시험해 보기 again: values listed, or a range ``a~b``. */
 function trialsOf(space: unknown): Trial[] {
   if (!space || typeof space !== "object") return [];
@@ -1354,6 +1418,20 @@ export function NewRun({
   );
   const keptClasses = useRef<number[] | null>(Array.isArray(given.classes) && given.classes.length ? given.classes.map(Number) : null);
   const keptMetric = useRef(String(given.metric ?? ""));
+  // 이미지 탐색's vectors, made on the server it trains on from the copy it has (only the images without one)
+  const [embed, setEmbed] = useState(Boolean(given.embed));
+  const [embedInfo, setEmbedInfo] = useState<EmbedInfo | null>(null);
+  useEffect(() => {
+    setEmbedInfo(null);
+    if (!release) return;
+    let live = true;
+    void api<EmbedInfo>(`/releases/${release}/embeddings`)
+      .then((found) => live && setEmbedInfo(found))
+      .catch(() => live && setEmbedInfo(null));
+    return () => {
+      live = false;
+    };
+  }, [release]);
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -1401,6 +1479,10 @@ export function NewRun({
   const template = templates?.find((t) => t.name === templateName);
   // Where it trains decides the GPUs on offer: pick again whenever that changes.
   const targets = choices ? trainTargets(choices, nodeMode, pickedNodes) : [];
+  const roleless = targets.filter((n) => !(n.roles ?? []).includes("embedding")); // servers it may train on, no 임베딩용
+  const later = settingsFor?.kind === "train"; // a pipeline step: the version is the one it runs on then
+  const embedding =
+    embed && targets.length > 0 && roleless.length === 0 && trials.length === 0 && settingsFor?.kind !== "sweep" && (later || (embedInfo?.todo ?? 1) > 0);
   const targetKey = targets.map((n) => n.id).join(",");
   useEffect(() => {
     if (keptGpus.current === null) return setGpuPick("auto");
@@ -1522,6 +1604,7 @@ export function NewRun({
         base_model_id: extra.base,
         nodes,
         data_after: nodes.length ? dataAfter : "",
+        ...(embedding ? { embed: true } : {}),
       };
       if (settingsFor.kind === "sweep") {
         if (trials.length === 0) {
@@ -1571,6 +1654,7 @@ export function NewRun({
         base_model_id: extra.base,
         nodes,
         data_after: nodes.length ? dataAfter : "",
+        ...(embedding ? { embed: true } : {}),
       };
       const after = followSteps(follow);
       if (after.length > 0 || save.on) {
@@ -1683,6 +1767,9 @@ export function NewRun({
               count={extra.gpus}
               onCount={(gpus) => setExtra({ ...extra, gpus })}
             />
+          )}
+          {choices && trials.length === 0 && settingsFor?.kind !== "sweep" && (
+            <EmbedField info={embedInfo} on={embed} onChange={setEmbed} roleless={roleless} later={later} />
           )}
 
           {settingsFor ? (

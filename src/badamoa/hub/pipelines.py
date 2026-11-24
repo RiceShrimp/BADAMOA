@@ -91,7 +91,7 @@ MAX_RUNS_SHOWN = 50
 # What a training step may carry: the new-run dialog's settings, without the version (the run's own)
 TRAIN_KEYS = (
     "template", "environment", "params", "name", "model_name", "classes", "unlabelled", "val_fraction", "gpus",
-    "gpu_indices", "min_vram_mb", "base_model_id", "tags", "note", "nodes", "data_after",
+    "gpu_indices", "min_vram_mb", "base_model_id", "tags", "note", "nodes", "data_after", "embed",
 )  # fmt: skip
 SWEEP_KEYS = (
     "template", "environment", "params", "space", "method", "metric", "goal", "max_runs", "parallel", "classes",
@@ -721,6 +721,7 @@ def train_settings_of(db: Session, run: Run) -> dict[str, Any]:
         "base_model_id": (c.get("base_model") or {}).get("id", ""),
         "nodes": c.get("nodes") or [],
         "data_after": c.get("data_after", ""),
+        "embed": bool(c.get("embed")) or None,  # the image vectors made alongside
     }
     return {k: v for k, v in settings.items() if v not in (None, "", [], {})}
 

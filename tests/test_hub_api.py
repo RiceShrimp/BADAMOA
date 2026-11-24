@@ -70,7 +70,7 @@ def test_roles_default_to_all_and_training_and_autolabel_split_once(client, admi
     from badamoa.hub.models import HubSetting, Node
 
     body = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()
-    assert body["roles"] == ["compute", "autolabel", "inference", "storage"]
+    assert body["roles"] == ["compute", "autolabel", "inference", "storage", "embedding"]
     bad = client.post("/api/nodes/join-tokens", json={"roles": ["gpu"]}, headers=admin)
     assert "compute(학습용)" in bad.json()["detail"] and "storage(데이터 서버용)" in bad.json()["detail"]
 

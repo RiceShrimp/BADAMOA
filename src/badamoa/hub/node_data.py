@@ -32,7 +32,7 @@ from .train_models import ModelJob, Run, Sweep
 
 CHECK_SINCE = (0, 42, 0)  # nodes from here on check and clean their received copies
 ACTIVE = ("queued", "running")
-USING = ("data.sync", "train.run", "model.run")  # jobs that read a version's images on a node
+USING = ("data.sync", "train.run", "model.run", "model.embed")  # jobs that read a version's images on a node
 PAGE = 5000
 CHOICES = ("", "keep", "delete")  # what a run does with the copy its server received, once it is over
 
@@ -75,7 +75,7 @@ def users(db: Session, node_id: str, release_id: str) -> list[str]:
             run = db.scalar(select(Run).where(Run.job_id == job.id))
             found.append(f"학습 {run.name}" if run else "학습")
         else:
-            found.append("평가" if job.type == "model.run" else "이미지 받기")
+            found.append({"model.run": "평가", "model.embed": "임베딩"}.get(job.type, "이미지 받기"))
     for sweep in db.scalars(select(Sweep).where(Sweep.release_id == release_id, Sweep.status == "running")):
         if node_id in ((sweep.settings or {}).get("nodes") or []):
             found.append(f"탐색 {sweep.name}")

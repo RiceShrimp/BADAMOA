@@ -10,6 +10,7 @@ const ROLES = [
   { id: "autolabel", label: "오토라벨용" },
   { id: "inference", label: "추론용" },
   { id: "storage", label: "데이터 서버용" },
+  { id: "embedding", label: "임베딩용" },
 ];
 
 // ---- what the Hub sends (/api/gpu-board) ----------------------------------------------------

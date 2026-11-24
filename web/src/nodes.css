@@ -618,7 +618,7 @@ details.node-more > summary {
   color: var(--muted);
   white-space: nowrap;
 }
-/* each role its own colour: 학습용 · 오토라벨용 · 추론용 · 데이터 서버용 */
+/* each role its own colour: 학습용 · 오토라벨용 · 추론용 · 데이터 서버용 · 임베딩용 */
 .role-chip.role-compute {
   border-color: var(--accent);
   color: var(--accent);
@@ -634,6 +634,10 @@ details.node-more > summary {
 .role-chip.role-storage {
   border-color: var(--warn);
   color: var(--warn);
+}
+.role-chip.role-embedding {
+  border-color: var(--role-embedding, #c2417e);
+  color: var(--role-embedding, #c2417e);
 }
 
 /* disks BADAMOA writes to that are nearly full (node page) */
@@ -676,6 +680,9 @@ details.node-more > summary {
 }
 :root[data-theme="dark"] .role-chip.role-autolabel {
   --role-autolabel: #b79cff;
+}
+:root[data-theme="dark"] .role-chip.role-embedding {
+  --role-embedding: #f08cbc;
 }
 
 /* the storage kinds: a caret says the list opens (each item has its own 지우기) */

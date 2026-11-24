@@ -434,7 +434,7 @@ def test_a_step_takes_only_the_servers_its_own_screen_offers(hub, release, tmp_p
         choices = hub.get(f"/api/releases/{release['id']}/nodes").json()["nodes"]
         assert next(n for n in choices if n["id"] == node)["roles"] == ["compute"]
     finally:
-        hub.patch(f"/api/nodes/{node}", json={"roles": ["compute", "autolabel", "inference", "storage"]})
+        hub.patch(f"/api/nodes/{node}", json={"roles": ["compute", "autolabel", "inference", "storage", "embedding"]})
 
 
 def test_templates_are_kept_and_offered(hub, release):  # noqa: F811

@@ -129,6 +129,25 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             params_schema=_TRAIN_PARAMS,
         ),
         JobTypeSpec(
+            type="model.embed",
+            title="이미지 임베딩",
+            description=(
+                "이미지 탐색에 쓸 이미지마다의 벡터를 노드에서 만들어 Hub에 둡니다. 이미 만든 이미지(같은 내용)는 "
+                "건너뜁니다."
+            ),
+            hidden=True,
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "release_id": {"type": "string"},
+                    "model": {"type": "string"},  # embeddings.MODELS
+                    "spec": {"type": "object"},  # the model's script, checkpoint, dimension
+                    "environment": {"type": "object"},
+                    "run_id": {"type": "string"},  # the training it goes with
+                },
+            },
+        ),
+        JobTypeSpec(
             type="model.run",
             title="모델 작업",
             description="등록된 모델을 평가하거나, 다른 형식으로 내보내거나, 올린 이미지로 테스트합니다.",

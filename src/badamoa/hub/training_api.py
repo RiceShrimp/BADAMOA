@@ -54,6 +54,7 @@ class NewRun(BaseModel):
     note: str = ""
     nodes: list[str] = Field(default_factory=list)  # servers it may train on; empty = where the images are
     data_after: str = ""  # keep | delete: the copy a server received for it, once the run succeeded
+    embed: bool = False  # the server it trains on also makes the version's image vectors (이미지 탐색)
 
 
 class RunUpdate(BaseModel):

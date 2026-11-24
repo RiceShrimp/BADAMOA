@@ -1636,3 +1636,18 @@ label.check {
   background: var(--accent-soft, rgb(80 160 255 / 0.15));
   color: var(--accent);
 }
+
+/* 새 학습: 학습하면서 이미지 임베딩도 만들기 (이미지 탐색용 벡터) */
+.embed-field {
+  margin: 4px 0 12px;
+}
+.embed-field .check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: 500;
+}
+.embed-field p {
+  margin: 4px 0 0 24px;
+}

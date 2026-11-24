@@ -25,6 +25,7 @@ from . import (
     cleanup,
     docker_registry,
     docker_registry_api,
+    embeddings_api,
     exports_api,
     hub_storage,
     install,
@@ -228,6 +229,8 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.include_router(modelops_api.router)
     app.include_router(modelops_api.agent_router)
     app.include_router(modelops_api.media_router)
+    app.include_router(embeddings_api.router)
+    app.include_router(embeddings_api.agent_router)
     app.router.routes.append(Route("/mcp", endpoint=mcp_endpoint))
 
     web_dir = settings.web_dir or STATIC_DIR

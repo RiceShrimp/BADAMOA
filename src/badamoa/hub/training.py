@@ -352,6 +352,7 @@ def start_run(
     sweep: dict[str, Any] | None = None,
     nodes: list[str] | None = None,
     data_after: str = "",
+    embed: bool = False,
     via: str = "api",
 ) -> Run:
     """Queue a training run: this release, with this template's code, in this environment.
@@ -360,7 +361,8 @@ def start_run(
     that has the images takes it as it is; if none has, one receives them first from the node
     that holds them (``transfers``), without holding a GPU meanwhile. ``data_after`` says what
     becomes of the copy such a node received once the run is over: ``keep`` it or ``delete`` it
-    (only after a run that succeeded; ``node_data``).
+    (only after a run that succeeded; ``node_data``). ``embed``: the server it trains on also makes the version's
+    image vectors for 이미지 탐색 (only those not made before), from the copy it has anyway (``embeddings``).
 
     ``template`` and ``environment`` may be left empty: the project's default
     template and the template's default environment are used. ``base_model_id``
@@ -494,6 +496,17 @@ def start_run(
         gpu_indices=picked,
     )
     run.job_id = job.id
+    if embed and not sweep:
+        from . import embeddings  # noqa: PLC0415  (embeddings reads this module)
+
+        made = embeddings.start(
+            db, user, release,
+            node_id=node.id if len(candidates) == 1 else None,
+            nodes=[n.id for n in candidates] if len(candidates) > 1 else None,
+            after=after, gpus=gpu_count, run_id=run.id, via=via,
+        )  # fmt: skip
+        known = {"model": embeddings.DEFAULT_MODEL, **({"job_id": made.id} if made else {"skipped": True})}
+        run.config = {**run.config, "embed": known}  # a new dict: a JSON column changed in place is not saved
     services.audit(
         db, user.id, via, "run.create", run.id, name=run.name, release=f"{dataset.name} {release.version}", template=row.name
     )
@@ -531,6 +544,7 @@ def rerun(db: Session, user: User, run_id: str, via: str = "api") -> Run:
         tags=tags_of(db, "run", [source.id]).get(source.id, []),
         nodes=c.get("nodes") or None,
         data_after=c.get("data_after", ""),
+        embed=bool(c.get("embed")),
         via=via,
     )
 

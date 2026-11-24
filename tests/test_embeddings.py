@@ -1,0 +1,80 @@
+"""Image vectors for 이미지 탐색, made with a training on the server it trains on (``model.embed``): only the images
+without one yet (a version's new ones), none when all have one, never on a server without the 임베딩용 role.
+
+Uses the ``dummy`` embedder (a few numbers of the pixels, the node's own Python) and a real Node Agent.
+"""
+
+from __future__ import annotations
+
+import pytest
+from sample_data import make_yolo
+from test_training import _logs, _wait, hub, release  # noqa: F401 (fixtures)
+
+from badamoa.hub import embeddings
+
+
+@pytest.fixture(autouse=True)
+def _dummy_model(monkeypatch):
+    monkeypatch.setattr(embeddings, "DEFAULT_MODEL", "dummy")
+
+
+def _coverage(client, release_id):
+    return client.get(f"/api/releases/{release_id}/embeddings", params={"model": "dummy"}).json()
+
+
+def _train(client, release_id, **extra):
+    body = {"release_id": release_id, "template": "dummy", "params": {"epochs": 1}, "gpus": 0, **extra}
+    resp = client.post("/api/runs", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _embedded(client, run):
+    made = (client.get(f"/api/runs/{run['id']}").json().get("config") or {}).get("embed") or {}
+    if made.get("job_id"):
+        job = _wait(client, made["job_id"])
+        assert job["status"] == "succeeded", _logs(client, job["id"])
+        return made, job
+    return made, None
+
+
+def test_vectors_come_with_a_training_once_per_image(hub, release, tmp_path):  # noqa: F811
+    assert _coverage(hub, release["id"]) == {
+        **_coverage(hub, release["id"]),
+        "total": 8,
+        "done": 0,
+        "todo": 8,
+    }
+    # a training that also makes them: on the server it trains on, from the images it has
+    made, job = _embedded(hub, _train(hub, release["id"], embed=True))
+    assert made["model"] == "dummy" and job is not None
+    assert job["type"] == "model.embed" and job["result"]["embedded"] == 8
+    assert _coverage(hub, release["id"])["done"] == 8
+    # again: every image has one, nothing to do
+    again, none = _embedded(hub, _train(hub, release["id"], embed=True))
+    assert again["skipped"] and none is None
+
+    # the next version: only the images it added (the first six are the same pictures)
+    folder = make_yolo(tmp_path / "more", train=10)
+    body = {"node_id": hub.node_id, "path": str(folder), "dataset": "street", "version": "v2"}
+    imported = _wait(hub, hub.post(f"/api/projects/{release['project_id']}/imports", json=body).json()["id"])
+    assert imported["status"] == "succeeded", _logs(hub, imported["id"])
+    v2 = imported["result"]["release_id"]
+    assert {k: _coverage(hub, v2)[k] for k in ("total", "done", "todo")} == {"total": 12, "done": 6, "todo": 6}
+    _, job = _embedded(hub, _train(hub, v2, embed=True))
+    assert job["result"]["embedded"] == 6 and _coverage(hub, v2)["todo"] == 0
+
+
+def test_a_server_without_the_role_makes_none(hub, release):  # noqa: F811
+    try:
+        assert hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "storage"]}).status_code == 200
+        refused = hub.post(
+            "/api/runs",
+            json={"release_id": release["id"], "template": "dummy", "params": {"epochs": 1}, "gpus": 0, "embed": True},
+        )
+        assert refused.status_code == 400 and "임베딩용" in refused.json()["detail"]
+        # the training alone still starts
+        run = _train(hub, release["id"])
+        assert "embed" not in run["config"]
+    finally:
+        hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "autolabel", "inference", "storage", "embedding"]})

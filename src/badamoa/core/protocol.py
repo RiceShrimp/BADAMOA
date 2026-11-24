@@ -11,16 +11,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-NodeRole = Literal["compute", "autolabel", "inference", "storage"]
-ALL_ROLES: list[str] = ["compute", "autolabel", "inference", "storage"]
+NodeRole = Literal["compute", "autolabel", "inference", "storage", "embedding"]
+ALL_ROLES: list[str] = ["compute", "autolabel", "inference", "storage", "embedding"]
 # What each role is called on screen. compute: training runs here. autolabel: a labeling set's images are
 # auto-labelled on the server holding them only when it has this role. Templates' environments go to servers
-# with either. inference / storage: shown on the server, nothing is sent by them yet.
+# with either. storage: datasets are imported only there. embedding: image vectors for 이미지 탐색 are made there
+# (with a training on the copy it received). inference: shown on the server, nothing is sent by it yet.
 ROLE_LABELS: dict[str, str] = {
     "compute": "학습용",
     "autolabel": "오토라벨용",
     "inference": "추론용",
     "storage": "데이터 서버용",
+    "embedding": "임베딩용",
 }
 
 JobStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
