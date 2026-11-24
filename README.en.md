@@ -17,7 +17,7 @@
 
 **BADAMOA** is a vision MLOps platform you install on your own servers. Registering image datasets and refining their labels, training on the team's GPU servers, and evaluating and keeping the resulting models all happen in one web app. Installing it takes no Docker and no extra server software: it runs as a single Python package.
 
-The name is Korean for "gathering the sea": collecting a scattered sea of data into models. It also spells **B**uild · **A**nnotate · **D**evelop · **A**utomate and **M**LOps **O**rchestration & **A**gents.
+The name is Korean for "gathering the sea": collecting a scattered sea of data into models. It also spells the four steps from data to a model, **B**uild · **A**nnotate · **D**evelop · **A**utomate, and the **M**LOps **O**rchestration **A**gent that runs nodes, datasets, labels, training, evaluation and models in one place. The app's screens call it **MLOps Orchestration** (MOA).
 
 <p align="center">
   <img src="docs/img/shot-project.png" alt="Project page: COCO128 detection and segmentation dataset cards, and the ranking of models trained in the project" width="880">
@@ -26,6 +26,10 @@ The name is Korean for "gathering the sea": collecting a scattered sea of data i
 - **Data stays where it is.** Pick a folder on a training server or a NAS and only the file list and labels go to the Hub. Hundreds of GB never move.
 
 - **Labels get better with the model.** A trained model's predictions point at missing and wrong labels; fix them on the spot or hand them out to teammates in parts. Fixed labels are confirmed as a new version.
+
+- **Find images by describing them.** Search every dataset of a project with text such as "a truck at night in the rain" or with a similar image. The vector DB lives in the Hub's folder, so there is no extra server to run.
+
+- **Repeated work becomes a pipeline.** Chain steps such as train → evaluate → promote to SOTA → export, or retrain on every new version, and the Hub runs them in order.
 
 - **GPU servers join with one command.** They only connect out to the Hub, so no firewall holes, and GPUs someone is already using are left alone.
 
@@ -111,7 +115,7 @@ To export a stopped Hub use `uv run badamoa hub export <folder> --home .badamoa/
 
 ### Add training and data servers
 
-1. In the web app, **Nodes** (노드) → **Add node** (노드 추가) asks which roles the server takes (training 학습용 · auto-labeling 오토라벨용 · inference 추론용 · data server 데이터 서버용), then shows a one-line command for Ubuntu and one for Windows.
+1. In the web app, **Nodes** (노드) → **Add node** (노드 추가) asks which roles the server takes (training 학습용 · auto-labeling 오토라벨용 · inference 추론용 · data server 데이터 서버용 · embedding 임베딩용), then shows a one-line command for Ubuntu and one for Windows.
 
 2. Run it on the server (`sudo` on Ubuntu, an administrator PowerShell on Windows).
 
@@ -121,7 +125,7 @@ Good to know:
 
 - **No sudo on the server** (say one whose datasets you only read): use the "sudo 권한이 없을 때" command on the same screen. It installs into that account's home (`~/.badamoa`), and that account's crontab starts the node at boot and every five minutes when it is not running. Registering a dataset only reads the images, so read access is all the account needs.
 
-- **What runs where**: training runs on training servers; auto-labeling runs on the server holding the images when that server has the auto-labeling role. Templates' environments are installed only on training or auto-labeling servers.
+- **What runs where**: dataset imports run on data servers, training on training servers, auto-labeling on auto-labeling servers, and the vectors for image search are made on embedding servers. A server without the images fetches them first. Templates' environments are installed only on training or auto-labeling servers.
 
 - **Port**: only node-to-node image transfers use TCP 8475, and the install command opens it in the firewall. Without sudo the firewall is left alone: if one is on, ask the server's admin to open the port.
 
@@ -156,7 +160,7 @@ Started from the repository with `uv`, the Hub builds the package nodes download
 
 2. Then just ask, e.g. "check the nodes", "train yolo11n on coco128 v1 and tell me the metrics when it's done".
 
-Agents can see nodes and GPUs, datasets and versions, run label checks and labeling sets, fix labels and confirm a version, start runs and hyperparameter sweeps, look up models and their lineage, and read job logs to diagnose failures.
+Agents can see nodes and GPUs, datasets and versions, run label checks, labeling sets and auto-labeling, fix labels and confirm a version, start runs, hyperparameter sweeps and pipelines, look up models and their lineage, and read job logs to diagnose failures.
 
 <br>
 
@@ -176,6 +180,18 @@ Everything below is a real screen, taken from a Hub that has trained on COCO128 
 
 - Images can be filtered by split, class and label state, and you can see where copies sent to other servers for training are still kept.
 
+### Image search
+
+<p align="center">
+  <img src="docs/img/feat-explore.png" alt="이미지 탐색 (image search): results of a text search, nearest first, with their score and version" width="880">
+</p>
+
+- **이미지 탐색** (image search) finds images across all of a project's datasets by **text** or by a **similar image**. Results come nearest first with their score and version, and a score slider keeps only the close ones.
+
+- Click a result and it opens like on the dataset screen, with labels and model predictions, ready to fix.
+
+- Vectors are made with SigLIP2 on embedding servers and kept in a vector DB (LanceDB) inside the Hub's folder; an index keeps searches over millions of images within tens of milliseconds.
+
 ### Refining labels
 
 <p align="center">
@@ -186,7 +202,7 @@ Everything below is a real screen, taken from a Hub that has trained on COCO128 
 
 - **Rule checks**: overlapping or tiny boxes and the like are found without a model.
 
-- **Model checks**: once a trained model has been evaluated, it also points at objects it found that have no label and labels it could not find.
+- **Model checks**: a trained model predicts every image and points, with its confidence, at objects that have no label, labels whose class may be wrong and labels with perhaps no object under them. A model trained on another dataset or project works too when its classes match.
 
 - **No problem**: a label you have checked and found right can be marked "문제 없음", and it is not flagged again in later versions while it stays unchanged.
 
@@ -228,9 +244,25 @@ Flagged images can be fixed on the spot or turned into a **labeling set** handed
 
 - Its lineage traces back which data and settings produced it.
 
+- **Model comparison**: pick up to six models from any project and see their evaluations on the same version and split side by side.
+
+- **Models trained elsewhere**: upload Ultralytics YOLO weights (.pt) with their class yaml and use them for evaluation, label checks, auto-labeling and export.
+
 <p align="center">
   <img src="docs/img/feat-lineage.png" alt="Lineage: from a dataset version to a run, a model, and its evaluation, export and test" width="880">
 </p>
+
+### Pipelines
+
+<p align="center">
+  <img src="docs/img/feat-pipeline.png" alt="A pipeline run: train → evaluate → promote → export, each step finished in turn" width="880">
+</p>
+
+- Put import, label checks, sending to a server, auto-labeling, labeling, confirming a version, training, sweeps, evaluation, promotion and export in any order as steps, each with its settings and whether the next goes on by success or past a threshold.
+
+- A labeling step waits until people finish the set; a promotion step measures against the current SOTA on the same data and moves SOTA only when the new model is better.
+
+- Run a pipeline by hand or on every new version of a dataset, and keep it as a template for the team; the new-run dialog offers them under what to do after training.
 
 ### Servers and the Hub
 
@@ -242,6 +274,8 @@ Flagged images can be fixed on the spot or turned into a **labeling set** handed
 - The node board shows each server's GPUs alongside its CPU, memory and disk.
 
 - A GPU someone is using directly counts as busy and gets no jobs.
+
+- A node's page lists the virtual environments, Docker images, received data and weights piled up on that server, with their size, to pick and delete.
 
 - Home sums up data, models, nodes and storage at a glance.
 
@@ -324,14 +358,14 @@ BADAMOA is in 0.x development. Here is what works and what is still to come; the
 
 | Area | Works | To come |
 |---|---|---|
-| **Build** · data | ✅ Registering in place, versions with fingerprints, version diff, node-to-node transfer and copies per server | 🚧 Image explorer (every dataset's images browsed, found by text or a similar image, picked into a version), curation |
+| **Build** · data | ✅ Registering in place (pause and resume), versions with fingerprints, version diff, node-to-node transfer and copies per server, image search by text or a similar image | 🚧 Near-duplicate filtering, picking images into a version, curation |
 | **Annotate** · labels | ✅ Fixing boxes, outlines, keypoints and classes; work in progress → version; labeling sets with a board; label checks (rules and model); autolabel | 🚧 CVAT integration |
-| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry, your own templates, virtualenv and Docker environments | 🚧 TensorRT |
-| **Automate** · deployment | ✅ Pipelines composed from import, checks, autolabel, labeling, training, evaluation, promotion gates … with templates, on each new version | 🚧 Inference service, deployment, pipelines that wait for people |
-| **MOA** · operations | ✅ Nodes and GPU assignment, self-updating nodes, MCP agents | 🚧 Approval gates, built-in agent |
+| **Develop** · training | ✅ Training, sweeps, evaluation, export, model registry and comparison, uploading YOLO models trained elsewhere, your own templates, virtualenv and Docker environments | 🚧 TensorRT |
+| **Automate** · deployment | ✅ Pipelines composed from import, checks, autolabel, labeling by people, training, evaluation, promotion gates … with templates, on each new version | 🚧 Inference service, deployment |
+| **Management** · operations | ✅ Node roles and GPU assignment, self-updating nodes, starting and moving the Hub, who is signed in, MCP agents | 🚧 Approval gates by people, built-in agent |
 
 > [!NOTE]
-> It speaks plain HTTP for now (TLS is planned), so keep it inside your own network. Each node gets a virtual environment with PyTorch in it, a few GB of disk. It has been verified on small data such as COCO128 and MNIST160; speed on large datasets will be measured as real ones come in.
+> It speaks plain HTTP for now (TLS is planned), so keep it inside your own network. Each node gets a virtual environment with PyTorch in it, a few GB of disk. Features are checked on small data such as COCO8, COCO128 and MNIST160, and speed was measured and fixed on a copy of a 684,049-image dataset.
 
 <br>
 
