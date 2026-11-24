@@ -35,6 +35,7 @@ from . import (  # these import this module too: each uses the other only when c
 from .catalog_models import (
     Batch,
     Dataset,
+    ImageEmbedding,
     Item,
     ItemPrediction,
     LabelRevision,
@@ -1660,6 +1661,10 @@ def item_detail(db: Session, settings: HubSettings, release_id: str, item_id: in
         "height": item.height,
         "bytes": item.bytes,
         "sha256": item.sha256,
+        "project_id": item.project_id,
+        # it has a vector (이미지 탐색): its similar images can be looked for
+        "embedded": db.scalar(select(ImageEmbedding.sha256).where(ImageEmbedding.sha256 == item.sha256).limit(1))
+        is not None,
         "site": item.site,
         "camera": item.camera,
         "rel_path": item.rel_path,

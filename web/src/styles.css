@@ -1787,3 +1787,13 @@ td.env-cell {
     margin-top: 10px;
   }
 }
+
+/* the image viewer: 비슷한 이미지 찾기 under 라벨 고치기 */
+.edit-similar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 8px;
+}

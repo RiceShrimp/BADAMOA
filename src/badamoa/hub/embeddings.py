@@ -502,6 +502,8 @@ def search(
         "min_score": min_score,
         "more": len(above) > limit,  # more images at least that near than were sent
         "items": _found(db, settings, chosen, release_id),
+        # the image looked like (when opened from elsewhere, the screen learns its name and thumbnail here)
+        "anchor": (_found(db, settings, [(like, 1.0)], release_id) or [None])[0] if like else None,
     }
 
 

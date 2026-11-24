@@ -44,6 +44,7 @@ interface SearchResult {
   min_score: number;
   more: boolean;
   items: Found[];
+  anchor: Found | null; // the image looked like
 }
 
 /** The lowest score shown. Words and images score on different scales (words 0.1~0.2 is a good match, a similar
@@ -160,7 +161,12 @@ function madeText(j: EmbedJob): string {
 
 /** 이미지 탐색: the board of projects, a project's search page, or one embedding job's record. */
 export function Explore({ sub, arg }: { sub?: string; arg?: string }) {
-  if (sub === "project" && arg) return <ExploreProject key={arg} projectId={arg} />;
+  if (sub === "project" && arg) {
+    // #/explore/project/<id>?like=<item>: opened from an image elsewhere (the version screen) to find its like
+    const [projectId, query = ""] = arg.split("?");
+    const like = Number(new URLSearchParams(query).get("like")) || 0;
+    return <ExploreProject key={projectId} projectId={projectId} like={like} />;
+  }
   if (sub === "job" && arg) return <EmbedJobPage key={arg} jobId={arg} />;
   return <ExploreBoard />;
 }
@@ -775,7 +781,7 @@ function VersionEmbeddings({ projectId, nudge, onStart }: { projectId: string; n
 }
 
 /** A project's images found by words or by another image, its versions' vectors, and its embedding jobs. */
-function ExploreProject({ projectId }: { projectId: string }) {
+function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: number }) {
   const { projects, choose } = useProject();
   useEffect(() => rememberProject(projectId), [projectId]);
   const project = projects?.find((p) => p.id === projectId);
@@ -818,6 +824,13 @@ function ExploreProject({ projectId }: { projectId: string }) {
       setOpening(null);
     }
   };
+
+  // an image asked for on the address: look for its like at once (its name and thumbnail come with the results)
+  useEffect(() => {
+    if (!like) return;
+    setViewing(null);
+    setQuery({ like: { id: like, file_name: "", width: 0, height: 0, score: 1, thumb_url: null, image_url: null, release: null } });
+  }, [like]);
 
   const loadStatus = () => void api<ExploreStatus>(`/projects/${projectId}/explore`).then(setStatus).catch((e) => setError(String(e)));
   useEffect(() => {
@@ -959,12 +972,19 @@ function ExploreProject({ projectId }: { projectId: string }) {
           </form>
           {query && "like" in query && (
             <div className="explore-anchor">
-              {query.like.thumb_url && <img src={query.like.thumb_url} alt="" />}
+              {(query.like.thumb_url ?? found?.anchor?.thumb_url) && <img src={query.like.thumb_url ?? found?.anchor?.thumb_url ?? ""} alt="" />}
               <span>
                 <strong>이 이미지와 비슷한 것</strong>
-                <span className="muted small"> · {query.like.file_name}</span>
+                <span className="muted small"> · {query.like.file_name || found?.anchor?.file_name || ""}</span>
               </span>
-              <button type="button" className="link small" onClick={() => setQuery(words.trim() ? { text: words.trim() } : null)}>
+              <button
+                type="button"
+                className="link small"
+                onClick={() => {
+                  setQuery(words.trim() ? { text: words.trim() } : null);
+                  if (like) window.history.replaceState(null, "", `#/explore/project/${projectId}`); // the address forgets it too
+                }}
+              >
                 지우기
               </button>
             </div>

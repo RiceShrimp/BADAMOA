@@ -1586,6 +1586,17 @@ export function ItemViewer({
               </p>
             )}
             {note && <div className={note.kind === "saved" ? "notice ok small" : "error small"}>{note.text}</div>}
+            {item.embedded && item.project_id && (
+              <a
+                className="btn edit-similar"
+                href={`#/explore/project/${item.project_id}?like=${item.id}`}
+                onClick={onClose}
+                title="이미지 탐색에서 이 이미지와 비슷한 이미지를 프로젝트의 모든 데이터셋에서 찾습니다"
+              >
+                <Icon name="eye" size={14} />
+                비슷한 이미지 찾기
+              </a>
+            )}
           </section>
         )}
 

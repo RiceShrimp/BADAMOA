@@ -275,6 +275,8 @@ export interface ItemDetail {
   thumb_url: string | null;
   image_url: string | null;
   image_local?: boolean; // false: the original comes from the node that has it
+  project_id?: string;
+  embedded?: boolean; // it has a vector: 이미지 탐색 can look for similar images
   edit: ItemEdit;
   revisions: Revision[];
   releases: { id: string; dataset: string; version: string; split: string; rev: number | null; current: boolean; draft: boolean }[];
