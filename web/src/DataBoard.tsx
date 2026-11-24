@@ -1,3 +1,4 @@
+import { LayoutSwitch, layoutClass, useCardLayout } from "./CardLayout";
 import { type FormEvent, type KeyboardEvent as KeyEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import {
@@ -381,6 +382,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
   const [wanted, setWanted] = useState<string[]>([]); // class names a project must all have (any case)
   const [filtering, setFiltering] = useState(false);
   const order = useOrder("datasets.projects", cards, cardId);
+  const [layout, setLayout] = useCardLayout("data");
   const [sortChoice, setSort] = useState<string | null>(null); // null: the dragged order if there is one, else the newest
   const sort = sortChoice ?? (order.custom ? MINE.id : "updated");
   const [editing, setEditing] = useState<ProjectCardInfo | null>(null);
@@ -536,6 +538,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
               고르기
             </button>
           )}
+          <LayoutSwitch value={layout} onChange={setLayout} />
         </div>
       )}
       {filters > 0 && (
@@ -621,7 +624,7 @@ export function ProjectBoard({ onNewProject }: { onNewProject: (folder: string) 
         <p className="muted">빈 폴더입니다. 여기서 새 프로젝트를 만들거나, 다른 프로젝트의 설정(톱니바퀴)에서 이 폴더로 옮기세요.</p>
       )}
       <Sortable ids={shown.map(cardId)} onMove={moved} disabled={picking.on}>
-        <div className="card-grid">
+        <div className={`card-grid${layoutClass(layout)}`}>
           {shown.map((c) => (
             <SortItem key={c.id} id={c.id}>
               <ProjectCard
@@ -1082,6 +1085,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
     (i) => i.project.id === projectId && (i.status === "queued" || i.status === "running"),
   );
   const order = useOrder(`datasets.datasets.${projectId}`, page?.dataset_cards, cardId);
+  const [layout, setLayout] = useCardLayout("datasets");
   if (error && !page) return <div className="error">{error}</div>;
   if (!page) return <div className="muted">불러오는 중…</div>;
   const colorOf = (cards: DatasetCardInfo) => (id: number) =>
@@ -1129,6 +1133,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
             </button>
           )}
           <OrderReset order={order} />
+          <LayoutSwitch value={layout} onChange={setLayout} />
           <a className="btn" href={`#/training/project/${page.id}`} onClick={() => rememberProject(page.id)}>
             학습
           </a>
@@ -1156,7 +1161,7 @@ export function ProjectPage({ projectId, onImport, isAdmin }: { projectId: strin
       )}
       <div className="project-layout">
         <Sortable ids={order.ordered.map(cardId)} onMove={order.move} disabled={picking.on}>
-          <div className="card-grid">
+          <div className={`card-grid${layoutClass(layout)}`}>
             {importing.map((i) => (
               <a key={i.job_id} className="data-card data-card-link importing" href={i.release_id ? `#/datasets/${i.release_id}` : undefined}>
                 <div className="collage importing-face">

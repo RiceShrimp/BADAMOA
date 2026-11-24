@@ -677,3 +677,59 @@ button.pl-add-item:hover:not(:disabled) {
 .pl-compose-body .folder-browser {
   margin-top: 4px;
 }
+
+/* 가로형 (the default here): one long card to a row — name, the steps, then what to do with it */
+.pl-templates.as-rows,
+.pl-cards.as-rows {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.pl-templates.as-rows .pl-template {
+  grid-template-columns: minmax(200px, 290px) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head chain foot"
+    "head desc foot";
+  align-items: center;
+  gap: 4px 24px;
+  padding: 12px 16px;
+}
+.pl-templates.as-rows .pl-template-head {
+  grid-area: head;
+  flex-wrap: wrap;
+}
+.pl-templates.as-rows .pl-template-head .tag {
+  margin-left: 0;
+}
+.pl-templates.as-rows .pl-template > .pl-chain {
+  grid-area: chain;
+}
+.pl-templates.as-rows .pl-template > p {
+  grid-area: desc;
+}
+.pl-templates.as-rows .pl-template-foot {
+  grid-area: foot;
+}
+.pl-cards.as-rows .pl-card {
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 24px;
+  padding: 12px 16px;
+}
+.pl-cards.as-rows .pl-card-foot {
+  padding-top: 0;
+  border-top: 0;
+  gap: 14px;
+}
+.pl-cards.as-rows .pl-card > .error {
+  grid-column: 1 / -1;
+}
+@media (max-width: 760px) {
+  .pl-templates.as-rows .pl-template,
+  .pl-cards.as-rows .pl-card {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: none;
+  }
+  .pl-templates.as-rows .pl-template > * {
+    grid-area: auto;
+  }
+}

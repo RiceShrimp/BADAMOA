@@ -97,6 +97,8 @@ const ICONS: Record<string, ReactNode> = {
   trash: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />,
   filter: <path d="M4 5h16l-6 7.5V18l-4 2v-7.5z" />,
   columns: <path d="M4 5h16v14H4zM12 5v14" />,
+  tiles: <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" />,
+  rows: <path d="M4 5h16v5H4zM4 14h16v5H4z" />,
   edit: <path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />,
   disk: (
     <>

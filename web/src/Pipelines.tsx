@@ -13,6 +13,7 @@ import {
   stepHref,
   whenStarted,
 } from "./FollowUps";
+import { LayoutSwitch, layoutClass, useCardLayout } from "./CardLayout";
 import { rememberProject } from "./DataBoard";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ProjectPicker, useProject } from "./ProjectPicker";
@@ -219,6 +220,8 @@ function PipelineBoard() {
   const { data: templates, refresh: refreshTemplates } = usePolling(() => api<PipelineTemplate[]>("/pipeline-templates"), 60000);
   const project = projects?.find((p) => p.id === projectId);
   const t = board?.totals;
+  // templates and saved pipelines: one long card to a row unless the grid is picked
+  const [layout, setLayout] = useCardLayout("pipelines", "rows");
 
   return (
     <>
@@ -247,8 +250,11 @@ function PipelineBoard() {
       </div>
 
       <section className="board-section">
-        <h2>템플릿</h2>
-        <Templates templates={templates ?? null} onChanged={() => void refreshTemplates()} />
+        <div className="layout-head">
+          <h2>템플릿</h2>
+          <LayoutSwitch value={layout} onChange={setLayout} />
+        </div>
+        <Templates templates={templates ?? null} layout={layoutClass(layout)} onChanged={() => void refreshTemplates()} />
       </section>
 
       <section className="board-section">
@@ -260,7 +266,7 @@ function PipelineBoard() {
             {project?.name ?? "이 프로젝트"}에 저장한 파이프라인이 없습니다. 위 템플릿에서 만들거나, 새 학습 창에서 "파이프라인으로 저장"을 고르세요.
           </div>
         )}
-        <div className="pl-cards">
+        <div className={`pl-cards${layoutClass(layout)}`}>
           {board?.pipelines.map((p) => (
             <PipelineCard key={p.id} pipeline={p} onRan={() => void refresh()} />
           ))}
@@ -277,7 +283,7 @@ function PipelineBoard() {
   );
 }
 
-function Templates({ templates, onChanged }: { templates: PipelineTemplate[] | null; onChanged: () => void }) {
+function Templates({ templates, layout, onChanged }: { templates: PipelineTemplate[] | null; layout: string; onChanged: () => void }) {
   const [error, setError] = useState<string | null>(null);
   if (!templates) return <p className="muted">불러오는 중…</p>;
   const remove = async (t: PipelineTemplate) => {
@@ -293,7 +299,7 @@ function Templates({ templates, onChanged }: { templates: PipelineTemplate[] | n
   return (
     <>
       {error && <div className="error">{error}</div>}
-      <div className="pl-templates">
+      <div className={`pl-templates${layout}`}>
         {templates.map((t) => (
           <div key={t.id} className="card pl-template">
             <div className="pl-template-head">

@@ -102,6 +102,13 @@ export function useOrder<T>(key: string, items: T[] | null | undefined, idOf: (i
   };
 }
 
+/** Something else of a screen this person keeps the same way, on the Hub (e.g. how its cards are laid out): the words
+ * kept under ``key`` (``undefined`` until loaded or when nothing is kept), and how to keep others (none: let it go). */
+export function useKept(key: string): [string[] | undefined, (words: string[]) => void, boolean] {
+  const all = useSyncExternalStore(subscribe, () => orders);
+  return [all?.[key], (words: string[]) => save(key, words), all !== null];
+}
+
 /** "원래 순서로": shown once this person has dragged the screen's cards. */
 export function OrderReset({ order, onReset }: { order: { custom: boolean; reset: () => void }; onReset?: () => void }) {
   if (!order.custom) return null;

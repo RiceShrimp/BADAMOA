@@ -91,7 +91,7 @@ const groupId = (g: SetGroup) => g.project.id;
 const setId = (s: SetCard) => s.id;
 
 /** One project's labeling sets on the board, in the order this person dragged them into. */
-function SetGroupCards({ group: g }: { group: SetGroup }) {
+function SetGroupCards({ group: g, layout }: { group: SetGroup; layout: string }) {
   const order = useOrder(`labeling.sets.${g.project.id}`, g.sets, setId);
   return (
     <div className="board-group">
@@ -103,7 +103,7 @@ function SetGroupCards({ group: g }: { group: SetGroup }) {
         <OrderReset order={order} />
       </h3>
       <Sortable ids={order.ordered.map(setId)} onMove={order.move}>
-        <div className="card-grid set-grid">
+        <div className={`card-grid set-grid${layout}`}>
           {order.ordered.map((s) => (
             <SortItem key={s.id} id={s.id}>
               <a className="data-card data-card-link set-card" href={`#/labeling/${s.id}`}>
@@ -144,7 +144,7 @@ function SetGroupCards({ group: g }: { group: SetGroup }) {
 function LabelingBoard() {
   const { data: board, error } = usePolling(() => api<LabelingBoardInfo>("/boards/labeling"), 15000);
   const order = useOrder("labeling.projects", board?.projects, groupId);
-  const { shown, tools } = useBoardFilter(board ? order.ordered : null, projectOfGroup);
+  const { shown, tools, layout } = useBoardFilter(board ? order.ordered : null, projectOfGroup, "labeling");
   if (error && !board) return <div className="error">{error}</div>;
   const t = board?.totals;
   return (
@@ -173,7 +173,7 @@ function LabelingBoard() {
         {board && board.mine.length === 0 && (
           <p className="muted small">맡겨진 일감이 없습니다. 라벨링 묶음의 보드에서 일감마다 라벨링할 사람과 검수할 사람을 정합니다.</p>
         )}
-        <div className="card-grid my-parts">
+        <div className={`card-grid my-parts${layout}`}>
           {board?.mine.map((m) => (
             <div key={`${m.set.id}-${m.part}`} className={`card my-part ${m.to_label || m.to_review ? "" : "waiting"}`}>
               <div className="part-title">
@@ -223,7 +223,7 @@ function LabelingBoard() {
         <Sortable ids={shown.map(groupId)} onMove={order.move} list>
           {shown.map((g) => (
             <SortItem key={g.project.id} id={g.project.id}>
-              <SetGroupCards group={g} />
+              <SetGroupCards group={g} layout={layout} />
             </SortItem>
           ))}
         </Sortable>

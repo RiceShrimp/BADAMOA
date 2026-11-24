@@ -218,7 +218,7 @@ function AutolabelBoard() {
   const { data: board, error, refresh } = usePolling(() => api<BoardInfo>("/autolabel/board"), going ? 4000 : 15000);
   useEffect(() => setGoing((board?.going.length ?? 0) > 0), [board]);
   const order = useOrder("autolabel.projects", board?.projects, cardId);
-  const { shown, tools } = useBoardFilter(board ? order.ordered : null, cardProject);
+  const { shown, tools, layout } = useBoardFilter(board ? order.ordered : null, cardProject, "autolabel");
   const [starting, setStarting] = useState(false);
   if (error && !board) return <div className="error">{error}</div>;
   const t = board?.totals;
@@ -289,7 +289,7 @@ function AutolabelBoard() {
           <div className="card empty">오토라벨할 데이터셋이 있는 프로젝트가 없습니다. 먼저 데이터셋을 가져오고 모델을 학습하세요.</div>
         )}
         <Sortable ids={shown.map(cardId)} onMove={order.move}>
-          <div className="card-grid board-grid">
+          <div className={`card-grid board-grid${layout}`}>
             {shown.map((c) => (
               <SortItem key={c.project.id} id={c.project.id}>
                 <ProjectBoardCard card={c} />

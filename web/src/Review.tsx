@@ -1,3 +1,4 @@
+import { LayoutSwitch, layoutClass, useCardLayout } from "./CardLayout";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { type BoardProject, useBoardFilter } from "./Boards";
 import { Collage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
@@ -252,7 +253,7 @@ function ReviewBoard() {
   const { data: board, error } = useReviewBoard();
   const projects = useMemo(() => byProject(board?.datasets ?? []), [board]);
   const order = useOrder("review.projects", projects, groupId);
-  const { shown, tools } = useBoardFilter(board ? order.ordered : null, projectOfGroup);
+  const { shown, tools, layout } = useBoardFilter(board ? order.ordered : null, projectOfGroup, "review");
   if (error && !board) return <div className="error">{error}</div>;
   return (
     <>
@@ -274,7 +275,7 @@ function ReviewBoard() {
       {!board && <p className="muted">불러오는 중…</p>}
       {board && projects.length === 0 && <div className="card empty">검사할 데이터셋 버전이 없습니다.</div>}
       <Sortable ids={shown.map(groupId)} onMove={order.move}>
-        <div className="card-grid review-grid">
+        <div className={`card-grid review-grid${layout}`}>
           {shown.map((p) => (
             <SortItem key={p.project.id} id={p.project.id}>
               <ProjectReviewCard group={p} />
@@ -340,6 +341,7 @@ function ReviewProjectPage({ projectId }: { projectId: string }) {
   useEffect(() => rememberProject(projectId), [projectId]);
   const mine = useMemo(() => (board?.datasets ?? []).filter((c) => c.project.id === projectId), [board, projectId]);
   const order = useOrder(`review.datasets.${projectId}`, mine, datasetId);
+  const [layout, setLayout] = useCardLayout("review");
   if (error && !board) return <div className="error">{error}</div>;
   const datasets = order.ordered;
   const project = datasets[0]?.project ?? projects?.find((p) => p.id === projectId);
@@ -360,13 +362,14 @@ function ReviewProjectPage({ projectId }: { projectId: string }) {
         </div>
         <div className="head-actions">
           <OrderReset order={order} />
+          <LayoutSwitch value={layout} onChange={setLayout} />
         </div>
       </div>
       <ReviewStats totals={board ? totalsOf(datasets) : undefined} />
       {!board && <p className="muted">불러오는 중…</p>}
       {board && datasets.length === 0 && <div className="card empty">이 프로젝트에는 검사할 데이터셋 버전이 없습니다.</div>}
       <Sortable ids={datasets.map(datasetId)} onMove={order.move}>
-        <div className="card-grid review-grid">
+        <div className={`card-grid review-grid${layoutClass(layout)}`}>
           {datasets.map((c) => (
             <SortItem key={c.dataset.id} id={c.dataset.id}>
               <DatasetReviewCard card={c} />

@@ -1,3 +1,4 @@
+import { LayoutSwitch, layoutClass, useCardLayout } from "./CardLayout";
 import { type ApiTokenInfo, type Job, type NodeInfo, type User, api } from "./api";
 import { bytesLabel } from "./catalogTypes";
 import { METRIC_NAME, ProjectCard, type ProjectCardInfo } from "./DataBoard";
@@ -86,6 +87,7 @@ const n = (value?: number) => (value ?? 0).toLocaleString();
 
 export function Home({ user, nodes }: { user: User; nodes: NodeInfo[] | null }) {
   const { data: home } = usePolling(() => api<HomeInfo>("/home"), 15000);
+  const [layout, setLayout] = useCardLayout("home");
   const { data: storage } = usePolling(() => api<StorageInfo>("/storage"), 60000);
   const { data: jobs } = usePolling(() => api<Job[]>("/jobs?limit=50"), 5000);
   const { data: tokens } = usePolling(() => api<ApiTokenInfo[]>("/tokens"), 30000);
@@ -180,16 +182,19 @@ export function Home({ user, nodes }: { user: User; nodes: NodeInfo[] | null }) 
       <section className="home-block">
         <div className="card-head">
           <h3>최근 프로젝트</h3>
-          <a className="link" href="#/datasets">
-            모든 프로젝트 <Icon name="arrow" size={14} />
-          </a>
+          <span className="layout-head">
+            <LayoutSwitch value={layout} onChange={setLayout} />
+            <a className="link" href="#/datasets">
+              모든 프로젝트 <Icon name="arrow" size={14} />
+            </a>
+          </span>
         </div>
         {home && home.projects.length === 0 ? (
           <div className="card empty-state">
             <p className="muted">아직 프로젝트가 없습니다. 데이터 화면에서 프로젝트를 만들고 데이터셋을 가져오세요.</p>
           </div>
         ) : (
-          <div className="card-grid">
+          <div className={`card-grid${layoutClass(layout)}`}>
             {home?.projects.map((card) => (
               <ProjectCard key={card.id} card={card} />
             ))}

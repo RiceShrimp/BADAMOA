@@ -1,3 +1,4 @@
+import { LayoutSwitch, layoutClass, useCardLayout } from "./CardLayout";
 import { type ReactNode, useMemo, useState } from "react";
 import { AliasChip } from "./Annotate";
 import { TaskTags, rememberProject } from "./DataBoard";
@@ -22,7 +23,9 @@ export interface BoardProject {
  * "전체" and each folder the cards' projects are in (only when the cards fall in two or more of them), and a search
  * box once there are many: the dataset board's way of narrowing projects, without making folders here.
  */
-export function useBoardFilter<T>(cards: T[] | null | undefined, projectOf: (card: T) => BoardProject) {
+/** A board's cards by folder and name, and how they are laid out (``page``: whose layout this browser keeps). */
+export function useBoardFilter<T>(cards: T[] | null | undefined, projectOf: (card: T) => BoardProject, page: string) {
+  const [layout, setLayout] = useCardLayout(page);
   const [folder, setFolder] = useState<string | null>(null); // null: all, "": no folder
   const [q, setQ] = useState("");
   const list = cards ?? [];
@@ -41,8 +44,7 @@ export function useBoardFilter<T>(cards: T[] | null | undefined, projectOf: (car
     return (folder === null || p.folder === folder) && (!needle || `${p.name} ${p.folder}`.toLowerCase().includes(needle));
   });
   const projects = new Set(list.map((c) => projectOf(c).id)).size;
-  const tools =
-    folders.length > 1 || projects > 6 ? (
+  const tools = (
       <div className="board-tools">
         {folders.length > 1 && (
           <div className="folder-chips" role="group" aria-label="폴더">
@@ -60,9 +62,11 @@ export function useBoardFilter<T>(cards: T[] | null | undefined, projectOf: (car
         {projects > 6 && (
           <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="프로젝트 찾기" aria-label="프로젝트 찾기" />
         )}
+        <LayoutSwitch value={layout} onChange={setLayout} />
       </div>
-    ) : null;
-  return { shown, tools };
+  );
+  // the class the cards' container takes for the layout picked (그리드 · 가로형)
+  return { shown, tools, layout: layoutClass(layout) };
 }
 
 const cardProject = (card: { project: BoardProject }) => card.project;
@@ -184,7 +188,7 @@ const STATUS_KIND: Record<string, string> = {
 export function TrainingBoard() {
   const { data: board, error } = usePolling(() => api<TrainingBoardInfo>("/boards/training"), 5000);
   const order = useOrder("training.projects", board?.projects, cardId);
-  const { shown, tools } = useBoardFilter(board ? order.ordered : null, cardProject);
+  const { shown, tools, layout } = useBoardFilter(board ? order.ordered : null, cardProject, "training");
   if (error && !board) return <div className="error">{error}</div>;
   const t = board?.totals;
   return (
@@ -254,7 +258,7 @@ export function TrainingBoard() {
         {tools}
         {board && board.projects.length === 0 && <div className="card empty">아직 프로젝트가 없습니다.</div>}
         <Sortable ids={shown.map(cardId)} onMove={order.move}>
-          <div className="card-grid board-grid">
+          <div className={`card-grid board-grid${layout}`}>
             {shown.map((c) => (
               <SortItem key={c.project.id} id={c.project.id}>
                 <div className="data-card">
@@ -349,7 +353,7 @@ export function ModelsBoard() {
   const { projects } = useProject();
   const [uploading, setUploading] = useState(false);
   const order = useOrder("models.projects", board?.projects, cardId);
-  const { shown, tools } = useBoardFilter(board ? order.ordered : null, cardProject);
+  const { shown, tools, layout } = useBoardFilter(board ? order.ordered : null, cardProject, "models");
   if (error && !board) return <div className="error">{error}</div>;
   const t = board?.totals;
   return (
@@ -377,7 +381,7 @@ export function ModelsBoard() {
       {tools}
       {board && board.projects.length === 0 && <div className="card empty">아직 프로젝트가 없습니다.</div>}
       <Sortable ids={shown.map(cardId)} onMove={order.move}>
-        <div className="card-grid board-grid">
+        <div className={`card-grid board-grid${layout}`}>
           {shown.map((c) => (
             <SortItem key={c.project.id} id={c.project.id}>
               <div className={`data-card${c.models === 0 ? " board-quiet" : ""}`}>
