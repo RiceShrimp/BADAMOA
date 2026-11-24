@@ -29,7 +29,7 @@ export function ClassFilter({
   const box = useRef<HTMLDivElement>(null);
   const colorOf = colorFor(classes);
   useEffect(() => {
-    if (!open) return;
+    if (!open) return setFind(""); // opened again, it lists every class
     const away = (e: MouseEvent) => box.current && !box.current.contains(e.target as Node) && setOpen(false);
     const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("mousedown", away);
