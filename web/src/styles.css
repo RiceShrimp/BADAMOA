@@ -1657,3 +1657,62 @@ td.env-cell {
   flex-direction: row;
   gap: 8px;
 }
+
+/* ---- tool rows: every control on one line at one height (search, selects, buttons, chips, switches) ---- */
+:root {
+  --control-h: 34px;
+}
+:where(.board-tools, .head-actions, .filters, .compare-row, .table-tools, .view-controls, .folder-bar, .browser-tools, .charts-tools, .inline-form)
+  :is(select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"])):not(
+    :where(.filter-panel, .class-filter-panel, .column-menu, .data-card-menu) *
+  ) {
+  height: var(--control-h);
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+:where(.board-tools, .head-actions, .filters, .compare-row, .table-tools, .view-controls, .folder-bar, .browser-tools, .charts-tools, .inline-form)
+  > :is(button, .btn),
+:where(.board-tools, .head-actions, .filters, .compare-row, .table-tools, .view-controls, .folder-bar, .browser-tools, .charts-tools, .inline-form)
+  > :is(.filter-anchor, .class-filter) > button,
+.folder-chips > button,
+:where(.view-controls, .board-tools, .table-tools) .segmented > button {
+  height: var(--control-h);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+:where(.board-tools, .head-actions, .filters, .table-tools, .view-controls) > .icon-btn {
+  width: var(--control-h);
+  padding: 0;
+}
+.layout-switch {
+  box-sizing: border-box;
+  height: var(--control-h);
+  align-items: center;
+}
+.layout-switch button {
+  height: calc(var(--control-h) - 8px);
+}
+/* the head's project picker: its name beside it, on the row's line */
+.head-actions {
+  align-items: center;
+}
+.head-actions > .project-picker,
+.filters > .project-picker {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.head-actions > .project-picker .eyebrow,
+.filters > .project-picker .eyebrow {
+  white-space: nowrap;
+}
+/* the pager: smaller controls, all on one line */
+.pager :is(button, select, input:not([type="checkbox"]):not([type="radio"])) {
+  height: 30px;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
