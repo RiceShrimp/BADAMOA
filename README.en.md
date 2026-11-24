@@ -188,7 +188,7 @@ Everything below is a real screen, taken from a Hub that has trained on COCO128 
 
 - **이미지 탐색** (image search) finds images across all of a project's datasets by **text** or by a **similar image**. Results come nearest first with their score and version, and a score slider keeps only the close ones.
 
-- Click a result and it opens like on the dataset screen, with labels and model predictions, ready to fix.
+- Click a result and it opens like on the dataset screen, with labels and model predictions, ready to fix. The other way round, any image you are looking at in a dataset, 검수 or labeling offers **비슷한 이미지 찾기** (find similar images).
 
 - Vectors are made with SigLIP2 on embedding servers and kept in a vector DB (LanceDB) inside the Hub's folder; an index keeps searches over millions of images within tens of milliseconds.
 
