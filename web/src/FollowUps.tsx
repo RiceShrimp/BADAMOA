@@ -7,7 +7,19 @@ import "./pipelines.css";
 
 // ---- what the Hub sends about pipelines ----------------------------------------------------
 
-export type StepKind = "import" | "check" | "sync" | "autolabel" | "label" | "confirm" | "train" | "sweep" | "eval" | "promote" | "export";
+export type StepKind =
+  | "import"
+  | "check"
+  | "review"
+  | "sync"
+  | "autolabel"
+  | "label"
+  | "confirm"
+  | "train"
+  | "sweep"
+  | "eval"
+  | "promote"
+  | "export";
 export interface StepSpec {
   kind: StepKind;
   config: Record<string, unknown>;
@@ -118,7 +130,7 @@ export function RunStatusBadge({ status }: { status: PipelineRunView["status"] }
 /** Where a step's work is seen: its training run, its evaluation, the model it promoted or exported. */
 export function stepHref(s: PipelineStepView): string | undefined {
   if (s.made_release) return `#/datasets/${s.made_release.id}`;
-  if (s.kind === "check" && s.release) return `#/review/${s.release.id}`;
+  if ((s.kind === "check" || s.kind === "review") && s.release) return `#/review/${s.release.id}`;
   if ((s.kind === "autolabel" || s.kind === "label") && s.set) return `#/labeling/${s.set.id}`;
   if (s.kind === "sweep" && s.sweep) return `#/training/sweep/${s.sweep.id}`;
   if (s.kind === "train" && s.run) return `#/training/${s.run.id}`;
@@ -138,6 +150,7 @@ export function stepNote(s: PipelineStepView): string {
   }
   if (s.made_release) return s.made_release.version;
   if (s.kind === "eval" && s.metric?.value != null) return s.metric.value.toFixed(3);
+  if (s.kind === "review" && s.flagged != null) return `의심 ${s.flagged.toLocaleString()}장`;
   if (s.kind === "promote" && s.status === "succeeded" && s.outcome === "promoted") return `→ ${s.alias}`;
   if (s.kind === "train" && s.model) return `v${s.model.version}`;
   return "";

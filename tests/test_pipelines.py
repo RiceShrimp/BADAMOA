@@ -319,8 +319,11 @@ def test_import_then_send_and_the_labeling_loop_on_its_own_versions(hub, release
     model = hub.get(f"/api/runs/{made['id']}").json()["model"]
     hub.post(f"/api/models/{model['id']}/alias", json={"alias": "SOTA"}).raise_for_status()
     raw = _raw(hub, release["project_id"], tmp_path)
+    # the set the 오토라벨 makes, as 새 오토라벨 makes it: its name, all of it to one person, approving asked for
     by_sota = {"model": {"name": model["name"], "alias": "SOTA"}, "accept": 0.9, "gpus": 0}
-    loop = [{"kind": "autolabel", "config": by_sota}, {"kind": "label", "config": {}}, {"kind": "confirm", "config": {}}]
+    by_sota.update(name="루프 묶음", divide="one", review=True)
+    confirm = {"kind": "confirm", "config": {"version": "loop-{n}", "note": "루프에서"}}
+    loop = [{"kind": "autolabel", "config": by_sota}, {"kind": "label", "config": {}}, confirm]
     saved = hub.post("/api/pipelines", json={"release_id": raw, "steps": loop, "trigger": "new_version", "run": True})
     assert saved.status_code == 200, saved.text
     run_id = saved.json()["started"]["id"]
@@ -334,6 +337,8 @@ def test_import_then_send_and_the_labeling_loop_on_its_own_versions(hub, release
         (s["kind"], s["status"], s["message"], s.get("job")) for s in view["steps"]
     ]
     assert waiting["set"]["id"] == labelled["set"]["id"] and waiting["set"]["done"] < waiting["set"]["total"]
+    made_set = hub.get(f"/api/label-sets/{waiting['set']['id']}").json()
+    assert made_set["name"] == "루프 묶음" and made_set["review"] and len(made_set["part_list"]) == 1
     time.sleep(1)
     assert hub.get(f"/api/pipeline-runs/{run_id}").json()["status"] == "running"  # it waits for people
     with Database(settings.database_url).session() as db:  # people finish the set
@@ -342,11 +347,52 @@ def test_import_then_send_and_the_labeling_loop_on_its_own_versions(hub, release
     done = _done(hub, run_id)
     assert done["status"] == "succeeded", [(s["kind"], s["status"], s["message"], s.get("set")) for s in done["steps"]]
     confirmed = done["steps"][2]
-    assert confirmed["made_release"]["version"] == "v2" and confirmed["message"].startswith("v2 확정 · 고친 이미지")
+    assert confirmed["made_release"]["version"] == "loop-1", confirmed
+    assert confirmed["message"].startswith("loop-1 확정 · 고친 이미지")
     # the version the pipeline made starts no run of it
     pipelines.wake()
     time.sleep(2)
     assert len(hub.get(f"/api/pipelines/{saved.json()['id']}").json()["history"]) == 1
+
+
+def test_review_step_checks_every_image_where_asked_and_versions_take_the_names_given(hub, release, settings):  # noqa: F811
+    train = {"kind": "train", "config": _train_step()}
+    # 검수 (모델로 검사하기): the model made before predicts every split of the version, on the server picked
+    review = {"kind": "review", "config": {"node_id": hub.node_id}}
+    done = _run(hub, release, [train, review, {"kind": "export", "config": {"format": "onnx", "node_id": hub.node_id}}])
+    assert done["status"] == "succeeded", [(s["kind"], s["status"], s["message"]) for s in done["steps"]]
+    checked = done["steps"][1]
+    assert checked["label"] == "검수" and not checked["gate"] and checked["release"]["id"] == release["id"]
+    assert checked["model"]["id"] == done["steps"][0]["model"]["id"]
+    assert "이미지 8장 검사" in checked["message"] and checked["flagged"] is not None
+    op = hub.get(f"/api/model-ops/{checked['op_id']}").json()
+    assert sorted(op["splits"]) == ["train", "val"] and op["node_id"] == hub.node_id
+    assert hub.get(f"/api/releases/{release['id']}/checks").json()[0]["id"] == checked["op_id"]  # 검수 offers it
+
+    def refused(steps, status=400):
+        resp = hub.post("/api/pipelines", json={"release_id": release["id"], "steps": steps})
+        assert resp.status_code == status, resp.text
+        return resp.json()["detail"]
+
+    # it needs a model: one made before, or one named by its alias
+    assert "쓸 모델을 고르세요" in refused([{"kind": "review", "config": {}}])
+    assert "서버를 찾을 수 없습니다" in refused([train, {"kind": "eval", "config": {"node_id": "nope"}}], 404)
+    # a version's name: as typed, but never one the dataset has; {n} the next free number, {date} the day
+    assert "v1 버전이 이미 있습니다" in refused([{"kind": "confirm", "config": {"version": "v1"}}], 409)
+    assert "한 번씩만" in refused([{"kind": "confirm", "config": {"version": "x-{n}-{n}"}}])
+    assert "한 번씩만" in refused([{"kind": "confirm", "config": {"version": "x-{week}"}}])
+    fixed = [{"kind": "confirm", "config": {"version": "fixed-{n}"}}]
+    saved = hub.post("/api/pipelines", json={"release_id": release["id"], "steps": fixed})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["steps"][0]["summary"] == "작업 중을 새 버전으로 (fixed-{n})"
+    from badamoa.hub.db import Database
+
+    dataset_id = hub.get(f"/api/releases/{release['id']}").json()["dataset"]["id"]
+    with Database(settings.database_url).session() as db:
+        assert pipelines._version_name(db, dataset_id, "") == "v2"
+        assert pipelines._version_name(db, dataset_id, "v{n}") == "v2"
+        assert pipelines._version_name(db, dataset_id, "fixed-{n}") == "fixed-1"
+        assert pipelines._version_name(db, dataset_id, "d{date}").startswith("d20")
 
 
 def test_templates_are_kept_and_offered(hub, release):  # noqa: F811

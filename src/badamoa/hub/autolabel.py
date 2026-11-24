@@ -620,9 +620,11 @@ def start_on_images(
     gpus: int | None = None,
     via: str = "ui",
     node_id: str = "",
+    parts: int = 0,
+    instructions: str = "",
 ) -> tuple[LabelSet, ModelJob]:
     """A dataset's images nobody labelled yet (of one split, or all): a labeling set of them, labelled by the model
-    first. People take its parts as with any set."""
+    first. People take its parts as with any set (``parts``, ``instructions``: as ``labeling.create_set``)."""
     release = catalog.get_release(db, release_id)
     dataset = db.get(Dataset, release.dataset_id)
     model = training.get_model(db, model_id)
@@ -634,8 +636,9 @@ def start_on_images(
     name = name.strip() or f"{dataset.name} 오토라벨 {utcnow():%m/%d}"
     try:
         found = labeling.create_set(
-            db, user, release_id=release.id, name=name, match=match, part_size=part_size, review=review, via=via
-        )
+            db, user, release_id=release.id, name=name, match=match, part_size=part_size, review=review, via=via,
+            parts=parts, instructions=instructions,
+        )  # fmt: skip
     except ServiceError as e:
         if e.status == 400 and "맞는 이미지가 없습니다" in e.message:
             where = f"{split}에 " if split else ""

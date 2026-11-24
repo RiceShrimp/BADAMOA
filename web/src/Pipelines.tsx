@@ -14,6 +14,7 @@ import {
   whenStarted,
 } from "./FollowUps";
 import { rememberProject } from "./DataBoard";
+import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { NewRun } from "./Training";
 import { type NodeInfo, api } from "./api";
@@ -86,16 +87,20 @@ const STEP_KINDS: { group: string; kinds: { kind: StepKind; label: string; what:
     group: "데이터",
     kinds: [
       { kind: "import", label: "가져오기", what: "서버의 폴더를 이 데이터셋의 새 버전으로 (바뀌지 않은 파일은 다시 읽지 않음)" },
-      { kind: "check", label: "검수 확인", what: "검수 규칙 검사에 걸린 이미지가 기준 이하일 때만 다음으로 (게이트)" },
-      { kind: "sync", label: "서버로 보내기", what: "학습할 서버에 이 버전의 이미지를 미리" },
+      {
+        kind: "sync",
+        label: "서버로 보내기",
+        what: "이 버전의 이미지 파일을 고른 서버에 미리 복사 (학습 단계에서 노드를 고르면 그 노드가 알아서 받으므로 보통은 필요 없음)",
+      },
     ],
   },
   {
     group: "라벨",
     kinds: [
       { kind: "autolabel", label: "오토라벨", what: "모델이 라벨 안 한 이미지에 먼저 그림 (라벨링 묶음으로)" },
-      { kind: "label", label: "라벨링", what: "사람이 라벨링 묶음을 끝낼 때까지 기다림" },
-      { kind: "confirm", label: "버전 확정", what: "작업 중을 새 버전으로 (이름은 다음 번호)" },
+      { kind: "label", label: "라벨링", what: "라벨링 묶음을 만들어 나누고, 사람이 끝낼 때까지 기다림" },
+      { kind: "confirm", label: "버전 확정", what: "작업 중을 새 버전으로 (이름은 다음 번호 또는 직접)" },
+      { kind: "review", label: "검수", what: "모델로 검사하기: 모델이 지금 버전의 모든 이미지를 예측해 라벨이 틀렸을 수 있는 이미지를 검수에 올림" },
     ],
   },
   {
@@ -109,14 +114,19 @@ const STEP_KINDS: { group: string; kinds: { kind: StepKind; label: string; what:
     ],
   },
 ];
-const KIND_LABEL = Object.fromEntries(STEP_KINDS.flatMap((g) => g.kinds.map((k) => [k.kind, k.label]))) as Record<StepKind, string>;
+const KIND_LABEL = {
+  ...Object.fromEntries(STEP_KINDS.flatMap((g) => g.kinds.map((k) => [k.kind, k.label]))),
+  check: "검수 확인 (예전)", // no longer offered; a saved one still runs
+} as Record<StepKind, string>;
+const USES_MODEL: StepKind[] = ["autolabel", "review", "eval", "export"];
 
 const DEFAULT_CONFIG: Record<StepKind, Record<string, unknown>> = {
   import: { path: "" },
   check: { max_flagged: 0, group: "any" },
+  review: {},
   sync: {},
   autolabel: {},
-  label: {},
+  label: { divide: "size", part_size: 50, review: false },
   confirm: {},
   train: {},
   sweep: { space: {}, method: "random", max_runs: 6 },
@@ -135,6 +145,56 @@ const CHECK_GROUPS: [string, string][] = [
 const isGate = (kind: StepKind, config: Record<string, unknown>) =>
   kind === "check" || kind === "promote" || (config.at_least !== undefined && config.at_least !== null && config.at_least !== "");
 const makesModelBefore = (steps: { kind: StepKind }[], index: number) => steps.slice(0, index).some((s) => MAKES_MODEL.includes(s.kind));
+
+/** The names a dataset's versions have (in the bin too): a new one may not take any. */
+const versionNames = (dataset?: TreeDataset) => new Set((dataset?.releases ?? []).map((r) => r.version));
+/** The next vN, as the Hub picks it when no name is given. */
+function nextVersion(dataset?: TreeDataset): string {
+  const names = versionNames(dataset);
+  const numbers = [...names].flatMap((v) => {
+    const m = /^[vV](\d+)$/.exec(v);
+    return m ? [Number(m[1])] : [];
+  });
+  let n = (numbers.length ? Math.max(...numbers) : names.size) + 1;
+  while (names.has(`v${n}`)) n += 1;
+  return `v${n}`;
+}
+const today = () => new Date().toISOString().slice(0, 10).replaceAll("-", "");
+/** What is wrong with a step's name for the version it makes ("" for nothing), as the Hub checks it. */
+function versionProblem(pattern: string, dataset?: TreeDataset): string {
+  if (!pattern) return "";
+  const rest = pattern.replaceAll("{n}", "").replaceAll("{date}", "");
+  if (rest.includes("{") || rest.includes("}") || pattern.split("{n}").length > 2) {
+    return "버전 이름에는 {n}(다음 번호)과 {date}(그날 날짜)를 한 번씩만 넣을 수 있습니다.";
+  }
+  if (pattern.includes("{n}")) return "";
+  const name = pattern.replaceAll("{date}", today());
+  return versionNames(dataset).has(name)
+    ? `${dataset?.name ?? "이 데이터셋"}에 ${name} 버전이 이미 있습니다(휴지통 포함). 다른 이름을 쓰거나 {n}을 넣으세요.`
+    : "";
+}
+
+/** What keeps the steps from running in this order, by step (as the Hub refuses them when saved). */
+function flowProblems(steps: Draft[], dataset?: TreeDataset): string[][] {
+  let made = false; // a model made by a step before
+  let measured = false; // and an evaluation of it since
+  return steps.map((s) => {
+    const c = s.config;
+    const out: string[] = [];
+    if (USES_MODEL.includes(s.kind) && !made && !c.model) out.push("앞에 학습이나 탐색이 없으면 쓸 모델을 고르세요.");
+    if (s.kind === "promote" && !measured) out.push("승격은 바로 앞의 평가로 정합니다. 학습 · 탐색 뒤에 평가를 넣고 그다음에 두세요.");
+    if (s.kind === "import" && (!c.node_id || !String(c.path ?? "").trim())) out.push("서버와 폴더를 고르세요.");
+    if (s.kind === "sync" && !c.node_id) out.push("보낼 서버를 고르세요.");
+    if (s.kind === "sweep" && Object.keys((c.space ?? {}) as object).length === 0) out.push("탐색 설정 열기에서 시험할 설정을 넣으세요.");
+    if (s.kind === "import" || s.kind === "confirm") {
+      const wrong = versionProblem(String(c.version ?? ""), dataset);
+      if (wrong) out.push(wrong);
+    }
+    if (MAKES_MODEL.includes(s.kind)) [made, measured] = [true, false];
+    else if (s.kind === "eval") measured = !c.model;
+    return out;
+  });
+}
 
 // ---- the screen --------------------------------------------------------------------------
 
@@ -261,7 +321,7 @@ function Templates({ templates, onChanged }: { templates: PipelineTemplate[] | n
             <Icon name="plus" />
             <strong>직접 조합</strong>
           </div>
-          <p className="muted small">가져오기 · 검수 확인 · 오토라벨 · 라벨링 · 버전 확정 · 학습 · 탐색 · 평가 · 승격 · 내보내기를 골라 순서대로 잇습니다.</p>
+          <p className="muted small">가져오기 · 서버로 보내기 · 오토라벨 · 라벨링 · 버전 확정 · 검수 · 학습 · 탐색 · 평가 · 승격 · 내보내기를 골라 순서대로 잇습니다.</p>
         </a>
       </div>
     </>
@@ -463,7 +523,7 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
   const add = (kind: StepKind) => {
     const config = structuredClone(DEFAULT_CONFIG[kind]);
     const family = [...(data?.families.entries() ?? [])].find(([, a]) => a.has(DEFAULT_ALIAS))?.[0] ?? [...(data?.families.keys() ?? [])][0];
-    if ((kind === "eval" || kind === "autolabel" || kind === "export") && !makesModelBefore(steps, steps.length) && family) {
+    if (USES_MODEL.includes(kind) && !makesModelBefore(steps, steps.length) && family) {
       config.model = { name: family, alias: DEFAULT_ALIAS }; // nothing makes a model before it: the one holding SOTA
     }
     if ((kind === "import" || kind === "sync") && data?.nodes[0]) config.node_id = data.nodes[0].id;
@@ -471,6 +531,8 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
     setAdding(false);
   };
   const body = () => steps.map((s) => ({ kind: s.kind, config: s.config }));
+  const problems = flowProblems(steps, data?.tree.find((d) => d.id === datasetId));
+  const blocked = problems.some((p) => p.length > 0);
 
   const save = async () => {
     setBusy(true);
@@ -517,8 +579,8 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
         <div>
           <h1>{editing ? `${editing.name} 단계 고치기` : "새 파이프라인"}</h1>
           <p className="muted">
-            단계를 순서대로 놓습니다. 단계는 앞 단계가 성공하면 시작하고, 게이트(검수 확인 · 승격 · 기준을 둔 단계)는 기준을 넘어야 다음으로 갑니다. 단계를
-            누르면 설정이 열립니다.
+            단계를 순서대로 놓습니다. 단계는 앞 단계가 성공하면 시작하고, 게이트(승격 · 기준을 둔 단계)는 기준을 넘어야 다음으로 갑니다. 단계를 누르면
+            설정이 열립니다. 돌 수 없는 순서는 그 단계 아래에 이유가 나오고, 고치기 전에는 저장되지 않습니다.
           </p>
         </div>
       </div>
@@ -554,7 +616,7 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
         <ol className="pl-compose-steps">
           {steps.map((s, i) => (
             <li key={s.key}>
-              <div className={`pl-compose-step${s.open ? " open" : ""}`}>
+              <div className={`pl-compose-step${s.open ? " open" : ""}${problems[i]?.length ? " bad" : ""}`}>
                 <button type="button" className="pl-compose-head" onClick={() => update(s.key, { open: !s.open })} aria-expanded={s.open}>
                   <span className="pl-spec-n">{i + 1}</span>
                   <strong>{KIND_LABEL[s.kind]}</strong>
@@ -572,6 +634,11 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
                     <Icon name="x" size={13} />
                   </button>
                 </span>
+                {problems[i]?.map((p) => (
+                  <div key={p} className="pl-problem">
+                    <Icon name="alert" size={13} /> {p}
+                  </div>
+                ))}
                 {s.open && (
                   <StepEditor
                     step={s}
@@ -582,6 +649,7 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
                     projectId={owner}
                     defaultTemplate={project?.settings?.template}
                     releaseId={newest?.id}
+                    dataset={dataset}
                     onChange={(config) => update(s.key, { config })}
                   />
                 )}
@@ -652,17 +720,18 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
             )}
           </div>
         )}
+        {blocked && <div className="error">이유가 적힌 단계를 고치면 저장할 수 있습니다.</div>}
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
           <a className="btn" href={editing ? `#/pipelines/p/${editing.id}` : "#/pipelines"}>
             취소
           </a>
           {!editing && keep && (
-            <button type="button" disabled={busy || steps.length === 0 || !(keepName || name)} onClick={() => void keepOnly()}>
+            <button type="button" disabled={busy || blocked || steps.length === 0 || !(keepName || name)} onClick={() => void keepOnly()}>
               템플릿으로만 등록
             </button>
           )}
-          <button type="button" className="primary" disabled={busy || steps.length === 0 || !datasetId} onClick={() => void save()}>
+          <button type="button" className="primary" disabled={busy || blocked || steps.length === 0 || !datasetId} onClick={() => void save()}>
             {editing ? "저장" : runNow ? "만들고 실행" : "만들기"}
           </button>
         </div>
@@ -677,20 +746,27 @@ function describe(s: Draft, steps: Draft[], index: number, data: ComposeData): s
   const model = c.model as { name: string; alias: string } | undefined;
   const who = model ? `${model.name} ${model.alias}` : makesModelBefore(steps, index) ? "앞 단계의 모델" : "모델을 고르세요";
   const node = (id: unknown) => data.nodes.find((n) => n.id === id)?.name ?? "서버를 고르세요";
+  const where = c.node_id ? ` · ${node(c.node_id)}에서` : "";
+  const version = `(${c.version ? String(c.version) : "다음 번호"})`;
   const floor = c.at_least !== undefined && c.at_least !== "" ? ` · ${c.at_least} 이상이면 다음` : "";
   switch (s.kind) {
     case "import":
-      return `${node(c.node_id)}: ${String(c.path || "경로를 적으세요")} → 새 버전`;
+      return `${node(c.node_id)}: ${String(c.path || "폴더를 고르세요")} → 새 버전 ${version}`;
+    case "review":
+      return `${who} · 지금 버전의 ${((c.splits as string[] | undefined) ?? []).join(" · ") || "모든 이미지"}${where}`;
     case "check":
       return `${CHECK_GROUPS.find(([g]) => g === (c.group ?? "any"))?.[1] ?? "문제"} 이미지 ${Number(c.max_flagged ?? 0)}장 이하면 다음`;
     case "sync":
       return `${node(c.node_id)}(으)로`;
     case "autolabel":
-      return `${who} · 라벨 안 한 이미지${c.accept != null && c.accept !== "" ? ` · 확신도 ${c.accept} 이상 자동 승인` : ""}`;
-    case "label":
-      return "사람이 라벨링 묶음을 끝낼 때까지 기다림";
+      return `${who} · 라벨 안 한 이미지${c.accept != null && c.accept !== "" ? ` · 확신도 ${c.accept} 이상 자동 승인` : ""}${where}`;
+    case "label": {
+      if (setMaker(steps, index) === "autolabel") return "오토라벨 묶음을 사람이 끝낼 때까지 기다림";
+      const parts = c.divide === "one" ? "한 사람에게 모두" : `일감 하나에 ${Number(c.part_size ?? 50)}장`;
+      return `${parts}${c.review ? " · 검수하기" : ""} · 사람이 끝낼 때까지 기다림`;
+    }
     case "confirm":
-      return "작업 중을 새 버전으로 (이름 자동)";
+      return `작업 중을 새 버전으로 ${version}`;
     case "train": {
       const params = (c.params ?? {}) as Record<string, unknown>;
       const variant = params.model ? String(params.model).replace(/\.pt$/, "") : "";
@@ -703,14 +779,14 @@ function describe(s: Draft, steps: Draft[], index: number, data: ComposeData): s
     }
     case "eval": {
       const fixed = data.tree.flatMap((d) => d.releases.map((r) => ({ d, r }))).find((x) => x.r.id === c.release_id);
-      const where = fixed ? `${fixed.d.name} ${fixed.r.version}` : model ? "그 버전" : "학습한 버전";
+      const at = fixed ? `${fixed.d.name} ${fixed.r.version}` : model ? "그 버전" : "학습한 버전";
       const split = SPLIT_CHOICES.find(([v]) => v === (c.split ?? "auto"))?.[1] ?? String(c.split);
-      return `${model ? `${who} → ` : ""}${where} · ${split}${c.review ? " · 검수에도" : ""}${floor}`;
+      return `${model ? `${who} → ` : ""}${at} · ${split}${c.review ? " · 검수에도" : ""}${where}${floor}`;
     }
     case "promote":
       return `더 나으면 ${String(c.alias || DEFAULT_ALIAS)}`;
     case "export":
-      return String(c.format ?? "onnx").toUpperCase();
+      return String(c.format ?? "onnx").toUpperCase() + where;
   }
   return "";
 }
@@ -725,6 +801,7 @@ function StepEditor({
   projectId,
   defaultTemplate,
   releaseId,
+  dataset,
   onChange,
 }: {
   step: Draft;
@@ -735,6 +812,7 @@ function StepEditor({
   projectId: string;
   defaultTemplate?: string;
   releaseId?: string;
+  dataset?: TreeDataset;
   onChange: (config: Record<string, unknown>) => void;
 }) {
   const c = step.config;
@@ -744,7 +822,34 @@ function StepEditor({
     onChange(next);
   };
   const [settings, setSettings] = useState<StepSettings | null>(null);
+  const [browsing, setBrowsing] = useState(false); // 가져오기: picking the folder on the server
+  const [layout, setLayout] = useState(""); // what the folder picked looks like
   const modelBefore = makesModelBefore(steps, index);
+  // The server a model step runs on: 자동 is where the Hub would put it; a server without the images gets them first.
+  const placeSelect = (auto: string) => (
+    <label>
+      실행할 서버
+      <select value={String(c.node_id ?? "")} onChange={(e) => set({ node_id: e.target.value || undefined })}>
+        <option value="">자동 — {auto}</option>
+        {data.nodes.map((n) => (
+          <option key={n.id} value={n.id}>
+            {n.name}
+            {n.status === "online" ? "" : " (응답 없음)"}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+  const placeHint = c.node_id ? <span className="pl-hint pl-lead">고른 서버에 이미지가 없으면 먼저 받은 뒤 합니다.</span> : null;
+  // 가져오기 · 버전 확정: the new version's name (empty: the next vN)
+  const versionField = (
+    <VersionField
+      key={step.key}
+      value={String(c.version ?? "")}
+      next={nextVersion(dataset)}
+      onChange={(version) => set({ version: version || undefined })}
+    />
+  );
   const metric = METRIC_LABEL[keyMetrics(task)[0]] ?? "주 지표";
   const nodeSelect = (
     <label>
@@ -802,38 +907,132 @@ function StepEditor({
 
   let fields: ReactNode = null;
   switch (step.kind) {
-    case "import":
+    case "import": {
+      const node = data.nodes.find((n) => n.id === c.node_id);
+      if (browsing && node) {
+        fields = (
+          <FolderBrowser
+            nodeId={node.id}
+            nodeName={node.name}
+            start={String(c.path ?? "")}
+            onCancel={() => setBrowsing(false)}
+            onPick={(path, guess) => {
+              set({ path });
+              setLayout(guess);
+              setBrowsing(false);
+            }}
+          />
+        );
+        break;
+      }
       fields = (
         <>
+          <div className="form-row">{nodeSelect}</div>
+          <div className="field-label">
+            폴더 경로 <span className="muted small">(그 서버에서의 경로)</span>
+            <div className="input-with-button">
+              <input
+                value={String(c.path ?? "")}
+                onChange={(e) => {
+                  setLayout("");
+                  set({ path: e.target.value });
+                }}
+                placeholder="/data/street 또는 D:\data\street"
+                className="mono"
+                aria-label="폴더 경로"
+              />
+              <button type="button" className="small" disabled={!node || node.status !== "online"} onClick={() => setBrowsing(true)}>
+                <Icon name="folder" size={13} /> 찾아보기
+              </button>
+            </div>
+            {layout && <span className="muted small field-hint">{LAYOUT_NAME[layout] ?? layout} 형식으로 보입니다. 형식은 자동으로 두면 됩니다.</span>}
+            {node && node.status !== "online" && <span className="muted small field-hint">서버가 꺼져 있어 폴더를 볼 수 없습니다. 경로를 직접 적으세요.</span>}
+          </div>
+          {versionField}
           <div className="form-row">
-            {nodeSelect}
             <label>
-              폴더 경로
-              <input value={String(c.path ?? "")} onChange={(e) => set({ path: e.target.value })} placeholder="그 서버의 데이터셋 폴더" />
+              형식
+              <select value={String(c.format ?? "auto")} onChange={(e) => set({ format: e.target.value })}>
+                <option value="auto">자동 감지</option>
+                <option value="yolo">YOLO</option>
+                <option value="coco">COCO</option>
+                <option value="imagefolder">클래스별 폴더</option>
+              </select>
             </label>
           </div>
-          <details className="advanced">
-            <summary>세부</summary>
-            <div className="form-row">
-              <label>
-                형식
-                <select value={String(c.format ?? "auto")} onChange={(e) => set({ format: e.target.value })}>
-                  <option value="auto">자동</option>
-                  <option value="yolo">YOLO</option>
-                  <option value="coco">COCO</option>
-                  <option value="imagefolder">클래스별 폴더</option>
-                </select>
-              </label>
-            </div>
-            <div className="pl-check">
-              <input id={`fr-${step.key}`} type="checkbox" checked={!!c.full_read} onChange={(e) => set({ full_read: e.target.checked })} />
-              <label htmlFor={`fr-${step.key}`}>모든 파일 다시 읽기</label>
-              <span className="pl-hint">끄면 경로 · 크기 · 수정 시각이 같은 파일은 등록된 그대로 씁니다</span>
-            </div>
+          <details className="advanced" open={(c.unlabelled ?? "auto") !== "auto" || Boolean(c.classes)}>
+            <summary>
+              라벨이 없는 이미지 <span className="muted">(라벨할 이미지를 가져올 때)</span>
+            </summary>
+            <label>
+              라벨 파일이 없는 이미지
+              <select value={String(c.unlabelled ?? "auto")} onChange={(e) => set({ unlabelled: e.target.value })}>
+                <option value="auto">자동 · 폴더에 라벨 파일이 하나도 없으면 아직 안 함, 아니면 배경</option>
+                <option value="background">배경 · 찾을 물체가 없는 이미지</option>
+                <option value="unlabelled">아직 안 함 · 라벨할 이미지</option>
+              </select>
+            </label>
+            <label>
+              클래스 <span className="muted small">(클래스 이름이 없는 폴더에)</span>
+              <input
+                value={Array.isArray(c.classes) ? (c.classes as string[]).join(", ") : String(c.classes ?? "")}
+                onChange={(e) => set({ classes: e.target.value || undefined })}
+                placeholder="예: car, person, bike"
+              />
+            </label>
+            <p className="muted small">비우면 이 데이터셋의 클래스를 씁니다. "아직 안 함" 이미지는 학습에서 빠지고, 라벨링 묶음으로 라벨하면 들어갑니다.</p>
           </details>
+          <label>
+            메모 (선택)
+            <input value={String(c.note ?? "")} maxLength={500} onChange={(e) => set({ note: e.target.value || undefined })} placeholder="이 버전에서 달라진 점" />
+          </label>
+          <div className="full-read">
+            <label className="check inline-check">
+              <input type="checkbox" checked={!!c.full_read} onChange={(e) => set({ full_read: e.target.checked || undefined })} />
+              바뀌지 않은 파일도 모두 다시 읽기
+            </label>
+            <p className="muted small">
+              {c.full_read
+                ? "폴더의 이미지를 전부 다시 읽습니다. 파일 내용이 바뀌었는데 수정 시각이 그대로일 때만 필요합니다."
+                : "이 프로젝트에 예전에 등록한 것과 경로 · 크기 · 수정 시각이 같은 이미지는 다시 읽지 않습니다(라벨은 새로 읽음)."}
+            </p>
+          </div>
         </>
       );
       break;
+    }
+    case "review": {
+      const chosen = (c.splits as string[] | undefined) ?? [];
+      const on = (k: string) => chosen.length === 0 || chosen.includes(k);
+      const toggle = (k: string) => {
+        const next = ["train", "val", "test"].filter((x) => (x === k ? !on(x) : on(x)));
+        if (next.length > 0) set({ splits: next.length === 3 ? undefined : next });
+      };
+      fields = (
+        <>
+          <p className="muted small">
+            검수의 "모델로 검사하기"와 같습니다. 모델이 고른 부분의 이미지를 예측하고, 검수가 그것으로 라벨이 없는 물체 · 클래스가 다를 수 있는 라벨 ·
+            물체가 없을 수 있는 라벨을 찾습니다. 파이프라인은 멈추지 않고 다음 단계로 갑니다.
+          </p>
+          <div className="form-row">
+            {modelPick(!modelBefore)}
+            {placeSelect("이미지가 있는 서버")}
+          </div>
+          {placeHint}
+          <fieldset className="eval-splits">
+            <legend>평가할 부분</legend>
+            {["train", "val", "test"].map((k) => (
+              <label key={k} className="check-line">
+                <input type="checkbox" checked={on(k)} onChange={() => toggle(k)} />
+                {k}
+              </label>
+            ))}
+            <span className="muted small">그 버전에 있는 부분만 차례로 평가해 한 기준으로 봅니다</span>
+          </fieldset>
+        </>
+      );
+      break;
+    }
     case "check":
       fields = (
         <div className="form-row">
@@ -855,53 +1054,132 @@ function StepEditor({
       );
       break;
     case "sync":
-      fields = <div className="form-row">{nodeSelect}</div>;
-      break;
-    case "autolabel":
       fields = (
-        <div className="form-row">
-          {modelPick(!modelBefore)}
-          <label>
-            split
-            <select value={String(c.split ?? "")} onChange={(e) => set({ split: e.target.value })}>
-              <option value="">모두</option>
-              <option value="train">train</option>
-              <option value="val">val</option>
-              <option value="test">test</option>
-            </select>
-          </label>
-          <label>
-            자동 승인 확신도 (선택)
-            <input
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              value={c.accept === undefined || c.accept === null ? "" : String(c.accept)}
-              onChange={(e) => set({ accept: e.target.value === "" ? undefined : Number(e.target.value) })}
-              placeholder="비우면 사람이 모두 확인"
-            />
-          </label>
-        </div>
+        <>
+          <p className="muted small">
+            이 버전의 이미지 파일을 고른 서버에 미리 복사합니다(그 서버에 이미 있으면 그대로 넘어감). 학습 단계에서 "노드 고르기"를 하면 그 노드가
+            학습 전에 알아서 받으므로, 보통은 넣지 않아도 됩니다.
+          </p>
+          <div className="form-row">{nodeSelect}</div>
+        </>
       );
       break;
-    case "label": {
-      const fromAutolabel = steps.slice(0, index).some((s) => s.kind === "autolabel");
-      fields = fromAutolabel ? (
-        <p className="muted small">앞의 오토라벨이 만든 묶음을 사람이 끝낼 때까지 기다립니다(라벨링 화면에서 나눠 하고 검수).</p>
-      ) : (
+    case "autolabel": {
+      const accepting = c.accept !== undefined && c.accept !== null && c.accept !== "";
+      const keep = c.keep === undefined || c.keep === null || c.keep === "" ? 0.25 : Number(c.keep);
+      fields = (
         <>
-          <p className="muted small">지금 버전에서 라벨 안 한 이미지로 묶음을 만들고, 사람이 끝낼 때까지 기다립니다.</p>
-          <div className="pl-check">
-            <input id={`rv-${step.key}`} type="checkbox" checked={c.review !== false} onChange={(e) => set({ review: e.target.checked })} />
-            <label htmlFor={`rv-${step.key}`}>검수를 거침</label>
+          <p className="muted small">
+            새 오토라벨의 "데이터셋의 라벨 안 한 이미지"와 같습니다. 그때의 버전에서 라벨 안 한 이미지로 라벨링 묶음을 만들고, 모델이 라벨을 먼저
+            그립니다. 라벨은 데이터셋의 작업 중에 모입니다.
+          </p>
+          <div className="form-row">
+            {modelPick(!modelBefore)}
+            <label>
+              split
+              <select value={String(c.split ?? "")} onChange={(e) => set({ split: e.target.value || undefined })}>
+                <option value="">전체</option>
+                <option value="train">train</option>
+                <option value="val">val</option>
+                <option value="test">test</option>
+              </select>
+            </label>
+          </div>
+          <SetFields c={c} set={set} id={step.key} name={`${dataset?.name ?? "데이터셋"} 오토라벨 날짜`} />
+          <div className="form-row">
+            {placeSelect("이미지가 있는 서버")}
+            <label>
+              계산
+              <select value={c.gpus === 0 ? "cpu" : "gpu"} onChange={(e) => set({ gpus: e.target.value === "cpu" ? 0 : undefined })}>
+                <option value="gpu">GPU (서버에 있으면)</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </label>
+          </div>
+          {placeHint}
+          <div className="form-row">
+            <label>
+              최소 확신도
+              <input type="number" min={0.05} max={0.95} step={0.05} value={keep} onChange={(e) => set({ keep: Number(e.target.value) || 0.25 })} />
+              <span className="muted small">이보다 낮은 예측은 버립니다</span>
+            </label>
+            <label>
+              <span className="check">
+                <input type="checkbox" checked={accepting} onChange={(e) => set({ accept: e.target.checked ? 0.8 : undefined })} /> 자동 승인
+              </span>
+              <input
+                type="number"
+                min={keep}
+                max={1}
+                step={0.05}
+                value={accepting ? Number(c.accept) : 0.8}
+                disabled={!accepting}
+                onChange={(e) => set({ accept: Number(e.target.value) || 0.8 })}
+              />
+              <span className="muted small">예측이 모두 이 확신도 이상인 이미지는 바로 저장해 {c.review ? "검수로" : "완료로"} 보냅니다</span>
+            </label>
           </div>
         </>
       );
       break;
     }
+    case "label": {
+      const fromAutolabel = setMaker(steps, index) === "autolabel";
+      fields = fromAutolabel ? (
+        <p className="muted small">
+          앞의 오토라벨이 만든 묶음을 사람이 끝낼 때까지 기다립니다. 묶음 이름 · 일감 · 검수하기는 오토라벨 단계에서 정합니다.
+        </p>
+      ) : (
+        <>
+          <p className="muted small">
+            라벨링 묶음 만들기와 같습니다. 그때의 버전에서 라벨 안 한 이미지로 묶음을 만들어 일감으로 나누고, 사람이 끝낼 때까지 기다립니다.
+          </p>
+          <div className="form-row">
+            <label>
+              split
+              <select value={String(c.split ?? "")} onChange={(e) => set({ split: e.target.value || undefined })}>
+                <option value="">전체</option>
+                <option value="train">train</option>
+                <option value="val">val</option>
+                <option value="test">test</option>
+              </select>
+            </label>
+          </div>
+          <SetFields c={c} set={set} id={step.key} name={`${dataset?.name ?? "데이터셋"} 라벨링 날짜`} />
+          <label>
+            지시문 <span className="muted small">(선택 · 라벨링하는 사람에게 보임)</span>
+            <textarea
+              rows={2}
+              maxLength={2000}
+              value={String(c.instructions ?? "")}
+              onChange={(e) => set({ instructions: e.target.value || undefined })}
+              placeholder="예: 사람과 차를 박스로, 30픽셀보다 작은 것은 빼기"
+            />
+          </label>
+        </>
+      );
+      break;
+    }
     case "confirm":
-      fields = <p className="muted small">작업 중에 고친 이미지가 있으면 다음 번호(v3 …)로 버전을 확정하고, 그다음 단계는 그 버전으로 합니다. 고친 것이 없으면 그대로 넘어갑니다.</p>;
+      fields = (
+        <>
+          <p className="muted small">
+            버전으로 확정과 같습니다. 작업 중에 고친 이미지가 있으면 새 버전으로 확정하고, 그다음 단계는 그 버전으로 합니다. 고친 것이 없으면 그대로
+            넘어갑니다.
+          </p>
+          {versionField}
+          <label>
+            메모
+            <textarea
+              rows={2}
+              maxLength={500}
+              value={String(c.note ?? "")}
+              onChange={(e) => set({ note: e.target.value || undefined })}
+              placeholder="비우면 &quot;파이프라인 (이름)에서 확정&quot;"
+            />
+          </label>
+        </>
+      );
       break;
     case "train":
     case "sweep":
@@ -944,7 +1222,7 @@ function StepEditor({
               </select>
             </label>
             <label>
-              split
+              평가할 부분
               <select value={String(c.split ?? "auto")} onChange={(e) => set({ split: e.target.value })}>
                 {SPLIT_CHOICES.map(([v, label]) => (
                   <option key={v} value={v}>
@@ -954,6 +1232,8 @@ function StepEditor({
               </select>
             </label>
           </div>
+          <div className="form-row">{placeSelect("이미지가 있는 서버")}</div>
+          {placeHint}
           <div className="pl-check">
             <input id={`ev-${step.key}`} type="checkbox" checked={!!c.review} onChange={(e) => set({ review: e.target.checked })} />
             <label htmlFor={`ev-${step.key}`}>검수에도 쓰기</label>
@@ -1001,6 +1281,7 @@ function StepEditor({
             </select>
           </label>
           {modelBefore ? null : modelPick(true)}
+          {placeSelect("모델을 학습한 서버")}
         </div>
       );
       break;
@@ -1021,6 +1302,92 @@ function StepEditor({
         />
       )}
     </div>
+  );
+}
+
+/** Which step makes the set a labeling step waits on: an 오토라벨 right before it (no 라벨링 · 버전 확정 · 가져오기 between),
+ * else it makes its own (as the Hub decides). */
+function setMaker(steps: { kind: StepKind }[], index: number): StepKind | undefined {
+  return [...steps.slice(0, index)].reverse().find((s) => ["autolabel", "label", "confirm", "import"].includes(s.kind))?.kind;
+}
+
+/** A labeling set's settings, as 라벨링 묶음 만들기 and 새 오토라벨 ask for them. */
+function SetFields({
+  c,
+  set,
+  id,
+  name,
+}: {
+  c: Record<string, unknown>;
+  set: (part: Record<string, unknown>) => void;
+  id: number;
+  name: string;
+}) {
+  const one = c.divide === "one";
+  return (
+    <>
+      <div className="form-row">
+        <label>
+          새 묶음 이름
+          <input value={String(c.name ?? "")} maxLength={128} onChange={(e) => set({ name: e.target.value || undefined })} placeholder={`자동: ${name}`} />
+        </label>
+        <label>
+          일감 하나에 이미지
+          <input
+            type="number"
+            min={1}
+            disabled={one}
+            value={one ? "" : String(c.part_size ?? 50)}
+            placeholder={one ? "모두" : "50"}
+            onChange={(e) => set({ part_size: e.target.value === "" ? undefined : Math.max(1, Math.floor(Number(e.target.value)) || 1) })}
+          />
+        </label>
+      </div>
+      <div className="pl-check">
+        <input id={`one-${id}`} type="checkbox" checked={one} onChange={(e) => set({ divide: e.target.checked ? "one" : "size" })} />
+        <label htmlFor={`one-${id}`}>한 사람에게 모두 (일감 1개)</label>
+      </div>
+      <div className="pl-check">
+        <input id={`rv-${id}`} type="checkbox" checked={!!c.review} onChange={(e) => set({ review: e.target.checked })} />
+        <label htmlFor={`rv-${id}`}>검수하기 (승인 · 돌려보내기)</label>
+        <span className="pl-hint">맡길 사람은 묶음이 생긴 뒤 라벨링 보드에서 정합니다</span>
+      </div>
+    </>
+  );
+}
+
+/** The name of the version a step makes: the next number, or typed ({n}: the next number, {date}: that day). */
+function VersionField({ value, next, onChange }: { value: string; next: string; onChange: (version: string) => void }) {
+  const [typed, setTyped] = useState(Boolean(value));
+  return (
+    <>
+      <div className="form-row">
+        <label>
+          새 버전 이름
+          <select
+            value={typed ? "typed" : "auto"}
+            onChange={(e) => {
+              setTyped(e.target.value === "typed");
+              if (e.target.value === "auto") onChange("");
+            }}
+          >
+            <option value="auto">자동 — 다음 번호 (지금이면 {next})</option>
+            <option value="typed">직접 입력</option>
+          </select>
+        </label>
+        {typed && (
+          <label>
+            이름
+            <input value={value} maxLength={64} onChange={(e) => onChange(e.target.value)} placeholder="예: labeled-{n}" autoFocus />
+          </label>
+        )}
+      </div>
+      {typed && (
+        <span className="pl-hint pl-lead">
+          {"{n}"}은 다음 번호, {"{date}"}는 그날 날짜({today()})로 바뀝니다. 같은 이름의 버전은 만들 수 없으니, 여러 번 돌 파이프라인이면 {"{n}"}을 넣으세요.
+        </span>
+      )}
+    </>
   );
 }
 
@@ -1296,6 +1663,12 @@ function StepCard({ step: s, measured }: { step: PipelineStepView; measured: str
   const links: ReactNode[] = [];
   if (s.made_release) links.push(<a key="made" href={`#/datasets/${s.made_release.id}`}>새 버전 {s.made_release.version}</a>);
   if (s.kind === "check" && s.release) links.push(<a key="check" href={`#/review/${s.release.id}`}>검수에서 걸린 이미지 보기</a>);
+  if (s.kind === "review" && s.release && s.status === "succeeded")
+    links.push(
+      <a key="review" href={`#/review/${s.release.id}`}>
+        검수에서 틀렸을 수 있는 라벨 보기
+      </a>,
+    );
   if ((s.kind === "autolabel" || s.kind === "label") && s.set) links.push(<a key="set" href={`#/labeling/${s.set.id}`}>묶음 {s.set.name}</a>);
   if (s.kind === "sweep" && s.sweep) links.push(<a key="sweep" href={`#/training/sweep/${s.sweep.id}`}>탐색 {s.sweep.name}</a>);
   if (s.kind === "train" && s.run) links.push(<a key="run" href={`#/training/${s.run.id}`}>학습 {s.run.name}</a>);

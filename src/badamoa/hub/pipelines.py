@@ -34,6 +34,7 @@ import copy
 import logging
 import re
 import threading
+from datetime import datetime
 from pathlib import PurePath
 from typing import Any
 
@@ -44,7 +45,7 @@ from badamoa.core import tasks as task_names
 from badamoa.core.protocol import TERMINAL_STATUSES
 
 from . import autolabel, catalog, drafts, labeling, modelops, qa, registry, services, sweeps, training, transfers
-from .catalog_models import Dataset, LabelSet, Project, Release
+from .catalog_models import Dataset, ItemPrediction, LabelSet, Project, Release
 from .config import HubSettings
 from .db import iso, utcnow, write_lock
 from .models import Job, Node, User
@@ -53,10 +54,14 @@ from .train_models import ModelJob, ModelVersion, Pipeline, PipelineRun, Pipelin
 
 log = logging.getLogger("badamoa.hub.pipelines")
 
-KINDS = ("import", "check", "sync", "autolabel", "label", "confirm", "train", "sweep", "eval", "promote", "export")
+# ``check`` (검수 확인, a gate on the rule checks) is no longer offered for new steps (0.104.0); saved ones still run.
+KINDS = (
+    "import", "check", "review", "sync", "autolabel", "label", "confirm", "train", "sweep", "eval", "promote", "export"
+)  # fmt: skip
 LABEL = {
     "import": "가져오기",
     "check": "검수 확인",
+    "review": "검수",
     "sync": "서버로 보내기",
     "autolabel": "오토라벨",
     "label": "라벨링",
@@ -68,7 +73,11 @@ LABEL = {
     "export": "내보내기",
 }
 MAKES_MODEL = ("train", "sweep")
-USES_MODEL = ("autolabel", "eval", "export")
+USES_MODEL = ("autolabel", "review", "eval", "export")
+# How a labeling set is split (as 라벨링 묶음 만들기 does): images to a part, or all of it to one person.
+DIVIDE = ("size", "one")
+UNLABELLED = ("auto", "background", "unlabelled")  # 가져오기: an image without a label file
+MAX_VERSION = 64
 GATES = ("check", "promote")  # always; train · sweep · eval with ``at_least``
 DEFAULT_ALIAS = "SOTA"
 TRIGGERS = ("manual", "new_version")
@@ -151,16 +160,12 @@ BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         ],
     },
     {
-        "id": "builtin-checked",
-        "name": "검수 확인 → 학습 → 평가 → 승격",
-        "description": "검수 규칙 검사에 걸린 이미지가 기준 이하일 때만 학습합니다. 라벨이 덜 된 버전으로 GPU를 쓰지 않게.",
+        "id": "builtin-review",
+        "name": "새 버전마다 SOTA로 검수",
+        "description": "새 버전이 생기면 지금 SOTA가 그 버전의 모든 이미지를 예측해, 검수에 라벨이 틀렸을 수 있는 "
+        "이미지를 올립니다(검수의 모델로 검사하기와 같음).",
         "trigger": "new_version",
-        "steps": [
-            {"kind": "check", "config": {"max_flagged": 0, "group": "any"}},
-            {"kind": "train", "config": {}},
-            {"kind": "eval", "config": {"split": "auto", "review": True}},
-            {"kind": "promote", "config": {"alias": DEFAULT_ALIAS}},
-        ],
+        "steps": [{"kind": "review", "config": {"model": {"name": "", "alias": DEFAULT_ALIAS}}}],
     },
     {
         "id": "builtin-sweep",
@@ -264,6 +269,53 @@ def _node_id(db: Session, config: dict[str, Any], what: str) -> str:
     return node_id
 
 
+def _place_of(db: Session, config: dict[str, Any], out: dict[str, Any]) -> None:
+    """The server a model step runs on; left out: where the Hub would put it (the images' server, the model's)."""
+    node_id = str(config.get("node_id") or "")
+    if node_id:
+        if db.get(Node, node_id) is None:
+            raise ServiceError(404, "고른 서버를 찾을 수 없습니다.")
+        out["node_id"] = node_id
+
+
+def _version_pattern(db: Session, dataset: Dataset | None, config: dict[str, Any]) -> str:
+    """A step's name for the version it makes: as typed, ``{n}`` the next free number and ``{date}`` the day it runs
+    (20261124); empty: the next vN. A name with no ``{n}`` must not be the dataset's already."""
+    pattern = str(config.get("version") or "").strip()
+    if not pattern:
+        return ""
+    if len(pattern) > MAX_VERSION:
+        raise ServiceError(400, f"버전 이름은 {MAX_VERSION}자까지입니다.")
+    if pattern == drafts.DRAFT:
+        raise ServiceError(400, f"'{drafts.DRAFT}'은 버전 이름으로 쓸 수 없습니다.")
+    rest = pattern.replace("{n}", "").replace("{date}", "")
+    if "{" in rest or "}" in rest or pattern.count("{n}") > 1:
+        raise ServiceError(400, "버전 이름에는 {n}(다음 번호)과 {date}(그날 날짜)를 한 번씩만 넣을 수 있습니다.")
+    if dataset is not None and "{n}" not in pattern:
+        name = _version_name(db, dataset.id, pattern)
+        if db.scalar(select(Release.id).where(Release.dataset_id == dataset.id, Release.version == name)) is not None:
+            raise ServiceError(
+                409, f"{dataset.name}에 {name} 버전이 이미 있습니다(휴지통 포함). 다른 이름을 쓰거나 {{n}}을 넣으세요."
+            )
+    return pattern
+
+
+def _version_name(db: Session, dataset_id: str, pattern: str) -> str:
+    """The name a step's version gets now (``_version_pattern``)."""
+    if not pattern:
+        return _next_version(db, dataset_id)
+    text = pattern.replace("{date}", f"{datetime.now():%Y%m%d}")
+    if "{n}" not in text:
+        return text
+    head, _, tail = text.partition("{n}")
+    names = set(db.scalars(select(Release.version).where(Release.dataset_id == dataset_id)))
+    shape = re.compile(re.escape(head) + r"(\d+)" + re.escape(tail))
+    n = max((int(m.group(1)) for v in names if (m := shape.fullmatch(v or ""))), default=0) + 1
+    while f"{head}{n}{tail}" in names:
+        n += 1
+    return f"{head}{n}{tail}"
+
+
 def _clean_import(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
     path = str(config.get("path") or "").strip()
     if not path:
@@ -271,12 +323,63 @@ def _clean_import(db: Session, dataset: Dataset | None, config: dict[str, Any], 
     fmt = str(config.get("format") or "auto")
     if fmt not in ("auto", "yolo", "coco", "imagefolder"):
         raise ServiceError(400, "가져오기 형식은 auto, yolo, coco, imagefolder 중 하나입니다.")
-    return {
+    unlabelled = str(config.get("unlabelled") or "auto")
+    if unlabelled not in UNLABELLED:
+        raise ServiceError(400, "라벨 파일이 없는 이미지는 auto · background · unlabelled 중 하나입니다.")
+    out: dict[str, Any] = {
         "node_id": _node_id(db, config, "가져오기"),
         "path": path,
         "format": fmt,
         "full_read": bool(config.get("full_read")),
+        "unlabelled": unlabelled,
     }
+    classes = config.get("classes") or []
+    if isinstance(classes, str):
+        classes = classes.replace("\n", ",").split(",")
+    if [str(c).strip() for c in classes if str(c).strip()]:
+        out["classes"] = [str(c).strip() for c in classes if str(c).strip()]
+    _note_of(config, out)
+    version = _version_pattern(db, dataset, config)
+    if version:
+        out["version"] = version
+    return out
+
+
+def _note_of(config: dict[str, Any], out: dict[str, Any]) -> None:
+    """The note a version made by a step keeps (가져오기 · 버전 확정, as their dialogs take one)."""
+    note = str(config.get("note") or "").strip()
+    if note:
+        out["note"] = note[:500]
+
+
+def _set_of(config: dict[str, Any], out: dict[str, Any]) -> None:
+    """A labeling set's settings, as 라벨링 묶음 만들기 and 새 오토라벨 take them: its name, images to a part (or all of
+    it to one person), whether someone approves the work (검수하기, off unless asked)."""
+    divide = str(config.get("divide") or "size")
+    if divide not in DIVIDE:
+        raise ServiceError(400, "나누기는 size(일감 하나에 몇 장) · one(한 사람에게 모두)입니다.")
+    out.update(review=bool(config.get("review", False)), divide=divide)
+    if divide == "size":
+        out["part_size"] = int(_number(config.get("part_size") or 50, "일감 하나의 이미지 수", 1))
+    name = str(config.get("name") or "").strip()
+    if name:
+        out["name"] = name[:128]
+
+
+def _clean_review(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    """검수 (모델로 검사하기): the model predicts every image of the version, for 검수's label checks."""
+    out: dict[str, Any] = {}
+    splits = [str(x) for x in config.get("splits") or []]
+    if any(x not in ("train", "val", "test") for x in splits):
+        raise ServiceError(400, "평가할 부분은 train · val · test 중에서 고릅니다(비우면 모두).")
+    if splits:
+        out["splits"] = [x for x in ("train", "val", "test") if x in splits]
+    _gpus_of(config, out)
+    _place_of(db, config, out)
+    model = _model_choice(config)
+    if model:
+        out["model"] = model
+    return out
 
 
 def _clean_check(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
@@ -297,7 +400,11 @@ def _clean_autolabel(db: Session, dataset: Dataset | None, config: dict[str, Any
     out: dict[str, Any] = {"split": split, "keep": _number(config.get("keep", autolabel.KEEP), "최소 확신도", 0, 1)}
     if config.get("accept") not in (None, ""):
         out["accept"] = _number(config["accept"], "자동 승인 확신도", 0, 1)
+        if out["accept"] < out["keep"]:
+            raise ServiceError(400, "자동 승인 확신도는 최소 확신도 이상입니다.")
+    _set_of(config, out)
     _gpus_of(config, out)
+    _place_of(db, config, out)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -305,15 +412,26 @@ def _clean_autolabel(db: Session, dataset: Dataset | None, config: dict[str, Any
 
 
 def _clean_label(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    """A labeling set of the version's images nobody labelled yet, as 라벨링 묶음 만들기 makes one (after an 오토라벨:
+    the set that one made, as it made it)."""
     split = str(config.get("split") or "")
     if split not in ("", "train", "val", "test"):
         raise ServiceError(400, "라벨링 split은 train, val, test 중 하나입니다(비우면 모두).")
-    part_size = int(_number(config.get("part_size") or 50, "일감 크기", 1, 10000))
-    return {"split": split, "review": bool(config.get("review", True)), "part_size": part_size}
+    out: dict[str, Any] = {"split": split}
+    _set_of(config, out)
+    instructions = str(config.get("instructions") or "").strip()
+    if instructions:
+        out["instructions"] = instructions[:2000]
+    return out
 
 
 def _clean_confirm(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
-    return {}
+    out: dict[str, Any] = {}
+    version = _version_pattern(db, dataset, config)
+    if version:
+        out["version"] = version
+    _note_of(config, out)
+    return out
 
 
 def _clean_train(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
@@ -363,6 +481,7 @@ def _clean_eval(
             raise ServiceError(400, f"{other.name} {release.version}의 {_split_of(release, split)}에는 이미지가 없습니다.")
     out: dict[str, Any] = {"release_id": release_id, "split": split, "review": bool(config.get("review"))}
     _gpus_of(config, out)
+    _place_of(db, config, out)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -383,6 +502,7 @@ def _clean_export(db: Session, dataset: Dataset | None, config: dict[str, Any], 
     if fmt not in modelops.EXPORT_FORMATS:
         raise ServiceError(400, f"내보내기 형식은 {', '.join(modelops.EXPORT_FORMATS)} 중 하나입니다.")
     out: dict[str, Any] = {"format": fmt}
+    _place_of(db, config, out)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -392,6 +512,7 @@ def _clean_export(db: Session, dataset: Dataset | None, config: dict[str, Any], 
 CLEAN = {
     "import": _clean_import,
     "check": _clean_check,
+    "review": _clean_review,
     "sync": _clean_sync,
     "autolabel": _clean_autolabel,
     "label": _clean_label,
@@ -457,8 +578,10 @@ def _check_code(db: Session, dataset: Dataset, steps: list[dict[str, Any]]) -> N
             continue
         if step["kind"] == "autolabel" and not modelops._does(row, "autolabel"):
             raise ServiceError(400, f"{row.title}은(는) 오토라벨을 하지 않아 그 단계를 넣을 수 없습니다.")
-        if step["kind"] in ("eval", "export") and step["kind"] not in registry.manifest_of(row, task).entrypoints:
-            raise ServiceError(400, f"{row.title}에는 {LABEL[step['kind']]} 코드가 없어 그 단계를 넣을 수 없습니다.")
+        code = "eval" if step["kind"] == "review" else step["kind"]  # 검수 is an evaluation on every split
+        if code in ("eval", "export") and code not in registry.manifest_of(row, task).entrypoints:
+            what = LABEL[step["kind"]]
+            raise ServiceError(400, f"{row.title}에는 {LABEL[code]} 코드가 없어 {what} 단계를 넣을 수 없습니다.")
 
 
 def train_settings_of(db: Session, run: Run) -> dict[str, Any]:
@@ -992,6 +1115,17 @@ def _gpus(db: Session, steps: list[dict[str, Any]], index: int) -> int | None:
     return int((made.config or {}).get("gpus") or 0) if made is not None else None
 
 
+def _set_settings(c: dict[str, Any]) -> dict[str, Any]:
+    """A step's labeling-set settings (``_set_of``) as ``labeling.create_set`` takes them."""
+    return {
+        "name": c.get("name", ""),
+        "instructions": c.get("instructions", ""),
+        "review": bool(c.get("review", False)),
+        "part_size": int(c.get("part_size") or 50),
+        "parts": 1 if c.get("divide") == "one" else 0,  # one part: all of it to one person
+    }
+
+
 def _metric_key(model: ModelVersion | None, config: dict[str, Any] | None = None) -> str:
     task = (model.task if model else "") or "detect"
     return (config or {}).get("metric") or training.PRIMARY_METRIC.get(task, "map50_95")
@@ -1025,14 +1159,27 @@ def _begin(
     if kind == "import":
         release = catalog.get_release(db, release_id)
         dataset = db.get(Dataset, release.dataset_id)
-        version = _next_version(db, dataset.id)
+        version = _version_name(db, dataset.id, c.get("version", ""))
         job = catalog.start_import(
             db, owner, project_id=dataset.project_id, node_id=c["node_id"], path=c["path"], dataset=dataset.name,
             version=version, fmt=c.get("format", "auto"), full_read=bool(c.get("full_read")), via=via,
+            unlabelled=c.get("unlabelled", "auto"), classes=c.get("classes") or None, note=c.get("note", ""),
         )  # fmt: skip
         refs = {"job_id": job.id, "version": version}
     elif kind == "check":
         refs = {"release_id": release_id}
+    elif kind == "review":  # 검수's 모델로 검사하기: every split of the version in one evaluation
+        model = _subject(db, run, steps, index)
+        release = catalog.get_release(db, release_id)
+        wanted = c.get("splits") or ("train", "val", "test")
+        parts = [s for s in ("train", "val", "test") if s in wanted and _has(release, s)]
+        if not parts:
+            raise ServiceError(400, f"{release.version}의 {' · '.join(wanted)}에 검사할 이미지가 없습니다.")
+        op = modelops.start_eval(
+            db, owner, model.id, release.id, parts[0], _gpus(db, steps, index), via="pipeline",
+            node_id=c.get("node_id", ""), splits=parts,
+        )  # fmt: skip
+        refs = {"model_id": model.id, "release_id": release.id, "op_id": op.id, "op_jobs": [op.job_id]}
     elif kind == "sync":
         node = services.get_node(db, c["node_id"])
         refs = {"node_id": node.id, "release_id": release_id}
@@ -1043,30 +1190,31 @@ def _begin(
         model = _subject(db, run, steps, index)
         found, op = autolabel.start_on_images(
             db, owner, release_id, model.id, split=c.get("split", ""), keep=c.get("keep", autolabel.KEEP),
-            accept=c.get("accept"), gpus=_gpus(db, steps, index), via=via,
+            accept=c.get("accept"), gpus=_gpus(db, steps, index), via=via, node_id=c.get("node_id", ""),
+            **_set_settings(c),
         )  # fmt: skip
         refs = {"model_id": model.id, "set_id": found.id, "op_id": op.id, "op_jobs": [op.job_id]}
     elif kind == "label":
-        made = _before_step(steps, index, ("autolabel", "label"))
-        set_id = ((made or {}).get("refs") or {}).get("set_id")
+        # the set an 오토라벨 right before made (no 라벨링 · 버전 확정 · 가져오기 between), else one of its own
+        made = _before_step(steps, index, ("autolabel", "label", "confirm", "import"))
+        set_id = ((made or {}).get("refs") or {}).get("set_id") if made and made["kind"] == "autolabel" else None
         if set_id and db.get(LabelSet, set_id) is not None:
             refs = {"set_id": set_id}
         else:  # a set of the version's images nobody labelled yet
             release = catalog.get_release(db, release_id)
             dataset = db.get(Dataset, release.dataset_id)
             match = {"state": "unlabelled", **({"split": c["split"]} if c.get("split") else {})}
-            found = labeling.create_set(
-                db, owner, release_id=release_id, name=f"{dataset.name} 라벨링 {utcnow():%m/%d}", match=match,
-                part_size=c.get("part_size", 50), review=c.get("review", True), via=via,
-            )  # fmt: skip
+            wanted = _set_settings(c)
+            wanted["name"] = wanted["name"] or f"{dataset.name} 라벨링 {utcnow():%m/%d}"
+            found = labeling.create_set(db, owner, release_id=release_id, match=match, via=via, **wanted)
             refs = {"set_id": found.id, "made": True}
     elif kind == "confirm":
         release = catalog.get_release(db, release_id)
         draft = drafts.draft_of(db, release.dataset_id)
         edited = drafts.edited_count(db, draft) if draft is not None else 0
         if edited:
-            version = _next_version(db, release.dataset_id)
-            drafts.confirm(db, owner, draft.id, version, note=f"파이프라인 {run.name}에서 확정", via=via)
+            version = _version_name(db, release.dataset_id, c.get("version", ""))
+            drafts.confirm(db, owner, draft.id, version, note=c.get("note") or f"파이프라인 {run.name}에서 확정", via=via)
             refs = {"release_out": draft.id, "version": version, "edited": edited}
         else:
             refs = {"edited": 0}
@@ -1097,6 +1245,7 @@ def _begin(
         if c.get("review") and release.id == release_id:  # one evaluation: the gate's split and 검수's images
             splits += [s for s in ("train", "val", "test") if s != split and _has(release, s)]
         gpus = _gpus(db, steps, index)
+        place = c.get("node_id", "")  # the server picked, else where the images are
         refs = {"model_id": model.id, "release_id": release.id, "split": split, "op_jobs": []}
         gate = _gate_after(steps, index)
         if gate is not None:  # the alias holder measured on the same data, alongside (and before, so the newest
@@ -1106,18 +1255,24 @@ def _begin(
                 if _measuring(db, holder.id, release.id, split) is None:
                     try:
                         with _savepoint(db):
-                            op = modelops.start_eval(db, owner, holder.id, release.id, split, gpus, via="pipeline")
+                            op = modelops.start_eval(
+                                db, owner, holder.id, release.id, split, gpus, via="pipeline", node_id=place
+                            )
                         refs.update(holder_op_id=op.id)
                         refs["op_jobs"].append(op.job_id)
                     except ServiceError as e:  # the gate says so when it compares
                         refs["holder_problem"] = e.message
-        op = modelops.start_eval(db, owner, model.id, release.id, split, gpus, via="pipeline", splits=splits)
+        op = modelops.start_eval(
+            db, owner, model.id, release.id, split, gpus, via="pipeline", splits=splits, node_id=place
+        )
         refs.update(op_id=op.id)
         refs["op_jobs"].append(op.job_id)
         if c.get("review") and release.id != release_id:  # 검수 looks at the current version
             own = catalog.get_release(db, release_id)
             parts = [s for s in ("train", "val", "test") if _has(own, s)]
-            review = modelops.start_eval(db, owner, model.id, own.id, parts[0], gpus, via="pipeline", splits=parts)
+            review = modelops.start_eval(
+                db, owner, model.id, own.id, parts[0], gpus, via="pipeline", splits=parts, node_id=place
+            )
             refs.update(review_op_id=review.id, review_release_id=own.id)
             refs["op_jobs"].append(review.job_id)
         else:
@@ -1126,7 +1281,9 @@ def _begin(
         refs = {}  # decided when the evaluations are in (``_check``)
     elif kind == "export":
         model = _subject(db, run, steps, index)
-        op = modelops.start_export(db, owner, model.id, c.get("format", "onnx"), via="pipeline", settings=settings)
+        op = modelops.start_export(
+            db, owner, model.id, c.get("format", "onnx"), via="pipeline", node_id=c.get("node_id", ""), settings=settings
+        )
         refs = {"model_id": model.id, "op_id": op.id, "op_jobs": [op.job_id]}
     step.update(status="running", refs=refs, started_at=iso(utcnow()), message="")
 
@@ -1201,6 +1358,17 @@ def _check(db: Session, owner: User, run: PipelineRun, steps: list[dict[str, Any
         if flagged > c["max_flagged"]:
             return "held", f"{said}: 검수에서 고치고 버전을 확정한 뒤 다시"
         return "succeeded", said
+    if kind == "review":
+        op = db.get(ModelJob, refs.get("op_id") or "")
+        ended = _ended(db, op.job_id if op else None, "모델로 검사하기")
+        if ended is None or ended[0] != "succeeded":
+            return ended
+        base = select(func.count()).select_from(ItemPrediction).where(ItemPrediction.op_id == op.id)
+        images, wrong = db.scalar(base) or 0, db.scalar(base.where(ItemPrediction.wrong > 0)) or 0
+        refs["images"], refs["flagged"] = images, wrong
+        model = db.get(ModelVersion, op.model_id)
+        who = f"{model.name} v{model.version}" if model else "모델"
+        return "succeeded", f"{who} · 이미지 {images:,}장 검사 · 라벨이 틀렸을 수 있는 이미지 {wrong:,}장"
     if kind == "sync":
         if not refs.get("job_id"):
             return "succeeded", "이미 그 서버에 있음"
@@ -1608,21 +1776,25 @@ def _summary(db: Session, project: Project | None, dataset: Dataset | None, step
     gate = ""
     if c.get("at_least") is not None:
         gate = f" · {METRIC_LABEL.get(c.get('metric', ''), c.get('metric') or '주 지표')} {c['at_least']} 이상이면 다음"
+    model = c.get("model")
+    who = f"{model['name'] or '모델'} {model['alias']}" if model else "앞 단계의 모델"
+    where = f" · {_node_name(db, c['node_id'])}에서" if c.get("node_id") else ""
     if kind == "import":
-        return f"{_node_name(db, c.get('node_id'))}: {c.get('path')} → 새 버전"
+        return f"{_node_name(db, c.get('node_id'))}: {c.get('path')} → 새 버전 {_version_said(c)}"
+    if kind == "review":
+        return f"{who} · 지금 버전의 {' · '.join(c.get('splits') or ['모든 이미지'])}{where}"
     if kind == "check":
         return f"{CHECK_GROUPS.get(c.get('group', 'any'), '문제')} 이미지 {c.get('max_flagged', 0):,}장 이하면 다음"
     if kind == "sync":
         return f"{_node_name(db, c.get('node_id'))}(으)로"
     if kind == "autolabel":
-        model = c.get("model")
-        who = f"{model['name'] or '모델'} {model['alias']}" if model else "앞 단계의 모델"
-        said = f"{who} · {SPLIT_LABEL.get(c.get('split', ''), c.get('split'))}의 라벨 안 한 이미지"
+        said = f"{who} · {SPLIT_LABEL.get(c.get('split', ''), c.get('split'))}의 라벨 안 한 이미지{where}"
         return said + (f" · 확신도 {c['accept']} 이상 자동 승인" if c.get("accept") is not None else "")
     if kind == "label":
-        return "사람이 라벨링 묶음을 끝낼 때까지 기다림"
+        parts = "한 사람에게 모두" if c.get("divide") == "one" else f"일감 하나에 {c.get('part_size', 50)}장"
+        return f"{parts}{' · 검수하기' if c.get('review') else ''} · 사람이 끝낼 때까지 기다림"
     if kind == "confirm":
-        return "작업 중을 새 버전으로 (이름 자동)"
+        return f"작업 중을 새 버전으로 {_version_said(c)}"
     if kind == "train":
         if c.get("attached"):
             return "따로 시작한 학습"
@@ -1631,20 +1803,25 @@ def _summary(db: Session, project: Project | None, dataset: Dataset | None, step
         tried = ", ".join(c.get("space") or {}) or "시험할 설정 없음"
         return f"{METHOD_LABEL.get(c.get('method', 'random'), c.get('method'))} {c.get('max_runs', 10)}번 · {tried}{gate}"
     if kind == "eval":
-        where = "그 버전" if c.get("model") else "학습한 버전"  # a model made before: on the version it trained on
+        at = "그 버전" if c.get("model") else "학습한 버전"  # a model made before: on the version it trained on
         if c.get("release_id"):
             ref = _release_ref(db, c["release_id"])
-            where = f"{ref['dataset']} {ref['version']}" if ref else "지운 버전"
-        said = f"{where} · {SPLIT_LABEL.get(c.get('split', 'auto'), c.get('split'))}"
+            at = f"{ref['dataset']} {ref['version']}" if ref else "지운 버전"
+        said = f"{at} · {SPLIT_LABEL.get(c.get('split', 'auto'), c.get('split'))}"
         if c.get("model"):
             said = f"{c['model']['name'] or '모델'} {c['model']['alias']} → {said}"
-        return said + (" · 검수에도" if c.get("review") else "") + gate
+        return said + (" · 검수에도" if c.get("review") else "") + where + gate
     if kind == "promote":
         gain = f" (+{c['min_delta']} 이상)" if c.get("min_delta") else ""
         return f"더 나으면 {c['alias']}{gain}"
     if kind == "export":
-        return str(c.get("format", "onnx")).upper()
+        return str(c.get("format", "onnx")).upper() + where
     return ""
+
+
+def _version_said(c: dict[str, Any]) -> str:
+    """The name a step gives the version it makes, as the summaries say it."""
+    return f"({c['version']})" if c.get("version") else "(이름은 다음 번호)"
 
 
 def _job_line(db: Session, settings: HubSettings, job_id: str | None) -> dict[str, Any] | None:
@@ -1680,6 +1857,14 @@ def _step_view(
     elif kind == "check" and refs:
         view["release"] = _release_ref(db, refs.get("release_id"))
         view["flagged"] = refs.get("flagged")
+    elif kind == "review" and refs:
+        view["release"] = _release_ref(db, refs.get("release_id"))
+        view["model"] = _model_ref(db.get(ModelVersion, refs.get("model_id") or ""))
+        view["op_id"] = refs.get("op_id")
+        view["flagged"] = refs.get("flagged")
+        if running:
+            op = db.get(ModelJob, refs.get("op_id") or "")
+            view["job"] = _job_line(db, settings, op.job_id if op else None)
     elif kind in ("autolabel", "label") and refs.get("set_id"):
         found = db.get(LabelSet, refs["set_id"])
         view["set"] = {"id": found.id, "name": found.name} if found else None

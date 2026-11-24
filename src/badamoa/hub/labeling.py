@@ -56,8 +56,10 @@ def create_set(
     part_size: int = 50,
     review: bool = True,
     via: str = "ui",
+    parts: int = 0,
 ) -> LabelSet:
-    """A set of the release's images that match the version screen's filters (all of them without).
+    """A set of the release's images that match the version screen's filters (all of them without). ``parts``: split
+    into that many parts instead (as even as can be; 1: all of it to one person), whatever the images come to.
 
     ``match`` also takes ``edited`` (only the images the work in progress changed) and ``suspect`` (an
     evaluation: the images it got wrong, the most mistakes first — a set to check labels that are likely wrong).
@@ -114,6 +116,8 @@ def create_set(
         raise ServiceError(400, "고른 조건에 맞는 이미지가 없습니다.")
     if len(item_ids) > MAX_ITEMS:
         raise ServiceError(400, f"라벨링 묶음 하나에는 이미지 {MAX_ITEMS:,}장까지 담을 수 있습니다. 조건을 좁혀 주세요.")
+    if parts > 0:
+        part_size = -(-len(item_ids) // parts)  # ceil: no more parts than asked for
     part_size = min(part_size, len(item_ids))  # no bound but the set's own size: all of it to one person is one part
     dataset = db.get(Dataset, release.dataset_id)
     found = LabelSet(

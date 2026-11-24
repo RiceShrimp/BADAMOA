@@ -1353,7 +1353,8 @@ export function NewRun({
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
       setTree(data);
       const ready = data.flatMap((d) => d.releases).filter((r) => r.status === "ready");
-      setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
+      // a pipeline step: the pipeline's dataset only (none yet: no classes to pick, the task's model kinds)
+      if (!settingsFor) setRelease((current) => (ready.some((r) => r.id === current) ? current : (ready[0]?.id ?? "")));
     });
     void api<Environment[]>("/environments").then(setEnvironments);
     void api<ModelInfo[]>(`/projects/${projectId}/models`).then(setModels);
@@ -1599,6 +1600,13 @@ export function NewRun({
         </>
       ) : (
         <form onSubmit={submit}>
+          {settingsFor ? (
+            // The version is the pipeline's when it runs, not one picked here
+            <p className="muted small step-version-note">
+              학습할 버전은 고르지 않습니다. 파이프라인이 돌 때의 버전(앞 단계가 새로 만든 버전, 없으면 실행한 버전)으로 학습합니다.
+              {releaseInfo ? ` 클래스와 설정은 지금 최신 ${releaseInfo.dataset.name} ${releaseInfo.version} 기준으로 보여 줍니다.` : ""}
+            </p>
+          ) : (
           <label>
             버전
             <select value={release} onChange={(e) => setRelease(e.target.value)} required>
@@ -1615,6 +1623,7 @@ export function NewRun({
               ))}
             </select>
           </label>
+          )}
           {templates && templates.length === 0 && (
             <div className="notice">
               이 데이터셋의 태스크({taskLabel(runTask)})를 학습하는 모델 템플릿이 없습니다.{" "}

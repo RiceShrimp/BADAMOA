@@ -661,3 +661,19 @@ button.pl-add-item:hover:not(:disabled) {
     padding-left: 14px;
   }
 }
+
+/* a step that cannot run where it is: why, under its head */
+.pl-compose-step.bad {
+  border-color: var(--bad);
+}
+.pl-problem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  color: var(--bad);
+  font-size: 13px;
+}
+.pl-compose-body .folder-browser {
+  margin-top: 4px;
+}
