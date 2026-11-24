@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session
 from badamoa.core import tasks as task_names
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import autolabel, catalog, drafts, labeling, modelops, qa, registry, services, sweeps, training, transfers
+from . import asks, autolabel, catalog, drafts, labeling, modelops, qa, registry, services, sweeps, training, transfers
 from .catalog_models import Dataset, ItemPrediction, LabelSet, Project, Release
 from .config import HubSettings
 from .db import iso, utcnow, write_lock
@@ -260,22 +260,139 @@ def _model_choice(config: dict[str, Any]) -> dict[str, str] | None:
     return {"name": name, "alias": _check_alias(alias)}
 
 
-def _node_id(db: Session, config: dict[str, Any], what: str) -> str:
+def _node_id(db: Session, config: dict[str, Any], what: str, kind: str = "", dataset: Dataset | None = None) -> str:
     node_id = str(config.get("node_id") or "")
     if not node_id:
         raise ServiceError(400, f"{what}: 서버를 고르세요.")
-    if db.get(Node, node_id) is None:
+    node = db.get(Node, node_id)
+    if node is None:
         raise ServiceError(404, f"{what}: 고른 서버를 찾을 수 없습니다.")
+    why = node_rules(db, node, kind, newest_release(db, dataset.id) if dataset is not None else None)
+    if why:
+        raise ServiceError(400, f"{what}: {node.name}에서는 할 수 없습니다: {' · '.join(why)}")
     return node_id
 
 
-def _place_of(db: Session, config: dict[str, Any], out: dict[str, Any]) -> None:
-    """The server a model step runs on; left out: where the Hub would put it (the images' server, the model's)."""
+def _place_of(db: Session, config: dict[str, Any], out: dict[str, Any], kind: str, dataset: Dataset | None) -> None:
+    """The server a model step runs on; left out: where the Hub would put it (the images' server, the model's). One
+    its own screen would not offer is refused (``node_rules``)."""
     node_id = str(config.get("node_id") or "")
     if node_id:
-        if db.get(Node, node_id) is None:
+        node = db.get(Node, node_id)
+        if node is None:
             raise ServiceError(404, "고른 서버를 찾을 수 없습니다.")
+        release = newest_release(db, dataset.id) if dataset is not None else None
+        why = node_rules(db, node, kind, release)
+        if why:
+            raise ServiceError(400, f"{node.name}에서는 할 수 없습니다: {' · '.join(why)}")
         out["node_id"] = node_id
+
+
+# Where a step's work runs, by the role a server needs for it (노드 설정의 학습용 · 오토라벨용).
+PLACE_ROLE = {"autolabel": "autolabel", "review": "compute", "eval": "compute", "export": "compute"}  # AUTOLABELS · TRAINS
+
+
+def node_rules(db: Session, node: Node, kind: str, release: Release | None) -> list[str]:
+    """Why a step cannot run on ``node`` by the rules its own screen goes by, whatever the model (the model's own
+    — its environment, Docker — are checked when the step starts, as by hand): a server that takes jobs, with the
+    role the work needs (학습용 for an evaluation or export, 오토라벨용 for an 오토라벨), a MOA new enough, and when
+    the version's images must come to it first, both ends able to send them. ``release``: the version it would work
+    on now (None: none yet, so nothing about its images). 가져오기 goes to a data server (데이터 서버용), as 데이터셋
+    가져오기 does; 서버로 보내기 to one that trains or auto-labels (where images are received)."""
+    why: list[str] = []
+    if not node.enabled:
+        return ["작업을 받지 않도록 되어 있음"]
+    if kind == "import" and not registry.has_role(node, registry.STORES):
+        why.append("데이터 서버용 서버가 아님 (노드 설정에서 '데이터 서버용'을 켭니다)")
+    if kind == "sync" and not registry.runs_models(node):
+        why.append("학습용 · 오토라벨용 서버가 아님 (이미지는 학습하거나 오토라벨할 서버로 보냅니다)")
+    role = PLACE_ROLE.get(kind)
+    if role == registry.AUTOLABELS and not registry.has_role(node, role):
+        why.append("오토라벨용 서버가 아님 (노드 설정에서 '오토라벨용'을 켭니다)")
+    elif role == registry.TRAINS and not registry.has_role(node, role):
+        why.append("학습용 서버가 아님 (노드 설정에서 '학습용'을 켭니다)")
+    if kind == "autolabel" and not asks.answers_questions(node.agent_version or "", autolabel.SINCE):
+        why.append(f"MOA {'.'.join(str(n) for n in autolabel.SINCE)} 이상 필요")
+    if kind in ("autolabel", "review", "eval", "sync") and release is not None:
+        try:
+            holder = training.data_node(db, release.id)
+        except ServiceError:
+            holder = None
+        if holder is not None and node.id not in transfers.holders(db, release.id):  # the images come to it first
+            since = {"autolabel": autolabel.RECEIVED_SINCE, "sync": transfers.SYNC_SINCE}.get(
+                kind, modelops.EVAL_RECEIVED_SINCE
+            )
+            if not asks.answers_questions(node.agent_version or "", since):
+                why.append(f"다른 서버의 이미지를 받아 하려면 MOA {'.'.join(str(n) for n in since)} 이상 필요")
+            else:
+                try:
+                    transfers.check_route(holder, node)
+                except ServiceError as e:
+                    why.append(e.message)
+    return list(dict.fromkeys(why))
+
+
+def places(
+    db: Session, settings: HubSettings, dataset_id: str, kind: str, model_name: str = "", model_alias: str = ""
+) -> dict[str, Any]:
+    """The servers a step may run on, each with whether it can and why not, as its own screen lists them: 새 오토라벨's
+    servers, 평가 · 모델로 검사하기 · 내보내기's (for the model named by its alias, when there is one now), the
+    servers a version can go to (서버로 보내기), the ones taking jobs (가져오기). A server not answering now is
+    said so but not refused: a pipeline runs later. ``default``: where it runs when 자동 is kept."""
+    if kind not in ("import", "sync", *PLACE_ROLE):
+        raise ServiceError(400, "서버를 고르는 단계는 가져오기 · 서버로 보내기 · 오토라벨 · 검수 · 평가 · 내보내기입니다.")
+    dataset = _dataset_of(db, dataset_id)
+    release = newest_release(db, dataset.id)
+    model = _holder(db, dataset.project_id, model_name, model_alias) if model_name and model_alias else None
+    listed: dict[str, Any] | None = None
+    try:
+        if kind == "autolabel" and release is not None:
+            listed = autolabel._servers(db, settings, release)
+        elif kind in ("review", "eval") and model is not None and release is not None:
+            listed = modelops.places(db, settings, model.id, "eval", release.id)
+        elif kind == "export" and model is not None:
+            listed = modelops.places(db, settings, model.id, "export")
+    except ServiceError as e:
+        listed = {"default": "", "nodes": [], "problem": e.message}
+    rows = []
+    if listed is not None and listed.get("nodes"):
+        for place in listed["nodes"]:
+            node = db.get(Node, place["id"])
+            reasons = [w for w in str(place.get("why") or "").split(" · ") if w and w != "응답 없음"]
+            reasons += [w for w in node_rules(db, node, kind, release) if w not in reasons] if node else []
+            rows.append({**place, "fits": not reasons, "why": " · ".join(reasons)})
+        default = str(listed.get("default") or "")
+    else:
+        for node in db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)):
+            reasons = node_rules(db, node, kind, release)
+            held = release is not None and node.id in transfers.holders(db, release.id)
+            rows.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "status": services.node_status(node, settings),
+                    "gpus": len((node.info or {}).get("gpus") or []),
+                    "fits": not reasons,
+                    "why": " · ".join(reasons),
+                    "transfer": kind in ("autolabel", "review", "eval", "sync") and release is not None and not held,
+                    "holds_images": held and kind in ("autolabel", "review", "eval", "sync"),
+                }
+            )
+        default = ""
+        if release is not None and kind in ("autolabel", "review", "eval"):
+            try:
+                default = training.data_node(db, release.id).id
+            except ServiceError:
+                default = ""
+    rows.sort(key=lambda r: (r["id"] != default, not r["fits"], r["name"]))
+    return {
+        "kind": kind,
+        "default": default,
+        "nodes": rows,
+        "problem": (listed or {}).get("problem", ""),
+        "release": {"id": release.id, "version": release.version} if release else None,
+        "model": {"id": model.id, "name": model.name, "version": model.version} if model else None,
+    }
 
 
 def _version_pattern(db: Session, dataset: Dataset | None, config: dict[str, Any]) -> str:
@@ -327,7 +444,7 @@ def _clean_import(db: Session, dataset: Dataset | None, config: dict[str, Any], 
     if unlabelled not in UNLABELLED:
         raise ServiceError(400, "라벨 파일이 없는 이미지는 auto · background · unlabelled 중 하나입니다.")
     out: dict[str, Any] = {
-        "node_id": _node_id(db, config, "가져오기"),
+        "node_id": _node_id(db, config, "가져오기", "import"),
         "path": path,
         "format": fmt,
         "full_read": bool(config.get("full_read")),
@@ -375,7 +492,7 @@ def _clean_review(db: Session, dataset: Dataset | None, config: dict[str, Any], 
     if splits:
         out["splits"] = [x for x in ("train", "val", "test") if x in splits]
     _gpus_of(config, out)
-    _place_of(db, config, out)
+    _place_of(db, config, out, "review", dataset)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -390,7 +507,7 @@ def _clean_check(db: Session, dataset: Dataset | None, config: dict[str, Any], *
 
 
 def _clean_sync(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
-    return {"node_id": _node_id(db, config, "서버로 보내기")}
+    return {"node_id": _node_id(db, config, "서버로 보내기", "sync", dataset)}
 
 
 def _clean_autolabel(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
@@ -404,7 +521,7 @@ def _clean_autolabel(db: Session, dataset: Dataset | None, config: dict[str, Any
             raise ServiceError(400, "자동 승인 확신도는 최소 확신도 이상입니다.")
     _set_of(config, out)
     _gpus_of(config, out)
-    _place_of(db, config, out)
+    _place_of(db, config, out, "autolabel", dataset)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -481,7 +598,7 @@ def _clean_eval(
             raise ServiceError(400, f"{other.name} {release.version}의 {_split_of(release, split)}에는 이미지가 없습니다.")
     out: dict[str, Any] = {"release_id": release_id, "split": split, "review": bool(config.get("review"))}
     _gpus_of(config, out)
-    _place_of(db, config, out)
+    _place_of(db, config, out, "eval", dataset)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -502,7 +619,7 @@ def _clean_export(db: Session, dataset: Dataset | None, config: dict[str, Any], 
     if fmt not in modelops.EXPORT_FORMATS:
         raise ServiceError(400, f"내보내기 형식은 {', '.join(modelops.EXPORT_FORMATS)} 중 하나입니다.")
     out: dict[str, Any] = {"format": fmt}
-    _place_of(db, config, out)
+    _place_of(db, config, out, "export", dataset)
     model = _model_choice(config)
     if model:
         out["model"] = model
@@ -1188,9 +1305,12 @@ def _begin(
             refs["job_id"] = transfers.sync_job(db, owner, release_id, node, via).id
     elif kind == "autolabel":
         model = _subject(db, run, steps, index)
+        place = c.get("node_id", "")
+        if not place and settings is not None:  # 자동: the server 새 오토라벨 would pick (the holder when it can)
+            place = autolabel._servers(db, settings, catalog.get_release(db, release_id))["default"]
         found, op = autolabel.start_on_images(
             db, owner, release_id, model.id, split=c.get("split", ""), keep=c.get("keep", autolabel.KEEP),
-            accept=c.get("accept"), gpus=_gpus(db, steps, index), via=via, node_id=c.get("node_id", ""),
+            accept=c.get("accept"), gpus=_gpus(db, steps, index), via=via, node_id=place,
             **_set_settings(c),
         )  # fmt: skip
         refs = {"model_id": model.id, "set_id": found.id, "op_id": op.id, "op_jobs": [op.job_id]}

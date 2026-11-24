@@ -65,6 +65,20 @@ def _steps(steps: list[Step]) -> list[dict[str, Any]]:
     return [s.model_dump() for s in steps]
 
 
+@router.get("/pipeline-places")
+def step_places(
+    dataset_id: str,
+    kind: str,
+    model_name: str = "",
+    model_alias: str = "",
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """The servers a step of ``kind`` may run on for this dataset, as the step's own screen lists them."""
+    return pipelines.places(db, hub.settings, dataset_id, kind, model_name, model_alias)
+
+
 @router.get("/projects/{project_id}/pipelines")
 def board(
     project_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)

@@ -470,7 +470,13 @@ function NodeField({
         <>
           <div className="node-pick">
             {choices.nodes.map((n) => {
-              const blocked = !n.enabled ? "작업 받지 않음" : !n.images && !n.can_receive ? "0.37.0 이상으로 업데이트 필요" : "";
+              const blocked = !n.enabled
+                ? "작업 받지 않음"
+                : !(n.roles ?? ["compute"]).includes("compute")
+                  ? "학습용 아님"
+                  : !n.images && !n.can_receive
+                    ? "0.37.0 이상으로 업데이트 필요"
+                    : "";
               return (
                 <label key={n.id} className={blocked ? "off" : ""}>
                   <input type="checkbox" checked={picked.includes(n.id)} disabled={Boolean(blocked)} onChange={() => toggle(n.id)} />

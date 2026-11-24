@@ -15,6 +15,7 @@ import {
 } from "./FollowUps";
 import { LayoutSwitch, layoutClass, useCardLayout } from "./CardLayout";
 import { rememberProject } from "./DataBoard";
+import { isDataServer } from "./Datasets";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { NewRun } from "./Training";
@@ -121,6 +122,30 @@ const KIND_LABEL = {
 } as Record<StepKind, string>;
 const USES_MODEL: StepKind[] = ["autolabel", "review", "eval", "export"];
 
+/** A server a step may run on, as the Hub lists it by the rules of the step's own screen. */
+interface Place {
+  id: string;
+  name: string;
+  status: string;
+  gpus: number;
+  fits: boolean;
+  why: string;
+  transfer?: boolean; // the version's images go there first
+  holds_images?: boolean;
+  trained_here?: boolean;
+}
+interface Places {
+  default: string;
+  nodes: Place[];
+  problem?: string;
+}
+/** The steps that run on a server picked (or 자동), and how their list of servers is asked for. */
+const PLACE_KINDS: StepKind[] = ["import", "sync", "autolabel", "review", "eval", "export"];
+const placeKey = (datasetId: string, kind: StepKind, c: Record<string, unknown>) => {
+  const model = c.model as { name?: string; alias?: string } | undefined;
+  return `${datasetId}|${kind}|${model?.name ?? ""}|${model?.alias ?? ""}`;
+};
+
 const DEFAULT_CONFIG: Record<StepKind, Record<string, unknown>> = {
   import: { path: "" },
   check: { max_flagged: 0, group: "any" },
@@ -176,7 +201,7 @@ function versionProblem(pattern: string, dataset?: TreeDataset): string {
 }
 
 /** What keeps the steps from running in this order, by step (as the Hub refuses them when saved). */
-function flowProblems(steps: Draft[], dataset?: TreeDataset): string[][] {
+function flowProblems(steps: Draft[], dataset?: TreeDataset, places: Record<string, Places> = {}): string[][] {
   let made = false; // a model made by a step before
   let measured = false; // and an evaluation of it since
   return steps.map((s) => {
@@ -190,6 +215,17 @@ function flowProblems(steps: Draft[], dataset?: TreeDataset): string[][] {
     if (s.kind === "import" || s.kind === "confirm") {
       const wrong = versionProblem(String(c.version ?? ""), dataset);
       if (wrong) out.push(wrong);
+    }
+    // the server: one the step's own screen would offer (as the Hub lists them); 자동's too, as those screens
+    // will not start on a default that cannot
+    const listed = dataset && PLACE_KINDS.includes(s.kind) ? places[placeKey(dataset.id, s.kind, c)] : undefined;
+    if (listed && c.node_id) {
+      const place = listed.nodes.find((n) => n.id === c.node_id);
+      if (!place) out.push("고른 서버가 작업을 받지 않습니다. 다른 서버를 고르세요.");
+      else if (!place.fits) out.push(`${place.name}에서는 할 수 없습니다: ${place.why}`);
+    } else if (listed && listed.default && USES_MODEL.includes(s.kind)) {
+      const auto = listed.nodes.find((n) => n.id === listed.default);
+      if (auto && !auto.fits) out.push(`자동이면 ${auto.name}에서 하는데 할 수 없습니다(${auto.why}). 실행할 서버를 고르세요.`);
     }
     if (MAKES_MODEL.includes(s.kind)) [made, measured] = [true, false];
     else if (s.kind === "eval") measured = !c.model;
@@ -532,12 +568,28 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
     if (USES_MODEL.includes(kind) && !makesModelBefore(steps, steps.length) && family) {
       config.model = { name: family, alias: DEFAULT_ALIAS }; // nothing makes a model before it: the one holding SOTA
     }
-    if ((kind === "import" || kind === "sync") && data?.nodes[0]) config.node_id = data.nodes[0].id;
+    if (kind === "import") {
+      const stores = (data?.nodes ?? []).filter(isDataServer); // 데이터셋 가져오기's: data servers, one that answers first
+      const first = stores.find((n) => n.status === "online") ?? stores[0];
+      if (first) config.node_id = first.id;
+    }
     setSteps((all) => [...all, draftOf(kind, config, true)]);
     setAdding(false);
   };
   const body = () => steps.map((s) => ({ kind: s.kind, config: s.config }));
-  const problems = flowProblems(steps, data?.tree.find((d) => d.id === datasetId));
+  const [places, setPlaces] = useState<Record<string, Places>>({});
+  const placeKeys = [...new Set(steps.filter((s) => PLACE_KINDS.includes(s.kind) && datasetId).map((s) => placeKey(datasetId, s.kind, s.config)))];
+  useEffect(() => {
+    for (const key of placeKeys) {
+      if (places[key]) continue;
+      const [dataset, kind, name, alias] = key.split("|");
+      const query = new URLSearchParams({ dataset_id: dataset, kind, model_name: name, model_alias: alias });
+      void api<Places>(`/pipeline-places?${query}`)
+        .then((found) => setPlaces((was) => ({ ...was, [key]: found })))
+        .catch((e) => setPlaces((was) => ({ ...was, [key]: { default: "", nodes: [], problem: e instanceof Error ? e.message : String(e) } })));
+    }
+  }, [placeKeys.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  const problems = flowProblems(steps, data?.tree.find((d) => d.id === datasetId), places);
   const blocked = problems.some((p) => p.length > 0);
 
   const save = async () => {
@@ -656,6 +708,7 @@ function Composer({ templateId = "", pipelineId = "" }: { templateId?: string; p
                     defaultTemplate={project?.settings?.template}
                     releaseId={newest?.id}
                     dataset={dataset}
+                    places={datasetId ? places[placeKey(datasetId, s.kind, s.config)] : undefined}
                     onChange={(config) => update(s.key, { config })}
                   />
                 )}
@@ -808,6 +861,7 @@ function StepEditor({
   defaultTemplate,
   releaseId,
   dataset,
+  places,
   onChange,
 }: {
   step: Draft;
@@ -819,6 +873,7 @@ function StepEditor({
   defaultTemplate?: string;
   releaseId?: string;
   dataset?: TreeDataset;
+  places?: Places; // the servers this step may run on (가져오기 · 보내기 · 오토라벨 · 검수 · 평가 · 내보내기)
   onChange: (config: Record<string, unknown>) => void;
 }) {
   const c = step.config;
@@ -833,18 +888,7 @@ function StepEditor({
   const modelBefore = makesModelBefore(steps, index);
   // The server a model step runs on: 자동 is where the Hub would put it; a server without the images gets them first.
   const placeSelect = (auto: string) => (
-    <label>
-      실행할 서버
-      <select value={String(c.node_id ?? "")} onChange={(e) => set({ node_id: e.target.value || undefined })}>
-        <option value="">자동 — {auto}</option>
-        {data.nodes.map((n) => (
-          <option key={n.id} value={n.id}>
-            {n.name}
-            {n.status === "online" ? "" : " (응답 없음)"}
-          </option>
-        ))}
-      </select>
-    </label>
+    <PlaceSelect label="실행할 서버" places={places} value={String(c.node_id ?? "")} auto={auto} onChange={(id) => set({ node_id: id || undefined })} />
   );
   const placeHint = c.node_id ? <span className="pl-hint pl-lead">고른 서버에 이미지가 없으면 먼저 받은 뒤 합니다.</span> : null;
   // 가져오기 · 버전 확정: the new version's name (empty: the next vN)
@@ -858,18 +902,13 @@ function StepEditor({
   );
   const metric = METRIC_LABEL[keyMetrics(task)[0]] ?? "주 지표";
   const nodeSelect = (
-    <label>
-      서버
-      <select value={String(c.node_id ?? "")} onChange={(e) => set({ node_id: e.target.value })}>
-        <option value="">고르세요</option>
-        {data.nodes.map((n) => (
-          <option key={n.id} value={n.id}>
-            {n.name}
-            {n.status === "online" ? "" : " (응답 없음)"}
-          </option>
-        ))}
-      </select>
-    </label>
+    <PlaceSelect
+      label={step.kind === "import" ? "데이터가 있는 서버" : "보낼 서버"}
+      places={places}
+      value={String(c.node_id ?? "")}
+      onChange={(id) => set({ node_id: id || undefined })}
+      brief
+    />
   );
   const floor = (what: string) => (
     <label>
@@ -1308,6 +1347,56 @@ function StepEditor({
         />
       )}
     </div>
+  );
+}
+
+/** A step's server: the ones the Hub listed for it, those that cannot greyed out with why (as 실행할 서버 in the
+ * evaluation and 오토라벨 windows); ``auto``: 자동 first (where the Hub would put it), else one must be picked. */
+function PlaceSelect({
+  label,
+  places,
+  value,
+  auto,
+  brief = false,
+  onChange,
+}: {
+  label: string;
+  places?: Places;
+  value: string;
+  auto?: string;
+  brief?: boolean; // 가져오기 · 보내기: no GPUs to say
+  onChange: (id: string) => void;
+}) {
+  const nodes = places?.nodes ?? [];
+  const fallback = nodes.find((n) => n.id === places?.default)?.name;
+  const words = (n: Place) =>
+    [
+      brief ? "" : n.gpus ? `GPU ${n.gpus}` : "CPU",
+      n.holds_images ? "이미지 있음" : n.transfer ? "이미지를 먼저 받음" : "",
+      n.trained_here ? "학습한 서버" : "",
+      n.status === "online" ? "" : "지금 응답 없음",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  return (
+    <label>
+      {label}
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {auto !== undefined ? <option value="">자동 — {fallback ? `${fallback} (${auto})` : auto}</option> : <option value="">고르세요</option>}
+        {nodes.map((n) => (
+          <option key={n.id} value={n.id} disabled={!n.fits && n.id !== value}>
+            {n.name}
+            {words(n) ? ` · ${words(n)}` : ""}
+            {n.fits ? "" : ` — ${n.why}`}
+          </option>
+        ))}
+      </select>
+      {!places && <span className="muted small">서버를 찾는 중…</span>}
+      {places?.problem && <span className="bad-text small">{places.problem}</span>}
+      {places && !places.problem && nodes.length > 0 && !nodes.some((n) => n.fits) && (
+        <span className="bad-text small">이 단계를 할 수 있는 서버가 없습니다. 노드 설정에서 역할을 확인하세요.</span>
+      )}
+    </label>
   );
 }
 

@@ -560,6 +560,7 @@ def start_import(
         raise ServiceError(400, "unlabelled는 auto, background, unlabelled 중 하나여야 합니다.")
     if version == drafts.DRAFT:
         raise ServiceError(400, f"'{version}'은 버전 이름으로 쓸 수 없습니다.")
+    import_node_problem(db.get(Node, node_id))
     existing = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == dataset))
     if existing and db.scalar(select(Release).where(Release.dataset_id == existing.id, Release.version == version)):
         raise ServiceError(409, f"{dataset} {version} 버전이 이미 있습니다. 다른 이름을 쓰세요.")
@@ -585,6 +586,19 @@ def start_import(
         "full_read": bool(full_read),
     }
     return services.create_job(db, user, "data.import", params, node_id, via=via)
+
+
+def import_node_problem(node: Node | None) -> None:
+    """A dataset is imported on a server that takes jobs and is a data server (노드 설정의 '데이터 서버용')."""
+    from . import registry  # noqa: PLC0415  (registry loads this module's dependants)
+
+    if node is None:
+        raise ServiceError(404, "고른 서버를 찾을 수 없습니다.")
+    if not node.enabled:
+        raise ServiceError(400, f"{node.name}은(는) 작업을 받지 않도록 되어 있습니다.")
+    if not registry.has_role(node, registry.STORES):
+        hint = "데이터가 있는 서버의 노드 설정에서 '데이터 서버용'을 켜세요"
+        raise ServiceError(400, f"{node.name}은(는) 데이터 서버용 서버가 아닙니다. {hint}.")
 
 
 def _import_job(db: Session, node: Node, job_id: str) -> Job:

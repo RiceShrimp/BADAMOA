@@ -169,6 +169,7 @@ export interface NodeChoice {
   name: string;
   status: "online" | "offline" | "disabled";
   enabled: boolean;
+  roles?: string[]; // 학습용 (compute) ones train
   gpus: number;
   gpus_free: number;
   /** Each GPU: free · busy (someone uses it) · job (a BADAMOA job) · reserved (kept for people) · offline */

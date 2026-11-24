@@ -1716,3 +1716,13 @@ td.env-cell {
   padding-top: 0;
   padding-bottom: 0;
 }
+/* a section's heading with the layout switch beside it: the same size and gap below as the other headings */
+.board-section > .layout-head {
+  margin: 0 0 10px;
+}
+.board-section > .layout-head > h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 16px;
+}

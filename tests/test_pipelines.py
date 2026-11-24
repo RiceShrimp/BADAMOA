@@ -395,6 +395,48 @@ def test_review_step_checks_every_image_where_asked_and_versions_take_the_names_
         assert pipelines._version_name(db, dataset_id, "d{date}").startswith("d20")
 
 
+def test_a_step_takes_only_the_servers_its_own_screen_offers(hub, release, tmp_path):  # noqa: F811
+    from sample_data import make_yolo
+
+    dataset_id = hub.get(f"/api/releases/{release['id']}").json()["dataset"]["id"]
+    node = hub.node_id
+
+    def offered(kind, **model):
+        query = {"dataset_id": dataset_id, "kind": kind, **model}
+        listed = hub.get("/api/pipeline-places", params=query)
+        assert listed.status_code == 200, listed.text
+        return next(n for n in listed.json()["nodes"] if n["id"] == node)
+
+    def refused(steps):
+        resp = hub.post("/api/pipelines", json={"release_id": release["id"], "steps": steps})
+        assert resp.status_code == 400, resp.text
+        return resp.json()["detail"]
+
+    train = {"kind": "train", "config": _train_step()}
+    assert all(offered(kind)["fits"] for kind in ("import", "sync", "autolabel", "review", "eval", "export"))
+    try:
+        # a data server only: it imports, but evaluates, auto-labels and receives nothing
+        assert hub.patch(f"/api/nodes/{node}", json={"roles": ["storage"]}).status_code == 200
+        assert offered("import")["fits"]
+        assert "학습용 서버가 아님" in offered("eval")["why"] and not offered("review")["fits"]
+        assert "오토라벨용 서버가 아님" in offered("autolabel")["why"]
+        assert "학습용 서버가 아님" in refused([train, {"kind": "eval", "config": {"node_id": node}}])
+        assert "오토라벨용" in refused([train, {"kind": "autolabel", "config": {"node_id": node}}])
+        # a training server only: no 가져오기 there, in a pipeline as in 데이터셋 가져오기
+        assert hub.patch(f"/api/nodes/{node}", json={"roles": ["compute"]}).status_code == 200
+        assert "데이터 서버용 서버가 아님" in offered("import")["why"] and offered("eval")["fits"]
+        folder = make_yolo(tmp_path / "more", train=4)
+        assert "데이터 서버용" in refused([{"kind": "import", "config": {"node_id": node, "path": str(folder)}}])
+        body = {"node_id": node, "path": str(folder), "dataset": "street", "version": "v9"}
+        direct = hub.post(f"/api/projects/{release['project_id']}/imports", json=body)
+        assert direct.status_code == 400 and "데이터 서버용" in direct.json()["detail"]
+        # the new-run dialog's servers say which train
+        choices = hub.get(f"/api/releases/{release['id']}/nodes").json()["nodes"]
+        assert next(n for n in choices if n["id"] == node)["roles"] == ["compute"]
+    finally:
+        hub.patch(f"/api/nodes/{node}", json={"roles": ["compute", "autolabel", "inference", "storage"]})
+
+
 def test_templates_are_kept_and_offered(hub, release):  # noqa: F811
     listed = hub.get("/api/pipeline-templates").json()
     builtin = [t for t in listed if t["builtin"]]

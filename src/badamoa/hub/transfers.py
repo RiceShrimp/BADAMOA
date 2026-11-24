@@ -342,6 +342,7 @@ def node_choices(db: Session, settings: Any, release_id: str) -> dict[str, Any]:
                 "name": node.name,
                 "status": status,
                 "enabled": node.enabled,
+                "roles": list(node.roles or []),  # 학습용 (compute) ones train
                 "gpus": len(gpus),
                 "gpus_free": len(free),
                 # each GPU, to pick by number: free · busy (someone uses it) · job (a BADAMOA job) · reserved (people's)

@@ -907,6 +907,9 @@ function nextVersion(d: TreeDataset): string {
   return `v${n}`;
 }
 
+/** A server datasets are imported on (노드 설정의 역할 '데이터 서버용'). */
+export const isDataServer = (n: { enabled: boolean; roles?: string[] }) => n.enabled && (n.roles ?? []).includes("storage");
+
 function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [form, setForm] = useState({
@@ -945,7 +948,8 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
     void api<NodeInfo[]>("/nodes").then((list) => {
       const usable = list.filter((n) => n.enabled);
       setNodes(usable);
-      setForm((f) => ({ ...f, node_id: usable.find((n) => n.status === "online")?.id ?? usable[0]?.id ?? "" }));
+      const stores = usable.filter(isDataServer);
+      setForm((f) => ({ ...f, node_id: stores.find((n) => n.status === "online")?.id ?? stores[0]?.id ?? "" }));
     });
   }, []);
 
@@ -1020,12 +1024,17 @@ function ImportDialog({ projectId, onClose }: { projectId: string; onClose: () =
           <label>
             데이터가 있는 노드
             <select value={form.node_id} onChange={set("node_id")} required>
+              {!nodes.some(isDataServer) && <option value="">데이터 서버용 노드가 없습니다</option>}
               {nodes.map((n) => (
-                <option key={n.id} value={n.id}>
+                <option key={n.id} value={n.id} disabled={!isDataServer(n)}>
                   {n.name} {n.status === "online" ? "" : "(오프라인)"}
+                  {isDataServer(n) ? "" : " — 데이터 서버용 아님"}
                 </option>
               ))}
             </select>
+            {nodes.length > 0 && !nodes.some(isDataServer) && (
+              <span className="muted small field-hint">데이터가 있는 서버의 노드 설정에서 역할 &quot;데이터 서버용&quot;을 켜세요.</span>
+            )}
           </label>
           <div className="field-label">
             폴더 경로 <span className="muted small">(그 노드에서의 경로)</span>
