@@ -74,12 +74,11 @@ def create_set(
     if part_size < 1:
         raise ServiceError(400, "일감 하나의 이미지 수는 1장 이상입니다.")
     wanted = match or {}
-    class_id = wanted.get("class_id")
     query = catalog._item_filter(
         release.id,
         wanted.get("split"),
         wanted.get("state") or "",
-        int(class_id) if class_id not in (None, "") else None,
+        catalog.class_ids(wanted.get("class_id")),  # one class or several: the images holding any
         wanted.get("site") or "",
         wanted.get("camera") or "",
         str(wanted.get("q") or "").strip(),

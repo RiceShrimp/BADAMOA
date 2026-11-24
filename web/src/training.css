@@ -1436,19 +1436,28 @@ label.check {
   margin-top: 6px;
 }
 
-/* 검수: several classes at once (Review.tsx ClassFilter) */
+/* a filter row's class filter, several classes at once (ClassFilter.tsx: the version screen's images, 검수):
+   it reads and sizes as the row's selects do, the list it drops has a checkbox a class */
 .class-filter {
   position: relative;
 }
 .class-filter-button {
-  max-width: 260px;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 130px;
+  max-width: 220px;
+  padding-left: 10px;
+  padding-right: 8px;
+  font-weight: 400;
+}
+.class-filter-button > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.class-filter-button.on {
-  border-color: var(--accent);
-  color: var(--accent);
+.class-filter-button > svg {
+  flex: none;
+  opacity: 0.75;
 }
 .class-filter-panel {
   position: absolute;
@@ -1484,6 +1493,12 @@ label.check {
 }
 .class-filter-list label.check:hover {
   background: var(--surface-2);
+}
+.class-filter-list label.check.all {
+  margin-bottom: 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
 }
 .class-filter-list input[type="checkbox"] {
   flex: none;

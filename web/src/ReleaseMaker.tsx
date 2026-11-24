@@ -8,7 +8,7 @@ import { Modal, timeAgo, usePolling } from "./ui";
 export interface ItemFilter {
   split?: string;
   state?: string;
-  class_id?: string;
+  class_id?: string; // one class id, or several comma separated: the images holding any of them
   classes?: string; // 검수: class ids, comma separated (the findings of these classes)
   site?: string;
   camera?: string;
@@ -57,7 +57,11 @@ export function describeFilter(filter: ItemFilter, release: ReleaseInfo): string
   const parts: string[] = [];
   if (filter.split !== undefined) parts.push(`split ${SPLIT_LABEL[filter.split] ?? filter.split}`);
   if (filter.state) parts.push(STATE_LABEL[filter.state] ?? filter.state);
-  if (filter.class_id) parts.push(release.label_space.classes.find((c) => String(c.id) === filter.class_id)?.name ?? "");
+  if (filter.class_id) {
+    const picked = filter.class_id.split(",");
+    const names = release.label_space.classes.filter((c) => picked.includes(String(c.id))).map((c) => c.name);
+    parts.push(names.length > 3 ? `${names.slice(0, 3).join(", ")} 외 ${names.length - 3}개 클래스` : names.join(", "));
+  }
   if (filter.site) parts.push(`사이트 ${filter.site}`);
   if (filter.camera) parts.push(`카메라 ${filter.camera}`);
   if (filter.q) parts.push(`"${filter.q}" 포함`);

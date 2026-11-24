@@ -402,6 +402,45 @@ def test_import_of_missing_folder_fails_with_a_clear_log(hub, tmp_path):
     assert "data.import" not in [t["type"] for t in hub.get("/api/job-types").json()]
 
 
+def test_filter_by_several_classes(hub, tmp_path):
+    """The version screen's class filter takes several classes (a comma list or the parameter repeated): the images
+    holding any of them, each once, paged and counted; a new version and a labeling set take the same ones."""
+    project = hub.post("/api/projects", json={"name": "여러 클래스", "task": "detect"}).json()
+    v1 = _import(hub, project["id"], make_yolo(tmp_path / "ds", train=12, val=4, seed=3), "v1")
+
+    def ids(params):
+        page = hub.get(f"/api/releases/{v1}/items", params=[*params, ("limit", 200)])
+        assert page.status_code == 200, page.text
+        found = [i["id"] for i in page.json()["items"]]
+        assert page.json()["total"] == len(found) == len(set(found))  # each image once, however many it holds
+        return set(found)
+
+    every = ids([])
+    of = {c: ids([("class_id", c)]) for c in range(len(CLASSES))}
+    assert all(of.values()) and of[0] != of[1]
+    both = of[0] | of[1]
+    assert both > of[0] and both < every  # some hold only class 2, or nothing
+    assert ids([("class_id", "0,1")]) == ids([("class_id", 0), ("class_id", 1)]) == ids([("class_id", "1, 0")]) == both
+    assert ids([("class_id", "0,1"), ("split", "val")]) == both & ids([("split", "val")])
+    assert ids([("class_id", ",".join(str(c) for c in range(len(CLASSES))))]) == every - ids([("state", "background")])
+    assert ids([("class_id", "")]) == every and ids([("class_id", 1)]) == of[1]  # none, and one as before
+    page = f"/api/releases/{v1}/items"
+    paged = [hub.get(page, params={"class_id": "0,1", "offset": n, "limit": 3}).json() for n in (0, 3)]
+    assert all(p["total"] == len(both) for p in paged)
+    assert {i["id"] for p in paged for i in p["items"]} == set(sorted(both)[:6])
+    bad = hub.get(f"/api/releases/{v1}/items", params={"class_id": "0,horse"})
+    assert bad.status_code == 400 and "class_id" in bad.json()["detail"]
+
+    # ---- a new version and a labeling set of the filtered images take every class picked
+    for picked in ("0,1", [0, 1], ["1", "0"]):
+        counted = hub.post("/api/releases", json={"sources": [v1], "dry_run": True, "filter": {"class_id": picked}})
+        assert counted.json()["items"] == len(both), counted.text
+    made = hub.post("/api/label-sets", json={"release_id": v1, "name": "두 클래스", "filter": {"class_id": "0,1"}})
+    assert made.status_code == 200, made.text
+    in_set = hub.get(f"/api/releases/{v1}/items", params={"label_set": made.json()["id"], "limit": 200}).json()
+    assert {i["id"] for i in in_set["items"]} == both
+
+
 def test_new_releases_from_existing_ones(hub, tmp_path, settings):
     project = hub.post("/api/projects", json={"name": "새 릴리스", "task": "detect"}).json()
     v1 = _import(hub, project["id"], make_yolo(tmp_path / "a"), "v1")

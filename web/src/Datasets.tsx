@@ -10,6 +10,7 @@ import {
   rememberProject,
   useFolders,
 } from "./DataBoard";
+import { ClassFilter } from "./ClassFilter";
 import { MoveDatasetDialog } from "./DatasetMove";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
@@ -125,6 +126,12 @@ function rememberedView(): string {
   }
 }
 
+/** ?class=3 (or 3,5) on the images tab's address: the classes it opens filtered by. */
+function classesAsked(query: string): number[] {
+  const asked = (new URLSearchParams(query).get("class") ?? "").split(",").map((c) => c.trim());
+  return asked.filter((c) => /^\d+$/.test(c)).map(Number);
+}
+
 function ReleaseView({
   releaseId,
   tab,
@@ -141,11 +148,11 @@ function ReleaseView({
   const { data: release, error, refresh } = usePolling(() => api<ReleaseInfo>(`/releases/${releaseId}`), 10000, [releaseId]);
   const [split, setSplit] = useState("all");
   const [state, setState] = useState("");
-  const [classId, setClassId] = useState(() => new URLSearchParams(query).get("class") ?? "");
+  // the images of any of these classes (none: all of them)
+  const [classIds, setClassIds] = useState<number[]>(() => classesAsked(query));
   // A class name clicked on the classes tab opens the images tab of the same version with that class.
   useEffect(() => {
-    const wanted = new URLSearchParams(query).get("class");
-    if (wanted !== null) setClassId(wanted);
+    if (new URLSearchParams(query).get("class") !== null) setClassIds(classesAsked(query));
   }, [query]);
   const [view, setViewState] = useState(rememberedView);
   const [showBoxes, setShowBoxes] = useState(true);
@@ -190,14 +197,14 @@ function ReleaseView({
     const params = new URLSearchParams();
     if (split !== "all") params.set("split", split === "none" ? "" : split);
     if (state) params.set("state", state);
-    if (classId) params.set("class_id", classId);
+    if (classIds.length) params.set("class_id", classIds.join(","));
     if (site) params.set("site", site);
     if (camera) params.set("camera", camera);
     if (q.trim()) params.set("q", q.trim());
     if (fixedOnly) params.set("edited", "true");
     if (fixedOnly && changeKind) params.set("changed", changeKind);
     return params.toString();
-  }, [split, state, classId, site, camera, q, fixedOnly, changeKind]);
+  }, [split, state, classIds, site, camera, q, fixedOnly, changeKind]);
   // The images a model's evaluation finds likely wrong are 검수's (its model cards), not this list's order.
   useEffect(() => setPage(0), [filterQuery]);
   // The same filters as the Hub takes them for a new release.
@@ -205,12 +212,12 @@ function ReleaseView({
     const out: ItemFilter = {};
     if (split !== "all") out.split = split === "none" ? "" : split;
     if (state) out.state = state;
-    if (classId) out.class_id = classId;
+    if (classIds.length) out.class_id = classIds.join(",");
     if (site) out.site = site;
     if (camera) out.camera = camera;
     if (q.trim()) out.q = q.trim();
     return out;
-  }, [split, state, classId, site, camera, q]);
+  }, [split, state, classIds, site, camera, q]);
 
   const { data: items, refresh: refreshItems } = usePolling(
     () =>
@@ -427,14 +434,7 @@ function ReleaseView({
             </option>
           ))}
         </select>
-        <select value={classId} onChange={(e) => setClassId(e.target.value)} aria-label="클래스">
-          <option value="">모든 클래스</option>
-          {classes.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+        <ClassFilter classes={classes} picked={classIds} onChange={setClassIds} />
         {(stats.sites?.length ?? 0) > 0 && (
           <select value={site} onChange={(e) => setSite(e.target.value)} aria-label="사이트">
             <option value="">모든 사이트</option>

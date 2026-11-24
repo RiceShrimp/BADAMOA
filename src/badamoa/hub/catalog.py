@@ -1330,7 +1330,21 @@ def release_view(db: Session, release_id: str) -> dict[str, Any]:
     }
 
 
+def class_ids(value: Any) -> list[int]:
+    """The class filter's ids, in the order given and each once: none (None, ""), one (a number), or several (a list,
+    a comma list, or a list of those: ``class_id=3,5`` or ``class_id=3&class_id=5`` in a query string)."""
+    if value is None or value == "":
+        return []
+    values = value if isinstance(value, list | tuple | set) else [value]
+    parts = [part.strip() for v in values for part in str(v).split(",")]
+    try:
+        return list(dict.fromkeys(int(part) for part in parts if part))
+    except ValueError as e:
+        raise ServiceError(400, "class_id는 숫자여야 합니다.") from e
+
+
 def _item_filter(release_id: str, split, state, class_id, site, camera, q):
+    """The version screen's filters. ``class_id``: one class or several (``class_ids``): the images holding any."""
     conditions = [ReleaseItem.release_id == release_id]
     if split is not None:
         conditions.append(ReleaseItem.split == split)
@@ -1343,10 +1357,14 @@ def _item_filter(release_id: str, split, state, class_id, site, camera, q):
     if q:
         conditions.append(Item.file_name.contains(q, autoescape=True))
     query = select(ReleaseItem, Item).join(Item, Item.id == ReleaseItem.item_id)
-    if class_id is not None:
+    wanted = class_ids(class_id)
+    if len(wanted) == 1:
         query = query.join(
-            RevisionClass, and_(RevisionClass.revision_id == ReleaseItem.revision_id, RevisionClass.class_id == class_id)
+            RevisionClass, and_(RevisionClass.revision_id == ReleaseItem.revision_id, RevisionClass.class_id == wanted[0])
         )
+    elif wanted:  # any of them: each image once, however many of them it holds
+        holding = select(RevisionClass.revision_id).where(RevisionClass.class_id.in_(wanted))
+        conditions.append(ReleaseItem.revision_id.in_(holding))
     return query.where(*conditions)
 
 
@@ -1357,7 +1375,7 @@ def list_items(
     *,
     split: str | None = None,
     state: str = "",
-    class_id: int | None = None,
+    class_id: int | list[int] | None = None,
     site: str = "",
     camera: str = "",
     q: str = "",
@@ -1382,6 +1400,7 @@ def list_items(
     found on it (``qa_by``, as ``qa`` for one). ``counting``: the thresholds a model check's findings are taken at
     (``checks.rule``; FiftyOne's by default). ``pred``: a model run's id (``checks.prediction_runs``): each image
     also carries what that run predicted for it, to lay over the thumbnail.
+    ``class_id``: one class or several, the images holding any of them.
     ``edited``: only the images the dataset's work in progress changed.
     ``suspect``: an evaluation's id: only the images it measured, those with the most mistakes first.
     ``label_set`` (and ``part``): only a labeling set's images, in the set's order.
@@ -1869,7 +1888,7 @@ def new_release(
 ) -> dict[str, Any]:
     """Make a release from the items of existing ones; ``dry_run`` only counts what it would hold.
 
-    ``match`` takes the release screen's filters (split, state, class_id, site, camera, q): only
+    ``match`` takes the release screen's filters (split, state, class_id: one or several, site, camera, q): only
     the items matching it, or with ``exclude`` all but those. With several sources an item that is
     in more than one keeps the split and labels of the first. ``split``: ratios such as
     {"train": 80, "val": 10, "test": 10} to deal the items out again (otherwise they keep theirs).
@@ -1897,11 +1916,7 @@ def new_release(
     plan = _class_plan(old_space, classes)
     ratios = _ratios(split)
     wanted = match or {}
-    class_id = wanted.get("class_id")
-    try:
-        class_id = int(class_id) if class_id not in (None, "") else None
-    except (TypeError, ValueError) as e:
-        raise ServiceError(400, "class_id는 숫자여야 합니다.") from e
+    class_id = class_ids(wanted.get("class_id"))  # one class or several
 
     members: dict[int, ReleaseItem] = {}
     for release in releases:

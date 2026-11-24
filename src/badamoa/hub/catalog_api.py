@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -377,7 +377,7 @@ def list_items(
     release_id: str,
     split: str | None = None,
     state: str = "",
-    class_id: int | None = None,
+    class_id: list[str] = Query(default=[]),  # one or several: class_id=3,5 or class_id=3&class_id=5
     site: str = "",
     camera: str = "",
     q: str = "",
@@ -410,7 +410,7 @@ def list_items(
         release_id,
         split=split,
         state=state,
-        class_id=class_id,
+        class_id=catalog.class_ids(class_id),
         site=site,
         camera=camera,
         q=q,
@@ -455,7 +455,7 @@ class NewRelease(BaseModel):
     version: str = ""
     dataset: str = ""  # empty: the first source's dataset (a new version of it)
     note: str = ""
-    filter: dict[str, Any] | None = None  # the release screen's filters: split, state, class_id, site, camera, q
+    filter: dict[str, Any] | None = None  # the version screen's filters: split, state, class_id (1 or more), site, camera, q
     exclude: bool = False  # all items but those matching the filter
     split: dict[str, float] | None = None  # deal out again, e.g. {"train": 80, "val": 10, "test": 10}
     group_by: str = ""  # "", "site" or "camera": one group, one split
