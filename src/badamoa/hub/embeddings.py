@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from badamoa.core.storage import Storage
 
 from . import catalog, registry, services, training, vector_store
-from .catalog_models import Dataset, EmbeddingPart, ImageEmbedding, Item, Release, ReleaseItem
+from .catalog_models import Dataset, EmbeddingPart, ImageEmbedding, Item, Project, Release, ReleaseItem
 from .config import HubSettings
 from .models import HubSetting, Job, Node, User
 from .services import ServiceError
@@ -161,6 +161,7 @@ def start(
         {
             "release_id": release.id,
             "model": model,
+            "images": known["todo"],  # the images it makes (its record says so)
             "spec": {
                 **{k: spec[k] for k in ("script", "checkpoint", "dim")},
                 # the first job also sends the text encoder the Hub reads 글 검색 queries with
@@ -638,3 +639,184 @@ def project_versions(db: Session, project_id: str, model: str = "") -> list[dict
             }
         )
     return out
+
+
+# ---- 임베딩 작업: each job as a record, as trainings, evaluations and checks are listed --------------------------
+
+RECENT = 3  # a project card's latest jobs
+GOING = ("queued", "assigned", "running")
+
+
+def _job_rows(db: Session, settings: HubSettings, jobs: list[Job]) -> list[dict[str, Any]]:
+    """Embedding jobs as records: the version and project, the server and GPU or CPU, the images it had to make and
+    how many it sent so far, who started it and from where (a training, a pipeline, here), and the images sent to
+    that server first."""
+    if not jobs:
+        return []
+    names = services.node_name_map(db)
+    starters = {j.created_by for j in jobs if j.created_by}
+    users = dict(db.execute(select(User.id, User.username).where(User.id.in_(starters))).all()) if starters else {}
+    wanted = {str((j.params or {}).get("release_id") or "") for j in jobs} - {""}
+    releases = {
+        r.id: (r, dataset, project_id, project)
+        for r, dataset, project_id, project in db.execute(
+            select(Release, Dataset.name, Dataset.project_id, Project.name)
+            .join(Dataset, Dataset.id == Release.dataset_id)
+            .join(Project, Project.id == Dataset.project_id)
+            .where(Release.id.in_(wanted))
+        )
+    }
+    ids = [j.id for j in jobs]
+    sent_so_far = dict(
+        db.execute(
+            select(EmbeddingPart.job_id, func.sum(EmbeddingPart.count))
+            .where(EmbeddingPart.job_id.in_(ids))
+            .group_by(EmbeddingPart.job_id)
+        ).all()
+    )
+    out = []
+    for job in jobs:
+        params = job.params or {}
+        view = services.job_view(db, settings, job, names)
+        found = releases.get(str(params.get("release_id") or ""))
+        release, dataset, project_id, project = found if found else (None, "", "", "")
+        result = job.result or {}
+        before_id = (job.requirements or {}).get("after")
+        before = db.get(Job, before_id) if before_id else None
+        sent = None
+        if before is not None and before.type == "data.sync":  # the images went to that server first
+            shown = services.job_view(db, settings, before, names)
+            sent = {
+                "job_id": before.id,
+                "status": shown["status"],
+                "error": shown["error"],
+                "node_name": shown["node_name"] or names.get(before.target_node_id or "", ""),
+                "duration_s": shown["duration_s"],
+            }
+        model = str(params.get("model") or DEFAULT_MODEL)
+        out.append(
+            {
+                "id": job.id,
+                "status": view["status"],
+                "error": view["error"],
+                "wait_reason": view["wait_reason"],
+                "model": model,
+                "model_title": (MODELS.get(model) or {}).get("title", model),
+                "release": {"id": release.id, "version": release.version, "dataset": dataset} if release else None,
+                "project": {"id": project_id, "name": project} if project_id else None,
+                "node_name": view["node_name"] or names.get(job.target_node_id or "", ""),
+                "gpus": view["gpus_requested"],
+                "gpu_indices": view["gpu_indices"],
+                # the images it had to make (said when it started; older jobs: what it made)
+                "images": params.get("images", result.get("embedded")),
+                "made": int(sent_so_far.get(job.id) or 0),
+                "missing": result.get("missing"),
+                "text": bool((params.get("spec") or {}).get("export_text")),
+                "duration_s": view["duration_s"],
+                "created_at": view["created_at"],
+                "finished_at": view["finished_at"],
+                "log_count": job.log_count,
+                "by": users.get(job.created_by or "", ""),
+                "via": "training" if params.get("run_id") else job.created_via,
+                "run_id": params.get("run_id") or None,
+                "sent": sent,
+            }
+        )
+    return out
+
+
+def _embed_jobs(db: Session, release_ids: list[str] | None = None, limit: int = 200) -> list[Job]:
+    query = select(Job).where(Job.type == "model.embed").order_by(Job.created_at.desc()).limit(limit)
+    if release_ids is not None:
+        if not release_ids:
+            return []
+        query = query.where(Job.params["release_id"].as_string().in_(release_ids))
+    return list(db.scalars(query))
+
+
+def history(
+    db: Session, settings: HubSettings, *, project_id: str = "", release_id: str = "", limit: int = 100
+) -> list[dict[str, Any]]:
+    """A project's (or a version's) embedding jobs, newest first: 임베딩 작업 기록."""
+    if release_id:
+        catalog.get_release(db, release_id)
+        wanted: list[str] | None = [release_id]
+    elif project_id:
+        catalog.get_project(db, project_id)
+        wanted = list(
+            db.scalars(
+                select(Release.id).join(Dataset, Dataset.id == Release.dataset_id).where(Dataset.project_id == project_id)
+            )
+        )
+    else:
+        wanted = None
+    return _job_rows(db, settings, _embed_jobs(db, wanted, max(1, min(limit, 500))))
+
+
+def job_detail(db: Session, settings: HubSettings, job_id: str) -> dict[str, Any]:
+    """One embedding job as its record (its page: what it made, where, the log)."""
+    job = db.get(Job, job_id)
+    if job is None or job.type != "model.embed":
+        raise ServiceError(404, "임베딩 작업을 찾을 수 없습니다.")
+    row = _job_rows(db, settings, [job])[0]
+    if row["release"]:
+        known = coverage(db, row["release"]["id"], row["model"])
+        row["coverage"] = {k: known[k] for k in ("total", "done", "todo")}
+    return row
+
+
+def board(db: Session, settings: HubSettings, model: str = "") -> dict[str, Any]:
+    """이미지 탐색's first screen: the embedding jobs going now, and each project with versions: its images, how many
+    can be found (have a vector), and its latest jobs."""
+    model = model or DEFAULT_MODEL
+    spec = model_of(model)
+    tasks = catalog.project_tasks(db)
+    projects = {p.id: p for p in db.scalars(select(Project).where(Project.deleted_at.is_(None)).order_by(Project.name))}
+    images = dict(db.execute(select(Item.project_id, func.count()).group_by(Item.project_id)).all())
+    found = dict(db.execute(select(Item.project_id, func.count()).where(_done(model)).group_by(Item.project_id)).all())
+    versions = dict(
+        db.execute(
+            select(Dataset.project_id, func.count(Release.id))
+            .join(Dataset, Dataset.id == Release.dataset_id)
+            .where(Release.status == "ready", Release.deleted_at.is_(None))
+            .group_by(Dataset.project_id)
+        ).all()
+    )
+    rows = _job_rows(db, settings, _embed_jobs(db, None, 500))
+    rows = [r for r in rows if r["project"] and r["project"]["id"] in projects]
+    cards = []
+    for pid, project in projects.items():
+        mine = [r for r in rows if r["project"]["id"] == pid]
+        if not versions.get(pid) and not mine:
+            continue  # no version to make vectors of yet
+        cards.append(
+            {
+                "project": {"id": pid, "name": project.name, "folder": project.folder, "tasks": tasks.get(pid, [])},
+                "images": int(images.get(pid) or 0),
+                "embedded": int(found.get(pid) or 0),
+                "versions": int(versions.get(pid) or 0),
+                "jobs": len(mine),
+                "going": sum(1 for r in mine if r["status"] in GOING),
+                "failed": sum(1 for r in mine if r["status"] == "failed"),
+                "recent": mine[:RECENT],
+                "last_at": mine[0]["created_at"] if mine else None,
+            }
+        )
+    # the projects worked on most recently first, then the ones never embedded by name
+    cards.sort(key=lambda c: c["project"]["name"])
+    cards.sort(key=lambda c: c["last_at"] or "", reverse=True)
+    text = text_state(db, model)
+    return {
+        "model": {"name": model, "title": spec["title"]},
+        "text": {"offered": bool(spec.get("text")), "ready": bool(text.get("ready")), "problem": text.get("problem") or ""},
+        "going": [r for r in rows if r["status"] in GOING],
+        "projects": cards,
+        "totals": {
+            "projects": len(cards),
+            "images": sum(c["images"] for c in cards),
+            "embedded": sum(c["embedded"] for c in cards),
+            "jobs": len(rows),
+            "going": sum(c["going"] for c in cards),
+            "failed": sum(c["failed"] for c in cards),
+        },
+    }

@@ -12,6 +12,7 @@ import {
 } from "./DataBoard";
 import { ClassFilter } from "./ClassFilter";
 import { MoveDatasetDialog } from "./DatasetMove";
+import { EmbedHistory, NewEmbedding } from "./Explore";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
 import { ChangeSummary, DraftActions, DraftLine, DraftNotice } from "./DraftBar";
@@ -192,6 +193,7 @@ function ReleaseView({
     if (release?.status === "ready") void api<{ total: number; done: number }>(`/releases/${release.id}/embeddings`).then(setVectors).catch(() => {});
   }, [release?.id, release?.status]);
   const [moving, setMoving] = useState(false); // 다른 프로젝트로 옮기기
+  const [embedding, setEmbedding] = useState(false); // 새 임베딩 of this version
 
   const filterQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -316,7 +318,7 @@ function ReleaseView({
               <>
                 {" "}
                 ·{" "}
-                <a href="#/explore" title="이미지 탐색에서 글 · 비슷한 이미지로 찾는 데 쓰는 벡터">
+                <a href={`#/explore/project/${release.project_id}`} title="이미지 탐색에서 글 · 비슷한 이미지로 찾는 데 쓰는 벡터">
                   벡터 {vectors.done.toLocaleString()}/{vectors.total.toLocaleString()}장
                 </a>
               </>
@@ -345,6 +347,18 @@ function ReleaseView({
             </button>
           )}
           {release.status === "ready" && (
+            <button
+              onClick={() => setEmbedding(true)}
+              title={
+                vectors && vectors.total > 0 && vectors.done >= vectors.total
+                  ? "이 버전의 이미지는 모두 벡터가 있습니다 (이미지 탐색에서 찾을 수 있음)"
+                  : "이미지 탐색에서 글 · 비슷한 이미지로 찾을 수 있게 이 버전 이미지의 벡터를 만듭니다"
+              }
+            >
+              임베딩
+            </button>
+          )}
+          {release.status === "ready" && (
             <a className="btn primary-link" href={`#/training/new/${release.id}`} onClick={() => rememberProject(release.project_id)}>
               이 버전으로 학습
             </a>
@@ -364,6 +378,7 @@ function ReleaseView({
       </div>
       <DraftNotice release={release} />
       {release.status === "ready" && <ReviewRecordCard releaseId={release.id} />}
+      {release.status === "ready" && <EmbedHistory releaseId={release.id} fold />}
       {isDraft && fixing && fixing.edited > 0 && (
         <DraftChangesCard releaseId={release.id} edited={fixing.edited} picked={changeKind} onPick={pickChange} />
       )}
@@ -626,6 +641,17 @@ function ReleaseView({
       )}
 
       {exporting && <ExportDialog release={release} task={task} onClose={() => setExporting(false)} />}
+      {embedding && (
+        <NewEmbedding
+          projectId={release.project_id}
+          releaseId={release.id}
+          onClose={() => setEmbedding(false)}
+          onStarted={(jobId) => {
+            setEmbedding(false);
+            window.location.hash = `#/explore/job/${jobId}`;
+          }}
+        />
+      )}
       {moving && (
         <MoveDatasetDialog
           dataset={release.dataset}

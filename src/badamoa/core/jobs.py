@@ -144,6 +144,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "spec": {"type": "object"},  # the model's script, checkpoint, dimension
                     "environment": {"type": "object"},
                     "run_id": {"type": "string"},  # the training it goes with
+                    "images": {"type": "integer"},  # the images it had to make when it started (its record)
                 },
             },
         ),

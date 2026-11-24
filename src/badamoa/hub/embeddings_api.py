@@ -36,6 +36,35 @@ def release_embeddings(
     return {**embeddings.coverage(db, release_id, model), "models": embeddings.models_view()}
 
 
+@router.get("/explore/board")
+def explore_board(
+    model: str = "", _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """이미지 탐색's first screen: the embedding jobs going now and each project's images and vectors."""
+    return embeddings.board(db, hub.settings, model)
+
+
+@router.get("/embeddings/jobs")
+def embedding_jobs(
+    project_id: str = "",
+    release_id: str = "",
+    limit: int = 100,
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> list[dict[str, Any]]:
+    """임베딩 작업 기록: a project's (or a version's) embedding jobs, newest first."""
+    return embeddings.history(db, hub.settings, project_id=project_id, release_id=release_id, limit=limit)
+
+
+@router.get("/embeddings/jobs/{job_id}")
+def embedding_job(
+    job_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """One embedding job: what it makes, where, how far."""
+    return embeddings.job_detail(db, hub.settings, job_id)
+
+
 @router.get("/projects/{project_id}/explore")
 def explore_status(
     project_id: str,

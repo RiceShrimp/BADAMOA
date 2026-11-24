@@ -94,27 +94,54 @@
   height: 100%;
   background: var(--accent);
 }
-.explore-start {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  margin: 6px 0 4px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--surface-2);
-}
-.explore-start select {
-  height: var(--control-h, 34px);
-  margin: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-.explore-start button {
-  height: var(--control-h, 34px);
-  padding-top: 0;
-  padding-bottom: 0;
-}
 .explore-version-row > :last-child {
   justify-self: end;
+}
+
+/* the board: a project's images that can be found */
+.explore-card-meter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.explore-card-meter .explore-meter {
+  flex: 1;
+  min-width: 60px;
+}
+.explore-card-meter strong {
+  font-size: 15px;
+}
+
+/* 임베딩 작업 기록 */
+section.embed-history {
+  margin: 14px 0;
+  padding: 12px 16px;
+}
+.embed-history .card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 4px;
+}
+.embed-history h3 {
+  margin: 0;
+}
+details.embed-history > summary .badge {
+  margin-left: 8px;
+}
+.embed-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 2px 10px;
+}
+.embed-row > .badge {
+  margin-top: 1px;
+}
+.embed-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
 }

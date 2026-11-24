@@ -63,6 +63,10 @@ def test_vectors_come_with_a_training_once_per_image(hub, release, tmp_path):  #
     assert {k: _coverage(hub, v2)[k] for k in ("total", "done", "todo")} == {"total": 12, "done": 6, "todo": 6}
     _, job = _embedded(hub, _train(hub, v2, embed=True))
     assert job["result"]["embedded"] == 6 and _coverage(hub, v2)["todo"] == 0
+    # each is a record of the version, made alongside its training
+    records = hub.get("/api/embeddings/jobs", params={"release_id": v2}).json()
+    assert [(r["id"], r["via"], r["images"], r["made"]) for r in records] == [(job["id"], "training", 6, 6)]
+    assert records[0]["run_id"] and records[0]["release"]["version"] == "v2"
 
 
 def test_a_server_without_the_role_makes_none(hub, release):  # noqa: F811
@@ -113,6 +117,20 @@ def test_vectors_without_a_training_and_as_a_pipeline_step(hub, release, tmp_pat
     assert again.status_code == 409 and "모두 벡터가 있습니다" in again.json()["detail"]
     rows = hub.get(f"/api/projects/{release['project_id']}/explore/versions").json()
     assert [(r["release"]["id"], r["done"], r["todo"]) for r in rows] == [(release["id"], 8, 0)]
+    # 임베딩 작업 기록: the project's and the version's, its page, and 이미지 탐색's board
+    records = hub.get("/api/embeddings/jobs", params={"project_id": release["project_id"]}).json()
+    assert [r["id"] for r in records] == [job["id"]]
+    record = records[0]
+    assert record["status"] == "succeeded" and record["via"] == "ui" and record["gpus"] == 0
+    assert record["images"] == 8 and record["made"] == 8 and record["node_name"] and record["by"]
+    assert hub.get("/api/embeddings/jobs", params={"release_id": release["id"]}).json()[0]["id"] == job["id"]
+    page = hub.get(f"/api/embeddings/jobs/{job['id']}").json()
+    assert page["coverage"] == {"total": 8, "done": 8, "todo": 0} and page["project"]["id"] == release["project_id"]
+    assert hub.get("/api/embeddings/jobs/nope").status_code == 404
+    board = hub.get("/api/explore/board").json()
+    card = next(c for c in board["projects"] if c["project"]["id"] == release["project_id"])
+    assert (card["images"], card["embedded"], card["jobs"], card["going"]) == (8, 8, 1, 0)
+    assert card["recent"][0]["id"] == job["id"] and board["going"] == [] and board["totals"]["embedded"] >= 8
 
     # a pipeline: 가져오기 → 임베딩, only the images the new version added
     folder = make_yolo(tmp_path / "more", train=10)
