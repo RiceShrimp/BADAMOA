@@ -351,6 +351,36 @@ def test_in_house_wheels_and_pinned_versions_reach_the_environment(client, admin
     database.engine.dispose()
 
 
+def test_a_listed_wheel_outlives_the_storage_cleanup(client, admin, settings):
+    """A server may build an environment that needs the wheel any day: its file is in use as long as it is listed."""
+    import hashlib
+    import os
+
+    wheel = b"PK\x03\x04" + b"1" * 64
+    up = client.post(
+        "/api/packages",
+        params={"filename": "kept_lib-2.0.0-py3-none-any.whl"},
+        content=wheel,
+        headers={**admin, "Content-Type": "application/octet-stream"},
+    ).json()
+    orphan = b"an upload nothing records"
+    digest = hashlib.sha256(orphan).hexdigest()
+    blobs = settings.storage_dir / "blobs"
+    (blobs / digest[:2] / digest[2:4]).mkdir(parents=True, exist_ok=True)
+    (blobs / digest[:2] / digest[2:4] / digest).write_bytes(orphan)
+    two_days_ago = time.time() - 2 * 24 * 3600  # both well past the grace period
+    for key in (up["sha256"], digest):
+        os.utime(blobs / key[:2] / key[2:4] / key, (two_days_ago, two_days_ago))
+
+    assert client.get("/api/storage/cleanup", headers=admin).json()["removed"]["files"] == 1  # the orphan only
+    assert client.post("/api/storage/cleanup", headers=admin).json()["removed"]["files"] == 1
+    assert (blobs / up["sha256"][:2] / up["sha256"][2:4] / up["sha256"]).read_bytes() == wheel
+    token = client.post("/api/nodes/join-tokens", json={}, headers=admin).json()["token"]
+    reg = client.post("/api/agent/register", json={"join_token": token, "agent_version": "0.120.1", "info": {}}).json()
+    got = client.get(f"/api/agent/packages/{up['sha256']}", headers={"Authorization": f"Bearer {reg['node_token']}"})
+    assert got.status_code == 200 and got.content == wheel
+
+
 def test_the_trial_runs_on_a_developer_pc_too(tmp_path):
     from typer.testing import CliRunner
 

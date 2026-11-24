@@ -38,7 +38,7 @@ from .config import HubSettings
 from .db import utcnow
 from .models import HubSetting, Job, User
 from .services import ServiceError
-from .train_models import ModelJob, ModelVersion, Run, RunFile, Tag, Template
+from .train_models import ModelJob, ModelVersion, Package, Run, RunFile, Tag, Template
 
 POLICY_KEY = "storage.policy"
 # trash_days: what is in the trash is removed for good after this long (0: until emptied by hand).
@@ -185,6 +185,7 @@ def live_blobs(
     # Records in the trash count: their files stay until the trash lets them go (purge.py).
     live.update(b for b in db.scalars(select(Template.blob)) if b)  # every version: old runs may run again
     live.update(db.scalars(select(ModelVersion.blob)))
+    live.update(db.scalars(select(Package.blob)))  # in-house wheels: servers fetch them whenever they build an environment
     for file_id, blob in db.execute(select(RunFile.id, RunFile.blob)):
         if file_id not in without_files:
             live.add(blob)
