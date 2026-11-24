@@ -1272,6 +1272,15 @@ function ParamField({ spec, value, onChange }: { spec: TemplateParam; value: For
   );
 }
 
+/** A search step's settings to try as typed in 여러 설정 시험해 보기 again: values listed, or a range ``a~b``. */
+function trialsOf(space: unknown): Trial[] {
+  if (!space || typeof space !== "object") return [];
+  return Object.entries(space as Record<string, SweepSpec>).map(([name, spec]) => ({
+    name,
+    text: spec.min !== undefined && spec.max !== undefined ? `${spec.min}~${spec.max}` : (spec.values ?? []).map(String).join(", "),
+  }));
+}
+
 /** 새 학습; with ``settingsFor``, the settings of a pipeline's training or search step (nothing starts). */
 export function NewRun({
   projectId,
@@ -1292,6 +1301,9 @@ export function NewRun({
   onSweep: (id: string) => void;
   settingsFor?: StepSettings;
 }) {
+  // A pipeline step's settings open as they were applied: every field below starts from them.
+  const given = settingsFor?.config ?? {};
+  const givenNodes = Array.isArray(given.nodes) ? given.nodes.map(String) : [];
   // "학습 끝나면": the steps the Hub takes after this training (the last choice is offered again)
   const [follow, setFollow] = useState<FollowSpec>(rememberedFollow);
   const [save, setSave] = useState<SaveSpec>({ on: false, name: "", trigger: "manual" });
@@ -1304,23 +1316,38 @@ export function NewRun({
   const [classes, setClasses] = useState<LabelClass[]>([]);
   const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
   const [chosen, setChosen] = useState<number[]>([]); // the classes ticked (every one when the version loads)
-  const [extra, setExtra] = useState({ environment: "", gpus: "", name: "", model_name: "", base: "" });
+  const [extra, setExtra] = useState({
+    environment: String(given.environment ?? ""),
+    gpus: given.gpus == null ? "" : String(given.gpus),
+    name: "",
+    model_name: String(given.model_name ?? ""),
+    base: String(given.base_model_id ?? ""),
+  });
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // A search: the settings to try, and how.
-  const [trials, setTrials] = useState<Trial[]>([]);
-  const [method, setMethod] = useState<SweepMethod>("grid");
-  const [drawCount, setDrawCount] = useState(10);
-  const [parallel, setParallel] = useState(1);
+  const [trials, setTrials] = useState<Trial[]>(() => trialsOf(given.space));
+  const [method, setMethod] = useState<SweepMethod>(() =>
+    ["grid", "random", "bayes"].includes(String(given.method)) ? (given.method as SweepMethod) : "grid",
+  );
+  const [drawCount, setDrawCount] = useState(Number(given.max_runs) || 10);
+  const [parallel, setParallel] = useState(Number(given.parallel) || 1);
   // What the chosen version's dataset is labelled for decides the templates on offer.
   const runTask = tree?.find((d) => d.releases.some((r) => r.id === release))?.task ?? task;
   const [goalMetric, setGoalMetric] = useState(keyMetrics(runTask)[0]);
   const [choices, setChoices] = useState<NodeChoices | null>(null);
-  const [nodeMode, setNodeMode] = useState<"auto" | "pick">("auto");
-  const [pickedNodes, setPickedNodes] = useState<string[]>([]);
-  const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
+  const [nodeMode, setNodeMode] = useState<"auto" | "pick">(givenNodes.length ? "pick" : "auto");
+  const [pickedNodes, setPickedNodes] = useState<string[]>(givenNodes);
+  const [dataAfter, setDataAfter] = useState<"keep" | "delete">(given.data_after === "delete" ? "delete" : "keep");
   const [gpuPick, setGpuPick] = useState<GpuPick>("auto");
+  // What a step's settings had for the GPUs and the classes: put back once the servers and the classes are known
+  // (picking a server or a version starts them over).
+  const keptGpus = useRef<"cpu" | number[] | null>(
+    Array.isArray(given.gpu_indices) && given.gpu_indices.length ? given.gpu_indices.map(Number) : given.gpus === 0 ? "cpu" : null,
+  );
+  const keptClasses = useRef<number[] | null>(Array.isArray(given.classes) && given.classes.length ? given.classes.map(Number) : null);
+  const keptMetric = useRef(String(given.metric ?? ""));
 
   useEffect(() => {
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then((data) => {
@@ -1334,10 +1361,11 @@ export function NewRun({
 
   useEffect(() => {
     setTemplates(null);
-    setGoalMetric(keyMetrics(runTask)[0]);
+    const metrics = keyMetrics(runTask);
+    setGoalMetric(metrics.includes(keptMetric.current) ? keptMetric.current : metrics[0]);
+    keptMetric.current = "";
     void api<Template[]>(`/templates?task=${encodeURIComponent(runTask)}`).then((list) => {
       setTemplates(list);
-      const given = settingsFor?.config ?? {};
       const wanted = String(given.template ?? "") || defaultTemplate;
       const first = list.find((t) => t.name === wanted || t.id === wanted) ?? list[0];
       setTemplateName(first?.name ?? "");
@@ -1353,8 +1381,11 @@ export function NewRun({
     setReleaseInfo(null);
     if (!release) return setClasses([]);
     void api<ReleaseInfo>(`/releases/${release}`).then((info) => {
+      const ids = info.label_space.classes.map((c) => c.id);
+      const kept = keptClasses.current?.filter((id) => ids.includes(id)) ?? [];
+      keptClasses.current = null;
       setClasses(info.label_space.classes);
-      setChosen(info.label_space.classes.map((c) => c.id)); // every class, until some are left out
+      setChosen(kept.length ? kept : ids); // every class, until some are left out
       setReleaseInfo(info);
     });
     void api<NodeChoices>(`/releases/${release}/nodes`).then(setChoices);
@@ -1364,7 +1395,15 @@ export function NewRun({
   // Where it trains decides the GPUs on offer: pick again whenever that changes.
   const targets = choices ? trainTargets(choices, nodeMode, pickedNodes) : [];
   const targetKey = targets.map((n) => n.id).join(",");
-  useEffect(() => setGpuPick("auto"), [targetKey]);
+  useEffect(() => {
+    if (keptGpus.current === null) return setGpuPick("auto");
+    if (!targetKey) return; // the servers are not known yet: a step's GPUs wait for them
+    const one = targets.length === 1 ? targets[0] : null;
+    const have = (one?.gpu_list ?? []).map((g) => g.index);
+    const kept = keptGpus.current;
+    keptGpus.current = null;
+    setGpuPick(kept === "cpu" || (kept.length && kept.every((i) => have.includes(i))) ? kept : "auto");
+  }, [targetKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const single = targets.length === 1 && (targets[0].gpu_list ?? []).length > 0;
   const gpuBody = single
     ? gpuPick === "auto"
