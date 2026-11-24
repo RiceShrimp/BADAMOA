@@ -142,6 +142,8 @@ def _start(
     gpus: int = 0,
     via: str = "api",
     after: str | None = None,
+    gpu_indices: list[int] | None = None,
+    data_after: str = "",
 ) -> ModelJob:
     own = _template_of(db, model)
     row = code_for(db, model, kind)
@@ -192,12 +194,15 @@ def _start(
             "classes": model.classes or [],
             "weights": {"blob": model.blob, "file_name": model.file_name or "best.pt"},
             **(extra or {}),
+            # what becomes of the copy the server received for it, once it is over (``node_data``)
+            **({"data_after": data_after} if data_after else {}),
         },
         node.id,
         via=via,
         gpus=gpus,
         role=role,
         after=after,
+        gpu_indices=gpu_indices or None,
     )
     op.job_id = job.id
     services.audit(db, user.id, via, f"model.{kind}", model.id, name=model.name, version=model.version, code=row.version)
@@ -214,6 +219,8 @@ def start_eval(
     via: str = "api",
     node_id: str = "",
     splits: list[str] | None = None,
+    gpu_indices: list[int] | None = None,
+    data_after: str = "",
 ) -> ModelJob:
     """Measure a model on a release: the way to compare models trained on different data.
 
@@ -259,14 +266,17 @@ def start_eval(
     if class_ids != sorted(class_ids) and not _since(node, ORDERED_SINCE):  # the model numbers them otherwise
         need = ".".join(str(n) for n in ORDERED_SINCE)
         raise ServiceError(400, f"클래스 순서가 모델과 다른 버전을 평가하려면 {node.name}이(가) {need} 이상이어야 합니다.")
-    gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else gpus
+    picked = transfers.picked_gpus(node, gpu_indices, gpus)
+    keep = transfers.data_after_of(data_after, node.id, holder.id)
+    gpus = len(picked) if picked else (1 if (node.info or {}).get("gpus") else 0) if gpus is None else gpus
     extra = {"release_id": release.id, "split": wanted[0], "class_ids": class_ids}
     if len(wanted) > 1:
         extra["splits"] = wanted
     shown = {"split": " · ".join(wanted), **({"splits": wanted} if len(wanted) > 1 else {})}
     return _start(
-        db, user, model, "eval", node, shown, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after
-    )
+        db, user, model, "eval", node, shown, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after,
+        gpu_indices=picked, data_after=keep,
+    )  # fmt: skip
 
 
 def _picked(db: Session, node_id: str) -> Node:
@@ -314,6 +324,9 @@ def places(db: Session, settings: HubSettings, model_id: str, kind: str, release
         holder = training.data_node(db, release.id)
         holders = transfers.holders(db, release.id)
     nodes = list(db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)))
+    from . import resources  # noqa: PLC0415
+
+    assigned = resources.assignments(db)
     found = []
     for node in nodes:
         why: list[str] = []
@@ -347,15 +360,28 @@ def places(db: Session, settings: HubSettings, model_id: str, kind: str, release
                 "transfer": transfer,  # the version's images are sent there first
                 "trained_here": trained is not None and node.id == trained.id,
                 "holds_images": kind == "eval" and not transfer,
+                **(
+                    transfers.place_info(node, settings, status, assigned.get(node.id), holder.id, holders or set())
+                    if holder is not None
+                    else {"gpu_list": transfers.gpu_list(node, settings, status, assigned.get(node.id))}
+                ),
             }
         )
+    size = transfers.release_bytes(db, release_id) if kind == "eval" else (0, 0)
     if kind == "eval":
         default = holder.id if holder is not None else ""
     else:
         default = trained.id if trained is not None and any(f["id"] == trained.id and f["fits"] for f in found) else ""
         default = default or next((f["id"] for f in found if f["fits"]), "")
     found.sort(key=lambda f: (f["id"] != default, not f["fits"], f["name"]))
-    return {"kind": kind, "default": default, "nodes": found}
+    return {
+        "kind": kind,
+        "default": default,
+        "holder": {"id": holder.id, "name": holder.name} if holder is not None else None,
+        "items": size[0],
+        "bytes": size[1],
+        "nodes": found,
+    }
 
 
 ALIAS_ORDER = ("production", "SOTA", "staging", "challenger")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from sample_data import make_yolo
 from test_training import _logs, _wait, hub, release  # noqa: F401 (fixtures)
+from test_transfer import two_nodes  # noqa: F401 (fixture)
 
 from badamoa.hub import embeddings
 
@@ -178,3 +179,40 @@ def test_the_vector_db_moves_to_another_folder(hub, release, tmp_path):  # noqa:
     first = hub.get(f"/api/releases/{release['id']}/items").json()["items"][0]["id"]
     found = hub.get(f"/api/projects/{release['project_id']}/explore/search", params={"like": first}).json()
     assert len(found["items"]) == 7
+
+
+def test_an_embedding_on_another_server_removes_the_copy_it_received_if_asked(two_nodes, tmp_path):  # noqa: F811
+    """As 새 학습: the server picked receives the version's images first, and once the vectors are made the copy goes
+    (지우기) or stays (남겨 두기); the images where they were registered always stay."""
+    import time
+
+    client = two_nodes
+    data, worker = client.data.config.node_id, client.train.config.node_id
+    client.patch(f"/api/nodes/{worker}", json={"roles": ["compute", "embedding"]})
+    project = client.post("/api/projects", json={"name": "어디서 임베딩"}).json()
+    body = {"node_id": data, "path": str(make_yolo(tmp_path / "ds")), "dataset": "street", "version": "v1"}
+    imported = _wait(client, client.post(f"/api/projects/{project['id']}/imports", json=body).json()["id"])
+    assert imported["status"] == "succeeded", _logs(client, imported["id"])
+    version = imported["result"]["release_id"]
+
+    places = client.get(f"/api/releases/{version}/embeddings/places").json()
+    by = {p["id"]: p for p in places["nodes"]}
+    assert by[worker]["fits"] and by[worker]["transfer"] and by[worker]["images"] == ""
+    assert set(by[worker]["cache"]) == {"dir", "free_gb", "auto"} and places["items"] == 8 and places["bytes"] > 0
+    url = f"/api/releases/{version}/embeddings"
+    assert client.post(url, json={"node_id": worker, "gpus": 0, "data_after": "later"}).status_code == 400
+    refused = client.post(url, json={"node_id": worker, "gpu_indices": [9]})
+    assert refused.status_code == 400 and "GPU 9" in refused.json()["detail"]
+
+    made = client.post(url, json={"node_id": worker, "gpus": 0, "data_after": "delete"})
+    assert made.status_code == 200, made.text
+    job = _wait(client, made.json()["job_id"])
+    assert job["status"] == "succeeded" and job["node_id"] == worker, _logs(client, job["id"])
+    record = client.get(f"/api/embeddings/jobs/{job['id']}").json()
+    assert record["data_after"] == "delete" and record["sent"]["status"] == "succeeded"
+    deadline = time.monotonic() + 60
+    copies = client.get(f"/api/releases/{version}/copies").json()
+    while time.monotonic() < deadline and copies["copies"]:
+        time.sleep(0.3)
+        copies = client.get(f"/api/releases/{version}/copies").json()
+    assert copies["copies"] == [] and copies["origin"]["node_id"] == data  # the registered images stay

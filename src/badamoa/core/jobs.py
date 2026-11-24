@@ -145,6 +145,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
                     "environment": {"type": "object"},
                     "run_id": {"type": "string"},  # the training it goes with
                     "images": {"type": "integer"},  # the images it had to make when it started (its record)
+                    "data_after": {"type": "string"},  # keep | delete: the copy its server received, once it is over
                 },
             },
         ),
@@ -156,6 +157,7 @@ BUILTIN_JOB_TYPES: dict[str, JobTypeSpec] = {
             params_schema={
                 "type": "object",
                 "properties": {
+                    "data_after": {"type": "string"},  # keep | delete: the copy its server received, once over
                     "op_id": {"type": "string"},
                     "model_id": {"type": "string"},
                     "action": {"type": "string"},  # eval | export | predict

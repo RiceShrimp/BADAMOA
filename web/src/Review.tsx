@@ -4,7 +4,7 @@ import { type BoardProject, useBoardFilter } from "./Boards";
 import { ClassFilter } from "./ClassFilter";
 import { Collage, SPLIT_COLOR, Shot, rememberProject } from "./DataBoard";
 import { ItemViewer } from "./ItemViewer";
-import { PlacePicker, placeReady, usePlaces } from "./ModelOps";
+import { EvalPlaceFields, useEvalPlace, usePlaces } from "./ModelOps";
 import type { ItemFilter } from "./ReleaseMaker";
 import { NewSetDialog } from "./Labeling";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
@@ -1498,7 +1498,6 @@ function CheckWithModel({
   const { data: choices, error: loadError } = usePolling(() => api<EvalChoices>(`/releases/${release.id}/eval-models`), 0, [release.id]);
   const [model, setModel] = useState("");
   const [picked, setPicked] = useState<string[] | null>(null); // null: not touched yet (every split)
-  const [nodeId, setNodeId] = useState(""); // "": the server holding the version's images
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const usedBy = (id: string) => done.filter((d) => d.model_id === id);
@@ -1516,9 +1515,9 @@ function CheckWithModel({
     const fresh = choices.models.find((m) => m.fits && !done.some((d) => d.model_id === m.id));
     setModel((current) => current || (fresh ?? choices.models.find((m) => m.fits))?.id || "");
   }, [choices]);
-  useEffect(() => setNodeId(""), [model]); // another model: its own servers, from the default
   const chosen = choices?.models.find((m) => m.id === model);
   const { data: places, error: placesError } = usePlaces(model, "eval", chosen?.fits ? (choices?.evaluate?.id ?? "") : "");
+  const place = useEvalPlace(places); // picked again for another model: its own servers
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -1527,7 +1526,7 @@ function CheckWithModel({
     setError(null);
     try {
       const op = await api<{ id: string; job_id: string }>(`/models/${chosen.id}/eval`, {
-        body: { release_id: choices.evaluate.id, split: chosenSplits[0], splits: chosenSplits, node_id: nodeId },
+        body: { release_id: choices.evaluate.id, split: chosenSplits[0], splits: chosenSplits, ...place.body },
       });
       onStarted(op);
     } catch (err) {
@@ -1631,7 +1630,7 @@ function CheckWithModel({
             검사에 나오지 않습니다.
           </div>
         )}
-        {chosen?.fits && <PlacePicker places={places} error={placesError} value={nodeId} onChange={setNodeId} />}
+        {chosen?.fits && <EvalPlaceFields places={places} error={placesError} place={place} />}
         {chosen?.trained_on && chosenSplits.includes("train") && (
           <div className="notice small">
             이 모델이 학습한 이미지입니다. 모델이 라벨을 그대로 외웠을 수 있어 틀린 라벨을 덜 찾습니다. 다른 데이터로 학습한 모델이나 val로 보면 더
@@ -1645,7 +1644,7 @@ function CheckWithModel({
           </button>
           <button
             className="primary"
-            disabled={busy || !chosen?.fits || chosenSplits.length === 0 || !choices?.evaluate || !placeReady(places, nodeId)}
+            disabled={busy || !chosen?.fits || chosenSplits.length === 0 || !choices?.evaluate || !place.ready}
           >
             검사 시작
           </button>

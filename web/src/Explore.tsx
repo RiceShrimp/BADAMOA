@@ -2,10 +2,12 @@ import { type FormEvent, useEffect, useState } from "react";
 import { useBoardFilter } from "./Boards";
 import { TaskTags, rememberProject } from "./DataBoard";
 import { type Order, OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
+import { DataAfterChoice, type GpuChoice, GpuChips, ImagesNote, PlaceGrid, PlaceRow, type PlaceServer, ServerSelect, copiedTo, gpuBody, spaceShort } from "./ServerPlace";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { LogTail } from "./Training";
 import { api } from "./api";
 import type { TreeDataset } from "./catalogTypes";
+import type { NodeGpu } from "./trainTypes";
 import { Badge, Icon, Modal, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
 import "./autolabel.css";
 import "./explore.css";
@@ -42,21 +44,13 @@ interface VersionRow {
   going: string | null;
 }
 
-/** A server a version's vectors can be made on (``/releases/{id}/embeddings/places``). */
-interface Place {
-  id: string;
-  name: string;
-  status: string;
-  gpus: number;
-  fits: boolean;
-  why: string;
-  transfer: boolean;
-  holds_images: boolean;
-}
+/** The servers a version's vectors can be made on (``/releases/{id}/embeddings/places``). */
 interface Places {
   default: string;
   holder: { id: string; name: string } | null;
-  nodes: Place[];
+  items: number;
+  bytes: number;
+  nodes: (PlaceServer & { gpu_list: NodeGpu[] })[];
   problem: string;
 }
 
@@ -84,6 +78,7 @@ export interface EmbedJob {
   by: string;
   via: string;
   run_id: string | null;
+  data_after: string; // keep | delete: the copy its server received, once it is over ("": registered there, or kept)
   sent: { job_id: string; status: string; error: string | null; node_name: string; duration_s: number | null } | null;
   coverage?: { total: number; done: number; todo: number };
 }
@@ -349,13 +344,19 @@ export function NewEmbedding({
     0,
     [releaseId],
   );
+  // the server is picked, never chosen for you (a version's other servers differ)
   const [nodeId, setNodeId] = useState("");
-  useEffect(() => setNodeId(servers?.default ?? ""), [servers]);
+  useEffect(() => setNodeId(""), [servers]);
   const server = servers?.nodes.find((s) => s.id === nodeId);
-  const [cpu, setCpu] = useState(false);
+  const [gpu, setGpu] = useState<GpuChoice>("auto");
+  useEffect(() => setGpu("auto"), [nodeId]);
+  // as 새 학습: what becomes of the copy the server received (or receives) once it is over
+  const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
+  const copied = copiedTo(server);
+  const short = spaceShort(server, servers?.bytes ?? 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const blocked = !row || !startable(row) || !server?.fits;
+  const blocked = !row || !startable(row) || !server?.fits || short;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -363,7 +364,8 @@ export function NewEmbedding({
     setSaving(true);
     setError(null);
     try {
-      const got = await api<{ job_id: string }>(`/releases/${releaseId}/embeddings`, { body: { node_id: nodeId, gpus: cpu || !server?.gpus ? 0 : null } });
+      const body = { node_id: nodeId, ...gpuBody(gpu, server), data_after: copied ? dataAfter : "" };
+      const got = await api<{ job_id: string }>(`/releases/${releaseId}/embeddings`, { body });
       onStarted(got.job_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -428,57 +430,33 @@ export function NewEmbedding({
         </label>
 
         {serverError && <div className="error">{serverError}</div>}
-        {servers && (
-          <div className={`al-server ${server?.fits ? "" : "bad"}`}>
-            <Icon name="server" size={14} />
-            {servers.problem ? (
-              <span className="bad-text">{servers.problem}</span>
-            ) : (
-              <>
-                <label className="al-server-pick">
-                  서버
-                  <select value={nodeId} onChange={(e) => setNodeId(e.target.value)} aria-label="만들 서버">
-                    {!servers.nodes.some((s) => s.fits) && <option value="">임베딩용 서버가 없습니다</option>}
-                    {servers.nodes.map((s) => (
-                      <option key={s.id} value={s.id} disabled={!s.fits}>
-                        {s.name} · {s.gpus ? `GPU ${s.gpus}개` : "CPU"} · {s.holds_images ? "이미지 있음" : "이미지를 먼저 받음"}
-                        {s.fits ? "" : ` — ${s.why}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {server?.gpus ? (
-                  <div className="segmented" role="radiogroup" aria-label="계산">
-                    <button type="button" className={cpu ? "" : "active"} onClick={() => setCpu(false)}>
-                      GPU
-                    </button>
-                    <button type="button" className={cpu ? "active" : ""} onClick={() => setCpu(true)}>
-                      CPU
-                    </button>
-                  </div>
-                ) : null}
-                <span className="al-server-note small">
-                  {!server ? (
-                    <span className="bad-text">
-                      벡터를 만들 서버가 없습니다. <a href="#/nodes">노드</a> 화면에서 만들 서버의 설정 → 역할에 &quot;임베딩용&quot;을 켜세요.
-                    </span>
-                  ) : !server.fits ? (
-                    <span className="bad-text">{server.why}</span>
-                  ) : server.transfer ? (
-                    <span className="muted">
-                      이미지가 있는 {servers.holder?.name ?? "서버"}에서 이 버전의 이미지를 먼저 받은 뒤 만듭니다 (받은 이미지는 그 서버에 남아 학습에도
-                      씁니다).
-                    </span>
-                  ) : (
-                    <span className="muted">
-                      이미지가 있는 서버라 받을 것 없이 바로 만듭니다.
-                      {server.status !== "online" ? " 지금 응답이 없어 켜지면 시작합니다." : ""}
-                    </span>
-                  )}
+        {servers?.problem && <div className="error small">{servers.problem}</div>}
+        {servers && !servers.problem && (
+          <PlaceGrid>
+            <PlaceRow label="서버">
+              <ServerSelect servers={servers.nodes} value={nodeId} onChange={setNodeId} />
+              {!servers.nodes.some((x) => x.fits) && (
+                <span className="bad-text small">
+                  벡터를 만들 서버가 없습니다. <a href="#/nodes">노드</a> 화면에서 만들 서버의 설정 → 역할에 &quot;임베딩용&quot;을 켜세요.
                 </span>
-              </>
+              )}
+            </PlaceRow>
+            {server && (
+              <PlaceRow label="이미지">
+                <ImagesNote server={server} holder={servers.holder?.name} items={servers.items} bytes={servers.bytes} />
+              </PlaceRow>
             )}
-          </div>
+            {server?.fits && server.gpu_list.length > 0 && (
+              <PlaceRow label="GPU">
+                <GpuChips gpus={server.gpu_list} pick={gpu} onPick={setGpu} doing="만듭니다" />
+              </PlaceRow>
+            )}
+            {server?.fits && copied && (
+              <PlaceRow label="보낸 데이터">
+                <DataAfterChoice value={dataAfter} onChange={setDataAfter} when="임베딩이 끝나면" />
+              </PlaceRow>
+            )}
+          </PlaceGrid>
         )}
         {error && <div className="error">{error}</div>}
         <div className="modal-actions">
@@ -693,6 +671,7 @@ function EmbedJobPage({ jobId }: { jobId: string }) {
             {job.node_name || "–"} · {job.gpus ? `GPU${job.gpu_indices.length ? ` ${job.gpu_indices.join(", ")}` : ""}` : "CPU"}
           </Fact>
           <Fact label="글 검색 인코더">{job.text ? "이 작업이 함께 만듦" : "이미 있음"}</Fact>
+          {job.data_after && <Fact label="보낸 데이터">{job.data_after === "delete" ? "끝나면 지움" : "남겨 둠"}</Fact>}
           <Fact label="시작">
             {job.via === "training" && job.run_id ? <a href={`#/training/${job.run_id}`}>학습과 함께</a> : (VIA_LABEL[job.via] ?? job.via)}
           </Fact>

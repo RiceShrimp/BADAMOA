@@ -1,4 +1,5 @@
 import { LineageGraph } from "./Lineage";
+import { DataAfterChoice, GpuChips, ImagesNote, PlaceGrid, PlaceRow, type PlaceServer, spaceShort } from "./ServerPlace";
 import { MediaPanel } from "./Media";
 import { SweepFields, SweepList, type SweepMethod, type SweepSpec, SweepView, type Trial, parseTrial } from "./Sweeps";
 import { AliasChip, Annotations, ListFilter, useDebounced } from "./Annotate";
@@ -35,7 +36,6 @@ import {
   type RunDetail,
   type NodeChoice,
   type NodeChoices,
-  type NodeGpu,
   type RunSync,
   STAGE_LABEL,
   type Template,
@@ -333,14 +333,6 @@ function trainTargets(choices: NodeChoices, mode: "auto" | "pick", picked: strin
 
 export type GpuPick = "auto" | "cpu" | number[];
 
-const GPU_STATE: Record<NodeGpu["state"], string> = {
-  free: "비어 있음",
-  busy: "사용 중",
-  job: "다른 학습 중",
-  reserved: "사람 전용",
-  offline: "오프라인",
-};
-
 /** The GPUs of the node a run trains on: 자동 (a free one), CPU only, or the ones ticked (people's GPUs cannot be). */
 function GpuField({
   targets,
@@ -362,9 +354,8 @@ function GpuField({
     const most = Math.max(0, ...targets.map((n) => (n.gpu_list ?? []).filter((g) => !g.reserved).length));
     const kept = targets.some((n) => (n.gpu_list ?? []).some((g) => g.reserved));
     return (
-      <label>
-        GPU 수
-        <select value={count} onChange={(e) => onCount(e.target.value)}>
+      <>
+        <select value={count} onChange={(e) => onCount(e.target.value)} aria-label="GPU 수">
           <option value="">자동{most ? " (빈 GPU 1개)" : ""}</option>
           <option value="0">CPU만</option>
           {Array.from({ length: most }, (_, i) => i + 1).map((n) => (
@@ -373,101 +364,79 @@ function GpuField({
             </option>
           ))}
         </select>
-        {kept && <span className="muted small">사람 전용 GPU는 고를 수 없어 셈에서 뺐습니다.</span>}
-      </label>
+        <span className="muted small">
+          {targets.length > 1 ? "고른 서버 중 GPU가 먼저 비는 쪽에서 학습합니다(번호로 고르려면 서버를 하나만 고르세요). " : ""}
+          {kept ? "사람 전용 GPU는 고를 수 없어 셈에서 뺐습니다." : ""}
+        </span>
+      </>
     );
   }
-  const ticked = Array.isArray(pick) ? pick : [];
-  const toggle = (index: number) => {
-    const next = ticked.includes(index) ? ticked.filter((i) => i !== index) : [...ticked, index].sort((a, b) => a - b);
-    onPick(next.length ? next : "auto");
-  };
-  const waiting = gpus.filter((g) => ticked.includes(g.index) && g.state !== "free");
-  return (
-    <div className="gpu-field">
-      <div className="eyebrow">GPU — {one.name}</div>
-      <div className="gpu-pick">
-        <button type="button" className={`chip ${pick === "auto" ? "active" : ""}`} onClick={() => onPick("auto")}>
-          자동
-        </button>
-        <button type="button" className={`chip ${pick === "cpu" ? "active" : ""}`} onClick={() => onPick("cpu")}>
-          CPU만
-        </button>
-        {gpus.map((g) => {
-          const label = `GPU ${g.index}${g.name ? ` · ${g.name.replace(/^NVIDIA (GeForce )?/, "")}` : ""}`;
-          const who = g.users.length ? g.users.join(", ") : "";
-          const why = g.reserved
-            ? `사람 전용${who ? ` · ${who}` : ""}`
-            : g.state === "busy" && who
-              ? `사용 중: ${who}`
-              : GPU_STATE[g.state];
-          return (
-            <button
-              type="button"
-              key={g.index}
-              className={`chip gpu ${g.state} ${ticked.includes(g.index) ? "active" : ""}`}
-              disabled={g.reserved}
-              aria-pressed={ticked.includes(g.index)}
-              title={g.reserved ? "사람 전용으로 빼 둔 GPU입니다 (노드 설정)" : why}
-              onClick={() => toggle(g.index)}
-            >
-              {label} <span>{why}</span>
-            </button>
-          );
-        })}
-      </div>
-      <p className="muted small">
-        {pick === "auto"
-          ? "비어 있는 GPU 1개를 씁니다."
-          : pick === "cpu"
-            ? "GPU 없이 CPU로 학습합니다."
-            : `GPU ${ticked.join(", ")} (${ticked.length}개)로 학습합니다.` +
-              (waiting.length ? ` 지금 쓰이고 있는 GPU ${waiting.map((g) => g.index).join(", ")}이(가) 비면 시작합니다.` : "")}
-      </p>
-    </div>
-  );
+  return <GpuChips gpus={gpus} pick={pick} onPick={onPick} multi doing="학습합니다" />;
 }
 
+/** A server a copy is sent to, as the shared rows read it. */
+function receiving(n: NodeChoice): PlaceServer {
+  return {
+    id: n.id,
+    name: n.name,
+    status: n.status,
+    gpus: n.gpus,
+    fits: true,
+    why: "",
+    transfer: true,
+    images: "",
+    cache: { dir: n.cache_dir ?? "", free_gb: n.cache_free_gb, auto: Boolean(n.cache_auto) },
+  };
+}
+
+/** Where a run's images come from: the picked servers that have them, or the one that receives them first. */
+function trainCopy(choices: NodeChoices, mode: "auto" | "pick", picked: string[]) {
+  const chosen = mode === "pick" ? choices.nodes.filter((n) => picked.includes(n.id)) : [];
+  const ready = chosen.filter((n) => n.images);
+  // The Hub's pick when none of them has the images: online first, then the one with the most GPUs.
+  const receiver = ready.length
+    ? undefined
+    : [...chosen].sort((a, b) => Number(b.status === "online") - Number(a.status === "online") || b.gpus - a.gpus)[0];
+  const targets = ready.length ? ready : receiver ? [receiver] : [];
+  return {
+    chosen,
+    ready,
+    receiver,
+    copied: targets.some((n) => n.images !== "registered"), // a copy from elsewhere is (or will be) there
+    short: Boolean(receiver && spaceShort(receiving(receiver), choices.bytes)),
+  };
+}
+
+/** 서버 and 이미지 rows of 새 학습: the servers it may train on, picked (never chosen for you); a pipeline step
+ * may leave it to the servers holding the version it runs on. */
 function NodeField({
   choices,
   mode,
   onMode,
   picked,
   onPicked,
-  dataAfter,
-  onDataAfter,
-  sweep,
+  pipeline,
 }: {
   choices: NodeChoices;
   mode: "auto" | "pick";
   onMode: (mode: "auto" | "pick") => void;
   picked: string[];
   onPicked: (ids: string[]) => void;
-  dataAfter: "keep" | "delete";
-  onDataAfter: (value: "keep" | "delete") => void;
-  sweep: boolean; // a search: the copy goes (or stays) once all its runs are over
+  pipeline: boolean;
 }) {
   const source = choices.nodes.find((n) => n.id === choices.source);
-  const chosen = choices.nodes.filter((n) => picked.includes(n.id));
-  const ready = chosen.filter((n) => n.images);
-  // The Hub's pick when none of them has the images: online first, then the one with the most GPUs.
-  const receiver = [...chosen].sort((a, b) => Number(b.status === "online") - Number(a.status === "online") || b.gpus - a.gpus)[0];
+  const { chosen, ready, receiver } = trainCopy(choices, mode, picked);
   const toggle = (id: string) => onPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
-  // Where it will train holds a copy sent from elsewhere (or will receive one): what becomes of it afterwards
-  const targets = ready.length ? ready : receiver ? [receiver] : [];
-  const copied = targets.some((n) => n.images !== "registered");
-  const when = sweep ? "탐색이 모두 끝나면" : "학습이 끝나면";
   return (
-    <div className="node-field">
-      <label>
-        학습할 노드
-        <select value={mode} onChange={(e) => onMode(e.target.value as "auto" | "pick")}>
-          <option value="auto">자동 — 이미지가 있는 {source?.name ?? "노드"}</option>
-          <option value="pick">노드 고르기</option>
-        </select>
-      </label>
-      {mode === "pick" && (
-        <>
+    <>
+      <PlaceRow label="서버">
+        {pipeline && (
+          <select value={mode} onChange={(e) => onMode(e.target.value as "auto" | "pick")} aria-label="학습할 서버">
+            <option value="auto">자동 — 그때 이미지가 있는 서버</option>
+            <option value="pick">서버 고르기</option>
+          </select>
+        )}
+        {mode === "pick" && (
           <div className="node-pick">
             {choices.nodes.map((n) => {
               const blocked = !n.enabled
@@ -492,41 +461,23 @@ function NodeField({
               );
             })}
           </div>
-          {chosen.length > 0 && ready.length > 0 && (
-            <p className="muted small">
-              이미지가 있는 {ready.map((n) => n.name).join(", ")}에서 학습합니다{ready.length > 1 ? " (GPU가 먼저 비는 쪽)" : ""}.
-            </p>
-          )}
-          {chosen.length > 0 && ready.length === 0 && receiver && (
-            <p className="muted small">
-              고른 노드에 이미지가 없어, {receiver.name}가 먼저 {source?.name ?? "이미지가 있는 노드"}에서 {choices.items.toLocaleString()}장 (
-              {gbText(choices.bytes)})을 직접 받은 뒤 학습합니다. 받는 동안 GPU는 잡지 않습니다.
-              {receiver.cache_free_gb != null && receiver.cache_free_gb * GB < choices.bytes && (
-                <span className="bad-text"> 보관 위치의 남은 공간({receiver.cache_free_gb} GB)이 모자랍니다 — 노드 설정에서 바꾸세요.</span>
-              )}
-            </p>
-          )}
-          {chosen.length > 0 && copied && (
-            <div className="data-after">
-              <div className="segmented" role="radiogroup" aria-label="보낸 데이터">
-                <span className="eyebrow">{when} 이 서버로 보낸 데이터를</span>
-                <button type="button" className={dataAfter === "keep" ? "active" : ""} onClick={() => onDataAfter("keep")}>
-                  남겨 두기
-                </button>
-                <button type="button" className={dataAfter === "delete" ? "active" : ""} onClick={() => onDataAfter("delete")}>
-                  지우기
-                </button>
-              </div>
-              <span className="muted small">
-                {dataAfter === "keep"
-                  ? "같은 버전으로 다시 학습하면 바로 시작합니다. 버전 화면에서 언제든 지울 수 있습니다."
-                  : `${sweep ? "탐색이 끝나면" : "학습이 성공하면"} 지웁니다. 실패하면 이어서 실행할 수 있게 남깁니다.`}
-              </span>
-            </div>
-          )}
-        </>
+        )}
+        {mode === "pick" && chosen.length === 0 && (
+          <span className="muted small">학습할 서버를 고르세요. 여럿을 고르면 GPU가 먼저 비는 쪽에서 학습합니다.</span>
+        )}
+      </PlaceRow>
+      {chosen.length > 0 && (
+        <PlaceRow label="이미지">
+          {ready.length > 0 ? (
+            <span className="muted small">
+              이미지가 있는 {ready.map((n) => n.name).join(", ")}에서 바로 학습합니다{ready.length > 1 ? " (GPU가 먼저 비는 쪽)" : ""}.
+            </span>
+          ) : receiver ? (
+            <ImagesNote server={receiving(receiver)} holder={source?.name} items={choices.items} bytes={choices.bytes} />
+          ) : null}
+        </PlaceRow>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1407,7 +1358,8 @@ export function NewRun({
   const runTask = tree?.find((d) => d.releases.some((r) => r.id === release))?.task ?? task;
   const [goalMetric, setGoalMetric] = useState(keyMetrics(runTask)[0]);
   const [choices, setChoices] = useState<NodeChoices | null>(null);
-  const [nodeMode, setNodeMode] = useState<"auto" | "pick">(givenNodes.length ? "pick" : "auto");
+  // the servers are picked; only a pipeline step may leave them to the version it runs on
+  const [nodeMode, setNodeMode] = useState<"auto" | "pick">(givenNodes.length || !settingsFor ? "pick" : "auto");
   const [pickedNodes, setPickedNodes] = useState<string[]>(givenNodes);
   const [dataAfter, setDataAfter] = useState<"keep" | "delete">(given.data_after === "delete" ? "delete" : "keep");
   const [gpuPick, setGpuPick] = useState<GpuPick>("auto");
@@ -1561,6 +1513,8 @@ export function NewRun({
     };
   }, [checkKey]); // checkKey stands for everything the check reads
   const blocked = (preflight?.problems.length ?? 0) > 0;
+  const copy = choices ? trainCopy(choices, nodeMode, pickedNodes) : null;
+  const unpicked = nodeMode === "pick" && pickedNodes.length === 0;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -1747,29 +1701,39 @@ export function NewRun({
             </p>
           )}
           {choices && (
-            <NodeField
-              choices={choices}
-              mode={nodeMode}
-              onMode={setNodeMode}
-              picked={pickedNodes}
-              onPicked={setPickedNodes}
-              dataAfter={dataAfter}
-              onDataAfter={setDataAfter}
-              sweep={trials.length > 0}
-            />
-          )}
-          {choices && (
-            <GpuField
-              targets={targets}
-              pick={gpuPick}
-              onPick={setGpuPick}
-              count={extra.gpus}
-              onCount={(gpus) => setExtra({ ...extra, gpus })}
-            />
-          )}
-          {/* a pipeline makes the vectors in a step of its own (임베딩), as 검수 */}
-          {choices && trials.length === 0 && !settingsFor && (
-            <EmbedField info={embedInfo} on={embed} onChange={setEmbed} roleless={roleless} later={later} />
+            <PlaceGrid>
+              <NodeField
+                choices={choices}
+                mode={nodeMode}
+                onMode={setNodeMode}
+                picked={pickedNodes}
+                onPicked={setPickedNodes}
+                pipeline={Boolean(settingsFor)}
+              />
+              <PlaceRow label="GPU">
+                <GpuField targets={targets} pick={gpuPick} onPick={setGpuPick} count={extra.gpus} onCount={(gpus) => setExtra({ ...extra, gpus })} />
+              </PlaceRow>
+              {copy?.copied && (
+                <PlaceRow label="보낸 데이터">
+                  <DataAfterChoice
+                    value={dataAfter}
+                    onChange={setDataAfter}
+                    when={trials.length > 0 ? "탐색이 모두 끝나면" : "학습이 끝나면"}
+                    deleteNote={
+                      trials.length > 0
+                        ? "탐색이 모두 끝나면 이 서버로 보낸 이미지를 지웁니다."
+                        : "학습이 성공하면 이 서버로 보낸 이미지를 지웁니다. 실패하면 이어서 실행할 수 있게 남깁니다."
+                    }
+                  />
+                </PlaceRow>
+              )}
+              {/* a pipeline makes the vectors in a step of its own (임베딩), as 검수 */}
+              {trials.length === 0 && !settingsFor && (
+                <PlaceRow label="임베딩">
+                  <EmbedField info={embedInfo} on={embed} onChange={setEmbed} roleless={roleless} later={later} />
+                </PlaceRow>
+              )}
+            </PlaceGrid>
           )}
 
           {settingsFor ? (
@@ -1929,7 +1893,7 @@ export function NewRun({
             <button type="button" onClick={onClose}>
               취소
             </button>
-            <button className="primary" disabled={busy || !release || !template || blocked || noClass}>
+            <button className="primary" disabled={busy || !release || !template || blocked || noClass || unpicked || Boolean(copy?.short)}>
               {settingsFor ? "설정 적용" : trials.length > 0 ? "탐색 시작" : "학습 시작"}
             </button>
           </div>

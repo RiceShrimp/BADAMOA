@@ -74,6 +74,8 @@ class Start(BaseModel):
     accept: float | None = None  # images whose predictions all reach it are saved and sent on at once
     gpus: int | None = None  # 0: on the CPU (by default a GPU when the server has one)
     node_id: str = ""  # where it runs ("" the server holding the images); another one receives the images first
+    gpu_indices: list[int] | None = None  # that GPU of the server (one)
+    data_after: str = ""  # keep | delete: the copy the server received, once it is over
 
 
 @router.post("")
@@ -81,8 +83,9 @@ def start(body: Start, user: User = Depends(current_user), db: Session = Depends
     """Start one: over a set, or over a dataset's images nobody labelled yet (a set of them is made first)."""
     if body.set_id:
         op = autolabel.start(
-            db, user, body.set_id, body.model_id, keep=body.keep, accept=body.accept, gpus=body.gpus, node_id=body.node_id
-        )
+            db, user, body.set_id, body.model_id, keep=body.keep, accept=body.accept, gpus=body.gpus, node_id=body.node_id,
+            gpu_indices=body.gpu_indices, data_after=body.data_after,
+        )  # fmt: skip
         set_id = body.set_id
     elif body.release_id:
         found, op = autolabel.start_on_images(
@@ -98,6 +101,8 @@ def start(body: Start, user: User = Depends(current_user), db: Session = Depends
             accept=body.accept,
             gpus=body.gpus,
             node_id=body.node_id,
+            gpu_indices=body.gpu_indices,
+            data_after=body.data_after,
         )
         set_id = found.id
     else:

@@ -533,6 +533,10 @@ def _clean_embed(db: Session, dataset: Dataset | None, config: dict[str, Any], *
     out: dict[str, Any] = {}
     _gpus_of(config, out)
     _place_of(db, config, out, "embed", dataset)
+    if config.get("data_after") not in (None, "", "keep", "delete"):
+        raise ServiceError(400, "임베딩의 보낸 데이터는 keep(남겨 두기) 또는 delete(지우기)입니다.")
+    if config.get("data_after"):
+        out["data_after"] = config["data_after"]
     return out
 
 
@@ -1335,7 +1339,10 @@ def _begin(
         else:
             if settings is None:
                 raise ServiceError(409, "임베딩 단계를 시작할 수 없습니다 (Hub 설정 없음).")
-            job = embeddings.start_alone(db, settings, owner, release.id, c.get("node_id", ""), via=via, gpus=c.get("gpus"))
+            job = embeddings.start_alone(
+                db, settings, owner, release.id, c.get("node_id", ""), via=via, gpus=c.get("gpus"),
+                data_after=c.get("data_after", ""),
+            )  # fmt: skip
             refs = {"release_id": release.id, "job_id": job.id}
     elif kind == "sync":
         node = services.get_node(db, c["node_id"])

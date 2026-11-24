@@ -1,6 +1,7 @@
 import { FileList } from "./Files";
 import { LoggedTable } from "./Media";
 import { type FormEvent, Fragment, useEffect, useState } from "react";
+import { DataAfterChoice, type GpuChoice, GpuChips, ImagesNote, PlaceGrid, PlaceRow, type PlaceServer, ServerSelect, copiedTo, gpuBody, spaceShort } from "./ServerPlace";
 import { api, apiUpload } from "./api";
 import { type ReleaseInfo, type TreeDataset, sameTask, taskLabel } from "./catalogTypes";
 import { METRIC_LABEL, type ModelDetail, type ModelOp, keyMetrics, metric } from "./trainTypes";
@@ -270,14 +271,7 @@ interface DialogProps {
 }
 
 /** A server a model's evaluation, export or test can run on, as the Hub sees it. */
-interface Place {
-  id: string;
-  name: string;
-  status: string;
-  gpus: number;
-  fits: boolean;
-  why: string; // why it cannot, when it cannot
-  transfer: boolean; // an evaluation there receives the version's images first
+interface Place extends PlaceServer {
   trained_here: boolean;
   holds_images: boolean;
 }
@@ -285,7 +279,75 @@ interface Place {
 export interface Places {
   kind: string;
   default: string;
+  holder: { id: string; name: string } | null; // an evaluation: the server holding the version's images
+  items: number; // an evaluation: what a server without them receives first
+  bytes: number;
   nodes: Place[];
+}
+
+/**
+ * An evaluation's server, as 새 학습 asks it: picked (never chosen for you), what happens to the version's images,
+ * its GPU, and what becomes of a copy sent there. ``ready``: a server that fits, with room for the copy.
+ */
+export function useEvalPlace(places: Places | null | undefined) {
+  const [node, setNode] = useState("");
+  useEffect(() => setNode(""), [places]);
+  const [gpu, setGpu] = useState<GpuChoice>("auto");
+  useEffect(() => setGpu("auto"), [node]);
+  const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
+  const server = places?.nodes.find((n) => n.id === node);
+  const copied = copiedTo(server);
+  return {
+    node,
+    setNode,
+    gpu,
+    setGpu,
+    dataAfter,
+    setDataAfter,
+    server,
+    copied,
+    ready: Boolean(server?.fits) && !spaceShort(server, places?.bytes ?? 0),
+    body: { node_id: node, ...gpuBody(gpu, server), data_after: copied ? dataAfter : "" },
+  };
+}
+
+export function EvalPlaceFields({
+  places,
+  error,
+  place,
+}: {
+  places: Places | null | undefined;
+  error?: string | null;
+  place: ReturnType<typeof useEvalPlace>;
+}) {
+  if (error) return <div className="error small">{error}</div>;
+  if (!places) return <p className="muted small">실행할 서버를 찾는 중…</p>;
+  const { server } = place;
+  return (
+    <PlaceGrid>
+      <PlaceRow label="서버">
+        <ServerSelect servers={places.nodes} value={place.node} onChange={place.setNode} />
+        {!places.nodes.some((n) => n.fits) && (
+          <span className="bad-text small">실행할 수 있는 서버가 없습니다. {places.nodes.map((n) => `${n.name}: ${n.why}`).join(" / ")}</span>
+        )}
+      </PlaceRow>
+      {server && (
+        <PlaceRow label="이미지">
+          <ImagesNote server={server} holder={places.holder?.name} items={places.items} bytes={places.bytes} />
+        </PlaceRow>
+      )}
+      {server?.fits && (server.gpu_list ?? []).length > 0 && (
+        <PlaceRow label="GPU">
+          <GpuChips gpus={server.gpu_list ?? []} pick={place.gpu} onPick={place.setGpu} doing="평가합니다" />
+        </PlaceRow>
+      )}
+      {server?.fits && place.copied && (
+        <PlaceRow label="보낸 데이터">
+          <DataAfterChoice value={place.dataAfter} onChange={place.setDataAfter} when="평가가 끝나면" />
+        </PlaceRow>
+      )}
+    </PlaceGrid>
+  );
 }
 
 export function usePlaces(modelId: string, kind: "eval" | "export" | "predict", releaseId = "") {
@@ -376,8 +438,8 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
   const [release, setRelease] = useState(model.release?.id ?? "");
   const [split, setSplit] = useState("val");
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [node, setNode] = useState("");
   const { data: places, error: placesError } = usePlaces(model.id, "eval", release);
+  const place = useEvalPlace(places);
   const { error, busy, submit } = useSubmit(onStarted);
 
   // Offer only the parts this release has, with how many images each holds.
@@ -407,7 +469,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    void submit(() => api(`/models/${model.id}/eval`, { body: { release_id: release, split, node_id: node } }));
+    void submit(() => api(`/models/${model.id}/eval`, { body: { release_id: release, split, ...place.body } }));
   };
 
   return (
@@ -470,7 +532,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
           </p>
         )}
         {fitting.length === 0 && tree && <div className="notice">이 프로젝트에는 이 모델로 평가할 {taskLabel(model.task)} 데이터셋이 없습니다.</div>}
-        {release && <PlacePicker places={places} error={placesError} value={node} onChange={setNode} />}
+        {release && <EvalPlaceFields places={places} error={placesError} place={place} />}
         {split === "train" && release === model.release?.id && (
           <div className="notice">이 모델이 학습에 쓴 이미지가 들어 있습니다. 지표가 실제보다 높게 나옵니다.</div>
         )}
@@ -479,7 +541,7 @@ function EvalDialog({ model, onClose, onStarted }: DialogProps) {
           <button type="button" onClick={onClose}>
             취소
           </button>
-          <button className="primary" disabled={busy || !release || !placeReady(places, node)}>
+          <button className="primary" disabled={busy || !release || !place.ready}>
             평가 시작
           </button>
         </div>

@@ -140,15 +140,26 @@ def test_autolabel_runs_on_a_server_picked_which_receives_the_images_first(two_n
     assert client.get("/api/label-sets", params={"project_id": project["id"]}).json() == []
     wrong = {"release_id": raw, "model_id": model["id"], "node_id": "nope"}
     assert client.post("/api/autolabel", json=wrong).status_code == 404
+    # as 새 학습 shows a server: its GPUs, that the images come first, where a copy goes and the room there
+    assert by[worker]["images"] == "" and by[data]["images"] == "registered" and isinstance(by[worker]["gpu_list"], list)
+    assert set(by[worker]["cache"]) == {"dir", "free_gb", "auto"} and servers["items"] == 8 and servers["bytes"] > 0
+    odd = {"release_id": raw, "model_id": model["id"], "node_id": worker, "gpus": 0, "data_after": "later"}
+    assert client.post("/api/autolabel", json=odd).status_code == 400
+    odd = {"release_id": raw, "model_id": model["id"], "node_id": worker, "gpu_indices": [9]}
+    refused = client.post("/api/autolabel", json=odd)
+    assert refused.status_code == 400 and "GPU 9" in refused.json()["detail"]
+    assert client.get("/api/label-sets", params={"project_id": project["id"]}).json() == []  # none kept
 
     # ---- on the server picked: the set's images come first (only those), then it labels them
     body = {"release_id": raw, "model_id": model["id"], "accept": 0.9, "gpus": 0, "node_id": worker, "split": "train"}
-    started = client.post("/api/autolabel", json=body)
+    started = client.post("/api/autolabel", json={**body, "data_after": "delete"})
     assert started.status_code == 200, started.text
     first = started.json()
     done = _wait(client, first["job_id"])
     assert done["status"] == "succeeded", _logs(client, first["job_id"])
     assert done["node_id"] == worker
+    # the job says what becomes of the copy, and which version it reads (its copy is spared while it runs)
+    assert done["params"]["data_after"] == "delete" and done["params"]["release_id"]
     (sync,) = [j for j in client.get("/api/jobs?limit=30").json() if j["type"] == "data.sync"]
     assert sync["status"] == "succeeded" and sync["node_id"] == worker and sync["params"]["set_id"] == first["set_id"]
     made = client.get(f"/api/label-sets/{first['set_id']}").json()

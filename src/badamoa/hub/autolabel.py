@@ -138,6 +138,8 @@ def start(
     gpus: int | None = None,
     via: str = "ui",
     node_id: str = "",
+    gpu_indices: list[int] | None = None,
+    data_after: str = "",
 ) -> ModelJob:
     """Run the model over the set's images not labelled yet, on the server that has them or on ``node_id``, which
     receives them first when it has none (only the set's images still to label, like a training's or an evaluation's
@@ -176,12 +178,19 @@ def start(
         raise ServiceError(409, f"{node.name}의 MOA를 {need} 이상으로 업데이트해야 오토라벨을 돌릴 수 있습니다.")
     # the model numbers its classes 0..n-1: each one's id in this dataset, by name (None: not in it, dropped)
     class_ids = [names.get(name) for name in model.classes or []]
-    gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else max(0, min(int(gpus), 1))
+    picked = transfers.picked_gpus(node, gpu_indices, gpus)
+    data_after = transfers.data_after_of(data_after, node.id, holder.id)
+    if picked:
+        gpus = len(picked)
+    else:
+        gpus = (1 if (node.info or {}).get("gpus") else 0) if gpus is None else max(0, min(int(gpus), 1))
     params = {"conf": keep, "keep": keep, "accept": accept, "set_id": found.id}
-    extra = {"class_ids": class_ids}
+    # the version too: its copy on that server is spared while it runs, and kept or removed as asked once over
+    extra = {"class_ids": class_ids, "release_id": release.id}
     op = modelops._start(
-        db, user, model, "autolabel", node, params, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after
-    )
+        db, user, model, "autolabel", node, params, release_id=release.id, extra=extra, gpus=gpus, via=via, after=after,
+        gpu_indices=picked, data_after=data_after,
+    )  # fmt: skip
     found.autolabel = {
         "op_id": op.id,
         "model": {"id": model.id, "name": model.name, "version": model.version},
@@ -535,7 +544,7 @@ def targets(db: Session, project_id: str) -> dict[str, Any]:
     return {"sets": sets, "datasets": datasets}
 
 
-def _servers(db: Session, settings: HubSettings, release: Release) -> dict[str, Any]:
+def _servers(db: Session, settings: HubSettings, release: Release, set_id: str = "") -> dict[str, Any]:
     """The servers it can run on, as for an evaluation: the one holding the images, or another one, which receives
     the set's images first. Each with whether it can and why not; the one picked unless another is: the holder when it
     can, else the first that can (one that has the images first)."""
@@ -543,7 +552,13 @@ def _servers(db: Session, settings: HubSettings, release: Release) -> dict[str, 
         holder = training.data_node(db, release.id)
     except ServiceError as e:
         return {"default": "", "holder": None, "nodes": [], "problem": e.message}
+    from . import resources  # noqa: PLC0415
+
     have = transfers.holders(db, release.id)
+    assigned = resources.assignments(db)
+    # what a server without the images receives: the set's images still to label (a dataset's: its version's)
+    only = select(LabelSetItem.item_id).where(LabelSetItem.set_id == set_id, LabelSetItem.state == "todo")
+    items, size = transfers.release_bytes(db, release.id, only if set_id else None)
     found = []
     for node in db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)):
         why: list[str] = []
@@ -574,6 +589,7 @@ def _servers(db: Session, settings: HubSettings, release: Release) -> dict[str, 
                 "why": " · ".join(dict.fromkeys(why)),
                 "transfer": transfer,  # the set's images are sent there first
                 "holds_images": node.id == holder.id,
+                **transfers.place_info(node, settings, status_now, assigned.get(node.id), holder.id, have),
             }
         )
     fitting = [f for f in found if f["fits"]]
@@ -582,7 +598,14 @@ def _servers(db: Session, settings: HubSettings, release: Release) -> dict[str, 
     )
     default = (first or (fitting[0] if fitting else None) or {"id": holder.id})["id"]
     found.sort(key=lambda f: (f["id"] != default, not f["fits"], f["name"]))
-    return {"default": default, "holder": {"id": holder.id, "name": holder.name}, "nodes": found, "problem": ""}
+    return {
+        "default": default,
+        "holder": {"id": holder.id, "name": holder.name},
+        "items": items,
+        "bytes": size,
+        "nodes": found,
+        "problem": "",
+    }
 
 
 def offer(db: Session, settings: HubSettings, set_id: str = "", release_id: str = "") -> dict[str, Any]:
@@ -601,7 +624,7 @@ def offer(db: Session, settings: HubSettings, set_id: str = "", release_id: str 
         "todo": todo,
         "keep": KEEP,
         "models": _models(db, project_id, release),
-        "servers": _servers(db, settings, release),
+        "servers": _servers(db, settings, release, set_id),
     }
 
 
@@ -622,6 +645,8 @@ def start_on_images(
     node_id: str = "",
     parts: int = 0,
     instructions: str = "",
+    gpu_indices: list[int] | None = None,
+    data_after: str = "",
 ) -> tuple[LabelSet, ModelJob]:
     """A dataset's images nobody labelled yet (of one split, or all): a labeling set of them, labelled by the model
     first. People take its parts as with any set (``parts``, ``instructions``: as ``labeling.create_set``)."""
@@ -644,4 +669,7 @@ def start_on_images(
             where = f"{split}에 " if split else ""
             raise ServiceError(400, f"이 데이터셋의 {where}아직 라벨링하지 않은 이미지가 없습니다.") from e
         raise
-    return found, start(db, user, found.id, model_id, keep=keep, accept=accept, gpus=gpus, via=via, node_id=node_id)
+    return found, start(
+        db, user, found.id, model_id, keep=keep, accept=accept, gpus=gpus, via=via, node_id=node_id,
+        gpu_indices=gpu_indices, data_after=data_after,
+    )  # fmt: skip

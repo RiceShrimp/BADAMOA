@@ -281,13 +281,27 @@ def forget(db: Session, release_ids: list[str], user_id: str | None = None, via:
 # ---- when jobs end -------------------------------------------------------------------------------
 
 
-def _after_run(db: Session, job: Job) -> None:
-    """A training ended: what it asked for the copy its server received."""
-    run = db.scalar(select(Run).where(Run.job_id == job.id))
-    if run is None or run.sweep_id or not job.node_id:
-        return  # a search's runs leave it to the search (``after_sweep``)
-    choice = (run.config or {}).get("data_after", "")
-    row = db.get(NodeRelease, (job.node_id, run.release_id))
+def _kept_by_another(db: Session, job: Job, node_id: str, release_id: str) -> bool:
+    """A training, an evaluation, a 오토라벨 or an embedding still to come on that node asked to keep the copy there."""
+    for other in db.scalars(
+        select(Job).where(Job.type.in_(("train.run", "model.run", "model.embed")), Job.status.in_(ACTIVE), Job.id != job.id)
+    ):
+        if not _on_node(other, node_id):
+            continue
+        if other.type != "train.run":
+            params = other.params or {}
+            if params.get("release_id") == release_id and params.get("data_after") == "keep":
+                return True
+            continue
+        later = db.scalar(select(Run).where(Run.job_id == other.id))
+        if later is not None and later.release_id == release_id and (later.config or {}).get("data_after") == "keep":
+            return True
+    return False
+
+
+def _after_use(db: Session, job: Job, release_id: str, choice: str) -> None:
+    """A job that asked what becomes of its server's copy ended: kept, held (it failed), or marked to go."""
+    row = db.get(NodeRelease, (job.node_id, release_id))
     if row is None or not choice:
         return  # registered there, or never received there
     if choice == "keep":
@@ -296,19 +310,27 @@ def _after_run(db: Session, job: Job) -> None:
         return
     if job.status != "succeeded":
         if row.state == "":
-            row.state = "held"  # kept so the run can continue; removed from the screens when no longer wanted
+            row.state = "held"  # kept so the job can be run again; removed from the screens when no longer wanted
         return
-    for other in db.scalars(select(Job).where(Job.type == "train.run", Job.status.in_(ACTIVE), Job.id != job.id)):
-        later = db.scalar(select(Run).where(Run.job_id == other.id))
-        if (
-            later is not None
-            and later.release_id == run.release_id
-            and (later.config or {}).get("data_after") == "keep"
-            and _on_node(other, job.node_id)
-        ):
-            return  # a run still to come there wants it kept
+    if _kept_by_another(db, job, str(job.node_id), release_id):
+        return  # a job still to come there wants it kept
     if row.state != "removing":
         row.state = "remove"
+
+
+def _after_run(db: Session, job: Job) -> None:
+    """A training ended: what it asked for the copy its server received."""
+    run = db.scalar(select(Run).where(Run.job_id == job.id))
+    if run is None or run.sweep_id or not job.node_id:
+        return  # a search's runs leave it to the search (``after_sweep``)
+    _after_use(db, job, run.release_id, (run.config or {}).get("data_after", ""))
+
+
+def _after_job(db: Session, job: Job) -> None:
+    """An evaluation, a 오토라벨 or an embedding ended: what it asked for the copy its server received."""
+    params = job.params or {}
+    if job.node_id and params.get("release_id"):
+        _after_use(db, job, str(params["release_id"]), str(params.get("data_after") or ""))
 
 
 def after_sweep(db: Session, sweep: Sweep) -> None:
@@ -377,6 +399,8 @@ def on_job_finished(db: Session, job: Job) -> None:
         return
     if job.type == "train.run":
         _after_run(db, job)
+    if job.type in ("model.run", "model.embed"):
+        _after_job(db, job)
     release_id = str((job.params or {}).get("release_id") or "")
     if job.type in USING and job.node_id and release_id:
         settle(db, job.node_id, release_id, job.created_by)

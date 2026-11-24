@@ -1666,3 +1666,14 @@ label.check {
 .embed-field p {
   margin: 4px 0 0 24px;
 }
+
+/* 새 학습's rows (서버 · 이미지 · GPU · 보낸 데이터 · 임베딩) take their spacing from the place grid */
+.place-body .embed-field {
+  margin: 0;
+}
+.place-body .embed-field p {
+  margin: 4px 0 0 24px;
+}
+.place-body > .node-pick {
+  margin: 0;
+}

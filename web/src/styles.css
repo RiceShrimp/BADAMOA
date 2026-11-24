@@ -1733,3 +1733,57 @@ td.env-cell {
 .vector-move {
   margin: 10px 0 6px;
 }
+
+/* where a job runs (새 학습 · 새 임베딩 · 새 오토라벨 · 모델로 검사하기): rows of a label and the choice */
+.place-grid {
+  display: grid;
+  grid-template-columns: 6.5em minmax(0, 1fr);
+  align-items: baseline;
+  gap: 14px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.place-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.place-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  justify-items: start;
+}
+.place-body > select,
+.place-body > .node-pick {
+  width: 100%;
+  margin: 0;
+}
+.place-body .gpu-pick {
+  margin: 0;
+}
+.place-body .segmented button {
+  border-color: var(--border);
+}
+.place-body .segmented button.active {
+  border-color: var(--border-strong);
+}
+.place-where code {
+  word-break: break-all;
+}
+.place-grid select.unpicked {
+  color: var(--muted);
+}
+.place-grid select.unpicked option {
+  color: var(--text);
+}
+@media (max-width: 560px) {
+  .place-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .place-label {
+    margin-top: 10px;
+  }
+}

@@ -176,6 +176,8 @@ export interface NodeChoice {
   gpu_list?: NodeGpu[];
   images: "" | "registered" | "received"; // "": they would be copied there first
   cache_free_gb: number | null;
+  cache_dir?: string; // where a copy goes there (its 받은 이미지 보관 위치)
+  cache_auto?: boolean; // picked by the node (the disk with the most room when the first copy came)
   can_receive: boolean;
 }
 

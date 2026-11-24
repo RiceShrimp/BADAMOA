@@ -1129,6 +1129,13 @@ function StepEditor({
                 <option value="cpu">CPU</option>
               </select>
             </label>
+            <label>
+              끝나면 이 서버로 보낸 데이터를
+              <select value={c.data_after === "delete" ? "delete" : "keep"} onChange={(e) => set({ data_after: e.target.value === "delete" ? "delete" : undefined })}>
+                <option value="keep">남겨 두기</option>
+                <option value="delete">지우기 (성공하면)</option>
+              </select>
+            </label>
           </div>
           {placeHint}
         </>

@@ -4,6 +4,7 @@ import { type BoardProject, useBoardFilter } from "./Boards";
 import { TaskTags, rememberProject } from "./DataBoard";
 import { type Order, OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { ProjectPicker, useProject } from "./ProjectPicker";
+import { DataAfterChoice, type GpuChoice, GpuChips, ImagesNote, PlaceGrid, PlaceRow, type PlaceServer, ServerSelect, copiedTo, gpuBody, spaceShort } from "./ServerPlace";
 import { LogTail } from "./Training";
 import { api } from "./api";
 import type { AutolabelModel, AutolabelStatus } from "./catalogTypes";
@@ -102,23 +103,12 @@ interface Targets {
   datasets: TargetDataset[];
 }
 
-/** A server it can run on: the one holding the images, or another one, which receives the set's images first. */
-interface Server {
-  id: string;
-  name: string;
-  status: string;
-  gpus: number;
-  fits: boolean;
-  why: string;
-  transfer: boolean;
-  holds_images: boolean;
-}
-
 interface Offer {
   todo: number | null;
   keep: number;
   models: AutolabelModel[];
-  servers: { default: string; holder: { id: string; name: string } | null; nodes: Server[]; problem: string };
+  // the servers it can run on: the one holding the images, or another one, which receives the images first
+  servers: { default: string; holder: { id: string; name: string } | null; items: number; bytes: number; nodes: PlaceServer[]; problem: string };
 }
 
 const STATUS_KIND: Record<string, string> = {
@@ -861,11 +851,14 @@ export function StartAutolabel({
   const [keep, setKeep] = useState(startKeep ?? 0.25);
   const [accepting, setAccepting] = useState(startAccept != null);
   const [accept, setAccept] = useState(startAccept ?? 0.8);
-  const [cpu, setCpu] = useState(false);
+  // the server is picked, never chosen for you; a pick that no longer fits is let go
   const [nodeId, setNodeId] = useState("");
   useEffect(() => {
-    if (offer && !offer.servers.nodes.some((s) => s.id === nodeId && s.fits)) setNodeId(offer.servers.default);
+    if (offer && !offer.servers.nodes.some((s) => s.id === nodeId && s.fits)) setNodeId("");
   }, [offer]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [gpu, setGpu] = useState<GpuChoice>("auto");
+  useEffect(() => setGpu("auto"), [nodeId]);
+  const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -877,14 +870,26 @@ export function StartAutolabel({
       ? (targets?.sets.find((s) => s.id === chosenSet)?.review ?? true)
       : review;
   const images = fixedSet || mode === "set" ? (offer?.todo ?? targets?.sets.find((s) => s.id === chosenSet)?.todo ?? 0) : unlabelled(dataset, split);
-  const blocked = !query || !modelId || images === 0 || !server?.fits || (accepting && accept < keep);
+  // what a server without the images receives: the set's images to label (a dataset's: its unlabelled ones, about)
+  const setSized = fixedSet || mode === "set";
+  const sendItems = setSized ? (servers?.items ?? images) : images;
+  const sendBytes = !servers ? 0 : setSized ? servers.bytes : Math.round((servers.bytes * images) / Math.max(1, servers.items));
+  const short = spaceShort(server, sendBytes);
+  const copied = copiedTo(server);
+  const blocked = !query || !modelId || images === 0 || !server?.fits || short || (accepting && accept < keep);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const gpus = cpu || !server?.gpus ? 0 : null;
-    const common = { model_id: modelId, keep, accept: accepting ? accept : null, gpus, node_id: nodeId };
+    const common = {
+      model_id: modelId,
+      keep,
+      accept: accepting ? accept : null,
+      node_id: nodeId,
+      ...gpuBody(gpu, server),
+      data_after: copied ? dataAfter : "",
+    };
     const body =
       fixedSet || mode === "set"
         ? { ...common, set_id: chosenSet }
@@ -1044,53 +1049,33 @@ export function StartAutolabel({
           </div>
         )}
 
-        {servers && (
-          <div className={`al-server ${server?.fits ? "" : "bad"}`}>
-            <Icon name="server" size={14} />
-            {servers.problem ? (
-              <span className="bad-text">{servers.problem}</span>
-            ) : (
-              <>
-                <label className="al-server-pick">
-                  서버
-                  <select value={nodeId} onChange={(e) => setNodeId(e.target.value)} aria-label="돌릴 서버">
-                    {servers.nodes.map((s) => (
-                      <option key={s.id} value={s.id} disabled={!s.fits}>
-                        {s.name} · {s.gpus ? `GPU ${s.gpus}개` : "CPU"} · {s.holds_images ? "이미지 있음" : s.transfer ? "이미지를 먼저 받음" : "받아 둔 이미지 있음"}
-                        {s.fits ? "" : ` — ${s.why}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {server?.gpus ? (
-                  <div className="segmented" role="radiogroup" aria-label="계산">
-                    <button type="button" className={cpu ? "" : "active"} onClick={() => setCpu(false)}>
-                      GPU
-                    </button>
-                    <button type="button" className={cpu ? "active" : ""} onClick={() => setCpu(true)}>
-                      CPU
-                    </button>
-                  </div>
-                ) : null}
-                <span className="al-server-note small">
-                  {!server ? (
-                    <span className="bad-text">돌릴 수 있는 서버가 없습니다. 노드 설정에서 '오토라벨용'을 켜세요.</span>
-                  ) : !server.fits ? (
-                    <span className="bad-text">{server.why}</span>
-                  ) : server.transfer ? (
-                    <span className="muted">
-                      이미지가 있는 {servers.holder?.name}에서 대상 이미지 {n(images)}장을 먼저 받은 뒤 돕니다 (받아 둔 것은 다시 받지 않음).
-                    </span>
-                  ) : (
-                    <span className="muted">
-                      {server.holds_images ? "이미지가 있는 서버라 받을 것 없이 바로 돕니다." : "이 버전의 이미지를 받아 둔 서버라 바로 돕니다."}
-                      {server.status !== "online" ? " 지금 응답이 없어 켜지면 시작합니다." : ""}
-                    </span>
-                  )}
+        {servers?.problem && <div className="error small">{servers.problem}</div>}
+        {servers && !servers.problem && (
+          <PlaceGrid>
+            <PlaceRow label="서버">
+              <ServerSelect servers={servers.nodes} value={nodeId} onChange={setNodeId} />
+              {!servers.nodes.some((x) => x.fits) && (
+                <span className="bad-text small">
+                  돌릴 수 있는 서버가 없습니다. <a href="#/nodes">노드</a> 화면에서 돌릴 서버의 설정 → 역할에 &quot;오토라벨용&quot;을 켜세요.
                 </span>
-              </>
+              )}
+            </PlaceRow>
+            {server && (
+              <PlaceRow label="이미지">
+                <ImagesNote server={server} holder={servers.holder?.name} items={sendItems} bytes={sendBytes} what="대상 이미지" />
+              </PlaceRow>
             )}
-          </div>
+            {server?.fits && (server.gpu_list ?? []).length > 0 && (
+              <PlaceRow label="GPU">
+                <GpuChips gpus={server.gpu_list ?? []} pick={gpu} onPick={setGpu} />
+              </PlaceRow>
+            )}
+            {server?.fits && copied && (
+              <PlaceRow label="보낸 데이터">
+                <DataAfterChoice value={dataAfter} onChange={setDataAfter} when="오토라벨이 끝나면" />
+              </PlaceRow>
+            )}
+          </PlaceGrid>
         )}
 
         <div className="form-row">

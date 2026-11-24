@@ -39,6 +39,8 @@ class EvalRequest(BaseModel):
     splits: list[str] | None = None  # several in one evaluation (train and val …); ``split`` when empty
     gpus: int | None = None  # empty: one GPU when the server has any
     node_id: str = ""  # empty: the server holding the version's images
+    gpu_indices: list[int] | None = None  # that GPU of the server (one)
+    data_after: str = ""  # keep | delete: the copy the server received, once it is over
 
 
 class ExportRequest(BaseModel):
@@ -85,8 +87,9 @@ def start_eval(
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     op = modelops.start_eval(
-        db, user, model_id, body.release_id, body.split, body.gpus, via="ui", node_id=body.node_id, splits=body.splits
-    )
+        db, user, model_id, body.release_id, body.split, body.gpus, via="ui", node_id=body.node_id, splits=body.splits,
+        gpu_indices=body.gpu_indices, data_after=body.data_after,
+    )  # fmt: skip
     db.commit()
     return modelops.op_view(db, hub.settings, op)
 

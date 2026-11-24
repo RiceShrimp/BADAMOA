@@ -334,7 +334,6 @@ def node_choices(db: Session, settings: Any, release_id: str) -> dict[str, Any]:
         status = services.node_status(node, settings)
         gpus = (node.info or {}).get("gpus") or []
         free = resources.free_gpus(node, settings, assigned.get(node.id), 0) if status == "online" else []
-        states = {g["index"]: g for g in resources.gpu_states(node, settings, assigned.get(node.id))}
         cache = (node.metrics or {}).get("cache") or {}
         shown.append(
             {
@@ -345,27 +344,74 @@ def node_choices(db: Session, settings: Any, release_id: str) -> dict[str, Any]:
                 "roles": list(node.roles or []),  # 학습용 (compute) ones train
                 "gpus": len(gpus),
                 "gpus_free": len(free),
-                # each GPU, to pick by number: free · busy (someone uses it) · job (a BADAMOA job) · reserved (people's)
-                "gpu_list": [
-                    {
-                        "index": g.get("index"),
-                        "name": g.get("name") or "",
-                        "memory_total_mb": g.get("memory_total_mb"),
-                        "state": (states.get(g.get("index")) or {}).get("state", "free")
-                        if status == "online"
-                        else "offline",
-                        "users": (states.get(g.get("index")) or {}).get("users", []),
-                        "reserved": g.get("index") in (node.reserved_gpus or []),
-                    }
-                    for g in gpus
-                ],
+                "gpu_list": gpu_list(node, settings, status, assigned.get(node.id)),
                 # registered: the images were imported here · received: copied here before · "": must be copied
                 "images": "registered" if node.id == source else "received" if node.id in received else "",
                 "cache_free_gb": cache.get("free_gb"),
+                "cache_dir": cache.get("dir") or "",  # where a copy goes there (its 받은 이미지 보관 위치)
+                "cache_auto": bool(cache.get("auto")),  # picked by the node: the disk with the most room then
                 "can_receive": bool(node.agent_version) and _knows_sync(node.agent_version),
             }
         )
     return {"items": count, "bytes": size, "source": source, "nodes": shown}
+
+
+def gpu_list(node: Node, settings: Any, status: str, assigned: Any = None) -> list[dict[str, Any]]:
+    """Each GPU of a node, to pick by number: free · busy (someone uses it) · job (a BADAMOA job) · reserved (people's)."""
+    from . import resources  # noqa: PLC0415
+
+    states = {g["index"]: g for g in resources.gpu_states(node, settings, assigned)}
+    return [
+        {
+            "index": g.get("index"),
+            "name": g.get("name") or "",
+            "memory_total_mb": g.get("memory_total_mb"),
+            "state": (states.get(g.get("index")) or {}).get("state", "free") if status == "online" else "offline",
+            "users": (states.get(g.get("index")) or {}).get("users", []),
+            "reserved": g.get("index") in (node.reserved_gpus or []),
+        }
+        for g in (node.info or {}).get("gpus") or []
+    ]
+
+
+def place_info(node: Node, settings: Any, status: str, assigned: Any, holder_id: str, have: Any) -> dict[str, Any]:
+    """What a dialog shows of a server a job over a version's images may run on: its GPUs by number, whether it
+    holds the images (registered there · received before · "": sent there first), and where a copy goes there (its
+    받은 이미지 보관 위치: the admin's, else the disk with the most room when the first copy came) with the room left."""
+    cache = (node.metrics or {}).get("cache") or {}
+    return {
+        "gpu_list": gpu_list(node, settings, status, assigned),
+        "images": "registered" if node.id == holder_id else "received" if node.id in have else "",
+        "cache": {"dir": cache.get("dir") or "", "free_gb": cache.get("free_gb"), "auto": bool(cache.get("auto"))},
+    }
+
+
+def picked_gpus(node: Node, gpu_indices: list[int] | None, gpus: int | None, one: bool = True) -> list[int]:
+    """GPUs picked by number on the server a job runs on: there, not people's, and (``one``) only one."""
+    picked = sorted({int(i) for i in gpu_indices or []})
+    if not picked:
+        return []
+    if gpus == 0:
+        raise ServiceError(400, "CPU로 돌릴 때는 GPU를 고르지 않습니다.")
+    if one and len(picked) > 1:
+        raise ServiceError(400, "이 작업은 GPU 하나로 돕니다. 하나만 고르세요.")
+    listed = {g.get("index") for g in (node.info or {}).get("gpus") or []}
+    for index in picked:
+        if index not in listed:
+            raise ServiceError(400, f"{node.name}에는 GPU {index}이(가) 없습니다.")
+        if index in (node.reserved_gpus or []):
+            raise ServiceError(400, f"{node.name}의 GPU {index}은(는) 사람 전용으로 빼 둔 GPU입니다.")
+    return picked
+
+
+DATA_AFTER = ("", "keep", "delete")  # what a job does with the copy its server received, once it is over
+
+
+def data_after_of(choice: str, node_id: str, holder_id: str) -> str:
+    """keep or delete the copy the server received (``node_data.on_job_finished``); none where it was registered."""
+    if choice not in DATA_AFTER:
+        raise ServiceError(400, "data_after는 keep(남겨 두기) 또는 delete(지우기)입니다.")
+    return "" if node_id == holder_id else choice
 
 
 SYNC_SINCE = (0, 37, 0)  # nodes from here on take images from other nodes

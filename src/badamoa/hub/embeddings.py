@@ -135,6 +135,8 @@ def start(
     nodes: list[str] | None = None,
     after: str | None = None,
     gpus: int | None = None,
+    gpu_indices: list[int] | None = None,
+    data_after: str = "",
     run_id: str = "",
     via: str = "api",
 ) -> Job | None:
@@ -169,6 +171,7 @@ def start(
             },
             "environment": spec["environment"],
             **({"run_id": run_id} if run_id else {}),
+            **({"data_after": data_after} if data_after else {}),
         },
         node_id,
         via=via,
@@ -176,6 +179,7 @@ def start(
         nodes=None if node_id else nodes,
         after=after,
         role=registry.EMBEDS,
+        gpu_indices=gpu_indices or None,
     )
     services.audit(db, user.id, via, "embedding.start", release.id, model=model, images=known["todo"], job=job.id)
     return job
@@ -554,9 +558,11 @@ def places(db: Session, settings: HubSettings, release: Release) -> dict[str, An
         holder = training.data_node(db, release.id)
     except ServiceError as e:
         return {"default": "", "holder": None, "nodes": [], "problem": e.message}
-    from . import transfers  # noqa: PLC0415  (transfers reads training, which reads this module's callers)
+    from . import resources, transfers  # noqa: PLC0415  (transfers reads training, which reads this module's callers)
 
     have = transfers.holders(db, release.id)
+    assigned = resources.assignments(db)
+    items, size = transfers.release_bytes(db, release.id)
     found = []
     for node in db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)):
         why = _place_why(node)
@@ -566,22 +572,31 @@ def places(db: Session, settings: HubSettings, release: Release) -> dict[str, An
                 transfers.check_route(holder, node)
             except ServiceError as e:
                 why.append(e.message)
+        status = services.node_status(node, settings)
         found.append(
             {
                 "id": node.id,
                 "name": node.name,
-                "status": services.node_status(node, settings),
+                "status": status,
                 "gpus": len((node.info or {}).get("gpus") or []),
                 "fits": not why,
                 "why": " · ".join(why),
                 "transfer": transfer,  # the version's images are sent there first
                 "holds_images": not transfer,
+                **transfers.place_info(node, settings, status, assigned.get(node.id), holder.id, have),
             }
         )
     fitting = [f for f in found if f["fits"]]
     default = next((f["id"] for f in fitting if not f["transfer"]), "") or (fitting[0]["id"] if fitting else "")
     found.sort(key=lambda f: (f["id"] != default, not f["fits"], f["name"]))
-    return {"default": default, "holder": {"id": holder.id, "name": holder.name}, "nodes": found, "problem": ""}
+    return {
+        "default": default,
+        "holder": {"id": holder.id, "name": holder.name},
+        "items": items,
+        "bytes": size,
+        "nodes": found,
+        "problem": "",
+    }
 
 
 def start_alone(
@@ -592,9 +607,17 @@ def start_alone(
     node_id: str = "",
     via: str = "api",
     gpus: int | None = None,
+    gpu_indices: list[int] | None = None,
+    data_after: str = "",
 ) -> Job:
     """Make a version's missing vectors without a training: on ``node_id`` (else where ``places`` would), which first
-    receives the images when it has none (they stay there, as a training's copy)."""
+    receives the images when it has none. ``gpu_indices``: that GPU of the server (one: an embedding uses one), else
+    any free one (``gpus`` 0: the CPU). ``data_after``: keep or delete the copy the server received, once it is over
+    (as a training's); left out, it stays."""
+    from . import transfers  # noqa: PLC0415
+
+    if data_after not in transfers.DATA_AFTER:
+        raise ServiceError(400, "data_after는 keep(남겨 두기) 또는 delete(지우기)입니다.")
     release = catalog.get_release(db, release_id)
     catalog.require_ready(release)
     known = coverage(db, release.id)
@@ -610,11 +633,13 @@ def start_alone(
         raise ServiceError(404, "고른 서버를 찾을 수 없거나 작업을 받지 않습니다.")
     if not place["fits"]:
         raise ServiceError(400, f"{place['name']}에서는 만들 수 없습니다: {place['why']}")
-    from . import transfers  # noqa: PLC0415
-
     node = db.get(Node, node_id)
+    picked = transfers.picked_gpus(node, gpu_indices, gpus)
     after = transfers.sync_job(db, user, release.id, node, via).id if place["transfer"] else None
-    job = start(db, user, release, node_id=node.id, after=after, gpus=gpus, via=via)
+    keep = transfers.data_after_of(data_after, node.id, listed["holder"]["id"])  # the registered images stay
+    job = start(
+        db, user, release, node_id=node.id, after=after, gpus=gpus, gpu_indices=picked, data_after=keep, via=via
+    )
     if job is None:
         raise ServiceError(409, "이 버전의 이미지는 모두 벡터가 있습니다.")
     return job
@@ -719,6 +744,7 @@ def _job_rows(db: Session, settings: HubSettings, jobs: list[Job]) -> list[dict[
                 "by": users.get(job.created_by or "", ""),
                 "via": "training" if params.get("run_id") else job.created_via,
                 "run_id": params.get("run_id") or None,
+                "data_after": str(params.get("data_after") or ""),
                 "sent": sent,
             }
         )

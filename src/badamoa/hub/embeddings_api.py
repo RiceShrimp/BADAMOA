@@ -141,6 +141,8 @@ def embedding_places(
 class StartEmbedding(BaseModel):
     node_id: str = ""  # empty: where the images are, on a server with the 임베딩용 role
     gpus: int | None = None  # None: a GPU when the server has one; 0: the CPU
+    gpu_indices: list[int] | None = None  # that GPU of the server (one)
+    data_after: str = ""  # keep | delete: the copy the server received, once it is over
 
 
 @router.post("/releases/{release_id}/embeddings")
@@ -152,7 +154,17 @@ def start_embedding(
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """Make the version's missing vectors without a training (임베딩 만들기)."""
-    job = embeddings.start_alone(db, hub.settings, user, release_id, body.node_id, via="ui", gpus=body.gpus)
+    job = embeddings.start_alone(
+        db,
+        hub.settings,
+        user,
+        release_id,
+        body.node_id,
+        via="ui",
+        gpus=body.gpus,
+        gpu_indices=body.gpu_indices,
+        data_after=body.data_after,
+    )
     db.commit()
     return {"job_id": job.id, **embeddings.coverage(db, release_id)}
 
