@@ -159,3 +159,28 @@ details.embed-history > summary .badge {
   opacity: 0.6;
   cursor: progress;
 }
+
+/* the lowest score shown */
+.explore-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h, 34px);
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.explore-score input[type="range"] {
+  width: 130px;
+  margin: 0;
+  padding: 0;
+  height: auto;
+}
+.explore-score .num {
+  min-width: 3.2em;
+  text-align: right;
+}

@@ -459,9 +459,11 @@ def search(
     release_id: str = "",
     limit: int = 60,
     model: str = "",
+    min_score: float = 0.0,
 ) -> dict[str, Any]:
     """A project's images (or one version's) nearest to the words ``text`` or to the image ``like`` (an item id),
-    the nearest first, each with how near (cosine) and a version it is in."""
+    the nearest first, each with how near (cosine) and a version it is in. ``min_score``: only those at least this
+    near; ``more`` says whether more of them are left beyond ``limit``."""
     import numpy as np  # noqa: PLC0415
 
     model = model or DEFAULT_MODEL
@@ -484,8 +486,9 @@ def search(
     within = (
         list(db.scalars(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id))) if release_id else None
     )
-    hits = vector_store.search(db, settings, model, dim, project_id, query, limit + 1, within)
-    chosen = [(item_id, score) for item_id, score in hits if not (like and item_id == like)][:limit]
+    hits = vector_store.search(db, settings, model, dim, project_id, query, limit + 2, within)
+    above = [(item_id, score) for item_id, score in hits if not (like and item_id == like) and score >= min_score]
+    chosen = above[:limit]
     searched = db.scalar(
         select(func.count()).select_from(Item).where(
             Item.project_id == project_id,
@@ -493,7 +496,13 @@ def search(
             *([Item.id.in_(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id))] if release_id else []),
         )
     ) or 0
-    return {"model": model, "searched": searched, "items": _found(db, settings, chosen, release_id)}
+    return {
+        "model": model,
+        "searched": searched,
+        "min_score": min_score,
+        "more": len(above) > limit,  # more images at least that near than were sent
+        "items": _found(db, settings, chosen, release_id),
+    }
 
 
 

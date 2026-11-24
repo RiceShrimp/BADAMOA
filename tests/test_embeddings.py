@@ -102,6 +102,13 @@ def test_explore_finds_the_nearest_images(hub, release):  # noqa: F811
     assert one.status_code == 200 and len(one.json()["items"]) == 7
     words = hub.get(f"/api/projects/{project}/explore/search", params={"text": "a cat"})
     assert words.status_code == 409 and "글 검색" in words.json()["detail"]
+    # only the images at least this near, and whether more are left beyond the limit
+    middle = scores[3]
+    some = hub.get(f"/api/projects/{project}/explore/search", params={"like": first, "min_score": middle}).json()
+    assert [i["score"] for i in some["items"]] == [s for s in scores if s >= middle] and not some["more"]
+    assert some["min_score"] == middle
+    two = hub.get(f"/api/projects/{project}/explore/search", params={"like": first, "limit": 2}).json()
+    assert len(two["items"]) == 2 and two["more"]
     # a result opens as on the version screen: the version's list of just the results, in their order
     order = [found["items"][2]["id"], found["items"][0]["id"], found["items"][4]["id"]]
     url = f"/api/releases/{release['id']}/items"

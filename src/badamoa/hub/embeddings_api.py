@@ -87,14 +87,16 @@ def explore_search(
     release_id: str = "",
     limit: int = 60,
     model: str = "",
+    min_score: float = 0.0,  # only the images at least this near (cosine)
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """The project's images (or one version's) nearest to the words or to the image ``like``, the nearest first."""
     found = embeddings.search(
-        db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit, model=model
-    )
+        db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit,
+        model=model, min_score=min_score,
+    )  # fmt: skip
     db.commit()
     return found
 

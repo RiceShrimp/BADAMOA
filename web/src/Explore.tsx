@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
+import { useDebounced } from "./Annotate";
 import { useBoardFilter } from "./Boards";
 import { ItemViewer } from "./ItemViewer";
 import { colorFor } from "./ReleaseTabs";
@@ -36,6 +37,34 @@ interface Found {
 }
 
 type Query = { text: string } | { like: Found };
+
+/** What a search sent back: the nearest images at least ``min_score`` near, and whether more are left. */
+interface SearchResult {
+  searched: number;
+  min_score: number;
+  more: boolean;
+  items: Found[];
+}
+
+/** The lowest score shown. Words and images score on different scales (words 0.1~0.2 is a good match, a similar
+ * image 0.7 and up), so each kind of search keeps its own, remembered in this browser. */
+type ScoreKind = "text" | "like";
+const SCORE_KEY = "badamoa.explore.min";
+const SCORE_RANGE: Record<ScoreKind, { max: number; step: number; digits: number }> = {
+  text: { max: 0.4, step: 0.005, digits: 3 },
+  like: { max: 1, step: 0.01, digits: 2 },
+};
+const FEW = 120; // the nearest shown with no lowest score
+const MANY = 300; // with one: everything at least that near, up to this many
+
+function keptScore(kind: ScoreKind): number {
+  try {
+    const kept = Number(localStorage.getItem(`${SCORE_KEY}.${kind}`));
+    return Number.isFinite(kept) && kept >= 0 && kept <= SCORE_RANGE[kind].max ? kept : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /** A version and how far its images have vectors (``/projects/{id}/explore/versions``). */
 interface VersionRow {
@@ -755,7 +784,19 @@ function ExploreProject({ projectId }: { projectId: string }) {
   const [release, setRelease] = useState(""); // "": every version of the project
   const [words, setWords] = useState("");
   const [query, setQuery] = useState<Query | null>(null);
-  const [found, setFound] = useState<{ searched: number; items: Found[] } | null>(null);
+  const [found, setFound] = useState<SearchResult | null>(null);
+  const [minScore, setMinScore] = useState<Record<ScoreKind, number>>(() => ({ text: keptScore("text"), like: keptScore("like") }));
+  const kind: ScoreKind = query && "like" in query ? "like" : "text";
+  const lowest = minScore[kind];
+  const sentLowest = useDebounced(lowest, 300); // asked again once the slider rests
+  const setLowest = (value: number) => {
+    setMinScore((current) => ({ ...current, [kind]: value }));
+    try {
+      localStorage.setItem(`${SCORE_KEY}.${kind}`, String(value));
+    } catch {
+      // kept for this visit only
+    }
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState<{ releaseId?: string } | null>(null);
@@ -789,18 +830,19 @@ function ExploreProject({ projectId }: { projectId: string }) {
     let live = true;
     setBusy(true);
     setError(null);
-    const params = new URLSearchParams({ limit: "120" });
+    const params = new URLSearchParams({ limit: String(sentLowest > 0 ? MANY : FEW) });
     if ("text" in query) params.set("text", query.text);
     else params.set("like", String(query.like.id));
     if (release) params.set("release_id", release);
-    api<{ searched: number; items: Found[] }>(`/projects/${projectId}/explore/search?${params}`)
+    if (sentLowest > 0) params.set("min_score", String(sentLowest));
+    api<SearchResult>(`/projects/${projectId}/explore/search?${params}`)
       .then((got) => live && setFound(got))
       .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => live && setBusy(false));
     return () => {
       live = false;
     };
-  }, [query, release, projectId]);
+  }, [query, release, projectId, sentLowest]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -894,6 +936,26 @@ function ExploreProject({ projectId }: { projectId: string }) {
                 </option>
               ))}
             </select>
+            <label
+              className="explore-score"
+              title={
+                kind === "text"
+                  ? "글 검색: 이 점수 이상인 이미지만 봅니다. 0.1~0.2만 되어도 잘 맞는 편입니다."
+                  : "비슷한 이미지: 이 점수 이상인 이미지만 봅니다. 0.7 이상이면 꽤 닮은 편입니다."
+              }
+            >
+              <span className="muted">{kind === "text" ? "글" : "이미지"} 점수 ≥</span>
+              <input
+                type="range"
+                min={0}
+                max={SCORE_RANGE[kind].max}
+                step={SCORE_RANGE[kind].step}
+                value={lowest}
+                onChange={(e) => setLowest(Number(e.target.value))}
+                aria-label="점수 임계값"
+              />
+              <span className="num">{lowest > 0 ? lowest.toFixed(SCORE_RANGE[kind].digits) : "끔"}</span>
+            </label>
           </form>
           {query && "like" in query && (
             <div className="explore-anchor">
@@ -908,14 +970,20 @@ function ExploreProject({ projectId }: { projectId: string }) {
             </div>
           )}
           {error && <div className="error">{error}</div>}
-          {busy && <p className="muted">찾는 중…</p>}
+          {busy && !found && <p className="muted">찾는 중…</p>}
           {!query && !busy && <p className="muted">글로 찾거나, 결과에서 &quot;비슷한 이미지&quot;를 눌러 그 이미지와 비슷한 것을 찾습니다.</p>}
-          {found && !busy && (
+          {found && (
             <>
               <p className="muted small">
                 {n(found.searched)}장에서 가까운 순으로 {n(found.items.length)}장
-                {"text" in (query ?? {}) ? " · 글 검색의 점수는 0.1~0.2만 되어도 잘 맞는 편입니다" : ""}
+                {found.min_score > 0 ? ` · 점수 ${found.min_score.toFixed(SCORE_RANGE[kind].digits)} 이상` : ""}
+                {found.more ? ` · 더 있습니다(가까운 ${n(found.items.length)}장까지 보임, 점수를 올리면 좁혀짐)` : ""}
+                {busy ? " · 다시 찾는 중…" : ""}
+                {kind === "text" && !found.min_score ? " · 글 검색의 점수는 0.1~0.2만 되어도 잘 맞는 편입니다" : ""}
               </p>
+              {found.items.length === 0 && found.min_score > 0 && (
+                <p className="muted">이 점수 이상인 이미지가 없습니다. 점수를 낮춰 보세요.</p>
+              )}
               <div className="thumb-grid explore-grid">
                 {found.items.map((item) => (
                   <div key={item.id} className="thumb explore-thumb">
