@@ -28,6 +28,7 @@ hub = [
     "numpy>=1.26",
     "onnxruntime>=1.18",
     "tokenizers>=0.20",
+    "lancedb>=0.20",  # the vector DB 이미지 탐색 searches (in the Hub's process, a folder: no server to run)
 ]
 
 [project.scripts]

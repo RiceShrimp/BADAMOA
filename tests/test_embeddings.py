@@ -137,3 +137,26 @@ def test_vectors_without_a_training_and_as_a_pipeline_step(hub, release, tmp_pat
         assert refused.status_code == 400 and "임베딩용" in refused.json()["detail"]
     finally:
         hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "autolabel", "inference", "storage", "embedding"]})
+
+
+def test_the_vector_db_moves_to_another_folder(hub, release, tmp_path):  # noqa: F811
+    import time
+
+    _embedded(hub, _train(hub, release["id"], embed=True))
+    before = hub.get("/api/vector-store").json()
+    assert before["path"] == before["default"] and sum(t["rows"] for t in before["tables"]) == 8
+    target = tmp_path / "vectors-elsewhere"
+    assert hub.post("/api/vector-store/move", json={"path": "relative/folder"}).status_code == 400
+    moved = hub.post("/api/vector-store/move", json={"path": str(target)})
+    assert moved.status_code == 200, moved.text
+    deadline = time.monotonic() + 60
+    view = moved.json()
+    while time.monotonic() < deadline and view["moving"]["state"] == "moving":
+        time.sleep(0.2)
+        view = hub.get("/api/vector-store").json()
+    assert view["moving"]["state"] == "done" and view["path"] == str(target), view
+    assert sum(t["rows"] for t in view["tables"]) == 8 and any(target.iterdir())
+    # found there as before
+    first = hub.get(f"/api/releases/{release['id']}/items").json()["items"][0]["id"]
+    found = hub.get(f"/api/projects/{release['project_id']}/explore/search", params={"like": first}).json()
+    assert len(found["items"]) == 7

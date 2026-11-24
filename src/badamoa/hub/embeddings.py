@@ -3,15 +3,14 @@
 An image is known by its content (sha256), so a vector made once serves every version, dataset and project the
 same picture is in: a new version of a dataset needs vectors only for the images it added. Vectors are made by a
 node with the 임베딩용 role (``registry.EMBEDS``) — usually the server a training received the version on, so
-the images are not copied a second time — and kept on the Hub, in part files (``EmbeddingPart``) with an index of
-which image is where (``ImageEmbedding``).
+the images are not copied a second time — and kept in the vector DB (``vector_store``, LanceDB, a folder an admin
+may move), with which images have one by which model in ``ImageEmbedding`` (how far a version is, at a glance).
 """
 
 from __future__ import annotations
 
 import json
 import threading
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from badamoa.core.storage import Storage
 
-from . import catalog, registry, services, training
+from . import catalog, registry, services, training, vector_store
 from .catalog_models import Dataset, EmbeddingPart, ImageEmbedding, Item, Release, ReleaseItem
 from .config import HubSettings
 from .models import HubSetting, Job, Node, User
@@ -202,8 +201,11 @@ def manifest(db: Session, node: Node, job_id: str, after: int = 0, limit: int = 
     return training.release_manifest(db, node, release, after, limit, only=todo)
 
 
-def ingest(db: Session, storage: Storage, node: Node, job_id: str, data: bytes) -> dict[str, int]:
-    """A part file the job sent: kept in the Hub's storage, and each image in it found by content from now on."""
+def ingest(
+    db: Session, settings: HubSettings, storage: Storage, node: Node, job_id: str, data: bytes
+) -> dict[str, int]:
+    """A part file the job sent: its vectors into the vector DB, a row for each project's image of that picture, and
+    each picture found by content from now on."""
     job = _job(db, node, job_id)
     model = (job.params or {}).get("model") or DEFAULT_MODEL
     dim = int(model_of(model)["dim"])
@@ -217,9 +219,12 @@ def ingest(db: Session, storage: Storage, node: Node, job_id: str, data: bytes) 
         raise ServiceError(400, f"임베딩 파일이 {model}({dim}차원) 벡터 {len(shas)}개와 맞지 않습니다.")
     if not shas:
         return {"stored": 0}
-    blob = storage.put_blob(data)
+    import numpy as np  # noqa: PLC0415
+
+    vectors = np.frombuffer(body, dtype="<f2").reshape(len(shas), dim)
+    _keep(db, settings, model, dim, shas, vectors)
     part = EmbeddingPart(
-        model=model, dim=dim, count=len(shas), blob=blob, job_id=job.id, release_id=(job.params or {}).get("release_id")
+        model=model, dim=dim, count=len(shas), blob="", job_id=job.id, release_id=(job.params or {}).get("release_id")
     )
     db.add(part)
     db.flush()
@@ -229,6 +234,71 @@ def ingest(db: Session, storage: Storage, node: Node, job_id: str, data: bytes) 
         db.execute(insert(ImageEmbedding).prefix_with("OR IGNORE"), rows[start_at : start_at + 5000])
     after = db.scalar(select(func.count()).select_from(ImageEmbedding).where(ImageEmbedding.model == model)) or 0
     return {"stored": after - before}
+
+
+def _keep(db: Session, settings: HubSettings, model: str, dim: int, shas: list[str], vectors: Any) -> int:
+    """Into the vector DB: a row for every image (of any project) that is one of these pictures."""
+    at = {sha: n for n, sha in enumerate(shas)}
+    rows: list[tuple[str, int, str]] = []
+    picked: list[int] = []
+    for start_at in range(0, len(shas), 5000):
+        chunk = shas[start_at : start_at + 5000]
+        for item_id, project_id, sha in db.execute(
+            select(Item.id, Item.project_id, Item.sha256).where(Item.sha256.in_(chunk))
+        ):
+            rows.append((project_id, item_id, sha))
+            picked.append(at[sha])
+    return vector_store.add(db, settings, model, dim, rows, vectors[picked] if picked else vectors[:0])
+
+
+def sync_project(db: Session, settings: HubSettings, project_id: str, model: str = "") -> int:
+    """A project's images whose picture has a vector (made for another project or before the image came) but which
+    the vector DB does not list for this project yet: listed now. Also part files kept before the vector DB, once."""
+    import numpy as np  # noqa: PLC0415
+
+    model = model or DEFAULT_MODEL
+    dim = int(model_of(model)["dim"])
+    _from_parts(db, settings, model, dim)
+    has_vector = exists().where(ImageEmbedding.model == model, ImageEmbedding.sha256 == Item.sha256)
+    wanted = dict(db.execute(select(Item.id, Item.sha256).where(Item.project_id == project_id, has_vector)).all())
+    if not wanted:
+        return 0
+    known = vector_store.items_of(db, settings, model, dim, project_id)
+    missing = [(item_id, sha) for item_id, sha in wanted.items() if item_id not in known]
+    if not missing:
+        return 0
+    found = vector_store.vectors_of(db, settings, model, dim, sorted({sha for _, sha in missing}))
+    rows = [(project_id, item_id, sha) for item_id, sha in missing if sha in found]
+    if rows:
+        vector_store.add(db, settings, model, dim, rows, np.stack([found[sha] for _, _, sha in rows]))
+    lost = {sha for _, sha in missing if sha not in found}  # the DB has none for it (moved away, removed): made again
+    if lost:
+        db.execute(ImageEmbedding.__table__.delete().where(ImageEmbedding.model == model, ImageEmbedding.sha256.in_(lost)))
+    return len(rows)
+
+
+def _from_parts(db: Session, settings: HubSettings, model: str, dim: int) -> None:
+    """Part files kept in the Hub's storage before the vector DB (0.108.0 · 0.109.0): into it, then let go."""
+    import numpy as np  # noqa: PLC0415
+
+    old = db.scalars(select(EmbeddingPart).where(EmbeddingPart.model == model, EmbeddingPart.blob != "")).all()
+    if not old:
+        return
+    storage = catalog.storage_for(str(settings.storage_dir))
+    for part in old:
+        try:
+            _, _, body = storage.get_blob(part.blob).partition(b"\n")
+            shas = [row.sha256 for row in db.scalars(
+                select(ImageEmbedding).where(ImageEmbedding.part_id == part.id).order_by(ImageEmbedding.row)
+            )]  # fmt: skip
+            vectors = np.frombuffer(body, dtype="<f2").reshape(part.count, part.dim)
+            rows = {r.sha256: r.row for r in db.scalars(select(ImageEmbedding).where(ImageEmbedding.part_id == part.id))}
+            _keep(db, settings, model, dim, shas, vectors[[rows[s] for s in shas]])
+            storage.delete(storage.blob_key(part.blob))
+        except Exception:  # noqa: BLE001 - a part that cannot be read: its images are made again
+            db.execute(ImageEmbedding.__table__.delete().where(ImageEmbedding.part_id == part.id))
+        part.blob = ""
+    db.flush()
 
 
 def models_view() -> list[dict[str, Any]]:
@@ -353,38 +423,13 @@ def text_vector_on(settings: HubSettings, model: str, text: str) -> list[float]:
 
 # ---- 이미지 탐색: finding a project's images by words or by another image ----------------------------------------
 
-PART_CACHE_BYTES = 1_500_000_000  # the part files kept in memory between searches
-_parts: OrderedDict[str, Any] = OrderedDict()
-_parts_bytes = 0
 
-
-def _part(storage: Storage, part: EmbeddingPart) -> Any:
-    """A part file's vectors (float16, one row an image), kept for the next search while memory allows."""
-    global _parts_bytes
-    import numpy as np  # noqa: PLC0415
-
-    with _lock:
-        found = _parts.get(part.id)
-        if found is not None:
-            _parts.move_to_end(part.id)
-            return found
-    data = storage.get_blob(part.blob)
-    _, _, body = data.partition(b"\n")
-    matrix = np.frombuffer(body, dtype="<f2").reshape(part.count, part.dim)
-    with _lock:
-        _parts[part.id] = matrix
-        _parts_bytes += matrix.nbytes
-        while _parts_bytes > PART_CACHE_BYTES and len(_parts) > 1:
-            _, dropped = _parts.popitem(last=False)
-            _parts_bytes -= dropped.nbytes
-    return matrix
-
-
-def explore_status(db: Session, project_id: str, model: str = "") -> dict[str, Any]:
+def explore_status(db: Session, settings: HubSettings, project_id: str, model: str = "") -> dict[str, Any]:
     """How much of a project 이미지 탐색 can find: its images, those with a vector, and whether 글 검색 is ready."""
     model = model or DEFAULT_MODEL
     spec = model_of(model)
     catalog.get_project(db, project_id)
+    sync_project(db, settings, project_id, model)
     images = db.scalar(select(func.count()).select_from(Item).where(Item.project_id == project_id)) or 0
     has_vector = exists().where(ImageEmbedding.model == model, ImageEmbedding.sha256 == Item.sha256)
     found = db.scalar(select(func.count()).select_from(Item).where(Item.project_id == project_id, has_vector)) or 0
@@ -415,8 +460,9 @@ def search(
     import numpy as np  # noqa: PLC0415
 
     model = model or DEFAULT_MODEL
-    model_of(model)
+    dim = int(model_of(model)["dim"])
     catalog.get_project(db, project_id)
+    sync_project(db, settings, project_id, model)
     limit = max(1, min(int(limit), 300))
     if text.strip():
         state = text_state(db, model)
@@ -425,44 +471,25 @@ def search(
             raise ServiceError(409, f"글 검색을 아직 쓸 수 없습니다. {why}")
         query = np.array(text_vector_on(settings, model, text.strip()), dtype=np.float32)
     elif like:
-        item = db.get(Item, like)
-        found = db.get(ImageEmbedding, (model, item.sha256)) if item is not None else None
-        if found is None:
+        query = vector_store.vector_of_item(db, settings, model, dim, like)
+        if query is None:
             raise ServiceError(404, "이 이미지는 아직 벡터가 없어 비슷한 이미지를 찾을 수 없습니다.")
-        query = _part(storage, db.get(EmbeddingPart, found.part_id))[found.row].astype(np.float32)
     else:
         raise ServiceError(400, "찾을 말(text)이나 이미지(like)를 주세요.")
-
-    rows = (
-        select(ImageEmbedding.part_id, ImageEmbedding.row, Item.id)
-        .join(Item, (Item.sha256 == ImageEmbedding.sha256) & (Item.project_id == project_id))
-        .where(ImageEmbedding.model == model)
+    within = (
+        list(db.scalars(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id))) if release_id else None
     )
-    if release_id:
-        rows = rows.where(Item.id.in_(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id)))
-    by_part: dict[str, tuple[list[int], list[int]]] = {}
-    for part_id, row, item_id in db.execute(rows):
-        rows_of, items_of = by_part.setdefault(part_id, ([], []))
-        rows_of.append(row)
-        items_of.append(item_id)
-    best_scores: list[Any] = []
-    best_items: list[Any] = []
-    searched = 0
-    for part_id, (rows_of, items_of) in by_part.items():
-        matrix = _part(storage, db.get(EmbeddingPart, part_id))
-        scores = matrix[np.asarray(rows_of)].astype(np.float32) @ query
-        searched += len(rows_of)
-        keep = min(limit + 1, len(scores))  # one more: the image searched with is left out
-        top = np.argpartition(-scores, keep - 1)[:keep]
-        best_scores.append(scores[top])
-        best_items.append(np.asarray(items_of)[top])
-    if not best_scores:
-        return {"model": model, "searched": 0, "items": []}
-    scores = np.concatenate(best_scores)
-    items = np.concatenate(best_items)
-    order = np.argsort(-scores)
-    chosen = [(int(items[i]), float(scores[i])) for i in order if not (like and int(items[i]) == like)][:limit]
+    hits = vector_store.search(db, settings, model, dim, project_id, query, limit + 1, within)
+    chosen = [(item_id, score) for item_id, score in hits if not (like and item_id == like)][:limit]
+    searched = db.scalar(
+        select(func.count()).select_from(Item).where(
+            Item.project_id == project_id,
+            exists().where(ImageEmbedding.model == model, ImageEmbedding.sha256 == Item.sha256),
+            *([Item.id.in_(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id))] if release_id else []),
+        )
+    ) or 0
     return {"model": model, "searched": searched, "items": _found(db, settings, chosen, release_id)}
+
 
 
 def _found(db: Session, settings: HubSettings, chosen: list[tuple[int, float]], release_id: str) -> list[dict[str, Any]]:

@@ -1,4 +1,5 @@
 import { MigrationPanel } from "./Migration";
+import { VectorStorePanel } from "./VectorStore";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { GpuBusyPanel, HubAutostartPanel, MyAccount, UsersPanel } from "./AdminSettings";
 import { DockerRegistry, ImageInRegistry, useRegistryImages } from "./DockerRegistry";
@@ -188,6 +189,7 @@ export function Settings({ isAdmin, nodes, user, sub }: { isAdmin: boolean; node
       {part === "projects" && <ProjectDefaults />}
       {part === "gpu" && <GpuBusyPanel isAdmin={isAdmin} />}
       {part === "storage" && <StorageUsage isAdmin={isAdmin} />}
+      {part === "storage" && <VectorStorePanel isAdmin={isAdmin} />}
       {part === "users" && <UsersPanel me={user} />}
       {part === "hub" && <HubAutostartPanel />}
       {part === "migrate" && <MigrationPanel />}

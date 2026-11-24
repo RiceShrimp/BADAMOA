@@ -1726,3 +1726,10 @@ td.env-cell {
   gap: 8px;
   font-size: 16px;
 }
+/* 벡터 DB (Hub 저장 공간) */
+.vector-store {
+  margin-top: 14px;
+}
+.vector-move {
+  margin: 10px 0 6px;
+}
