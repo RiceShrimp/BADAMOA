@@ -133,10 +133,11 @@ const GROUPS: { id: Rule["group"]; title: string; hint: string }[] = [
   { id: "boxes", title: "박스 오류", hint: "박스 모양이 이상한 라벨" },
 ];
 // A model's view, counted FiftyOne's way (the Hub's ``checks.judge``): only what the model is sure of
-const MODEL: Record<Mistake, { group: Rule["group"]; title: string; hint: string }> = {
-  extra: { group: "missing", title: "라벨이 없는 물체", hint: "라벨이 없는 곳에 모델이 확신하는 물체: 빠뜨린 라벨일 수 있음" },
-  reclass: { group: "wrong", title: "클래스가 다를 수 있는 라벨", hint: "같은 자리에서 모델은 다른 클래스라고 확신함" },
-  missed: { group: "wrong", title: "물체가 없을 수 있는 라벨", hint: "라벨은 있는데 모델은 이 물체를 찾지 못함: 없는 물체를 그렸거나, 모델이 놓친 것(라벨이 맞으면 문제 없음)" },
+// ``short`` names a count on a board card, where the title would not fit.
+const MODEL: Record<Mistake, { group: Rule["group"]; title: string; short: string; hint: string }> = {
+  extra: { group: "missing", title: "라벨이 없는 물체", short: "라벨 없는 물체", hint: "라벨이 없는 곳에 모델이 확신하는 물체: 빠뜨린 라벨일 수 있음" },
+  reclass: { group: "wrong", title: "클래스가 다를 수 있는 라벨", short: "클래스 다름", hint: "같은 자리에서 모델은 다른 클래스라고 확신함" },
+  missed: { group: "wrong", title: "물체가 없을 수 있는 라벨", short: "못 찾은 라벨", hint: "라벨은 있는데 모델은 이 물체를 찾지 못함: 없는 물체를 그렸거나, 모델이 놓친 것(라벨이 맞으면 문제 없음)" },
 };
 
 /** A dataset's newest labels as 검수's screens show them. */
@@ -155,6 +156,7 @@ interface ReviewCard {
   evaluation: {
     id: string;
     model: { id: string; name: string; version: number } | null;
+    created_at: string;
     images: number;
     extra: number;
     missed: number;
@@ -231,7 +233,7 @@ function ReviewStats({ totals: t }: { totals: Totals | undefined }) {
       {GROUPS.map((g) => (
         <Stat key={g.id} icon={g.id === "missing" ? "images" : g.id === "wrong" ? "alert" : "box"} label={g.title} value={(t?.[g.id] ?? 0).toLocaleString()} sub={g.hint} />
       ))}
-      <Stat icon="chart" label="모델로 평가함" value={t?.evaluated ?? "–"} sub="모델이 본 미라벨 · 오라벨도 셈" />
+      <Stat icon="chart" label="모델로 검사함" value={t?.evaluated ?? "–"} sub="모델이 본 미라벨 · 오라벨도 셈" />
     </div>
   );
 }
@@ -313,7 +315,7 @@ function ProjectReviewCard({ group }: { group: ReviewProject }) {
           )}
           <div className="muted small">
             {t.checked > 0 && waiting > 0 && `검사 전 데이터셋 ${waiting} · `}
-            {t.evaluated > 0 ? `모델로 평가한 데이터셋 ${t.evaluated}` : "평가한 모델 없음"}
+            {t.evaluated > 0 ? `모델로 검사한 데이터셋 ${t.evaluated}` : "모델 검사 전"}
           </div>
         </div>
       </a>
@@ -385,7 +387,7 @@ function ReviewProjectPage({ projectId }: { projectId: string }) {
 function DatasetReviewCard({ card: c }: { card: ReviewCard }) {
   return (
     <a className="data-card data-card-link review-card" href={`#/review/${c.release.id}`}>
-      <Collage shots={c.collage} colorOf={classColor} />
+      <Collage shots={c.collage} colorOf={classColor} title={c.flagged_shots ? "검사에 걸린 이미지" : undefined} />
       <div className="data-card-body">
         <div className="data-card-title">
           <span className="with-grip"><SortHandle /><strong>{c.dataset.name}</strong></span>
@@ -397,36 +399,66 @@ function DatasetReviewCard({ card: c }: { card: ReviewCard }) {
         {c.checked && c.groups ? (
           <>
             <ReviewCounts groups={c.groups} />
-            {c.checks.length > 0 ? (
-              <div className="muted small">
-                {c.checks
-                  .slice(0, 2)
-                  .map((k) => `${k.title} ${k.images.toLocaleString()}`)
-                  .join(" · ")}
-                {c.checks.length > 2 ? ` 외 ${c.checks.length - 2}` : ""}
-              </div>
-            ) : (
-              <div className="muted small">규칙 검사에 걸린 이미지가 없습니다</div>
-            )}
+            <div
+              className="card-line muted small"
+              title={[`규칙 검사 ${c.computed_at ? timeAgo(c.computed_at) : ""}`, ...c.checks.map((k) => `${k.title} ${k.images.toLocaleString()}장`)].join("\n")}
+            >
+              <span className="ellipsis">
+                {c.checks.length > 0
+                  ? c.checks
+                      .slice(0, 2)
+                      .map((k) => `${k.title} ${k.images.toLocaleString()}`)
+                      .join(" · ") + (c.checks.length > 2 ? ` 외 ${c.checks.length - 2}` : "")
+                  : "규칙 검사에 걸린 이미지 없음"}
+              </span>
+              {c.computed_at && <span className="card-when">{timeAgo(c.computed_at)}</span>}
+            </div>
           </>
         ) : (
           <div className="muted small">이미지가 많아 아직 검사하지 않았습니다. 누르면 검사합니다.</div>
         )}
-        {c.evaluation ? (
-          <div className="small">
-            {c.evaluation.model ? `${c.evaluation.model.name} v${c.evaluation.model.version}` : "모델"}: 라벨이 없는 물체{" "}
-            <strong>{c.evaluation.extra.toLocaleString()}</strong>장 · 클래스 다름 <strong>{(c.evaluation.reclass ?? 0).toLocaleString()}</strong>장 ·
-            물체가 없을 수 있는 라벨 <strong>{c.evaluation.missed.toLocaleString()}</strong>장
-          </div>
-        ) : (
-          <div className="muted small">평가한 모델 없음</div>
-        )}
-        <div className="muted small">
-          {c.flagged_shots ? "사진은 걸린 이미지 · " : ""}
-          {c.computed_at ? `검사 ${timeAgo(c.computed_at)}` : "검사 전"}
-        </div>
+        <ModelCheck evaluation={c.evaluation} />
       </div>
     </a>
+  );
+}
+
+/** A dataset card's last 모델로 검사하기: which model and when on one line, what it found as three counts under it. */
+function ModelCheck({ evaluation: e }: { evaluation: ReviewCard["evaluation"] }) {
+  if (!e)
+    return (
+      <div className="review-model">
+        <div className="card-line muted small">
+          <Icon name="box" size={12} />
+          모델 검사 전
+        </div>
+      </div>
+    );
+  const name = e.model ? `${e.model.name} v${e.model.version}` : "모델";
+  return (
+    <div className="review-model">
+      <div className="card-line small" title={`${name}로 검사 · 이미지 ${e.images.toLocaleString()}장 · ${timeAgo(e.created_at)}`}>
+        <Icon name="box" size={12} />
+        <span className="ellipsis">
+          <span className="muted">모델 검사</span>
+          {e.model && ` ${e.model.name}`}
+        </span>
+        <span className="card-when muted">
+          {e.model && `v${e.model.version} · `}
+          {timeAgo(e.created_at)}
+        </span>
+      </div>
+      <div className="card-sums">
+        {(Object.keys(MODEL) as Mistake[]).map((m) => {
+          const n = e[m] ?? 0;
+          return (
+            <span key={m} className={n ? "" : "zero"} title={`${MODEL[m].title}: ${MODEL[m].hint}`}>
+              <strong className="num">{n.toLocaleString()}</strong> {MODEL[m].short}
+            </span>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

@@ -180,9 +180,19 @@ export function Shot({
   );
 }
 
-export function Collage({ shots, colorOf, more }: { shots: Shot[]; colorOf: (id: number) => string; more?: number }) {
+export function Collage({
+  shots,
+  colorOf,
+  more,
+  title,
+}: {
+  shots: Shot[];
+  colorOf: (id: number) => string;
+  more?: number;
+  title?: string; // what the pictures are, on hover
+}) {
   return (
-    <div className="collage">
+    <div className="collage" title={title}>
       {[0, 1, 2, 3].map((i) =>
         shots[i] ? (
           <div key={i} className="collage-cell">

@@ -41,17 +41,6 @@
 }
 
 /* a project's card: what its runs drew */
-.al-sums {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 14px;
-  font-size: 12.5px;
-  color: var(--muted);
-}
-.al-sums strong {
-  color: var(--text);
-  font-size: 15px;
-}
 .al-lines-head {
   padding: 6px 4px 0;
 }

@@ -337,7 +337,7 @@ function ProjectBoardCard({ card: c }: { card: ProjectCard }) {
                 오토라벨 {c.runs} · 성공 {c.succeeded}
                 {c.failed > 0 && <span className="bad-text"> · 실패 {c.failed}</span>}
               </div>
-              <div className="al-sums">
+              <div className="card-sums">
                 <span>
                   <strong className="num">{n(c.images)}</strong> 예측한 이미지
                 </span>
