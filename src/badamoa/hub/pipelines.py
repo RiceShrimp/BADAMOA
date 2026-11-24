@@ -44,7 +44,21 @@ from sqlalchemy.orm import Session
 from badamoa.core import tasks as task_names
 from badamoa.core.protocol import TERMINAL_STATUSES
 
-from . import asks, autolabel, catalog, drafts, labeling, modelops, qa, registry, services, sweeps, training, transfers
+from . import (
+    asks,
+    autolabel,
+    catalog,
+    drafts,
+    embeddings,
+    labeling,
+    modelops,
+    qa,
+    registry,
+    services,
+    sweeps,
+    training,
+    transfers,
+)  # fmt: skip
 from .catalog_models import Dataset, ItemPrediction, LabelSet, Project, Release
 from .config import HubSettings
 from .db import iso, utcnow, write_lock
@@ -56,13 +70,15 @@ log = logging.getLogger("badamoa.hub.pipelines")
 
 # ``check`` (검수 확인, a gate on the rule checks) is no longer offered for new steps (0.104.0); saved ones still run.
 KINDS = (
-    "import", "check", "review", "sync", "autolabel", "label", "confirm", "train", "sweep", "eval", "promote", "export"
+    "import", "check", "review", "sync", "embed", "autolabel", "label", "confirm", "train", "sweep", "eval", "promote",
+    "export",
 )  # fmt: skip
 LABEL = {
     "import": "가져오기",
     "check": "검수 확인",
     "review": "검수",
     "sync": "서버로 보내기",
+    "embed": "임베딩",
     "autolabel": "오토라벨",
     "label": "라벨링",
     "confirm": "버전 확정",
@@ -91,7 +107,7 @@ MAX_RUNS_SHOWN = 50
 # What a training step may carry: the new-run dialog's settings, without the version (the run's own)
 TRAIN_KEYS = (
     "template", "environment", "params", "name", "model_name", "classes", "unlabelled", "val_fraction", "gpus",
-    "gpu_indices", "min_vram_mb", "base_model_id", "tags", "note", "nodes", "data_after", "embed",
+    "gpu_indices", "min_vram_mb", "base_model_id", "tags", "note", "nodes", "data_after",
 )  # fmt: skip
 SWEEP_KEYS = (
     "template", "environment", "params", "space", "method", "metric", "goal", "max_runs", "parallel", "classes",
@@ -196,7 +212,7 @@ def pending() -> bool:
 
 
 def on_job_finished(job: Job) -> None:
-    if job.type in ("train.run", "model.run", "data.sync", "data.import"):
+    if job.type in ("train.run", "model.run", "model.embed", "data.sync", "data.import"):
         wake()
 
 
@@ -288,6 +304,7 @@ def _place_of(db: Session, config: dict[str, Any], out: dict[str, Any], kind: st
         out["node_id"] = node_id
 
 
+MOVES_IMAGES = ("autolabel", "review", "eval", "sync", "embed")  # steps whose server may receive the images first
 # Where a step's work runs, by the role a server needs for it (노드 설정의 학습용 · 오토라벨용).
 PLACE_ROLE = {"autolabel": "autolabel", "review": "compute", "eval": "compute", "export": "compute"}  # AUTOLABELS · TRAINS
 
@@ -311,15 +328,17 @@ def node_rules(db: Session, node: Node, kind: str, release: Release | None) -> l
         why.append("오토라벨용 서버가 아님 (노드 설정에서 '오토라벨용'을 켭니다)")
     elif role == registry.TRAINS and not registry.has_role(node, role):
         why.append("학습용 서버가 아님 (노드 설정에서 '학습용'을 켭니다)")
+    if kind == "embed":
+        why += embeddings._place_why(node)
     if kind == "autolabel" and not asks.answers_questions(node.agent_version or "", autolabel.SINCE):
         why.append(f"MOA {'.'.join(str(n) for n in autolabel.SINCE)} 이상 필요")
-    if kind in ("autolabel", "review", "eval", "sync") and release is not None:
+    if kind in ("autolabel", "review", "eval", "sync", "embed") and release is not None:
         try:
             holder = training.data_node(db, release.id)
         except ServiceError:
             holder = None
         if holder is not None and node.id not in transfers.holders(db, release.id):  # the images come to it first
-            since = {"autolabel": autolabel.RECEIVED_SINCE, "sync": transfers.SYNC_SINCE}.get(
+            since = {"autolabel": autolabel.RECEIVED_SINCE, "sync": transfers.SYNC_SINCE, "embed": transfers.SYNC_SINCE}.get(
                 kind, modelops.EVAL_RECEIVED_SINCE
             )
             if not asks.answers_questions(node.agent_version or "", since):
@@ -339,8 +358,9 @@ def places(
     servers, 평가 · 모델로 검사하기 · 내보내기's (for the model named by its alias, when there is one now), the
     servers a version can go to (서버로 보내기), the ones taking jobs (가져오기). A server not answering now is
     said so but not refused: a pipeline runs later. ``default``: where it runs when 자동 is kept."""
-    if kind not in ("import", "sync", *PLACE_ROLE):
-        raise ServiceError(400, "서버를 고르는 단계는 가져오기 · 서버로 보내기 · 오토라벨 · 검수 · 평가 · 내보내기입니다.")
+    if kind not in ("import", "sync", "embed", *PLACE_ROLE):
+        steps = "가져오기 · 서버로 보내기 · 임베딩 · 오토라벨 · 검수 · 평가 · 내보내기"
+        raise ServiceError(400, f"서버를 고르는 단계는 {steps}입니다.")
     dataset = _dataset_of(db, dataset_id)
     release = newest_release(db, dataset.id)
     model = _holder(db, dataset.project_id, model_name, model_alias) if model_name and model_alias else None
@@ -348,6 +368,8 @@ def places(
     try:
         if kind == "autolabel" and release is not None:
             listed = autolabel._servers(db, settings, release)
+        elif kind == "embed" and release is not None:
+            listed = embeddings.places(db, settings, release)
         elif kind in ("review", "eval") and model is not None and release is not None:
             listed = modelops.places(db, settings, model.id, "eval", release.id)
         elif kind == "export" and model is not None:
@@ -374,12 +396,12 @@ def places(
                     "gpus": len((node.info or {}).get("gpus") or []),
                     "fits": not reasons,
                     "why": " · ".join(reasons),
-                    "transfer": kind in ("autolabel", "review", "eval", "sync") and release is not None and not held,
-                    "holds_images": held and kind in ("autolabel", "review", "eval", "sync"),
+                    "transfer": kind in MOVES_IMAGES and release is not None and not held,
+                    "holds_images": held and kind in MOVES_IMAGES,
                 }
             )
         default = ""
-        if release is not None and kind in ("autolabel", "review", "eval"):
+        if release is not None and kind in ("autolabel", "review", "eval", "embed"):
             try:
                 default = training.data_node(db, release.id).id
             except ServiceError:
@@ -504,6 +526,14 @@ def _clean_check(db: Session, dataset: Dataset | None, config: dict[str, Any], *
     if group not in CHECK_GROUPS:
         raise ServiceError(400, f"검수 확인의 group은 {', '.join(CHECK_GROUPS)} 중 하나입니다.")
     return {"max_flagged": int(_number(config.get("max_flagged") or 0, "문제 이미지 수", 0)), "group": group}
+
+
+def _clean_embed(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
+    """임베딩: the version's images without a vector, on a server with the 임베딩용 role (자동: one with the images)."""
+    out: dict[str, Any] = {}
+    _gpus_of(config, out)
+    _place_of(db, config, out, "embed", dataset)
+    return out
 
 
 def _clean_sync(db: Session, dataset: Dataset | None, config: dict[str, Any], **_: Any) -> dict[str, Any]:
@@ -631,6 +661,7 @@ CLEAN = {
     "check": _clean_check,
     "review": _clean_review,
     "sync": _clean_sync,
+    "embed": _clean_embed,
     "autolabel": _clean_autolabel,
     "label": _clean_label,
     "confirm": _clean_confirm,
@@ -721,7 +752,6 @@ def train_settings_of(db: Session, run: Run) -> dict[str, Any]:
         "base_model_id": (c.get("base_model") or {}).get("id", ""),
         "nodes": c.get("nodes") or [],
         "data_after": c.get("data_after", ""),
-        "embed": bool(c.get("embed")) or None,  # the image vectors made alongside
     }
     return {k: v for k, v in settings.items() if v not in (None, "", [], {})}
 
@@ -1298,6 +1328,15 @@ def _begin(
             node_id=c.get("node_id", ""), splits=parts,
         )  # fmt: skip
         refs = {"model_id": model.id, "release_id": release.id, "op_id": op.id, "op_jobs": [op.job_id]}
+    elif kind == "embed":
+        release = catalog.get_release(db, release_id)
+        if embeddings.coverage(db, release.id)["todo"] == 0 and embeddings.text_state(db).get("ready"):
+            refs = {"release_id": release.id, "skipped": True}
+        else:
+            if settings is None:
+                raise ServiceError(409, "임베딩 단계를 시작할 수 없습니다 (Hub 설정 없음).")
+            job = embeddings.start_alone(db, settings, owner, release.id, c.get("node_id", ""), via=via, gpus=c.get("gpus"))
+            refs = {"release_id": release.id, "job_id": job.id}
     elif kind == "sync":
         node = services.get_node(db, c["node_id"])
         refs = {"node_id": node.id, "release_id": release_id}
@@ -1490,6 +1529,15 @@ def _check(db: Session, owner: User, run: PipelineRun, steps: list[dict[str, Any
         model = db.get(ModelVersion, op.model_id)
         who = f"{model.name} v{model.version}" if model else "모델"
         return "succeeded", f"{who} · 이미지 {images:,}장 검사 · 라벨이 틀렸을 수 있는 이미지 {wrong:,}장"
+    if kind == "embed":
+        if refs.get("skipped"):
+            return "succeeded", "이 버전의 이미지는 모두 벡터가 있어 건너뜀"
+        ended = _ended(db, refs.get("job_id"), "임베딩")
+        if ended is None or ended[0] != "succeeded":
+            return ended
+        job = db.get(Job, refs["job_id"])
+        result = (job.result or {}) if job else {}
+        return "succeeded", f"벡터 {int(result.get('embedded') or 0):,}개 만듦"
     if kind == "sync":
         if not refs.get("job_id"):
             return "succeeded", "이미 그 서버에 있음"
@@ -1908,6 +1956,8 @@ def _summary(db: Session, project: Project | None, dataset: Dataset | None, step
         return f"{CHECK_GROUPS.get(c.get('group', 'any'), '문제')} 이미지 {c.get('max_flagged', 0):,}장 이하면 다음"
     if kind == "sync":
         return f"{_node_name(db, c.get('node_id'))}(으)로"
+    if kind == "embed":
+        return "벡터가 없는 이미지만" + (where or " · 이미지가 있는 임베딩용 서버에서")
     if kind == "autolabel":
         said = f"{who} · {SPLIT_LABEL.get(c.get('split', ''), c.get('split'))}의 라벨 안 한 이미지{where}"
         return said + (f" · 확신도 {c['accept']} 이상 자동 승인" if c.get("accept") is not None else "")
@@ -1973,7 +2023,7 @@ def _step_view(
     }
     if refs.get("release_out"):
         view["made_release"] = _release_ref(db, refs["release_out"])
-    if kind in ("import", "sync") and running:
+    if kind in ("import", "sync", "embed") and running:
         view["job"] = _job_line(db, settings, refs.get("job_id"))
     elif kind == "check" and refs:
         view["release"] = _release_ref(db, refs.get("release_id"))

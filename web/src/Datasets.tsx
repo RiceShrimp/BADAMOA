@@ -178,6 +178,12 @@ function ReleaseView({
   const [labelingSet, setLabelingSet] = useState(false); // making a labeling set of the filtered images
   const [exporting, setExporting] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  // 이미지 탐색: how many of this version's images have a vector
+  const [vectors, setVectors] = useState<{ total: number; done: number } | null>(null);
+  useEffect(() => {
+    setVectors(null);
+    if (release?.status === "ready") void api<{ total: number; done: number }>(`/releases/${release.id}/embeddings`).then(setVectors).catch(() => {});
+  }, [release?.id, release?.status]);
   const [moving, setMoving] = useState(false); // 다른 프로젝트로 옮기기
 
   const filterQuery = useMemo(() => {
@@ -297,6 +303,15 @@ function ReleaseView({
                     </a>
                   </span>
                 ))}
+              </>
+            )}
+            {vectors && vectors.total > 0 && (
+              <>
+                {" "}
+                ·{" "}
+                <a href="#/explore" title="이미지 탐색에서 글 · 비슷한 이미지로 찾는 데 쓰는 벡터">
+                  벡터 {vectors.done.toLocaleString()}/{vectors.total.toLocaleString()}장
+                </a>
               </>
             )}
           </p>

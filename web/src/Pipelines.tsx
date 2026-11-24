@@ -94,6 +94,7 @@ const STEP_KINDS: { group: string; kinds: { kind: StepKind; label: string; what:
         label: "서버로 보내기",
         what: "이 버전의 이미지 파일을 고른 서버에 미리 복사 (학습 단계에서 노드를 고르면 그 노드가 알아서 받으므로 보통은 필요 없음)",
       },
+      { kind: "embed", label: "임베딩", what: "이미지 탐색용 벡터를 벡터가 없는 이미지만 만듦 (임베딩용 서버, 학습 뒤면 학습한 서버가 받은 이미지로)" },
     ],
   },
   {
@@ -140,7 +141,7 @@ interface Places {
   problem?: string;
 }
 /** The steps that run on a server picked (or 자동), and how their list of servers is asked for. */
-const PLACE_KINDS: StepKind[] = ["import", "sync", "autolabel", "review", "eval", "export"];
+const PLACE_KINDS: StepKind[] = ["import", "sync", "embed", "autolabel", "review", "eval", "export"];
 const placeKey = (datasetId: string, kind: StepKind, c: Record<string, unknown>) => {
   const model = c.model as { name?: string; alias?: string } | undefined;
   return `${datasetId}|${kind}|${model?.name ?? ""}|${model?.alias ?? ""}`;
@@ -151,6 +152,7 @@ const DEFAULT_CONFIG: Record<StepKind, Record<string, unknown>> = {
   check: { max_flagged: 0, group: "any" },
   review: {},
   sync: {},
+  embed: {},
   autolabel: {},
   label: { divide: "size", part_size: 50, review: false },
   confirm: {},
@@ -817,6 +819,8 @@ function describe(s: Draft, steps: Draft[], index: number, data: ComposeData): s
       return `${CHECK_GROUPS.find(([g]) => g === (c.group ?? "any"))?.[1] ?? "문제"} 이미지 ${Number(c.max_flagged ?? 0)}장 이하면 다음`;
     case "sync":
       return `${node(c.node_id)}(으)로`;
+    case "embed":
+      return `벡터가 없는 이미지만${where || " · 이미지가 있는 임베딩용 서버에서"}`;
     case "autolabel":
       return `${who} · 라벨 안 한 이미지${c.accept != null && c.accept !== "" ? ` · 확신도 ${c.accept} 이상 자동 승인` : ""}${where}`;
     case "label": {
@@ -1106,6 +1110,27 @@ function StepEditor({
             학습 전에 알아서 받으므로, 보통은 넣지 않아도 됩니다.
           </p>
           <div className="form-row">{nodeSelect}</div>
+        </>
+      );
+      break;
+    case "embed":
+      fields = (
+        <>
+          <p className="muted small">
+            이미지 탐색의 &quot;임베딩 만들기&quot;와 같습니다. 그때의 버전에서 벡터가 없는 이미지만 임베딩용 서버가 만들고, 모두 있으면 건너뜁니다. 학습
+            단계 뒤에 두면 학습한 서버가 받아 둔 이미지로 만들어 다시 옮기지 않습니다(그 서버에 임베딩용 역할이 있을 때).
+          </p>
+          <div className="form-row">
+            {placeSelect("이미지가 있는 임베딩용 서버")}
+            <label>
+              계산
+              <select value={c.gpus === 0 ? "cpu" : "gpu"} onChange={(e) => set({ gpus: e.target.value === "cpu" ? 0 : undefined })}>
+                <option value="gpu">GPU (서버에 있으면)</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </label>
+          </div>
+          {placeHint}
         </>
       );
       break;

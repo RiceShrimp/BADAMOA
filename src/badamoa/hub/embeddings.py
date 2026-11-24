@@ -500,3 +500,114 @@ def _found(db: Session, settings: HubSettings, chosen: list[tuple[int, float]], 
             }
         )
     return out
+
+
+# ---- 임베딩 만들기 without a training: on a server with the role, the images sent there first if need be -------
+
+
+def _place_why(node: Node) -> list[str]:
+    """Why vectors cannot be made on ``node``, in a few words for a list (``node_problem`` says it in full)."""
+    if not node.enabled:
+        return ["작업을 받지 않음"]
+    why = []
+    if not registry.has_role(node, registry.EMBEDS):
+        why.append("임베딩용 아님 (노드 설정에서 역할 '임베딩용'을 켭니다)")
+    version = training._version(node.agent_version or "")
+    if not version or version < SINCE:
+        why.append(f"MOA {'.'.join(str(n) for n in SINCE)} 이상 필요")
+    return why
+
+
+def places(db: Session, settings: HubSettings, release: Release) -> dict[str, Any]:
+    """The servers a version's vectors can be made on, as 오토라벨's are listed: each with whether it can and why not,
+    whether the images must be sent there first; the one used unless another is picked (one that has the images
+    first). A server not answering now is said so, not refused (the job waits for it)."""
+    try:
+        holder = training.data_node(db, release.id)
+    except ServiceError as e:
+        return {"default": "", "holder": None, "nodes": [], "problem": e.message}
+    from . import transfers  # noqa: PLC0415  (transfers reads training, which reads this module's callers)
+
+    have = transfers.holders(db, release.id)
+    found = []
+    for node in db.scalars(select(Node).where(Node.enabled.is_(True)).order_by(Node.name)):
+        why = _place_why(node)
+        transfer = node.id not in have
+        if transfer and not why:
+            try:
+                transfers.check_route(holder, node)
+            except ServiceError as e:
+                why.append(e.message)
+        found.append(
+            {
+                "id": node.id,
+                "name": node.name,
+                "status": services.node_status(node, settings),
+                "gpus": len((node.info or {}).get("gpus") or []),
+                "fits": not why,
+                "why": " · ".join(why),
+                "transfer": transfer,  # the version's images are sent there first
+                "holds_images": not transfer,
+            }
+        )
+    fitting = [f for f in found if f["fits"]]
+    default = next((f["id"] for f in fitting if not f["transfer"]), "") or (fitting[0]["id"] if fitting else "")
+    found.sort(key=lambda f: (f["id"] != default, not f["fits"], f["name"]))
+    return {"default": default, "holder": {"id": holder.id, "name": holder.name}, "nodes": found, "problem": ""}
+
+
+def start_alone(
+    db: Session,
+    settings: HubSettings,
+    user: User,
+    release_id: str,
+    node_id: str = "",
+    via: str = "api",
+    gpus: int | None = None,
+) -> Job:
+    """Make a version's missing vectors without a training: on ``node_id`` (else where ``places`` would), which first
+    receives the images when it has none (they stay there, as a training's copy)."""
+    release = catalog.get_release(db, release_id)
+    catalog.require_ready(release)
+    known = coverage(db, release.id)
+    if known["going"]:
+        raise ServiceError(409, "이 버전의 벡터를 지금 만들고 있습니다.")
+    listed = places(db, settings, release)
+    node_id = node_id or listed["default"]
+    if not node_id:
+        why = listed.get("problem") or "벡터를 만들 서버가 없습니다. 노드 설정에서 역할 '임베딩용'을 켜세요."
+        raise ServiceError(400, why)
+    place = next((p for p in listed["nodes"] if p["id"] == node_id), None)
+    if place is None:
+        raise ServiceError(404, "고른 서버를 찾을 수 없거나 작업을 받지 않습니다.")
+    if not place["fits"]:
+        raise ServiceError(400, f"{place['name']}에서는 만들 수 없습니다: {place['why']}")
+    from . import transfers  # noqa: PLC0415
+
+    node = db.get(Node, node_id)
+    after = transfers.sync_job(db, user, release.id, node, via).id if place["transfer"] else None
+    job = start(db, user, release, node_id=node.id, after=after, gpus=gpus, via=via)
+    if job is None:
+        raise ServiceError(409, "이 버전의 이미지는 모두 벡터가 있습니다.")
+    return job
+
+
+def project_versions(db: Session, project_id: str, model: str = "") -> list[dict[str, Any]]:
+    """Every version of a project with how far its images have vectors (이미지 탐색's 버전별 임베딩)."""
+    catalog.get_project(db, project_id)
+    rows = db.execute(
+        select(Release, Dataset.name)
+        .join(Dataset, Dataset.id == Release.dataset_id)
+        .where(Dataset.project_id == project_id, Release.status == "ready", Release.deleted_at.is_(None))
+        .order_by(Dataset.name, Release.created_at.desc())
+    ).all()
+    out = []
+    for release, dataset in rows:
+        known = coverage(db, release.id, model)
+        out.append(
+            {
+                "release": {"id": release.id, "version": release.version, "dataset": dataset},
+                **{k: known[k] for k in ("total", "done", "todo", "going")},
+            }
+        )
+    return out

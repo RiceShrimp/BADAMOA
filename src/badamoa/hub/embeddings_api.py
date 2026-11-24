@@ -10,6 +10,7 @@ from typing import Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from . import catalog, embeddings, services
@@ -59,6 +60,41 @@ def explore_search(
     return embeddings.search(
         db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit, model=model
     )
+
+
+@router.get("/projects/{project_id}/explore/versions")
+def explore_versions(
+    project_id: str, model: str = "", _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> list[dict[str, Any]]:
+    """Every version of the project with how far its images have vectors."""
+    return embeddings.project_versions(db, project_id, model)
+
+
+@router.get("/releases/{release_id}/embeddings/places")
+def embedding_places(
+    release_id: str, _: User = Depends(current_user), db: Session = Depends(db_session), hub: Hub = Depends(get_hub)
+) -> dict[str, Any]:
+    """The servers the version's vectors can be made on, each with why not."""
+    return embeddings.places(db, hub.settings, catalog.get_release(db, release_id))
+
+
+class StartEmbedding(BaseModel):
+    node_id: str = ""  # empty: where the images are, on a server with the 임베딩용 role
+    gpus: int | None = None  # None: a GPU when the server has one; 0: the CPU
+
+
+@router.post("/releases/{release_id}/embeddings")
+def start_embedding(
+    release_id: str,
+    body: StartEmbedding,
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """Make the version's missing vectors without a training (임베딩 만들기)."""
+    job = embeddings.start_alone(db, hub.settings, user, release_id, body.node_id, via="ui", gpus=body.gpus)
+    db.commit()
+    return {"job_id": job.id, **embeddings.coverage(db, release_id)}
 
 
 @agent_router.get("/manifest")

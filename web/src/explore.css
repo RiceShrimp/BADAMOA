@@ -60,3 +60,61 @@
 .explore-thumb .ghost-btn {
   align-self: flex-start;
 }
+
+/* 버전별 임베딩 */
+.explore-versions {
+  margin-bottom: 14px;
+  padding: 10px 16px;
+}
+.explore-versions > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.explore-version-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.explore-version-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(80px, 160px) 9.5em 12em;
+  align-items: center;
+  gap: 12px;
+}
+.explore-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.explore-meter i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.explore-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 6px 0 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.explore-start select {
+  height: var(--control-h, 34px);
+  margin: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.explore-start button {
+  height: var(--control-h, 34px);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.explore-version-row > :last-child {
+  justify-self: end;
+}

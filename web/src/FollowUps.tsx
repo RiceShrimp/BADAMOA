@@ -12,6 +12,7 @@ export type StepKind =
   | "check"
   | "review"
   | "sync"
+  | "embed"
   | "autolabel"
   | "label"
   | "confirm"

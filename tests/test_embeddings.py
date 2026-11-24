@@ -97,3 +97,43 @@ def test_explore_finds_the_nearest_images(hub, release):  # noqa: F811
     assert one.status_code == 200 and len(one.json()["items"]) == 7
     words = hub.get(f"/api/projects/{project}/explore/search", params={"text": "a cat"})
     assert words.status_code == 409 and "글 검색" in words.json()["detail"]
+
+
+def test_vectors_without_a_training_and_as_a_pipeline_step(hub, release, tmp_path):  # noqa: F811
+    import time
+
+    places = hub.get(f"/api/releases/{release['id']}/embeddings/places").json()
+    here = next(p for p in places["nodes"] if p["id"] == hub.node_id)
+    assert here["fits"] and not here["transfer"] and places["default"] == hub.node_id
+    made = hub.post(f"/api/releases/{release['id']}/embeddings", json={"gpus": 0})
+    assert made.status_code == 200, made.text
+    job = _wait(hub, made.json()["job_id"])
+    assert job["status"] == "succeeded" and job["result"]["embedded"] == 8, _logs(hub, job["id"])
+    again = hub.post(f"/api/releases/{release['id']}/embeddings", json={})
+    assert again.status_code == 409 and "모두 벡터가 있습니다" in again.json()["detail"]
+    rows = hub.get(f"/api/projects/{release['project_id']}/explore/versions").json()
+    assert [(r["release"]["id"], r["done"], r["todo"]) for r in rows] == [(release["id"], 8, 0)]
+
+    # a pipeline: 가져오기 → 임베딩, only the images the new version added
+    folder = make_yolo(tmp_path / "more", train=10)
+    steps = [
+        {"kind": "import", "config": {"node_id": hub.node_id, "path": str(folder)}},
+        {"kind": "embed", "config": {"gpus": 0}},
+    ]
+    started = hub.post("/api/pipeline-runs", json={"release_id": release["id"], "steps": steps})
+    assert started.status_code == 200, started.text
+    deadline = time.monotonic() + 120
+    view = started.json()
+    while time.monotonic() < deadline and view["status"] == "running":
+        time.sleep(0.3)
+        view = hub.get(f"/api/pipeline-runs/{view['id']}").json()
+    assert view["status"] == "succeeded", [(s["kind"], s["status"], s["message"]) for s in view["steps"]]
+    assert view["steps"][1]["label"] == "임베딩" and view["steps"][1]["message"] == "벡터 6개 만듦"
+    # a server without the role is refused for the step, as everywhere
+    try:
+        hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "storage"]})
+        step = {"kind": "embed", "config": {"node_id": hub.node_id}}
+        refused = hub.post("/api/pipelines", json={"release_id": release["id"], "steps": [step]})
+        assert refused.status_code == 400 and "임베딩용" in refused.json()["detail"]
+    finally:
+        hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "autolabel", "inference", "storage", "embedding"]})

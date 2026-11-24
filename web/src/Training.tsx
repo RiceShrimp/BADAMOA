@@ -1481,8 +1481,7 @@ export function NewRun({
   const targets = choices ? trainTargets(choices, nodeMode, pickedNodes) : [];
   const roleless = targets.filter((n) => !(n.roles ?? []).includes("embedding")); // servers it may train on, no 임베딩용
   const later = settingsFor?.kind === "train"; // a pipeline step: the version is the one it runs on then
-  const embedding =
-    embed && targets.length > 0 && roleless.length === 0 && trials.length === 0 && settingsFor?.kind !== "sweep" && (later || (embedInfo?.todo ?? 1) > 0);
+  const embedding = embed && !settingsFor && targets.length > 0 && roleless.length === 0 && trials.length === 0 && (embedInfo?.todo ?? 1) > 0;
   const targetKey = targets.map((n) => n.id).join(",");
   useEffect(() => {
     if (keptGpus.current === null) return setGpuPick("auto");
@@ -1768,7 +1767,8 @@ export function NewRun({
               onCount={(gpus) => setExtra({ ...extra, gpus })}
             />
           )}
-          {choices && trials.length === 0 && settingsFor?.kind !== "sweep" && (
+          {/* a pipeline makes the vectors in a step of its own (임베딩), as 검수 */}
+          {choices && trials.length === 0 && !settingsFor && (
             <EmbedField info={embedInfo} on={embed} onChange={setEmbed} roleless={roleless} later={later} />
           )}
 

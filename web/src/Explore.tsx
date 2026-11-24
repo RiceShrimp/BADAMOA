@@ -28,6 +28,157 @@ interface Found {
 
 type Query = { text: string } | { like: Found };
 
+/** A version and how far its images have vectors (``/projects/{id}/explore/versions``). */
+interface VersionRow {
+  release: { id: string; version: string; dataset: string };
+  total: number;
+  done: number;
+  todo: number;
+  going: string | null;
+}
+
+/** A server a version's vectors can be made on (``/releases/{id}/embeddings/places``). */
+interface Place {
+  id: string;
+  name: string;
+  status: string;
+  gpus: number;
+  fits: boolean;
+  why: string;
+  transfer: boolean;
+}
+interface Places {
+  default: string;
+  nodes: Place[];
+  problem: string;
+}
+
+/** 버전별 임베딩: each version's vectors, and 임베딩 만들기 for the ones it lacks, on a server with the 임베딩용 role. */
+function VersionEmbeddings({ projectId, onMade }: { projectId: string; onMade: () => void }) {
+  const [rows, setRows] = useState<VersionRow[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null); // the version whose 임베딩 만들기 is open
+  const [places, setPlaces] = useState<Places | null>(null);
+  const [node, setNode] = useState("");
+  const [cpu, setCpu] = useState(false); // as 오토라벨: a GPU when the server has one, or the CPU
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => void api<VersionRow[]>(`/projects/${projectId}/explore/versions`).then(setRows).catch(() => setRows([]));
+  useEffect(load, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const going = rows?.some((r) => r.going) ?? false;
+  useEffect(() => {
+    if (!going) return;
+    const timer = window.setInterval(() => {
+      load();
+      onMade();
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [going]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const choose = (releaseId: string) => {
+    setOpen(releaseId);
+    setPlaces(null);
+    setNode("");
+    setError(null);
+    void api<Places>(`/releases/${releaseId}/embeddings/places`)
+      .then((found) => {
+        setPlaces(found);
+        setNode(found.default);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  };
+  const start = async (releaseId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/releases/${releaseId}/embeddings`, { body: { node_id: node, gpus: cpu ? 0 : null } });
+      setOpen(null);
+      load();
+      onMade();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const n = (v: number) => v.toLocaleString();
+  if (!rows) return null;
+  return (
+    <details className="card explore-versions" open={rows.some((r) => r.done === 0) || going}>
+      <summary>
+        버전별 임베딩 <span className="muted small">— 벡터가 없는 이미지만 임베딩용 서버가 만듭니다</span>
+      </summary>
+      {rows.length === 0 && <p className="muted small">이 프로젝트에는 등록이 끝난 버전이 없습니다.</p>}
+      <ul className="explore-version-list">
+        {rows.map((r) => (
+          <li key={r.release.id}>
+            <div className="explore-version-row">
+              <a href={`#/datasets/${r.release.id}`}>
+                {r.release.dataset} {r.release.version}
+              </a>
+              <span className="explore-meter" title={`${n(r.done)}/${n(r.total)}장`}>
+                <i style={{ width: `${r.total ? (100 * r.done) / r.total : 0}%` }} />
+              </span>
+              <span className="muted small nowrap">
+                벡터 {n(r.done)}/{n(r.total)}장
+              </span>
+              {r.going ? (
+                <span className="tag">만드는 중</span>
+              ) : r.todo === 0 ? (
+                <span className="muted small">모두 있음</span>
+              ) : (
+                <button type="button" className="ghost-btn" onClick={() => (open === r.release.id ? setOpen(null) : choose(r.release.id))}>
+                  임베딩 만들기 ({n(r.todo)}장)
+                </button>
+              )}
+            </div>
+            {open === r.release.id && (
+              <div className="explore-start">
+                {!places && !error && <span className="muted small">서버를 찾는 중…</span>}
+                {places && (
+                  <>
+                    <label className="inline-select">
+                      만들 서버
+                      <select value={node} onChange={(e) => setNode(e.target.value)}>
+                        {!places.nodes.some((p) => p.fits) && <option value="">임베딩용 서버가 없습니다</option>}
+                        {places.nodes.map((p) => (
+                          <option key={p.id} value={p.id} disabled={!p.fits}>
+                            {p.name} · {p.gpus ? `GPU ${p.gpus}` : "CPU"} · {p.transfer ? "이미지를 먼저 받음" : "이미지 있음"}
+                            {p.status === "online" ? "" : " · 지금 응답 없음"}
+                            {p.fits ? "" : ` — ${p.why}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="inline-select">
+                      계산
+                      <select value={cpu ? "cpu" : "gpu"} onChange={(e) => setCpu(e.target.value === "cpu")}>
+                        <option value="gpu">GPU (서버에 있으면)</option>
+                        <option value="cpu">CPU</option>
+                      </select>
+                    </label>
+                    <button type="button" className="primary" disabled={busy || !node} onClick={() => void start(r.release.id)}>
+                      시작
+                    </button>
+                    {!places.nodes.some((p) => p.fits) && (
+                      <span className="warn-text small">
+                        <a href="#/nodes">노드</a> 화면에서 벡터를 만들 서버의 설정 → 역할에 &quot;임베딩용&quot;을 켜세요.
+                      </span>
+                    )}
+                    {places.nodes.find((p) => p.id === node)?.transfer && (
+                      <span className="muted small">그 서버가 이 버전의 이미지를 먼저 받은 뒤 만듭니다(받은 이미지는 그 서버에 남음).</span>
+                    )}
+                  </>
+                )}
+                {error && <span className="bad-text small">{error}</span>}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 /** 이미지 탐색: a project's images found by words or by another image, with the vectors made alongside trainings. */
 export function Explore() {
   const { projects, projectId, choose } = useProject();
@@ -40,13 +191,16 @@ export function Explore() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const loadStatus = () => {
+    if (projectId) void api<ExploreStatus>(`/projects/${projectId}/explore`).then(setStatus).catch((e) => setError(String(e)));
+  };
   useEffect(() => {
     setStatus(null);
     setFound(null);
     setQuery(null);
     setRelease("");
     if (!projectId) return;
-    void api<ExploreStatus>(`/projects/${projectId}/explore`).then(setStatus).catch((e) => setError(String(e)));
+    loadStatus();
     void api<TreeDataset[]>(`/projects/${projectId}/datasets`).then(setTree).catch(() => setTree([]));
   }, [projectId]);
 
@@ -84,8 +238,8 @@ export function Explore() {
         <div>
           <h1>이미지 탐색</h1>
           <p className="muted">
-            프로젝트의 모든 데이터셋 이미지를 글이나 비슷한 이미지로 찾습니다. 찾는 것은 벡터가 있는 이미지뿐이며, 벡터는 새 학습에서 &quot;학습하면서
-            이미지 임베딩도 만들기&quot;로 만듭니다.
+            프로젝트의 모든 데이터셋 이미지를 글이나 비슷한 이미지로 찾습니다. 찾는 것은 벡터가 있는 이미지뿐이며, 벡터는 아래 버전별 임베딩이나 새 학습의
+            &quot;학습하면서 이미지 임베딩도 만들기&quot;로 만듭니다.
           </p>
         </div>
         <div className="head-actions">
@@ -113,11 +267,12 @@ export function Explore() {
           <Icon name="images" size={26} />
           <strong>아직 찾을 수 있는 이미지가 없습니다</strong>
           <p className="muted">
-            학습 화면의 새 학습에서 &quot;학습하면서 이미지 임베딩도 만들기&quot;를 켜고 학습하면, 학습하는 서버가 그 버전의 이미지 벡터를 만듭니다(그 서버에
+            아래 버전별 임베딩에서 &quot;임베딩 만들기&quot;를 누르거나, 새 학습에서 &quot;학습하면서 이미지 임베딩도 만들기&quot;를 켜고 학습하세요(만드는 서버에
             노드 역할 &quot;임베딩용&quot;이 있어야 함).
           </p>
         </div>
       )}
+      {status && projectId && <VersionEmbeddings projectId={projectId} onMade={loadStatus} />}
 
       {status && status.embedded > 0 && (
         <>
