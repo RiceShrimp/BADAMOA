@@ -234,7 +234,7 @@ def search(
             .where(where, prefilter=True)
             .nprobes(NPROBES)
             .refine_factor(REFINE)  # the index's guesses re-ranked by the vectors themselves: exact similarities
-            .select(["item_id"])
+            .select(["item_id", "_distance"])  # the distance asked for by name (Lance drops it otherwise later)
             .limit(wanted)
             .to_list()
         )
