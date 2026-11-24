@@ -10,6 +10,9 @@ which image is where (``ImageEmbedding``).
 from __future__ import annotations
 
 import json
+import threading
+from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import exists, func, insert, select
@@ -18,8 +21,9 @@ from sqlalchemy.orm import Session
 from badamoa.core.storage import Storage
 
 from . import catalog, registry, services, training
-from .catalog_models import EmbeddingPart, ImageEmbedding, Item, Release, ReleaseItem
-from .models import Job, Node, User
+from .catalog_models import Dataset, EmbeddingPart, ImageEmbedding, Item, Release, ReleaseItem
+from .config import HubSettings
+from .models import HubSetting, Job, Node, User
 from .services import ServiceError
 
 # The models a vector is made with: the script under ``badamoa/embedders`` that makes them, the checkpoint it loads,
@@ -30,10 +34,12 @@ MODELS: dict[str, dict[str, Any]] = {
         "script": "siglip2.py",
         "checkpoint": "google/siglip2-base-patch16-256",
         "dim": 768,
+        "text": True,  # finds images by words too: its text encoder runs on the Hub (``text_vector_on``)
         "environment": {
             "kind": "auto",
-            # torch named itself (transformers does not bring it); ``torch`` picks the build for the node's GPU
-            "requirements": ["torch", "transformers>=5,<6", "pillow", "numpy"],
+            # torch named itself (transformers does not bring it); ``torch`` picks the build for the node's GPU.
+            # onnx · onnxruntime: the text encoder the Hub reads queries with, exported (and made smaller) once
+            "requirements": ["torch", "transformers>=5,<6", "pillow", "numpy", "onnx", "onnxscript", "onnxruntime"],
             "python": "3.12",
             "torch": True,
         },
@@ -145,8 +151,9 @@ def start(
         if why:
             raise ServiceError(400, why)
     known = coverage(db, release.id, model)
-    if known["todo"] == 0 or known["going"]:
-        return None  # every image has its vector already, or a job is making them now
+    text = bool(spec.get("text")) and not text_state(db, model).get("ready")  # 글 검색's encoder still to come
+    if (known["todo"] == 0 and not text) or known["going"]:
+        return None  # every image has its vector already (and the Hub its text encoder), or a job is on it now
     count = (1 if any((p.info or {}).get("gpus") for p in places) else 0) if gpus is None else max(0, min(gpus, 1))
     job = services.create_job(
         db,
@@ -155,7 +162,11 @@ def start(
         {
             "release_id": release.id,
             "model": model,
-            "spec": {k: spec[k] for k in ("script", "checkpoint", "dim")},
+            "spec": {
+                **{k: spec[k] for k in ("script", "checkpoint", "dim")},
+                # the first job also sends the text encoder the Hub reads 글 검색 queries with
+                "export_text": text,
+            },
             "environment": spec["environment"],
             **({"run_id": run_id} if run_id else {}),
         },
@@ -226,3 +237,266 @@ def models_view() -> list[dict[str, Any]]:
         for k, v in MODELS.items()
         if not v.get("hidden")
     ]
+
+
+# ---- 글 검색: the text encoder, on the Hub ------------------------------------------------------------------------
+# The first embedding job exports the model's text encoder to ONNX (made smaller to 8-bit weights when it stays as
+# good) with its tokenizer, and a few phrases' token ids and vectors as made there. The Hub keeps them, checks it
+# reads those phrases the same, and from then on turns a query into a vector on its own CPU (ONNX Runtime, no torch).
+
+TEXT_FILES = ("onnx", "tokenizer", "checks")
+_sessions: dict[str, Any] = {}  # model → (tokenizer, session, settings) once loaded
+_lock = threading.RLock()
+
+
+def _text_key(model: str) -> str:
+    return f"embedding.text.{model}"
+
+
+def text_state(db: Session, model: str = "") -> dict[str, Any]:
+    row = db.get(HubSetting, _text_key(model or DEFAULT_MODEL))
+    return dict(row.value) if row is not None else {}
+
+
+def _text_dir(settings: HubSettings, model: str) -> Path:
+    return settings.home / "embeddings" / model
+
+
+def text_file(
+    db: Session, settings: HubSettings, storage: Storage, node: Node, job_id: str, kind: str, blob: str
+) -> dict[str, Any]:
+    """A file of the text encoder the job sent (``onnx``, ``tokenizer`` or ``checks``); with all three, checked."""
+    job = _job(db, node, job_id)
+    model = (job.params or {}).get("model") or DEFAULT_MODEL
+    if kind not in TEXT_FILES:
+        raise ServiceError(400, f"글 검색 파일은 {', '.join(TEXT_FILES)} 중 하나입니다.")
+    state = {k: v for k, v in text_state(db, model).items() if k not in ("ready", "problem")}
+    state[kind] = blob
+    if all(state.get(k) for k in TEXT_FILES):
+        problem = _install_text(settings, storage, model, state)
+        state.update(ready=not problem, problem=problem)
+    row = db.get(HubSetting, _text_key(model))
+    if row is None:
+        db.add(HubSetting(key=_text_key(model), value=state))
+    else:
+        row.value = state  # a new dict: a JSON column changed in place is not saved
+    db.flush()
+    return {"kind": kind, "ready": bool(state.get("ready")), "problem": state.get("problem", "")}
+
+
+def _install_text(settings: HubSettings, storage: Storage, model: str, state: dict[str, Any]) -> str:
+    """Lay the files out where the Hub loads them from, and check it reads the phrases as the node did ("" when it
+    does)."""
+    folder = _text_dir(settings, model)
+    folder.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        _sessions.pop(model, None)
+    (folder / "text.onnx").write_bytes(storage.get_blob(state["onnx"]))
+    (folder / "tokenizer.json").write_bytes(storage.get_blob(state["tokenizer"]))
+    (folder / "checks.json").write_bytes(storage.get_blob(state["checks"]))
+    try:
+        checks = json.loads((folder / "checks.json").read_text(encoding="utf-8"))
+        for phrase in checks["phrases"]:
+            ids = _tokens(settings, model, phrase["text"])
+            if ids != phrase["ids"]:
+                return f"'{phrase['text']}'을(를) 노드와 다르게 읽습니다 (토큰이 다름)."
+            mine = text_vector_on(settings, model, phrase["text"])
+            same = sum(a * b for a, b in zip(mine, phrase["vector"], strict=False))
+            if same < 0.98:
+                return f"'{phrase['text']}'의 벡터가 노드에서 만든 것과 다릅니다 (코사인 {same:.3f})."
+    except Exception as e:  # noqa: BLE001 - say why 글 검색 is not ready, keep the rest working
+        return f"글 검색 모델을 읽지 못했습니다: {type(e).__name__}: {e}"
+    return ""
+
+
+def _loaded(settings: HubSettings, model: str) -> tuple[Any, Any, dict[str, Any]]:
+    with _lock:
+        found = _sessions.get(model)
+        if found is None:
+            import onnxruntime  # noqa: PLC0415  (only when 글 검색 is used)
+            from tokenizers import Tokenizer  # noqa: PLC0415
+
+            folder = _text_dir(settings, model)
+            meta = json.loads((folder / "checks.json").read_text(encoding="utf-8"))
+            tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
+            tokenizer.enable_truncation(max_length=int(meta["max_length"]))
+            tokenizer.enable_padding(
+                length=int(meta["max_length"]),
+                pad_id=int(meta["pad_id"]),
+                pad_token=str(meta["pad_token"]),
+                direction=str(meta.get("padding_side") or "right"),
+            )
+            options = onnxruntime.SessionOptions()
+            options.intra_op_num_threads = 4
+            path = str(folder / "text.onnx")
+            session = onnxruntime.InferenceSession(path, options, providers=["CPUExecutionProvider"])
+            found = (tokenizer, session, meta)
+            _sessions[model] = found
+        return found
+
+
+def _tokens(settings: HubSettings, model: str, text: str) -> list[int]:
+    tokenizer, _, meta = _loaded(settings, model)
+    return list(tokenizer.encode(text.lower() if meta.get("lowercase") else text).ids)
+
+
+def text_vector_on(settings: HubSettings, model: str, text: str) -> list[float]:
+    """The words' vector, made on the Hub's CPU with the text encoder the first embedding job sent."""
+    import numpy as np  # noqa: PLC0415
+
+    _, session, _ = _loaded(settings, model)
+    ids = np.array([_tokens(settings, model, text)], dtype=np.int64)
+    out = session.run(None, {session.get_inputs()[0].name: ids})[0][0]
+    norm = float(np.linalg.norm(out)) or 1.0
+    return [float(v) / norm for v in out]
+
+
+# ---- 이미지 탐색: finding a project's images by words or by another image ----------------------------------------
+
+PART_CACHE_BYTES = 1_500_000_000  # the part files kept in memory between searches
+_parts: OrderedDict[str, Any] = OrderedDict()
+_parts_bytes = 0
+
+
+def _part(storage: Storage, part: EmbeddingPart) -> Any:
+    """A part file's vectors (float16, one row an image), kept for the next search while memory allows."""
+    global _parts_bytes
+    import numpy as np  # noqa: PLC0415
+
+    with _lock:
+        found = _parts.get(part.id)
+        if found is not None:
+            _parts.move_to_end(part.id)
+            return found
+    data = storage.get_blob(part.blob)
+    _, _, body = data.partition(b"\n")
+    matrix = np.frombuffer(body, dtype="<f2").reshape(part.count, part.dim)
+    with _lock:
+        _parts[part.id] = matrix
+        _parts_bytes += matrix.nbytes
+        while _parts_bytes > PART_CACHE_BYTES and len(_parts) > 1:
+            _, dropped = _parts.popitem(last=False)
+            _parts_bytes -= dropped.nbytes
+    return matrix
+
+
+def explore_status(db: Session, project_id: str, model: str = "") -> dict[str, Any]:
+    """How much of a project 이미지 탐색 can find: its images, those with a vector, and whether 글 검색 is ready."""
+    model = model or DEFAULT_MODEL
+    spec = model_of(model)
+    catalog.get_project(db, project_id)
+    images = db.scalar(select(func.count()).select_from(Item).where(Item.project_id == project_id)) or 0
+    has_vector = exists().where(ImageEmbedding.model == model, ImageEmbedding.sha256 == Item.sha256)
+    found = db.scalar(select(func.count()).select_from(Item).where(Item.project_id == project_id, has_vector)) or 0
+    text = text_state(db, model)
+    return {
+        "model": model,
+        "title": spec["title"],
+        "images": images,
+        "embedded": found,
+        "text": {"offered": bool(spec.get("text")), "ready": bool(text.get("ready")), "problem": text.get("problem") or ""},
+    }
+
+
+def search(
+    db: Session,
+    settings: HubSettings,
+    storage: Storage,
+    project_id: str,
+    *,
+    text: str = "",
+    like: int = 0,
+    release_id: str = "",
+    limit: int = 60,
+    model: str = "",
+) -> dict[str, Any]:
+    """A project's images (or one version's) nearest to the words ``text`` or to the image ``like`` (an item id),
+    the nearest first, each with how near (cosine) and a version it is in."""
+    import numpy as np  # noqa: PLC0415
+
+    model = model or DEFAULT_MODEL
+    model_of(model)
+    catalog.get_project(db, project_id)
+    limit = max(1, min(int(limit), 300))
+    if text.strip():
+        state = text_state(db, model)
+        if not state.get("ready"):
+            why = state.get("problem") or "임베딩 작업이 한 번 끝나면 글 검색 모델이 Hub에 들어옵니다."
+            raise ServiceError(409, f"글 검색을 아직 쓸 수 없습니다. {why}")
+        query = np.array(text_vector_on(settings, model, text.strip()), dtype=np.float32)
+    elif like:
+        item = db.get(Item, like)
+        found = db.get(ImageEmbedding, (model, item.sha256)) if item is not None else None
+        if found is None:
+            raise ServiceError(404, "이 이미지는 아직 벡터가 없어 비슷한 이미지를 찾을 수 없습니다.")
+        query = _part(storage, db.get(EmbeddingPart, found.part_id))[found.row].astype(np.float32)
+    else:
+        raise ServiceError(400, "찾을 말(text)이나 이미지(like)를 주세요.")
+
+    rows = (
+        select(ImageEmbedding.part_id, ImageEmbedding.row, Item.id)
+        .join(Item, (Item.sha256 == ImageEmbedding.sha256) & (Item.project_id == project_id))
+        .where(ImageEmbedding.model == model)
+    )
+    if release_id:
+        rows = rows.where(Item.id.in_(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id)))
+    by_part: dict[str, tuple[list[int], list[int]]] = {}
+    for part_id, row, item_id in db.execute(rows):
+        rows_of, items_of = by_part.setdefault(part_id, ([], []))
+        rows_of.append(row)
+        items_of.append(item_id)
+    best_scores: list[Any] = []
+    best_items: list[Any] = []
+    searched = 0
+    for part_id, (rows_of, items_of) in by_part.items():
+        matrix = _part(storage, db.get(EmbeddingPart, part_id))
+        scores = matrix[np.asarray(rows_of)].astype(np.float32) @ query
+        searched += len(rows_of)
+        keep = min(limit + 1, len(scores))  # one more: the image searched with is left out
+        top = np.argpartition(-scores, keep - 1)[:keep]
+        best_scores.append(scores[top])
+        best_items.append(np.asarray(items_of)[top])
+    if not best_scores:
+        return {"model": model, "searched": 0, "items": []}
+    scores = np.concatenate(best_scores)
+    items = np.concatenate(best_items)
+    order = np.argsort(-scores)
+    chosen = [(int(items[i]), float(scores[i])) for i in order if not (like and int(items[i]) == like)][:limit]
+    return {"model": model, "searched": searched, "items": _found(db, settings, chosen, release_id)}
+
+
+def _found(db: Session, settings: HubSettings, chosen: list[tuple[int, float]], release_id: str) -> list[dict[str, Any]]:
+    """The items found, as the grid shows them, each with the newest version it is in (or the one searched)."""
+    ids = [item_id for item_id, _ in chosen]
+    if not ids:
+        return []
+    items = {item.id: item for item in db.scalars(select(Item).where(Item.id.in_(ids)))}
+    where: dict[int, dict[str, Any]] = {}
+    member = (
+        select(ReleaseItem.item_id, Release.id, Release.version, Dataset.name)
+        .join(Release, Release.id == ReleaseItem.release_id)
+        .join(Dataset, Dataset.id == Release.dataset_id)
+        .where(ReleaseItem.item_id.in_(ids), Release.status == "ready", Release.deleted_at.is_(None))
+    )
+    if release_id:
+        member = member.where(Release.id == release_id)
+    for item_id, rid, version, dataset in db.execute(member.order_by(Release.created_at)):
+        where[item_id] = {"id": rid, "version": version, "dataset": dataset}  # the newest last
+    out = []
+    for item_id, score in chosen:
+        item = items.get(item_id)
+        if item is None:
+            continue
+        out.append(
+            {
+                "id": item.id,
+                "file_name": item.file_name,
+                "width": item.width,
+                "height": item.height,
+                "score": round(score, 4),
+                "thumb_url": catalog.media_url(settings, "thumb", item.thumb_key) if item.thumb_key else None,
+                "image_url": catalog.media_url(settings, "item", str(item.id)) if item.location_id else None,
+                "release": where.get(item_id),
+            }
+        )
+    return out

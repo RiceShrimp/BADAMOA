@@ -24,6 +24,10 @@ hub = [
     "sqlalchemy>=2.0.30",
     "mcp>=2.0,<3",
     "optuna>=4.0,<5",  # Bayesian search (TPE) for sweeps
+    # 이미지 탐색: the vectors searched with numpy; a query's words turned into a vector on the CPU (no torch)
+    "numpy>=1.26",
+    "onnxruntime>=1.18",
+    "tokenizers>=0.20",
 ]
 
 [project.scripts]

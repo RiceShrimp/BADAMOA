@@ -15,13 +15,14 @@ import { Nodes } from "./Nodes";
 import { OnlineTray } from "./Online";
 import { Pipelines } from "./Pipelines";
 import { GuidesPage } from "./Guides";
+import { Explore } from "./Explore";
 import { ReleasesPage, hasUnseenRelease } from "./ReleaseNotes";
 import { Settings } from "./Settings";
 import { Training } from "./Training";
 import { TrashPage } from "./Trash";
 import { Icon, Logo, usePolling, useTheme } from "./ui";
 
-type Page = "home" | "datasets" | "labeling" | "review" | "autolabel" | "training" | "models" | "pipelines" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
+type Page = "home" | "explore" | "datasets" | "labeling" | "review" | "autolabel" | "training" | "models" | "pipelines" | "nodes" | "jobs" | "agents" | "settings" | "trash" | "releases" | "guides";
 
 interface NavItem {
   label: string;
@@ -37,8 +38,8 @@ const NAV: { group?: string; hint?: string; items: NavItem[] }[] = [
     group: "Build",
     hint: "데이터",
     items: [
-      // every image of every dataset in one place, found by what is in it (text · similar image), P2
-      { label: "이미지 탐색", icon: "images", phase: 2 },
+      // every image of every dataset in one place, found by what is in it (text · similar image)
+      { label: "이미지 탐색", icon: "images", page: "explore" },
       { label: "데이터셋", icon: "database", page: "datasets" },
     ],
   },
@@ -333,6 +334,7 @@ function Shell({
         )}
         <main className="content">
           {page === "home" && <Home user={user} nodes={nodes} />}
+          {page === "explore" && <Explore />}
           {page === "datasets" && <Datasets sub={sub} arg={arg} isAdmin={isAdmin} />}
           {page === "labeling" && <Labeling setId={sub} arg={arg} />}
           {page === "review" && <Review sub={sub} arg={arg} />}

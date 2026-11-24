@@ -1,19 +1,29 @@
-"""Image embeddings (이미지 탐색): how far a version's images have vectors, and the node's side of making them."""
+"""Image embeddings and 이미지 탐색: how far a version's images have vectors, searching a project's images by words or
+by another image, and the node's side of making them (the vectors, and once the text encoder)."""
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+import anyio
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from . import catalog, embeddings
-from .deps import Hub, current_node, current_user, db_session, get_hub
+from . import catalog, embeddings, services
+from .deps import Hub, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 from .services import ServiceError
 
 router = APIRouter(prefix="/api")
 agent_router = APIRouter(prefix="/api/agent/jobs/{job_id}/embed")
+MAX_TEXT_FILE = 2 * 1024 * 1024 * 1024  # the text encoder, before it is made smaller (about 0.8 GB)
+
+
+def _storage(hub: Hub):
+    return catalog.storage_for(str(hub.settings.storage_dir))
 
 
 @router.get("/releases/{release_id}/embeddings")
@@ -23,6 +33,32 @@ def release_embeddings(
     """How many of the version's images have a vector by ``model`` (the default one) already, and the models."""
     catalog.get_release(db, release_id)
     return {**embeddings.coverage(db, release_id, model), "models": embeddings.models_view()}
+
+
+@router.get("/projects/{project_id}/explore")
+def explore_status(
+    project_id: str, model: str = "", _: User = Depends(current_user), db: Session = Depends(db_session)
+) -> dict[str, Any]:
+    """How much of the project 이미지 탐색 can find, and whether 글 검색 is ready."""
+    return embeddings.explore_status(db, project_id, model)
+
+
+@router.get("/projects/{project_id}/explore/search")
+def explore_search(
+    project_id: str,
+    text: str = "",
+    like: int = 0,
+    release_id: str = "",
+    limit: int = 60,
+    model: str = "",
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """The project's images (or one version's) nearest to the words or to the image ``like``, the nearest first."""
+    return embeddings.search(
+        db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit, model=model
+    )
 
 
 @agent_router.get("/manifest")
@@ -43,6 +79,37 @@ async def put_part(
     data = await request.body()
     if len(data) > embeddings.MAX_PART:
         raise ServiceError(413, "임베딩 파일이 너무 큽니다. 더 작게 나눠 보내세요.")
-    stored = embeddings.ingest(db, catalog.storage_for(str(hub.settings.storage_dir)), node, job_id, data)
+    stored = embeddings.ingest(db, _storage(hub), node, job_id, data)
     db.commit()
     return stored
+
+
+@agent_router.put("/text")
+async def put_text(job_id: str, request: Request, kind: str, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """A file of the model's text encoder (``onnx``, ``tokenizer``, ``checks``), streamed to disk: 글 검색 on the Hub."""
+    token = bearer_token(request)
+    incoming = hub.settings.storage_dir / "incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    handle, temp = tempfile.mkstemp(dir=incoming, suffix=".part")
+    size = 0
+    try:
+        with os.fdopen(handle, "wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_TEXT_FILE:
+                    raise HTTPException(status_code=413, detail="파일이 너무 큽니다.")
+                out.write(chunk)
+        blob = await anyio.to_thread.run_sync(_storage(hub).put_blob_file, temp)
+    finally:
+        Path(temp).unlink(missing_ok=True)
+
+    def record() -> dict[str, Any]:
+        with hub.db.session() as db:
+            node = services.authenticate_node(db, token)
+            if node is None:
+                raise HTTPException(status_code=401, detail="노드 인증 실패")
+            found = embeddings.text_file(db, hub.settings, _storage(hub), node, job_id, kind, blob)
+            db.commit()
+            return found
+
+    return await anyio.to_thread.run_sync(record)

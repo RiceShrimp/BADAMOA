@@ -78,3 +78,22 @@ def test_a_server_without_the_role_makes_none(hub, release):  # noqa: F811
         assert "embed" not in run["config"]
     finally:
         hub.patch(f"/api/nodes/{hub.node_id}", json={"roles": ["compute", "autolabel", "inference", "storage", "embedding"]})
+
+
+def test_explore_finds_the_nearest_images(hub, release):  # noqa: F811
+    _embedded(hub, _train(hub, release["id"], embed=True))
+    project = release["project_id"]
+    status = hub.get(f"/api/projects/{project}/explore").json()
+    assert status["images"] == 8 and status["embedded"] == 8
+    assert not status["text"]["offered"] and not status["text"]["ready"]  # the dummy has no text encoder
+    first = hub.get(f"/api/releases/{release['id']}/items").json()["items"][0]["id"]
+    found = hub.get(f"/api/projects/{project}/explore/search", params={"like": first}).json()
+    assert found["searched"] == 8 and len(found["items"]) == 7 and first not in [i["id"] for i in found["items"]]
+    scores = [i["score"] for i in found["items"]]
+    assert scores == sorted(scores, reverse=True) and all(-1.01 <= s <= 1.01 for s in scores)
+    assert found["items"][0]["release"]["id"] == release["id"] and found["items"][0]["thumb_url"]
+    # one version only, and words before the text encoder came
+    one = hub.get(f"/api/projects/{project}/explore/search", params={"like": first, "release_id": release["id"]})
+    assert one.status_code == 200 and len(one.json()["items"]) == 7
+    words = hub.get(f"/api/projects/{project}/explore/search", params={"text": "a cat"})
+    assert words.status_code == 409 and "글 검색" in words.json()["detail"]

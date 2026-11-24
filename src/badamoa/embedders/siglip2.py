@@ -52,6 +52,85 @@ def pooled(output: Any) -> Any:
     return found if found is not None else output[0]
 
 
+TEXT_LENGTH = 64  # the tokens a query is padded or cut to, as SigLIP2 was trained
+PHRASES = ("a photo of a cat", "a truck on a road at night", "자전거를 타는 사람")
+
+
+def export_text(checkpoint: str, folder: Path) -> None:
+    """The text encoder as ONNX for the Hub (8-bit weights when the vectors stay as good), its tokenizer, and the
+    phrases' token ids and vectors as made here, which the Hub checks it reproduces."""
+    import onnxruntime
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+    from transformers import AutoTokenizer
+
+    folder.mkdir(parents=True, exist_ok=True)
+    print("글 검색에 쓸 텍스트 인코더를 만듭니다 (처음 한 번).", flush=True)
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    model = AutoModel.from_pretrained(checkpoint, dtype=torch.float32).eval()
+
+    class Text(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = model
+
+        def forward(self, input_ids: Any) -> Any:
+            return pooled(self.model.get_text_features(input_ids=input_ids))
+
+    def ids_of(text: str) -> Any:
+        found = tokenizer(text.lower(), padding="max_length", max_length=TEXT_LENGTH, truncation=True, return_tensors="pt")
+        return found["input_ids"]
+
+    full = folder / "text-full.onnx"
+    args = {
+        "input_names": ["input_ids"],
+        "output_names": ["embeds"],
+        "dynamic_axes": {"input_ids": {0: "batch"}, "embeds": {0: "batch"}},
+        "opset_version": 17,
+    }
+    with torch.no_grad():
+        try:
+            torch.onnx.export(Text(), (ids_of(PHRASES[0]),), str(full), dynamo=False, **args)
+        except TypeError:  # a torch without the choice
+            torch.onnx.export(Text(), (ids_of(PHRASES[0]),), str(full), **args)
+        wanted = [torch.nn.functional.normalize(Text()(ids_of(t)).float(), dim=-1)[0].numpy() for t in PHRASES]
+
+    def vectors(path: Path) -> list[Any]:
+        session = onnxruntime.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        name = session.get_inputs()[0].name
+        made = [session.run(None, {name: ids_of(t).numpy().astype(np.int64)})[0][0] for t in PHRASES]
+        return [v / (np.linalg.norm(v) or 1.0) for v in made]
+
+    def worst(path: Path) -> float:
+        return min(float(np.dot(a, b)) for a, b in zip(vectors(path), wanted, strict=True))
+
+    if worst(full) < 0.999:
+        raise RuntimeError(f"ONNX로 바꾼 텍스트 인코더가 원래와 다릅니다 (코사인 {worst(full):.4f}).")
+    small = folder / "text-int8.onnx"
+    chosen = full
+    try:
+        quantize_dynamic(str(full), str(small), weight_type=QuantType.QInt8)
+        if worst(small) >= 0.99:
+            chosen = small
+    except Exception as e:  # noqa: BLE001 - the full one is good too, only bigger
+        print(f"8비트로 줄이지 못해 원래 크기로 보냅니다: {type(e).__name__}: {e}", flush=True)
+    chosen.replace(folder / "text.onnx")
+    tokenizer.backend_tokenizer.save(str(folder / "tokenizer.json"))
+    checks = {
+        "max_length": TEXT_LENGTH,
+        "pad_id": int(tokenizer.pad_token_id),
+        "pad_token": str(tokenizer.pad_token),
+        "padding_side": str(getattr(tokenizer, "padding_side", "right") or "right"),
+        "lowercase": True,
+        "phrases": [
+            {"text": t, "ids": [int(i) for i in ids_of(t)[0].tolist()], "vector": [float(x) for x in v]}
+            for t, v in zip(PHRASES, wanted, strict=True)
+        ],
+    }
+    (folder / "checks.json").write_text(json.dumps(checks, ensure_ascii=False), encoding="utf-8")
+    size = (folder / "text.onnx").stat().st_size / 1e6
+    print(f"글 검색 모델을 만들었습니다 ({size:,.0f} MB, {'8비트' if chosen == small else '원래 크기'}).", flush=True)
+
+
 def main() -> None:
     config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     out, size, dim = Path(config["out"]), int(config["part"]), int(config["dim"])
@@ -106,6 +185,14 @@ def main() -> None:
     took = time.monotonic() - started
     note = f" (읽지 못한 이미지 {failed:,}장)" if failed else ""
     print(f"이미지 {done:,}장의 벡터를 {took:,.0f}초에 만들었습니다{note}", flush=True)
+    if config.get("export_text"):  # the first job: the text encoder the Hub reads 글 검색 queries with
+        del model
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        try:
+            export_text(config["checkpoint"], out / "text")
+        except Exception as e:  # noqa: BLE001 - the vectors are made; 글 검색 waits for the next job
+            print(f"글 검색 모델을 만들지 못했습니다(다음 임베딩 때 다시): {type(e).__name__}: {e}", flush=True)
 
 
 if __name__ == "__main__":
