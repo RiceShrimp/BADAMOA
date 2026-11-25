@@ -1,6 +1,6 @@
 """BADAMOA — Build · Annotate · Develop · Automate / MLOps Orchestration & Agents."""
 
-__version__ = "0.120.3"
+__version__ = "0.120.4"
 
 import sys as _sys
 

@@ -41,6 +41,7 @@ fi
 echo "==> installing badamoa node $VERSION from $HUB_URL"
 uv tool install --force --python 3.12 --index "$HUB_URL/install/simple/" "badamoa==$VERSION"
 if [ "$(id -u)" -eq 0 ]; then
+  mkdir -p /usr/local/bin  # not there on a minimal system
   ln -sf "$ROOT/bin/badamoa" /usr/local/bin/badamoa
 else
   mkdir -p "$HOME/.local/bin"
