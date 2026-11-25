@@ -19,6 +19,7 @@ $env:UV_INSTALL_DIR = Join-Path $Root "bin"
 $env:UV_TOOL_DIR = Join-Path $Root "tools"
 $env:UV_TOOL_BIN_DIR = Join-Path $Root "bin"
 $env:UV_PYTHON_INSTALL_DIR = Join-Path $Root "python"
+if (-not $env:UV_CACHE_DIR) { $env:UV_CACHE_DIR = Join-Path $Root "uv-cache" }  # gone with the program
 $env:UV_NO_MODIFY_PATH = "1"
 New-Item -ItemType Directory -Force -Path $env:UV_INSTALL_DIR | Out-Null
 

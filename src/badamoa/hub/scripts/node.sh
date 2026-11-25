@@ -30,6 +30,7 @@ export UV_INSTALL_DIR="$ROOT/bin"
 export UV_TOOL_DIR="$ROOT/tools"
 export UV_TOOL_BIN_DIR="$ROOT/bin"
 export UV_PYTHON_INSTALL_DIR="$ROOT/python"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT/uv-cache}"  # downloads in the program's folder: gone with it
 export PATH="$ROOT/bin:$PATH"
 mkdir -p "$ROOT/bin"
 

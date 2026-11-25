@@ -56,6 +56,8 @@ def _env(where: dict[str, Path]) -> dict[str, str]:
         "UV_TOOL_BIN_DIR": str(where["bin"]),
         "UV_PYTHON_INSTALL_DIR": str(where["python"]),
         "UV_NO_MODIFY_PATH": "1",
+        # the program's own downloads in its folder, gone with it (unless the server set a cache itself)
+        "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(where["root"] / "uv-cache"),
     }
 
 

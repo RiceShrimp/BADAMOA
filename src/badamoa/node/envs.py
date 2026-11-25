@@ -15,8 +15,8 @@ build still follows the server's driver). In-house wheels come from the Hub's pa
 (``wheels``): the node fetches them into ``cache/wheels`` and uv looks there first.
 
 Environments are built in the node's work folder (``places``); one built before in another folder (the
-node's home) is used where it is. uv links packages from its cache into an environment, so the cache is
-kept on the work folder's disk (``uv_env``).
+node's home) is used where it is. uv links packages from its cache into an environment, so the node's own cache
+is kept in the work folder (``uv_env``), and goes with the node.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -84,29 +83,12 @@ def find_uv() -> str:
     return found
 
 
-@lru_cache(maxsize=1)
-def _uv_own_cache() -> Path | None:
-    """uv's cache as uv picks it for this account (``uv cache dir``), None when uv cannot say."""
-    try:
-        done = subprocess.run(
-            [find_uv(), "cache", "dir"], capture_output=True, text=True, timeout=30, check=False, env=code_env()
-        )
-    except (OSError, RuntimeError, subprocess.TimeoutExpired):
-        return None
-    text = done.stdout.strip()
-    return Path(text) if done.returncode == 0 and text else None
-
-
 def uv_cache(where: places.Places) -> Path | None:
-    """The uv cache the node uses, when it is not uv's own: uv hard-links packages from its cache into an
-    environment, so on another disk than the work folder every environment would be a full copy. None:
-    uv's own cache (on the work folder's disk already, or the server set ``UV_CACHE_DIR`` itself)."""
+    """The uv cache the node uses: its own, in its work folder (``uv-cache``). It is on the disk of the node's
+    environments (uv hard-links packages from its cache into them) and goes with the node when it is removed;
+    uv's cache of the account (``~/.cache/uv``) may hold other people's work, so the node leaves it alone.
+    None: the server set ``UV_CACHE_DIR`` itself."""
     if os.environ.get("UV_CACHE_DIR"):
-        return None
-    if places.same(where.work, where.home):
-        return None  # as before the work folder: uv's own cache
-    own = _uv_own_cache()
-    if own is not None and places.same_disk(own, where.work):
         return None
     return where.work / "uv-cache"
 
@@ -232,7 +214,7 @@ def ensure(
         shutil.rmtree(env, ignore_errors=True)  # leftovers of an interrupted build
         cached = uv_env(places.of(home))
         if cached:
-            log(f"uv 캐시: {cached['UV_CACHE_DIR']} (작업 폴더와 같은 디스크)")
+            log(f"uv 캐시: {cached['UV_CACHE_DIR']} (이 노드의 것: 노드를 지우면 함께 지워짐)")
         _run([uv, "venv", "--color", "never", "--python", python, str(env)], log, cached)
         install = [uv, "pip", "install", "--color", "never", "--python", str(python_of(env))]
         if torch:

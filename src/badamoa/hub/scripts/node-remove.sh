@@ -18,6 +18,14 @@ for path in json.load(open(sys.argv[1])):
 PY
 }
 
+# The folder of images received from other nodes the node picked (badamoa-cache; an admin's other folder stays).
+image_folder() {
+  local home="$1" path
+  [ -f "$home/cache-dir.txt" ] || return 0
+  path="$(head -n 1 "$home/cache-dir.txt")"
+  if [ "$(basename "$path")" = "badamoa-cache" ] && [ -d "$path" ]; then printf '%s\n' "$path"; fi
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   ROOT="$HOME/.badamoa"
   if [ ! -d "$ROOT" ]; then
@@ -28,6 +36,7 @@ if [ "$(id -u)" -ne 0 ]; then
   "$ROOT/bin/badamoa" node uninstall-service 2>/dev/null || true
   echo "==> removing the program and its settings"
   work_folders "${XDG_DATA_HOME:-$HOME/.local/share}/badamoa/node" | while IFS= read -r folder; do rm -rf "$folder"; done
+  image_folder "${XDG_DATA_HOME:-$HOME/.local/share}/badamoa/node" | while IFS= read -r folder; do rm -rf "$folder"; done
   rm -rf "$ROOT" "${XDG_DATA_HOME:-$HOME/.local/share}/badamoa/node"
   if [ -L "$HOME/.local/bin/badamoa" ]; then rm -f "$HOME/.local/bin/badamoa"; fi
   rmdir "${XDG_DATA_HOME:-$HOME/.local/share}/badamoa" 2>/dev/null || true
@@ -42,6 +51,7 @@ systemctl daemon-reload 2>/dev/null || true
 
 echo "==> removing the program and its settings"
 work_folders /var/lib/badamoa/node | while IFS= read -r folder; do rm -rf "$folder"; done
+image_folder /var/lib/badamoa/node | while IFS= read -r folder; do rm -rf "$folder"; done
 rm -rf /opt/badamoa /var/lib/badamoa/node
 if command -v ufw >/dev/null 2>&1; then ufw delete allow 8475/tcp >/dev/null 2>&1 || true; fi
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then

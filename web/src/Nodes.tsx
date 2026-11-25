@@ -3,6 +3,8 @@ import "./nodes.css";
 import { OrderReset, SortHandle, SortItem, Sortable, useOrder } from "./Order";
 import { DiskAlertLine, type DiskAlert } from "./DiskAlerts";
 import { type HubAddress, type JoinToken, api } from "./api";
+import { bytesLabel } from "./catalogTypes";
+import { KIND, type Kind, type StorageInfo, type StorageKind } from "./NodeStorage";
 import { CopyBlock, Icon, Modal, RefreshButton, gb, timeAgo, usePolling, useUpdatedAt } from "./ui";
 
 const ROLES = [
@@ -864,19 +866,44 @@ interface Deleted {
   commands: { linux: string; linux_user: string; windows: string };
 }
 
-/** Deleting a node: what it means, whether BADAMOA leaves the server too, and the command when it could not. */
+/** What deleting a node may leave on the server (the program, its settings and service always go). */
+const KEEPABLE: Kind[] = ["images", "envs", "containers", "models", "templates", "template_data", "runs", "uv"];
+
+/** What removing a kind frees: for Docker images only those BADAMOA pulled (the others are only forgotten). */
+function freed(entry: StorageKind | undefined): number {
+  if (!entry) return 0;
+  if (entry.kind === "containers") return (entry.items ?? []).filter((i) => i.pulled).reduce((s, i) => s + i.bytes, 0);
+  return entry.bytes ?? 0;
+}
+
+/** Deleting a node: what it means, whether BADAMOA leaves the server too (and what of it), and the command when it could not. */
 function DeleteNode({ node, onBack, onDone }: { node: BoardNode; onBack: () => void; onDone: () => void }) {
   const [cleanup, setCleanup] = useState(true);
+  const [keep, setKeep] = useState<Kind[]>([]); // kinds left on the server
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [left, setLeft] = useState<Deleted | null>(null); // deleted, but BADAMOA is still on the server
   const online = node.status !== "offline";
 
+  useEffect(() => {
+    if (!online) return;
+    api<StorageInfo>(`/nodes/${node.id}/storage`)
+      .then(setStorage)
+      .catch(() => setStorage(null));
+  }, [node.id, online]);
+
+  const measured = !!storage?.measured_at;
+  const entryOf = (kind: Kind) => storage?.kinds.find((k) => k.kind === kind);
+  const shown = measured ? KEEPABLE.filter((k) => freed(entryOf(k)) > 0) : KEEPABLE;
+  const total = shown.filter((k) => !keep.includes(k)).reduce((s, k) => s + freed(entryOf(k)), 0);
+
   const remove = async () => {
     setBusy(true);
     try {
       setError(null);
-      const done = await api<Deleted>(`/nodes/${node.id}?cleanup=${cleanup}`, { method: "DELETE" });
+      const kept = cleanup ? keep.map((k) => `&keep=${k}`).join("") : "";
+      const done = await api<Deleted>(`/nodes/${node.id}?cleanup=${cleanup}${kept}`, { method: "DELETE" });
       if (cleanup && !done.removed_on_server) setLeft(done);
       else onDone();
     } catch (e) {
@@ -911,8 +938,35 @@ function DeleteNode({ node, onBack, onDone }: { node: BoardNode; onBack: () => v
         <input type="checkbox" checked={cleanup} onChange={(e) => setCleanup(e.target.checked)} />
         서버에서도 MOA 지우기 <span className="muted small">— 서비스 등록 · 프로그램 · 설정. 데이터 폴더는 그대로</span>
       </label>
+      {cleanup && online && (
+        <div className="remove-pick">
+          <p className="muted small">
+            MOA가 이 서버에 둔 것 중 함께 지울 것을 고르세요. 체크를 풀면 그 서버에 남깁니다.
+            {measured ? ` (${timeAgo(storage!.measured_at!)}에 잰 크기)` : " 크기는 아직 재지 않았습니다."}
+          </p>
+          {shown.length === 0 && <p className="muted small">프로그램 · 설정 말고는 지울 것이 없습니다.</p>}
+          {shown.map((kind) => (
+            <label key={kind} className="check">
+              <input
+                type="checkbox"
+                checked={!keep.includes(kind)}
+                onChange={(e) => setKeep(e.target.checked ? keep.filter((k) => k !== kind) : [...keep, kind])}
+              />
+              {KIND[kind].name}{" "}
+              <span className="muted small">
+                {measured ? bytesLabel(freed(entryOf(kind))) : ""}
+                {kind === "containers" ? " · MOA가 받은 이미지만 지움" : ""}
+              </span>
+            </label>
+          ))}
+          {measured && shown.length > 0 && <p className="small">지울 크기: {bytesLabel(total)}</p>}
+        </div>
+      )}
       {cleanup && !online && (
-        <p className="muted small">노드가 꺼져 있어 지금은 서버를 정리할 수 없습니다. 삭제한 뒤 그 서버에서 실행할 명령을 알려 드립니다.</p>
+        <p className="muted small">
+          노드가 꺼져 있어 지금은 서버를 정리할 수 없습니다. 삭제한 뒤 그 서버에서 실행할 명령을 알려 드립니다(그 명령은 골라 남기지
+          않고 모두 지웁니다).
+        </p>
       )}
       <p className="muted small">잠시 쉬게 하려는 것이면 삭제 대신 비활성화하세요.</p>
       {error && <div className="error">{error}</div>}

@@ -16,6 +16,7 @@ from .services import ServiceError
 WAIT_S = 15.0
 SINCE = (0, 31, 0)  # node versions from here on answer (a folder listing)
 REMOVE_SINCE = (0, 32, 0)  # … and take themselves off their machine when deleted
+KEEP_SINCE = (0, 120, 6)  # … leaving on it what an admin chose to keep
 
 _lock = threading.Lock()
 _pending: dict[str, list[dict[str, Any]]] = {}  # node id -> questions not yet taken

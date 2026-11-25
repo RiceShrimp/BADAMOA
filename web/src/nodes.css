@@ -692,3 +692,10 @@ details.node-more > summary {
   color: var(--muted);
   font-size: 11px;
 }
+
+/* deleting a node: what BADAMOA keeps on the server, to keep or remove */
+.remove-pick {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 10px 24px;
+}

@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 
 import httpx
 from conftest import ADMIN
@@ -246,15 +247,12 @@ def test_the_storage_report_and_cleaning_cover_both_places(tmp_path, monkeypatch
         places.use(home, None)
 
 
-def test_uvs_cache_is_kept_on_the_work_folders_disk(tmp_path, monkeypatch):
+def test_the_node_keeps_its_own_uv_cache_in_its_work_folder(tmp_path, monkeypatch):
+    """Not uv's cache of the account (``~/.cache/uv``, which may hold other work): the node's own, beside its
+    environments, so removing the node takes it too."""
     home, work = tmp_path / "home", tmp_path / "work"
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
-    envs._uv_own_cache.cache_clear()
-    monkeypatch.setattr(envs, "_uv_own_cache", lambda: tmp_path / "uv-own")
-    assert envs.uv_env(places.Places(home, home)) == {}  # no work folder of its own: uv's own cache
-    monkeypatch.setattr(places, "same_disk", lambda a, b: True)
-    assert envs.uv_env(places.Places(home, work)) == {}  # uv's own is on that disk already
-    monkeypatch.setattr(places, "same_disk", lambda a, b: False)
+    assert envs.uv_env(places.Places(home, home)) == {"UV_CACHE_DIR": str(home / "uv-cache")}
     assert envs.uv_env(places.Places(home, work)) == {"UV_CACHE_DIR": str(work / "uv-cache")}
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "admins"))
     assert envs.uv_env(places.Places(home, work)) == {}  # the server's own setting stays
@@ -358,13 +356,15 @@ def test_a_real_node_moves_into_the_work_folder_an_admin_set(live_hub, tmp_path,
 
 
 
-def test_removing_the_node_takes_the_work_folders_it_made(tmp_path, monkeypatch):
-    from badamoa.node import remover
+def test_removing_the_node_takes_the_work_folders_and_received_images_it_made(tmp_path, monkeypatch):
+    from badamoa.node import cache, remover
 
     root, home = tmp_path / "opt" / "badamoa", tmp_path / "var" / "node"
     made, named = tmp_path / "home4" / places.FOLDER, tmp_path / "data" / "mine"
-    for folder in (root, home, made, named):
+    images, picked, admins = tmp_path / "d1" / cache.FOLDER, tmp_path / "d2" / cache.FOLDER, tmp_path / "pics"
+    for folder in (root, home, made, named, images, picked, admins):
         folder.mkdir(parents=True)
+    (home / cache.SAVED).write_text(str(picked), encoding="utf-8")
     (home / places.USED).write_text(json.dumps([str(made), str(named)]), encoding="utf-8")
     monkeypatch.setattr(remover.updater, "layout", lambda: {"root": root})
     seen: dict[str, list] = {}
@@ -377,7 +377,46 @@ def test_removing_the_node_takes_the_work_folders_it_made(tmp_path, monkeypatch)
     monkeypatch.setattr(remover, "_windows", capture)
     places.use(home, named)  # an admin's folder of another name: what else is in it is not BADAMOA's
     try:
-        remover.remove(home)
+        remover.remove(home, images)
+        # the home and the work folder whole (nothing kept), the images in use and the folder the node picked before
+        assert seen["work"] == [home, made, images, picked]
+        remover.remove(home, admins)  # an admin's folder of another name stays
+        assert seen["work"] == [home, made, picked]
     finally:
         places.use(home, None)
-    assert seen["work"] == [made]
+
+
+def test_removing_the_node_leaves_what_an_admin_chose_to_keep(tmp_path, monkeypatch):
+    """노드 삭제 → 남길 것: kept kinds stay (in the home and the work folders); the rest BADAMOA made goes, whole
+    folders when nothing in them is kept, and received images unless they were kept."""
+    from badamoa.node import cache, containers, remover
+
+    root, home = tmp_path / "opt" / "badamoa", tmp_path / "var" / "node"
+    work, images = tmp_path / "d1" / places.FOLDER, tmp_path / "d2" / cache.FOLDER
+    for folder in (root, home / "envs" / "e1", home / "runs" / "r1", home / "cache" / "models", home / "uv-cache",
+                   work / "envs" / "e2", work / "cache" / "templates", work / "uv-cache", images):  # fmt: skip
+        folder.mkdir(parents=True)
+    (home / "node.json").write_text("{}", encoding="utf-8")
+    (home / places.USED).write_text(json.dumps([str(work)]), encoding="utf-8")
+    monkeypatch.setattr(remover.updater, "layout", lambda: {"root": root})
+    dropped: list[str] = []
+    monkeypatch.setattr(containers, "listing", lambda _home: [{"image": "reg/x:1"}])
+    monkeypatch.setattr(containers, "remove", lambda _home, image, _log: dropped.append(image) or {"removed": True})
+    seen: dict[str, list] = {}
+
+    def capture(_root, _home, targets):
+        seen["targets"] = sorted(str(t.relative_to(tmp_path)) for t in targets)
+        return ""
+
+    monkeypatch.setattr(remover, "_linux", capture)
+    monkeypatch.setattr(remover, "_windows", capture)
+    remover.remove(home, images, keep=["envs", "uv", "containers", "nonsense"])
+    assert seen["targets"] == sorted(
+        str(Path(*p)) for p in [("d1", places.FOLDER, "cache"), ("d2", cache.FOLDER), ("var", "node", "cache"),
+                                ("var", "node", "node.json"), ("var", "node", "runs"), ("var", "node", places.USED)]
+    )  # fmt: skip
+    assert dropped == []  # Docker images kept
+
+    remover.remove(home, images)  # nothing kept: the folders whole, and the images BADAMOA pulled
+    assert seen["targets"] == sorted(str(Path(*p)) for p in [("var", "node"), ("d1", places.FOLDER), ("d2", cache.FOLDER)])
+    assert dropped == ["reg/x:1"]

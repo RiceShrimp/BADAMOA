@@ -6,7 +6,7 @@ import { DockerMoveDialog } from "./DiskAlerts";
 import { Badge, Modal, timeAgo, usePolling } from "./ui";
 
 /** One thing BADAMOA keeps on a server: an environment, an image, a weights file, a folder. */
-interface StorageItem {
+export interface StorageItem {
   id: string;
   image?: string; // Docker images go by name
   bytes: number;
@@ -27,7 +27,7 @@ interface StorageItem {
   requirements?: string[]; // what an environment was built from
 }
 
-interface StorageKind {
+export interface StorageKind {
   kind: Kind;
   path: string;
   removable: boolean;
@@ -44,7 +44,7 @@ interface StorageKind {
   desktop?: boolean; // Docker images: inside Docker Desktop's virtual disk
 }
 
-interface StorageInfo {
+export interface StorageInfo {
   node_id: string;
   can_clean: boolean;
   need: string;
@@ -70,9 +70,9 @@ interface StorageInfo {
   kinds: StorageKind[];
 }
 
-type Kind = "images" | "envs" | "containers" | "models" | "templates" | "template_data" | "runs" | "uv";
+export type Kind = "images" | "envs" | "containers" | "models" | "templates" | "template_data" | "runs" | "uv";
 
-const KIND: Record<Kind, { name: string; about: string; empty: string }> = {
+export const KIND: Record<Kind, { name: string; about: string; empty: string }> = {
   images: {
     name: "받은 이미지",
     about: "다른 서버에서 받아 둔 버전의 이미지. 아래 '받아 둔 버전'에서 버전별로 지웁니다",
@@ -110,8 +110,8 @@ const KIND: Record<Kind, { name: string; about: string; empty: string }> = {
   },
   uv: {
     name: "uv 캐시",
-    about: "가상환경을 만들 때 받은 패키지. 이 서버의 다른 uv 작업과 함께 쓰는 캐시라 정리는 쓰지 않는 것만 지웁니다",
-    empty: "에서 쓰지 않는 것을 정리할까요? 가상환경과 다른 프로젝트는 그대로입니다.",
+    about: "가상환경을 만들 때 받은 패키지(이 노드의 것). 정리는 쓰지 않는 것만 지우고, 노드를 지우면 함께 지워집니다",
+    empty: "에서 쓰지 않는 것을 정리할까요? 가상환경은 그대로입니다.",
   },
 };
 

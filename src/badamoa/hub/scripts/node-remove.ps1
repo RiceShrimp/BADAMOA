@@ -27,6 +27,12 @@ if (Test-Path $Used) {
         if ((Split-Path $dir -Leaf) -eq "badamoa-work" -and (Test-Path $dir)) { Remove-Item $dir -Recurse -Force }
     }
 }
+# the folder of images received from other nodes the node picked (badamoa-cache; an admin's other folder stays)
+$Picked = Join-Path $Home_ "cache-dir.txt"
+if (Test-Path $Picked) {
+    $dir = (Get-Content $Picked -TotalCount 1).Trim()
+    if ($dir -and (Split-Path $dir -Leaf) -eq "badamoa-cache" -and (Test-Path $dir)) { Remove-Item $dir -Recurse -Force }
+}
 foreach ($dir in @($Root, $Home_)) {
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
 }

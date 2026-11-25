@@ -131,6 +131,25 @@ def test_delete_takes_the_node_off_its_machine(hub):
     assert all(n["id"] != hub.node_id for n in hub.get("/api/nodes").json())
 
 
+def test_delete_tells_the_node_what_to_keep(hub, monkeypatch):
+    from badamoa.node import remover
+
+    assert hub.delete(f"/api/nodes/{hub.node_id}", params={"keep": ["envs", "bogus"]}).status_code == 400
+    asked: list = []
+    monkeypatch.setattr(remover, "remove", lambda home, images=None, keep=(): asked.append(list(keep)) or "kept")
+    done = hub.delete(f"/api/nodes/{hub.node_id}", params={"keep": ["envs", "images"]}).json()
+    assert (done["removed_on_server"], done["reason"]) == (True, "") and asked == [["envs", "images"]]
+
+
+def test_an_old_node_is_not_cleaned_when_something_should_stay(hub):
+    old = hub.post("/api/nodes/join-tokens", json={}).json()
+    info = {"hostname": "old", "os": "Linux", "cpu_count": 1, "memory_total_mb": 1, "gpus": []}
+    body = {"join_token": old["token"], "agent_version": "0.100.0", "info": info}
+    old_id = httpx.post(f"{hub.url}/api/agent/register", json=body).json()["node_id"]
+    gone = hub.delete(f"/api/nodes/{old_id}", params={"keep": ["envs"]}).json()  # it would remove everything
+    assert gone["removed_on_server"] is False and "골라 지우지" in gone["reason"]
+
+
 def test_delete_without_cleanup_leaves_the_server_alone(hub):
     done = hub.delete(f"/api/nodes/{hub.node_id}", params={"cleanup": False}).json()
     assert (done["removed_on_server"], done["reason"]) == (False, "")

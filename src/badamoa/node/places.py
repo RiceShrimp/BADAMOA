@@ -6,7 +6,7 @@
     <work>/cache/templates         template code fetched from the Hub
     <work>/cache/template-data     what template code keeps between runs (pretrained weights)
     <work>/cache/wheels, ultralytics
-    <work>/uv-cache                uv's cache, when uv's own is on another disk (``envs.uv_env``)
+    <work>/uv-cache                the node's own uv cache (``envs.uv_env``): it goes with the node
 
 The node's config, logs and lock stay in its home. Like received images (``cache``), the work folder is
 the one an admin set for the node; otherwise the disk with the most room, picked once and remembered

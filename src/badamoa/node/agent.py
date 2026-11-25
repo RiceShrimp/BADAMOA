@@ -527,7 +527,8 @@ class NodeAgent:
                 body = {"result": self._send_file(params)}
             elif kind == "remove":  # deleted on the Hub: take BADAMOA off this machine
                 self._stop_jobs()
-                body = {"result": {"removing": remover.remove(self.home)}}
+                keep = [str(k) for k in params.get("keep") or []]
+                body = {"result": {"removing": remover.remove(self.home, self.cache_root(), keep)}}
                 leaving = True
                 hard = updater.layout() is not None  # a helper deletes the files once this process is gone
             else:
