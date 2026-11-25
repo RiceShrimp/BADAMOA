@@ -39,7 +39,15 @@ import httpx
 from badamoa.core import tasks as task_names
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-SPLIT_ALIASES = {"train": "train", "val": "val", "valid": "val", "validation": "val", "test": "test"}
+SPLIT_ALIASES = {
+    "train": "train",
+    "training": "train",
+    "val": "val",
+    "valid": "val",
+    "validation": "val",
+    "test": "test",
+    "testing": "test",
+}
 CHUNK = 200
 
 
@@ -198,9 +206,15 @@ def _images_under(directory: Path, report: Report = _quiet, found_before: int = 
     return sorted(Path(f) for f in found)
 
 
-def _yolo_label_path(image: Path) -> Path:
+def _yolo_label_path(image: Path, tops: tuple[Path, ...] = ()) -> Path:
+    """Where an image's label file is: in the ``labels`` folder that mirrors its ``images`` folder
+    (images/train/a.jpg → labels/train/a.txt, train/images/a.jpg → train/labels/a.txt), else beside it
+    (train/a.jpg → train/a.txt). Only an ``images`` folder inside the dataset (under one of ``tops``) counts:
+    one above it (D:/images/my-set/train/a.jpg) is not the dataset's."""
     parts = list(image.parts)
-    for i in range(len(parts) - 1, -1, -1):
+    # the folder chosen may itself be the images folder (labels beside it: data/images + data/labels)
+    inside = next((len(top.parts) - (top.name == "images") for top in tops if image.is_relative_to(top)), 0)
+    for i in range(len(parts) - 2, inside - 1, -1):
         if parts[i] == "images":
             parts[i] = "labels"
             break
@@ -289,10 +303,18 @@ def scan_yolo(root: Path, as_is: bool = False, report: Report = _quiet) -> Scan:
     for split, directory in split_dirs:
         images += [(split, image) for image in _images_under(directory, report, len(images))]
     report("find", len(images), 0)
+    # the dataset's own folders: an "images" folder above them is not where its labels are
+    tops = tuple(dict.fromkeys((root, root.resolve(), base.resolve())))
+    listings = _Listings()
 
     def read(pair: tuple[str, Path]) -> Entry:
         split, image = pair
-        state, boxes = _read_yolo_label(_yolo_label_path(image), kpt_shape, as_is)
+        label = _yolo_label_path(image, tops)
+        state, boxes = _read_yolo_label(label, kpt_shape, as_is)
+        beside = image.with_suffix(".txt")
+        if state == "unlabelled" and label != beside and listings.has(beside):
+            # no labels folder for it, but a label file next to it (images/train/a.jpg + images/train/a.txt)
+            state, boxes = _read_yolo_label(beside, kpt_shape, as_is)
         return Entry(path=image, split=split, state=state, boxes=boxes)
 
     entries = []
@@ -360,16 +382,20 @@ class _Listings:
 
     def __init__(self) -> None:
         self.folders: dict[Path, set[str]] = {}
+        self.lock = threading.Lock()  # asked from many threads at once: a big folder is listed once, not by each
 
     def has(self, path: Path) -> bool:
         names = self.folders.get(path.parent)
         if names is None:
-            try:
-                with os.scandir(path.parent) as listing:
-                    names = {e.name for e in listing if not e.is_dir()}
-            except OSError:
-                names = set()
-            self.folders[path.parent] = names
+            with self.lock:
+                names = self.folders.get(path.parent)
+                if names is None:
+                    try:
+                        with os.scandir(path.parent) as listing:
+                            names = {e.name for e in listing if not e.is_dir()}
+                    except OSError:
+                        names = set()
+                    self.folders[path.parent] = names
         return path.name in names
 
 
@@ -505,11 +531,45 @@ def scan(root: Path, fmt: str = "auto", unlabelled: str = "auto", task: str = ""
     return settle(_scan(root, fmt, as_is=named, report=report), unlabelled)
 
 
+def _entries(folder: Path) -> list[os.DirEntry[str]]:
+    try:
+        with os.scandir(folder) as listing:
+            return list(listing)
+    except OSError:
+        return []
+
+
+def _labels_beside(entries: list[os.DirEntry[str]]) -> bool:
+    """A YOLO label file next to an image of the same name (a.jpg + a.txt)."""
+    stems = {os.path.splitext(e.name)[0] for e in entries if _is_image(e.name)}
+    return any(e.name.lower().endswith(".txt") and e.name[:-4] in stems for e in entries)
+
+
+def _yolo_signs(root: Path) -> bool:
+    """A YOLO folder, data.yaml or not: an ``images`` or ``labels`` folder under the root or under a split folder
+    (images/train, train/images), or label files next to the images (train/a.jpg + train/a.txt). Told apart
+    from a classification folder (train/<class>/a.jpg), whose split folders hold class folders of images only."""
+    if list(root.glob("*.yaml")):
+        return True
+    top = _entries(root)
+    if _labels_beside(top):
+        return True
+    for entry in top:
+        if not entry.is_dir():
+            continue
+        if entry.name in ("images", "labels"):
+            return True
+        if _split_from_name(entry.name):
+            inner = _entries(Path(entry.path))
+            if any(i.name in ("images", "labels") and i.is_dir() for i in inner) or _labels_beside(inner):
+                return True
+    return False
+
+
 def _scan(root: Path, fmt: str = "auto", as_is: bool = False, report: Report = _quiet) -> Scan:
     if not root.is_dir():
         raise FileNotFoundError(f"폴더를 찾을 수 없습니다: {root}")
-    detection_layout = (root / "images").is_dir() or (root / "labels").is_dir() or list(root.glob("*.yaml"))
-    looks_like_classes = not detection_layout and not _coco_files(root) and _imagefolder_splits(root)
+    looks_like_classes = not _yolo_signs(root) and not _coco_files(root) and _imagefolder_splits(root)
     if fmt == "imagefolder" or (fmt == "auto" and looks_like_classes):
         return scan_imagefolder(root, report)
     if fmt == "coco" or (fmt == "auto" and not list(root.glob("*.yaml")) and _coco_files(root)):

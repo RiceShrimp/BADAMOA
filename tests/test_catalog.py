@@ -84,6 +84,65 @@ def test_scan_follows_a_linked_folder_once(tmp_path):
     assert len(found.entries) == 8
 
 
+
+def _put(root: Path, images: str, labels: str, name: str) -> None:
+    from PIL import Image
+
+    (root / images).mkdir(parents=True, exist_ok=True)
+    (root / labels).mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (16, 16)).save(root / images / f"{name}.jpg")
+    (root / labels / f"{name}.txt").write_text("0 0.5 0.5 0.2 0.2\n1 0.3 0.3 0.1 0.1\n")
+
+
+# Detection folders as they come: (images, labels) per split
+LAYOUTS = {
+    "images/<split>": [("images/train", "labels/train"), ("images/val", "labels/val")],
+    "<split>/images": [("train/images", "train/labels"), ("val/images", "val/labels")],
+    "roboflow": [("train/images", "train/labels"), ("valid/images", "valid/labels")],
+    "<split> beside": [("train", "train"), ("validation", "validation")],
+}
+
+
+@pytest.mark.parametrize("layout", list(LAYOUTS))
+@pytest.mark.parametrize("yaml", [False, True])
+@pytest.mark.parametrize("task", ["", "detect"])
+def test_detection_layouts_with_or_without_yaml(tmp_path, layout, yaml, task):
+    """Every usual detection layout reads as YOLO with its labels and splits, data.yaml or not — also when the
+    dataset sits under a folder named images (D:/images/my-set/train/a.jpg + a.txt)."""
+    root = tmp_path / "images" / "my-set"
+    for images, labels in LAYOUTS[layout]:
+        for i in range(2):
+            _put(root, images, labels, f"{images.replace('/', '_')}_{i}")
+    if yaml:
+        (root / "data.yaml").write_text("names: [cat, dog]\n")
+    found = importer.scan(root, task=task)
+    assert found.format == "yolo"
+    assert found.classes == (["cat", "dog"] if yaml else ["class_0", "class_1"])
+    assert len(found.entries) == 4 and all(e.state == "labelled" and len(e.boxes) == 2 for e in found.entries)
+    assert sorted(e.split for e in found.entries) == ["train", "train", "val", "val"]
+
+
+def test_labels_found_when_the_images_folder_is_chosen_or_holds_them(tmp_path):
+    """The images folder picked as the dataset (its labels beside it), and label files kept inside images/."""
+    _put(tmp_path / "a", "images/train", "labels/train", "x")
+    found = importer.scan(tmp_path / "a" / "images")
+    assert [e.state for e in found.entries] == ["labelled"]
+
+    _put(tmp_path / "b", "images/train", "images/train", "y")
+    found = importer.scan(tmp_path / "b")
+    assert [(e.split, e.state) for e in found.entries] == [("train", "labelled")]
+
+
+def test_classification_folders_still_read_as_classes(tmp_path):
+    """Split folders of class folders are a classification dataset; split folders of images with their label
+    files are not (the Hub then refuses a Cls import of them)."""
+    assert importer.scan(make_imagefolder(tmp_path / "cls")).format == "imagefolder"
+    beside = tmp_path / "det"
+    _put(beside, "train", "train", "a")
+    _put(beside, "val", "val", "b")
+    assert importer.scan(beside, task="classify").format == "yolo"
+
+
 # ---- end to end -------------------------------------------------------------------
 
 
