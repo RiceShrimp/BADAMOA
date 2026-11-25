@@ -79,6 +79,13 @@ export const WITHOUT_SUDO_HINT =
   "Docker의 사내 레지스트리 허용 같은 서버 설정은 스스로 하지 못합니다. sudo로 쓰려면 노드 추가의 Linux 명령(sudo)을 " +
   "이 서버에서 다시 실행하세요: 같은 노드로 이어받고, 이 계정의 노드는 멈춥니다(학습이 돌 때는 끝난 뒤에).";
 
+/** The Hub PC's node runs inside the Hub, as the account that started it: nothing to reinstall, only root's setup. */
+export const HUB_WITHOUT_SUDO_HINT =
+  "Hub를 이 계정으로(sudo 없이) 띄워서, Hub 안에서 도는 이 PC의 노드도 이 계정으로 돕니다. 학습 · 오토라벨 · 임베딩은 " +
+  "그대로 되고, 재부팅 자동 실행(설정 → Hub 실행)은 이 계정의 crontab으로 켜집니다. 방화벽(8470 · 이미지 전송 8475)을 " +
+  "열거나 Docker의 사내 레지스트리를 허용하는 것 같은 서버 설정은 스스로 하지 못하니, 필요하면 관리자가 한 번 직접 합니다. " +
+  "Hub를 sudo로 띄우지는 마세요: 데이터 폴더가 root의 것이 됩니다.";
+
 interface Board {
   hub_version: string;
   nodes: BoardNode[];
@@ -303,11 +310,16 @@ function ServerRow({
           {node.is_local ? " · Hub" : ""}
         </div>
         <RoleChips roles={node.roles} />
-        {withoutSudo(node) && (
-          <div className="small warn-text" title={WITHOUT_SUDO_HINT}>
-            sudo 없이 설치 · {node.account?.name} 계정으로 실행
-          </div>
-        )}
+        {withoutSudo(node) &&
+          (node.is_local ? (
+            <div className="small muted" title={HUB_WITHOUT_SUDO_HINT}>
+              sudo 없이 실행 · Hub와 같은 {node.account?.name} 계정
+            </div>
+          ) : (
+            <div className="small warn-text" title={WITHOUT_SUDO_HINT}>
+              sudo 없이 설치 · {node.account?.name} 계정으로 실행
+            </div>
+          ))}
         {sys.length > 0 && <SysBars bars={sys} />}
         {online && <DiskAlertLine alerts={node.disk_alerts} />}
         {!online && (
