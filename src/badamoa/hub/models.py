@@ -55,6 +55,7 @@ class JoinToken(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    name: Mapped[str] = mapped_column(String(128), default="")  # the server's name when it joins ("": its hostname)
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime)

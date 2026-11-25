@@ -189,8 +189,10 @@ def _clean_roles(roles: list[str] | None) -> list[str]:
 
 
 def create_join_token(
-    db: Session, user: User, roles: list[str] | None, ttl_minutes: int = 60
+    db: Session, user: User, roles: list[str] | None, ttl_minutes: int = 60, name: str = ""
 ) -> tuple[str, JoinToken]:
+    """A one-time install token. ``name``: what the server is called once it joins ("": its hostname); the name
+    rides with the token, not in the command, so any name works without quoting."""
     require_admin(user)
     if not 1 <= ttl_minutes <= 60 * 24 * 7:
         raise ServiceError(400, "만료 시간은 1분 ~ 7일 사이여야 합니다.")
@@ -198,6 +200,7 @@ def create_join_token(
     row = JoinToken(
         token_hash=hash_token(token),
         roles=_clean_roles(roles),
+        name=" ".join((name or "").split())[:128],
         created_by=user.id,
         expires_at=utcnow() + timedelta(minutes=ttl_minutes),
     )
@@ -213,7 +216,7 @@ def register_node(db: Session, req: RegisterRequest) -> tuple[Node, str]:
     token = new_token(NODE_PREFIX)
     info = dict(req.info)
     node = Node(
-        name=(req.name or info.get("hostname") or "node")[:128],
+        name=(jt.name or req.name or info.get("hostname") or "node")[:128],  # the admin's name for it, else its own
         token_hash=hash_token(token),
         roles=list(jt.roles),
         os=str(info.get("os", ""))[:16],

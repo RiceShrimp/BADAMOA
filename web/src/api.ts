@@ -274,6 +274,7 @@ export interface HubAddress {
 export interface JoinToken {
   token: string;
   roles: string[];
+  name: string; // the server's name once it joins ("": its hostname)
   expires_at: string;
   hub_url: string;
   address: HubAddress;

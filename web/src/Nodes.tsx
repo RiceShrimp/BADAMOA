@@ -672,13 +672,14 @@ function RolePicker({ roles, onChange }: { roles: string[]; onChange: (roles: st
 }
 
 function AddNode({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState(""); // "": the server's hostname
   const [roles, setRoles] = useState(ROLES.map((r) => r.id));
   const [join, setJoin] = useState<JoinToken | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const create = async (): Promise<void> => {
     try {
-      setJoin(await api<JoinToken>("/nodes/join-tokens", { body: { roles, ttl_minutes: 60 } }));
+      setJoin(await api<JoinToken>("/nodes/join-tokens", { body: { roles, ttl_minutes: 60, name: name.trim() } }));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -689,7 +690,17 @@ function AddNode({ onClose }: { onClose: () => void }) {
     <Modal title="노드 추가" onClose={onClose}>
       {!join ? (
         <>
-          <p>추가할 서버가 맡을 역할을 고르세요. 나중에 바꿀 수 있습니다.</p>
+          <p>추가할 서버의 이름과 맡을 역할을 정하세요. 둘 다 나중에 노드 설정에서 바꿀 수 있습니다.</p>
+          <label>
+            이름 <span className="muted small">(선택)</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="비우면 그 서버의 이름(hostname)"
+              maxLength={128}
+            />
+          </label>
+          <div className="field-label">역할</div>
           <RolePicker roles={roles} onChange={setRoles} />
           {error && <div className="error">{error}</div>}
           <div className="modal-actions">
@@ -710,6 +721,15 @@ function AddNode({ onClose }: { onClose: () => void }) {
               자동으로 만들어지니 잠시 뒤 다시 여세요. 설치본이라면 <code>badamoa hub publish-wheel &lt;wheel 파일&gt;</code>로 올리세요.
             </div>
           )}
+          <p className="muted small">
+            {join.name ? (
+              <>
+                이 명령으로 설치한 서버는 <strong>{join.name}</strong>(이)라는 이름으로 붙습니다.
+              </>
+            ) : (
+              "이름은 그 서버의 이름(hostname)으로 정해집니다."
+            )}
+          </p>
           <CopyBlock label="Ubuntu / Linux" text={join.commands.linux} />
           <CopyBlock label="Ubuntu / Linux — sudo 권한이 없을 때 (그 계정에만 설치)" text={join.commands.linux_user} />
           <CopyBlock label="Windows (관리자 PowerShell)" text={join.commands.windows} />

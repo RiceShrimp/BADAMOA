@@ -536,6 +536,7 @@ def delete_node(
 class JoinTokenRequest(BaseModel):
     roles: list[str] | None = None
     ttl_minutes: int = 60
+    name: str = ""  # the server's name once it joins ("": its hostname); it can be changed later in its settings
 
 
 @router.post("/nodes/join-tokens")
@@ -546,14 +547,15 @@ def create_join_token(
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    token, row = services.create_join_token(db, user, body.roles, body.ttl_minutes)
-    services.audit(db, user.id, "ui", "node.join_token", row.id, roles=row.roles)
+    token, row = services.create_join_token(db, user, body.roles, body.ttl_minutes, body.name)
+    services.audit(db, user.id, "ui", "node.join_token", row.id, roles=row.roles, name=row.name)
     db.commit()
     where = address.view(request, hub.settings)
     hub_url = where["url"]
     return {
         "token": token,
         "roles": row.roles,
+        "name": row.name,
         "expires_at": iso(row.expires_at),
         "hub_url": hub_url,
         "address": where,  # where the address came from, and others this machine has

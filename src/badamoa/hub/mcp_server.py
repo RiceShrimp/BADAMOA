@@ -174,20 +174,24 @@ def build_mcp(hub: Hub) -> tuple[MCPServer, ASGIApp]:
 
     @mcp.tool(title="노드 추가 명령 생성", annotations=WRITE)
     @guarded
-    def create_node_join_command(ctx: Context, roles: list[str] | None = None, ttl_minutes: int = 60) -> dict[str, Any]:
+    def create_node_join_command(
+        ctx: Context, roles: list[str] | None = None, ttl_minutes: int = 60, name: str = ""
+    ) -> dict[str, Any]:
         """원격 머신을 노드로 추가하는 1회용 설치 명령(Linux/Windows)을 만듭니다. 관리자 전용.
 
         roles: compute(학습용) | autolabel(오토라벨용) | inference(추론용) | storage(데이터 서버용) 중 선택 (기본: 전부).
         반환된 명령을 원격 머신의 터미널에서 실행하면 노드가 Hub에 등록되고, 재부팅 뒤에도 자동으로 켜집니다.
         commands.linux_user: sudo 권한이 없는 Linux 계정용(그 계정의 홈에 설치, 그 계정의 crontab으로 부팅 시 실행).
+        name: 붙었을 때의 노드 이름 (비우면 그 서버의 hostname). 나중에 화면의 노드 설정에서 바꿀 수 있습니다.
         """
         user = user_of(ctx)
         with hub.db.session() as db:
-            token, row = services.create_join_token(db, user, roles, ttl_minutes)
-            services.audit(db, user.id, "mcp", "node.join_token", row.id, roles=row.roles)
+            token, row = services.create_join_token(db, user, roles, ttl_minutes, name)
+            services.audit(db, user.id, "mcp", "node.join_token", row.id, roles=row.roles, name=row.name)
             hub_url = (hub.settings.public_url or _origin(ctx) or "").rstrip("/")
             return {
                 "roles": row.roles,
+                "name": row.name,
                 "expires_at": row.expires_at.isoformat() + "Z",
                 "commands": join_commands(hub_url, token),
             }
