@@ -45,18 +45,20 @@ Hub는 MOA의 중심입니다. 웹 화면과 기록을 맡고, 학습 · 데이�
 
 | 무엇 | 필요한 것 |
 |---|---|
-| Hub PC | Windows 또는 Ubuntu. [uv](https://docs.astral.sh/uv/)(Python 3.11 이상은 uv가 알아서 받음)와 Node.js(22.12 이상, 또는 20.19 이상) |
+| Hub PC | Windows 또는 Ubuntu. [uv](https://docs.astral.sh/uv/)(Python 3.11 이상은 uv가 알아서 받음). 웹 화면을 빌드할 때만 Node.js(22.12 이상, 또는 20.19 이상) |
 | 학습 · 데이터 서버(노드) | Ubuntu/Linux 또는 Windows. 미리 설치할 것은 없고, [11.2](#112-서버-추가-관리자)의 명령 한 줄이 나머지를 설치합니다. GPU로 학습 · 오토라벨 · 임베딩을 하려면 NVIDIA GPU와 드라이버가 있어야 하고, 없으면 CPU로 돕니다 |
 | 네트워크 | 노드가 Hub 주소(기본 포트 8470)에 닿아야 하고, 노드끼리 이미지를 주고받을 때 TCP 8475를 씁니다. 지금은 HTTP로만 동작하니 사내망 안에서 쓰세요 |
 | 디스크 | 노드는 처음 학습할 때 PyTorch가 든 가상환경(모델 종류마다 수 GB)을 만듭니다. GPU 드라이버에 맞는 빌드를 스스로 고르고, 노드의 환경 변수 `BADAMOA_TORCH_BACKEND`(예: `cpu`, `cu128`)로 정할 수도 있습니다 |
 
 MOA를 받은 폴더에서 차례로 실행합니다.
 
-1. 패키지를 설치하고 웹 화면을 빌드합니다.
+1. 패키지를 설치합니다.
 
    ```bash
    uv sync --all-extras
    ```
+
+   웹 화면은 `src/badamoa/hub/static`에 빌드된 것을 씁니다. 그 폴더가 없을 때(git으로 받은 저장소)나 화면 코드(`web/`)를 고쳤을 때만 Node.js(22.12 이상)로 빌드합니다.
 
    ```bash
    npm --prefix web install
@@ -66,13 +68,33 @@ MOA를 받은 폴더에서 차례로 실행합니다.
    npm --prefix web run build
    ```
 
-2. Hub를 띄웁니다.
+2. Hub를 백그라운드로 띄웁니다. 터미널을 닫아도 계속 돌고, 출력은 `.badamoa/hub.log`에 쌓입니다.
+
+   Ubuntu:
 
    ```bash
-   uv run badamoa hub run --home .badamoa/hub
+   mkdir -p .badamoa && nohup uv run badamoa hub run --home .badamoa/hub > .badamoa/hub.log 2>&1 &
    ```
 
-3. 브라우저가 이 PC의 네트워크 주소(예: `http://192.168.0.10:8470`)로 열리면 관리자 계정을 만듭니다([1.2](#12-첫-실행과-로그인)).
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force .badamoa | Out-Null; Start-Process uv -ArgumentList "run badamoa hub run --home .badamoa/hub" -WindowStyle Hidden -RedirectStandardOutput .badamoa\hub.out.log -RedirectStandardError .badamoa\hub.log
+   ```
+
+   - 끌 때는 데이터 폴더가 `.badamoa/hub`인 Hub만 찾아 끕니다(Ubuntu · Windows).
+
+     ```bash
+     pkill -f "hub run --home .badamoa/hub"
+     ```
+
+     ```powershell
+     Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like "*hub run --home .badamoa/hub*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+     ```
+
+   - 출력을 화면에서 보며 띄우려면(문제를 찾을 때) `uv run badamoa hub run --home .badamoa/hub`로 띄우고 Ctrl+C로 끕니다.
+
+3. 브라우저로 이 PC의 네트워크 주소(예: `http://192.168.0.10:8470`)를 열어 관리자 계정을 만듭니다([1.2](#12-첫-실행과-로그인)).
 
    - 다른 서버는 이 주소로 Hub를 찾아오므로 `localhost` 대신 이 주소로 접속하세요.
 

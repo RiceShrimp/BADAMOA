@@ -37,10 +37,10 @@ def machine_root() -> Path:
 
 
 def component_home(component: str, explicit: str | os.PathLike[str] | None = None) -> Path:
-    if explicit:
-        path = Path(explicit)
+    if explicit:  # absolute, so a relative one (--home .moa/hub) means the same to every process it is handed to
+        path = Path(explicit).expanduser().absolute()
     elif os.environ.get("BADAMOA_HOME"):
-        path = Path(os.environ["BADAMOA_HOME"]) / component
+        path = Path(os.environ["BADAMOA_HOME"]).expanduser().absolute() / component
     elif is_elevated():
         path = machine_root() / component
     else:

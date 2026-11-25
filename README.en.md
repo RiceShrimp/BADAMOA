@@ -56,13 +56,15 @@ The Hub serves the web app, the API and the MCP server, and holds the catalog an
 
 ### Start the Hub
 
-You need [uv](https://docs.astral.sh/uv/) and Node.js. Run these in order from the repository folder.
+You need [uv](https://docs.astral.sh/uv/) (Node.js only to build the web app). Run these in order from the repository folder.
 
-1. Install the packages and build the web app.
+1. Install the packages.
 
    ```bash
    uv sync --all-extras
    ```
+
+   The web app is the build in `src/badamoa/hub/static`. Build it with Node.js (22.12 or later) only when that folder is missing (a git clone) or after changing the app's code (`web/`).
 
    ```bash
    npm --prefix web install
@@ -72,13 +74,33 @@ You need [uv](https://docs.astral.sh/uv/) and Node.js. Run these in order from t
    npm --prefix web run build
    ```
 
-2. Start the Hub.
+2. Start the Hub in the background. It keeps running after the terminal closes, and its output goes to `.badamoa/hub.log`.
+
+   Ubuntu:
 
    ```bash
-   uv run badamoa hub run --home .badamoa/hub
+   mkdir -p .badamoa && nohup uv run badamoa hub run --home .badamoa/hub > .badamoa/hub.log 2>&1 &
    ```
 
-3. When the browser opens at this PC's network address (e.g. `http://192.168.0.10:8470`), create the admin account.
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force .badamoa | Out-Null; Start-Process uv -ArgumentList "run badamoa hub run --home .badamoa/hub" -WindowStyle Hidden -RedirectStandardOutput .badamoa\hub.out.log -RedirectStandardError .badamoa\hub.log
+   ```
+
+   - To stop it, end the Hub whose data folder is `.badamoa/hub` (Ubuntu, Windows):
+
+     ```bash
+     pkill -f "hub run --home .badamoa/hub"
+     ```
+
+     ```powershell
+     Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like "*hub run --home .badamoa/hub*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+     ```
+
+   - To watch its output while you look into a problem, start it in the foreground with `uv run badamoa hub run --home .badamoa/hub` and stop it with Ctrl+C.
+
+3. Open this PC's network address (e.g. `http://192.168.0.10:8470`) in a browser and create the admin account.
 
    - Other servers find the Hub through that address, so use it rather than `localhost`.
    - The "샘플 (COCO8)" project then holds detection, segmentation and keypoint datasets and a 검수 example with labels made wrong on purpose. Delete it if not needed.

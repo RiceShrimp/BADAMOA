@@ -28,7 +28,9 @@ class HubSettings:
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.home = Path(self.home)
+        # absolute: paths under it go to this PC's node, whose jobs run in folders of their own (--home .moa/hub
+        # once handed the samples' import a relative path the node could not find)
+        self.home = Path(self.home).expanduser().absolute()
         self.home.mkdir(parents=True, exist_ok=True)
         if self.database_url is None:
             self.database_url = f"sqlite:///{(self.home / 'hub.db').as_posix()}"

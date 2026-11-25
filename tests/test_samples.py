@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import httpx
 from conftest import ADMIN
 
+from badamoa.core.paths import component_home
 from badamoa.hub import samples, services
+from badamoa.hub.config import HubSettings
 from badamoa.hub.db import Database
 from badamoa.node import agent as node_agent
 
@@ -56,6 +59,23 @@ def test_the_first_admin_finds_samples_and_a_review_example(live_hub, settings, 
         assert counts["duplicate"] == counts["tiny"] == counts["huge"] == counts["unlabelled"] == 0
     finally:
         runner.stop()
+
+
+def test_a_relative_data_folder_hands_the_node_paths_it_can_find(tmp_path, monkeypatch):
+    """`--home .badamoa/hub` from the install folder: the samples' folders handed to this PC's node are absolute, for the
+    node's imports run in folders of their own (a relative path failed with "폴더를 찾을 수 없습니다")."""
+    monkeypatch.chdir(tmp_path)
+    assert component_home("hub", ".badamoa/hub") == tmp_path / ".badamoa" / "hub"
+    settings = HubSettings(home=Path(".badamoa") / "hub", web_dir=tmp_path / "no-web")
+    assert settings.home == tmp_path / ".badamoa" / "hub"
+    database = Database(settings.database_url)
+    database.create_all()
+    with database.session() as db:
+        services.ensure_local_node(db, {"hostname": "hubpc"}, "0.80.0")
+        user = services.create_user(db, "admin", "admin-pass-1", role="admin")
+        paths = [Path(job.params["path"]) for job in samples.seed(db, user, settings)]
+    database.engine.dispose()
+    assert len(paths) == 4 and all(p.is_absolute() and p.is_dir() for p in paths)
 
 
 def test_a_hub_without_its_own_node_starts_without_samples(client):
