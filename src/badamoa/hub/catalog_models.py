@@ -243,7 +243,10 @@ class ItemPrediction(Base):
     """
 
     __tablename__ = "item_predictions"
-    __table_args__ = (Index("ix_item_predictions_wrong", "op_id", "wrong", "item_id"),)
+    __table_args__ = (
+        Index("ix_item_predictions_wrong", "op_id", "wrong", "item_id"),
+        Index("ix_item_predictions_item", "item_id"),  # an image deleted: its rows found at once
+    )
 
     op_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
@@ -303,7 +306,10 @@ class LabelSetItem(Base):
     """An image of a set: its part and place, and how far it got (todo → labelled → approved, or rejected)."""
 
     __tablename__ = "label_set_items"
-    __table_args__ = (Index("ix_label_set_items_part", "set_id", "part", "position"),)
+    __table_args__ = (
+        Index("ix_label_set_items_part", "set_id", "part", "position"),
+        Index("ix_label_set_items_item", "item_id"),
+    )
 
     set_id: Mapped[str] = mapped_column(ForeignKey("label_sets.id", ondelete="CASCADE"), primary_key=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
@@ -332,7 +338,10 @@ class QaResult(Base):
     """An image a label check flagged: which of its labels (indices in the release's revision) and why."""
 
     __tablename__ = "qa_results"
-    __table_args__ = (Index("ix_qa_results_check", "release_id", "check", "item_id"),)
+    __table_args__ = (
+        Index("ix_qa_results_check", "release_id", "check", "item_id"),
+        Index("ix_qa_results_item", "item_id"),
+    )
 
     release_id: Mapped[str] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True)
     check: Mapped[str] = mapped_column(String(24), primary_key=True)
@@ -347,7 +356,10 @@ class QaScore(Base):
     (``qa.LOOSE``). 검수 counts at whatever threshold it asks for from these; ``QaResult`` keeps the defaults."""
 
     __tablename__ = "qa_scores"
-    __table_args__ = (Index("ix_qa_scores_check", "release_id", "check", "score"),)
+    __table_args__ = (
+        Index("ix_qa_scores_check", "release_id", "check", "score"),
+        Index("ix_qa_scores_item", "item_id"),
+    )
 
     release_id: Mapped[str] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True)
     check: Mapped[str] = mapped_column(String(24), primary_key=True)

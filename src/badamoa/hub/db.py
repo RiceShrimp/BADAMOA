@@ -97,6 +97,19 @@ def insert_new(db: Session, model: type, rows: list[dict[str, Any]], unique: lis
     db.execute(insert(model).on_conflict_do_nothing(index_elements=unique), rows)
 
 
+# Indexes added to tables that were there already: (name, table, columns).
+# 0.120.8: the tables that point at an image by item_id only after other columns. Deleting an image (an import
+# stopped, a version thrown away) looks its rows up there one image at a time, which without these read the whole
+# table each time: 150,000 images stopped against 470,000 check scores held the database for over an hour.
+_ADDED_INDEXES = [
+    ("ix_items_project_path", "items", "project_id, rel_path"),
+    ("ix_item_predictions_item", "item_predictions", "item_id"),
+    ("ix_label_set_items_item", "label_set_items", "item_id"),
+    ("ix_qa_results_item", "qa_results", "item_id"),
+    ("ix_qa_scores_item", "qa_scores", "item_id"),
+]
+
+
 def make_engine(url: str) -> Engine:
     is_sqlite = url.startswith("sqlite")
     engine = create_engine(
@@ -194,7 +207,8 @@ class Database:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
                     added.add((table, column))
             # indexes newer versions added to a table that was there already (create_all makes only new tables)
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_items_project_path ON items (project_id, rel_path)"))
+            for name, table, columns in _ADDED_INDEXES:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})"))
             if ("model_versions", "aliases") in added:  # the one alias a version could have had before
                 conn.execute(text("""UPDATE model_versions SET aliases = '["' || alias || '"]' WHERE alias != ''"""))
             if ("datasets", "task") in added:  # 0.34.0: the task moved from the project to each dataset
