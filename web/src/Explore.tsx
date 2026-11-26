@@ -401,7 +401,9 @@ export function NewEmbedding({
   // as 새 학습: what becomes of the copy the server received (or receives) once it is over
   const [dataAfter, setDataAfter] = useState<"keep" | "delete">("keep");
   const copied = copiedTo(server);
-  const short = spaceShort(server, servers?.bytes ?? 0);
+  // every image has its vector: the job makes only the Hub's encoders, and no image is sent
+  const encodersOnly = row?.todo === 0;
+  const short = !encodersOnly && spaceShort(server, servers?.bytes ?? 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const blocked = !row || !startable(row) || !server?.fits || short;
@@ -492,7 +494,11 @@ export function NewEmbedding({
             </PlaceRow>
             {server && (
               <PlaceRow label="이미지">
-                <ImagesNote server={server} holder={servers.holder?.name} items={servers.items} bytes={servers.bytes} />
+                {encodersOnly ? (
+                  <span className="muted small">보내지 않음 · 모든 이미지에 벡터가 있어 Hub의 검색 모델만 만듭니다</span>
+                ) : (
+                  <ImagesNote server={server} holder={servers.holder?.name} items={servers.items} bytes={servers.bytes} />
+                )}
               </PlaceRow>
             )}
             {server?.fits && server.gpu_list.length > 0 && (
@@ -500,7 +506,7 @@ export function NewEmbedding({
                 <GpuChips gpus={server.gpu_list} pick={gpu} onPick={setGpu} doing="만듭니다" />
               </PlaceRow>
             )}
-            {server?.fits && copied && (
+            {server?.fits && copied && !encodersOnly && (
               <PlaceRow label="보낸 데이터">
                 <DataAfterChoice value={dataAfter} onChange={setDataAfter} when="임베딩이 끝나면" />
               </PlaceRow>

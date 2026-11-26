@@ -845,7 +845,9 @@ def start_alone(
         raise ServiceError(400, f"{place['name']}에서는 만들 수 없습니다: {place['why']}")
     node = db.get(Node, node_id)
     picked = transfers.picked_gpus(node, gpu_indices, gpus)
-    after = transfers.sync_job(db, user, release.id, node, via).id if place["transfer"] else None
+    # the images go to the server first only when it makes vectors: one making the Hub's encoders alone needs none
+    needs = coverage(db, release.id)["todo"] > 0
+    after = transfers.sync_job(db, user, release.id, node, via).id if place["transfer"] and needs else None
     keep = transfers.data_after_of(data_after, node.id, listed["holder"]["id"])  # the registered images stay
     job = start(
         db, user, release, node_id=node.id, after=after, gpus=gpus, gpu_indices=picked, data_after=keep, via=via
