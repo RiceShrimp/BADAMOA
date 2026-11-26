@@ -15,7 +15,8 @@
   gap: 8px;
   margin: 0 0 12px;
 }
-.explore-bar input[type="search"] {
+/* form.: outranks the shared input rule (styles.css), whose top margin pushed the box below the buttons */
+form.explore-bar input[type="search"] {
   flex: 1;
   min-width: 220px;
   height: var(--control-h, 34px);
@@ -186,10 +187,15 @@ details.embed-history > summary .badge {
 }
 
 /* 이미지로 찾기: the button, and the search bar as a file is dragged over it */
-.explore-put {
+/* a label (it holds the file input), so it drops the shared label margin and sizes like the buttons beside it */
+.explore-bar .explore-put {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: var(--control-h, 34px);
+  margin: 0;
+  padding-top: 0;
+  padding-bottom: 0;
   white-space: nowrap;
   cursor: pointer;
 }
