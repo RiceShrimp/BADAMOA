@@ -184,3 +184,21 @@ details.embed-history > summary .badge {
   min-width: 3.2em;
   text-align: right;
 }
+
+/* 이미지로 찾기: the button, and the search bar as a file is dragged over it */
+.explore-put {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.explore-put.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.explore-bar.dropping {
+  outline: 2px dashed var(--accent, #3b82f6);
+  outline-offset: 4px;
+  border-radius: 8px;
+}

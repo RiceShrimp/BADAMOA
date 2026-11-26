@@ -65,13 +65,14 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 count += 1
         name = f"{header['dataset']} {header['version']}"
         skipped = f" (이 서버에서 찾을 수 없는 이미지 {missing:,}장은 건너뜀)" if missing else ""
-        if count == 0 and not spec.get("export_text"):
+        encoders = spec.get("export_text") or spec.get("export_vision")  # the Hub's query encoders, still to come
+        if count == 0 and not encoders:
             print(f"{name}에는 벡터를 만들 이미지가 없습니다{skipped}. 이미 모두 만들었거나 이미지가 이 서버에 없습니다.")
             return {"model": model, "embedded": 0, "missing": missing}
         if count:
             print(f"{name}의 이미지 {count:,}장으로 {model} 벡터를 만듭니다{skipped}.", flush=True)
         else:
-            print(f"{name}의 이미지는 모두 벡터가 있어, 글 검색 모델만 만듭니다.", flush=True)
+            print(f"{name}의 이미지는 모두 벡터가 있어, Hub의 검색 모델만 만듭니다.", flush=True)
 
         python, _, _ = trainer.ready_environment(node_home, params.get("environment") or {}, print, client)
         hf = where.find("cache", "huggingface")  # the model's checkpoint, downloaded once
@@ -84,6 +85,7 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
             "out": str(work / "out"),
             "part": PART,
             "export_text": bool(spec.get("export_text")),  # the first job: 글 검색's text encoder too
+            "export_vision": bool(spec.get("export_vision")),  # and 이미지로 찾기's image encoder
         }
         config_path = work / "config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
@@ -141,5 +143,18 @@ def run(params: dict[str, Any]) -> dict[str, Any]:
                 print("글 검색 모델을 Hub에 두었습니다. 이제 이미지 탐색에서 글로 찾을 수 있습니다.", flush=True)
             else:
                 print(f"Hub가 글 검색 모델을 쓰지 못합니다: {said.get('problem') or '확인 실패'}", flush=True)
+        vision = work / "out" / "vision"
+        if (vision / "vision.json").is_file():  # 이미지로 찾기's image encoder
+            said = {}
+            for kind, name in (("onnx", "vision.onnx"), ("checks", "vision.json")):
+                with (vision / name).open("rb") as stream:
+                    resp = client.put(f"{base}/vision", params={"kind": kind}, content=stream, timeout=3600)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"이미지 검색 모델을 Hub에 보내지 못했습니다 ({resp.status_code}): {resp.text[:200]}")
+                said = resp.json()
+            if said.get("ready"):
+                print("이미지 검색 모델을 Hub에 두었습니다. 이제 이미지를 올려 찾을 수 있습니다.", flush=True)
+            else:
+                print(f"Hub가 이미지 검색 모델을 쓰지 못합니다: {said.get('problem') or '확인 실패'}", flush=True)
     print(f"벡터 {stored:,}개를 Hub에 두었습니다.", flush=True)
     return {"model": model, "embedded": stored, "missing": missing}

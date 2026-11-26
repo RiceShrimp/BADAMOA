@@ -8,7 +8,7 @@ import { type Order, OrderReset, SortHandle, SortItem, Sortable, useOrder } from
 import { DataAfterChoice, type GpuChoice, GpuChips, ImagesNote, PlaceGrid, PlaceRow, type PlaceServer, ServerSelect, copiedTo, gpuBody, spaceShort } from "./ServerPlace";
 import { ProjectPicker, useProject } from "./ProjectPicker";
 import { LogTail } from "./Training";
-import { api } from "./api";
+import { api, apiUpload } from "./api";
 import type { ReleaseInfo, TreeDataset } from "./catalogTypes";
 import type { NodeGpu } from "./trainTypes";
 import { ListDownload } from "./ListDownload";
@@ -23,6 +23,7 @@ interface ExploreStatus {
   images: number;
   embedded: number;
   text: { offered: boolean; ready: boolean; problem: string };
+  image?: { offered: boolean; ready: boolean; problem: string }; // 이미지로 찾기: an image put in
 }
 
 /** An image found: how near (cosine) and a version it is in. */
@@ -37,7 +38,14 @@ interface Found {
   release: { id: string; version: string; dataset: string } | null;
 }
 
-type Query = { text: string } | { like: Found };
+/** An image put in to find its like: kept on the Hub by its content (``id``), shown from this browser. */
+interface PutImage {
+  id: string;
+  name: string;
+  preview: string;
+}
+
+type Query = { text: string } | { like: Found } | { image: PutImage };
 
 /** What a search sent back: the nearest images at least ``min_score`` near, and whether more are left. */
 interface SearchResult {
@@ -104,6 +112,7 @@ export interface EmbedJob {
   made: number; // vectors it sent so far
   missing: number | null;
   text: boolean; // it also makes 글 검색's text encoder
+  vision?: boolean; // and 이미지로 찾기's image encoder
   duration_s: number | null;
   created_at: string;
   finished_at: string | null;
@@ -369,7 +378,8 @@ export function NewEmbedding({
   );
   const [releaseId, setReleaseId] = useState(fixedRelease ?? "");
   const textMissing = Boolean(status?.text.offered && !status.text.ready);
-  const startable = (r: VersionRow) => !r.going && (r.todo > 0 || textMissing);
+  const imageMissing = Boolean(status?.image?.offered && !status.image.ready);
+  const startable = (r: VersionRow) => !r.going && (r.todo > 0 || textMissing || imageMissing);
   // Where to begin: the version given, else the one with the most images still to embed.
   useEffect(() => {
     if (!rows || (releaseId && rows.some((r) => r.release.id === releaseId))) return;
@@ -430,6 +440,7 @@ export function NewEmbedding({
           <p className="muted small">
             {status.title} · 이 프로젝트 이미지 {n(status.images)}장 중 {n(status.embedded)}장에 벡터가 있습니다
             {status.text.offered && !status.text.ready ? " · 글 검색에 쓸 텍스트 인코더도 이 작업이 함께 만듭니다" : ""}
+            {imageMissing ? " · 이미지로 찾기에 쓸 이미지 인코더도 이 작업이 함께 만듭니다" : ""}
           </p>
         )}
 
@@ -538,6 +549,7 @@ export function EmbedHistory({ projectId, releaseId, nudge, fold = false }: { pr
                   r.images != null || r.made ? `벡터 ${madeText(r)}` : "",
                   r.missing ? `못 읽은 이미지 ${n(r.missing)}장` : "",
                   r.text ? "글 검색 인코더" : "",
+                  r.vision ? "이미지 검색 인코더" : "",
                   r.node_name ? `${r.node_name} · ${r.gpus ? "GPU" : "CPU"}` : "",
                   r.duration_s != null && r.status !== "queued" ? duration(r.duration_s) : "",
                   VIA_LABEL[r.via] ?? r.via,
@@ -709,6 +721,7 @@ function EmbedJobPage({ jobId }: { jobId: string }) {
             {job.node_name || "–"} · {job.gpus ? `GPU${job.gpu_indices.length ? ` ${job.gpu_indices.join(", ")}` : ""}` : "CPU"}
           </Fact>
           <Fact label="글 검색 인코더">{job.text ? "이 작업이 함께 만듦" : "이미 있음"}</Fact>
+          <Fact label="이미지 검색 인코더">{job.vision ? "이 작업이 함께 만듦" : "이미 있음"}</Fact>
           {job.data_after && <Fact label="보낸 데이터">{job.data_after === "delete" ? "끝나면 지움" : "남겨 둠"}</Fact>}
           <Fact label="시작">
             {job.via === "training" && job.run_id ? <a href={`#/training/${job.run_id}`}>학습과 함께</a> : (VIA_LABEL[job.via] ?? job.via)}
@@ -794,7 +807,7 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
   const [found, setFound] = useState<SearchResult | null>(null);
   const [asked, setAsked] = useState(""); // the search the results on screen came from (목록 받기 asks it again)
   const [minScore, setMinScore] = useState<Record<ScoreKind, number>>(() => ({ text: keptScore("text"), like: keptScore("like") }));
-  const kind: ScoreKind = query && "like" in query ? "like" : "text";
+  const kind: ScoreKind = query && ("like" in query || "image" in query) ? "like" : "text";
   const lowest = minScore[kind];
   const sentLowest = useDebounced(lowest, 300); // asked again once the slider rests
   const setLowest = (value: number) => {
@@ -847,6 +860,7 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
     setError(null);
     const params = new URLSearchParams({ limit: String(sentLowest > 0 ? MANY : FEW) });
     if ("text" in query) params.set("text", query.text);
+    else if ("image" in query) params.set("image", query.image.id);
     else params.set("like", String(query.like.id));
     if (release) params.set("release_id", release);
     if (sentLowest > 0) params.set("min_score", String(sentLowest));
@@ -868,6 +882,43 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
     if (words.trim()) setQuery({ text: words.trim() });
   };
   const textReady = Boolean(status?.text.ready);
+  const imageReady = Boolean(status?.image?.ready);
+  // 이미지로 찾기: an image chosen, dropped on the search bar or pasted goes to the Hub, then is searched like any
+  const [putting, setPutting] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const putImage = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("이미지 파일(jpg · png · webp · bmp 등)을 올려 주세요.");
+      return;
+    }
+    if (!imageReady) {
+      setError(status?.image?.problem || "이미지로 찾기는 임베딩 작업이 한 번 더 돌면 쓸 수 있습니다.");
+      return;
+    }
+    setPutting(true);
+    setError(null);
+    try {
+      const kept = await apiUpload<{ id: string }>(`/projects/${projectId}/explore/query-image`, file, file.type);
+      setViewing(null);
+      setQuery({ image: { id: kept.id, name: file.name || "붙여 넣은 이미지", preview: URL.createObjectURL(file) } });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPutting(false);
+    }
+  };
+  useEffect(() => {
+    const pasted = (e: ClipboardEvent) => {
+      const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+      if (file) {
+        e.preventDefault();
+        void putImage(file);
+      }
+    };
+    window.addEventListener("paste", pasted);
+    return () => window.removeEventListener("paste", pasted);
+  }); // the newest putImage (it reads the newest status)
   const versions = tree.flatMap((d) =>
     d.releases.filter((r) => r.status === "ready" && !r.deleted_at).map((r) => ({ id: r.id, label: `${d.name} ${r.version}` })),
   );
@@ -914,6 +965,15 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
                 ? `글 검색을 쓸 수 없음: ${status.text.problem}`
                 : "글 검색은 첫 임베딩 작업이 끝나면 쓸 수 있습니다"}
           </span>
+          {status.image?.offered && (
+            <span className={`small ${imageReady ? "muted" : "warn-text"}`}>
+              {imageReady
+                ? "이미지로 찾기 준비됨 (올린 이미지를 Hub에서 벡터로 바꿈)"
+                : status.image.problem
+                  ? `이미지로 찾기를 쓸 수 없음: ${status.image.problem}`
+                  : "이미지로 찾기는 임베딩 작업이 한 번 더 돌면 쓸 수 있습니다 (새 임베딩)"}
+            </span>
+          )}
         </div>
       )}
       {status && status.embedded === 0 && (
@@ -935,7 +995,21 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
 
       {status && status.embedded > 0 && (
         <>
-          <form className="explore-bar" onSubmit={submit}>
+          <form
+            className={`explore-bar${dropping ? " dropping" : ""}`}
+            onSubmit={submit}
+            onDragOver={(e) => {
+              if (![...e.dataTransfer.items].some((i) => i.kind === "file")) return;
+              e.preventDefault();
+              setDropping(true);
+            }}
+            onDragLeave={() => setDropping(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDropping(false);
+              void putImage(e.dataTransfer.files[0]);
+            }}
+          >
             <input
               type="search"
               value={words}
@@ -947,6 +1021,28 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
             <button className="primary" disabled={!textReady || !words.trim() || busy}>
               <Icon name="eye" size={14} /> 찾기
             </button>
+            {status?.image?.offered && (
+              <label
+                className={`btn explore-put${imageReady && !putting ? "" : " disabled"}`}
+                title={
+                  imageReady
+                    ? "이미지를 올려 비슷한 이미지를 찾습니다. 찾기 줄에 끌어다 놓거나 Ctrl+V로 붙여 넣어도 됩니다"
+                    : status.image.problem || "이미지로 찾기는 임베딩 작업이 한 번 더 돌면 쓸 수 있습니다 (새 임베딩)"
+                }
+              >
+                <Icon name="upload" size={14} /> {putting ? "올리는 중…" : "이미지로"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  disabled={!imageReady || putting}
+                  onChange={(e) => {
+                    void putImage(e.target.files?.[0]);
+                    e.target.value = ""; // the same file again searches again
+                  }}
+                />
+              </label>
+            )}
             <select value={release} onChange={(e) => setRelease(e.target.value)} aria-label="찾을 버전">
               <option value="">프로젝트의 모든 버전</option>
               {versions.map((v) => (
@@ -976,6 +1072,18 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
               <span className="num">{lowest > 0 ? lowest.toFixed(SCORE_RANGE[kind].digits) : "끔"}</span>
             </label>
           </form>
+          {query && "image" in query && (
+            <div className="explore-anchor">
+              <img src={query.image.preview} alt="" />
+              <span>
+                <strong>올린 이미지와 비슷한 것</strong>
+                <span className="muted small"> · {query.image.name}</span>
+              </span>
+              <button type="button" className="link small" onClick={() => setQuery(words.trim() ? { text: words.trim() } : null)}>
+                지우기
+              </button>
+            </div>
+          )}
           {query && "like" in query && (
             <div className="explore-anchor">
               {(query.like.thumb_url ?? found?.anchor?.thumb_url) && <img src={query.like.thumb_url ?? found?.anchor?.thumb_url ?? ""} alt="" />}
@@ -997,7 +1105,12 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
           )}
           {error && <div className="error">{error}</div>}
           {busy && !found && <p className="muted">찾는 중…</p>}
-          {!query && !busy && <p className="muted">글로 찾거나, 결과에서 &quot;비슷한 이미지&quot;를 눌러 그 이미지와 비슷한 것을 찾습니다.</p>}
+          {!query && !busy && (
+            <p className="muted">
+              글로 찾거나, <strong>이미지로</strong>를 눌러(또는 찾기 줄에 끌어다 놓거나 붙여 넣어) 올린 이미지와 비슷한 것을 찾습니다. 결과의
+              &quot;비슷한 이미지&quot;는 그 이미지와 비슷한 것을 찾습니다.
+            </p>
+          )}
           {found && (
             <>
               <p className="muted small">
@@ -1010,7 +1123,15 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
               {found.items.length > 0 && asked && (
                 <ListDownload
                   path={`/projects/${projectId}/explore/search/list?${asked}`}
-                  name={`이미지탐색-${query && "text" in query ? query.text.slice(0, 30) : query && "like" in query ? query.like.file_name || found.anchor?.file_name || "비슷한것" : ""}`}
+                  name={`이미지탐색-${
+                    query && "text" in query
+                      ? query.text.slice(0, 30)
+                      : query && "image" in query
+                        ? `올린이미지-${query.image.name.replace(/\.[^.]+$/, "")}`
+                        : query && "like" in query
+                          ? query.like.file_name || found.anchor?.file_name || "비슷한것"
+                          : ""
+                  }`}
                 />
               )}
               {found.items.length === 0 && found.min_score > 0 && (

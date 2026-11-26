@@ -131,6 +131,121 @@ def export_text(checkpoint: str, folder: Path) -> None:
     print(f"글 검색 모델을 만들었습니다 ({size:,.0f} MB, {'8비트' if chosen == small else '원래 크기'}).", flush=True)
 
 
+def _samples() -> list[Any]:
+    """A few made-up pictures (no files needed) the Hub turns into vectors too, to check it reads images as here."""
+    pictures = []
+    for n, (width, height) in enumerate(((320, 240), (200, 300), (512, 512))):
+        y, x = np.mgrid[0:height, 0:width]
+        red = (x * (3 + n) + y) % 256
+        green = (y * (2 + n) + 40 * n) % 256
+        blue = ((x // (16 + 8 * n) + y // 24) % 2) * 255
+        pictures.append(Image.fromarray(np.stack([red, green, blue], axis=-1).astype(np.uint8), "RGB"))
+    return pictures
+
+
+def hub_pixels(image: Any, prep: dict[str, Any]) -> Any:
+    """The model's input as the Hub makes it (PIL and numpy, no torch): resized, scaled and normalised."""
+    height, width = prep["size"]
+    resized = image.convert("RGB").resize((width, height), resample=int(prep["resample"]))
+    pixels = np.asarray(resized, dtype=np.float32) * float(prep["rescale"])
+    pixels = (pixels - np.array(prep["mean"], dtype=np.float32)) / np.array(prep["std"], dtype=np.float32)
+    return pixels.transpose(2, 0, 1)[None].astype(np.float32)
+
+
+def export_vision(checkpoint: str, folder: Path) -> None:
+    """The image encoder as ONNX for the Hub (8-bit weights when the vectors stay as good), how the Hub makes its
+    input, and a few pictures with their vectors as made here, which the Hub checks it reproduces: 이미지로 찾기."""
+    import base64
+    import io
+
+    import onnxruntime
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
+    folder.mkdir(parents=True, exist_ok=True)
+    print("이미지로 찾기에 쓸 이미지 인코더를 만듭니다 (처음 한 번).", flush=True)
+    processor = AutoImageProcessor.from_pretrained(checkpoint)
+    model = AutoModel.from_pretrained(checkpoint, dtype=torch.float32).eval()
+    size = getattr(processor, "size", None) or {}
+
+    def side(name: str) -> int:  # a dict, or transformers 5's SizeDict
+        found = size.get(name) if isinstance(size, dict) else getattr(size, name, None)
+        return int(found or 0)
+
+    if not (side("height") and side("width")):
+        raise RuntimeError(f"이 모델의 입력 크기를 알 수 없습니다: {size}")
+    try:
+        resample = int(getattr(processor, "resample", 2))
+    except (TypeError, ValueError):
+        resample = 2  # bilinear
+    prep = {
+        "size": [side("height"), side("width")],
+        "resample": resample,
+        "rescale": float(getattr(processor, "rescale_factor", 1 / 255)),
+        "mean": [float(v) for v in getattr(processor, "image_mean", [0.5, 0.5, 0.5])],
+        "std": [float(v) for v in getattr(processor, "image_std", [0.5, 0.5, 0.5])],
+    }
+
+    class Vision(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = model
+
+        def forward(self, pixel_values: Any) -> Any:
+            return pooled(self.model.get_image_features(pixel_values=pixel_values))
+
+    pictures = _samples()
+    with torch.no_grad():
+        wanted = [
+            torch.nn.functional.normalize(
+                Vision()(processor(images=p, return_tensors="pt")["pixel_values"].float()), dim=-1
+            )[0].numpy()
+            for p in pictures
+        ]
+        full = folder / "vision-full.onnx"
+        args = {
+            "input_names": ["pixel_values"],
+            "output_names": ["embeds"],
+            "dynamic_axes": {"pixel_values": {0: "batch"}, "embeds": {0: "batch"}},
+            "opset_version": 17,
+        }
+        example = (torch.from_numpy(hub_pixels(pictures[0], prep)),)
+        try:
+            torch.onnx.export(Vision(), example, str(full), dynamo=False, **args)
+        except TypeError:  # a torch without the choice
+            torch.onnx.export(Vision(), example, str(full), **args)
+
+    def worst(path: Path) -> float:
+        session = onnxruntime.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        name = session.get_inputs()[0].name
+        made = [session.run(None, {name: hub_pixels(p, prep)})[0][0] for p in pictures]
+        return min(float(np.dot(v / (np.linalg.norm(v) or 1.0), w)) for v, w in zip(made, wanted, strict=True))
+
+    if worst(full) < 0.98:
+        raise RuntimeError(f"Hub 방식으로 읽은 이미지 벡터가 원래와 다릅니다 (코사인 {worst(full):.4f}).")
+    small = folder / "vision-int8.onnx"
+    chosen = full
+    try:
+        quantize_dynamic(str(full), str(small), weight_type=QuantType.QInt8)
+        if worst(small) >= 0.98:
+            chosen = small
+    except Exception as e:  # noqa: BLE001 - the full one is good too, only bigger
+        print(f"8비트로 줄이지 못해 원래 크기로 보냅니다: {type(e).__name__}: {e}", flush=True)
+    chosen.replace(folder / "vision.onnx")
+
+    def png(picture: Any) -> str:
+        buffer = io.BytesIO()
+        picture.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    checks = {
+        **prep,
+        "samples": [{"png": png(p), "vector": [float(x) for x in v]} for p, v in zip(pictures, wanted, strict=True)],
+    }
+    (folder / "vision.json").write_text(json.dumps(checks), encoding="utf-8")
+    size_mb = (folder / "vision.onnx").stat().st_size / 1e6
+    print(f"이미지 인코더를 만들었습니다 ({size_mb:,.0f} MB, {'8비트' if chosen == small else '원래 크기'}).", flush=True)
+
+
 def main() -> None:
     config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     out, size, dim = Path(config["out"]), int(config["part"]), int(config["dim"])
@@ -185,14 +300,20 @@ def main() -> None:
     took = time.monotonic() - started
     note = f" (읽지 못한 이미지 {failed:,}장)" if failed else ""
     print(f"이미지 {done:,}장의 벡터를 {took:,.0f}초에 만들었습니다{note}", flush=True)
-    if config.get("export_text"):  # the first job: the text encoder the Hub reads 글 검색 queries with
+    if config.get("export_text") or config.get("export_vision"):  # the encoders the Hub reads queries with
         del model
         if device == "cuda":
             torch.cuda.empty_cache()
+    if config.get("export_text"):  # the first job: the text encoder the Hub reads 글 검색 queries with
         try:
             export_text(config["checkpoint"], out / "text")
         except Exception as e:  # noqa: BLE001 - the vectors are made; 글 검색 waits for the next job
             print(f"글 검색 모델을 만들지 못했습니다(다음 임베딩 때 다시): {type(e).__name__}: {e}", flush=True)
+    if config.get("export_vision"):  # 이미지로 찾기: the image encoder the Hub reads an image put in with
+        try:
+            export_vision(config["checkpoint"], out / "vision")
+        except Exception as e:  # noqa: BLE001 - the vectors are made; 이미지로 찾기 waits for the next job
+            print(f"이미지 검색 모델을 만들지 못했습니다(다음 임베딩 때 다시): {type(e).__name__}: {e}", flush=True)
 
 
 if __name__ == "__main__":

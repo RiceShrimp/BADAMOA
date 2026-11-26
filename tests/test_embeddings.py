@@ -6,6 +6,8 @@ Uses the ``dummy`` embedder (a few numbers of the pixels, the node's own Python)
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from sample_data import make_yolo
 from test_training import _logs, _wait, hub, release  # noqa: F401 (fixtures)
@@ -132,6 +134,22 @@ def test_explore_finds_the_nearest_images(hub, release):  # noqa: F811
     assert rows[0]["version"] == found["items"][0]["release"]["version"] and rows[0]["split"] and rows[0]["path"]
     paths = hub.get(f"/api/projects/{project}/explore/search/list", params={"like": first, "format": "txt", "limit": 2})
     assert paths.text.splitlines() == [r["path"] for r in rows[:2]]
+
+    # an image put in: kept by its content, found like any image (the same picture as one of the dataset's: it first)
+    assert status["image"] == {"offered": True, "ready": True, "problem": ""}  # the dummy: the Hub makes it itself
+    picture = Path(rows[3]["path"]).read_bytes()
+    put = hub.post(f"/api/projects/{project}/explore/query-image", content=picture)
+    assert put.status_code == 200, put.text
+    image = put.json()["id"]
+    assert put.json()["width"] > 0 and len(image) == 64
+    by_image = hub.get(f"/api/projects/{project}/explore/search", params={"image": image}).json()
+    assert by_image["items"][0]["id"] == int(rows[3]["item_id"]) and by_image["items"][0]["score"] > 0.999
+    assert len(by_image["items"]) == 8 and by_image["anchor"] is None  # nothing left out: it is none of them
+    listed = hub.get(f"/api/projects/{project}/explore/search/list", params={"image": image, "format": "txt"})
+    assert listed.text.splitlines()[0] == rows[3]["path"]
+    assert hub.post(f"/api/projects/{project}/explore/query-image", content=b"not an image").status_code == 400
+    missing = hub.get(f"/api/projects/{project}/explore/search", params={"image": "0" * 64})
+    assert missing.status_code == 404 and "다시 올려" in missing.json()["detail"]
 
 
 def test_vectors_without_a_training_and_as_a_pipeline_step(hub, release, tmp_path):  # noqa: F811

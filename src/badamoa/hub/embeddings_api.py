@@ -90,6 +90,7 @@ def explore_search(
     limit: int = 60,
     model: str = "",
     min_score: float = 0.0,  # only the images at least this near (cosine)
+    image: str = "",  # an image put in (``/explore/query-image``'s id)
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -97,10 +98,25 @@ def explore_search(
     """The project's images (or one version's) nearest to the words or to the image ``like``, the nearest first."""
     found = embeddings.search(
         db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit,
-        model=model, min_score=min_score,
+        model=model, min_score=min_score, image=image,
     )  # fmt: skip
     db.commit()
     return found
+
+
+@router.post("/projects/{project_id}/explore/query-image")
+async def explore_query_image(
+    project_id: str,
+    request: Request,
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> dict[str, Any]:
+    """An image to find the like of (the request's body): kept for a while by its content; its id goes to the search
+    as ``image``."""
+    catalog.get_project(db, project_id)
+    data = await request.body()
+    return await anyio.to_thread.run_sync(embeddings.keep_query_image, hub.settings, data)
 
 
 @router.get("/projects/{project_id}/explore/search/list")
@@ -113,6 +129,7 @@ def explore_search_file(
     limit: int = 60,
     model: str = "",
     min_score: float = 0.0,
+    image: str = "",
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
@@ -121,11 +138,11 @@ def explore_search_file(
     fmt = item_lists.check_format(format)
     found = embeddings.search(
         db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit,
-        model=model, min_score=min_score,
+        model=model, min_score=min_score, image=image,
     )  # fmt: skip
     db.commit()
     path, count = item_lists.write(item_lists.search_rows(db, found["items"]), fmt, item_lists.SEARCH_COLUMNS)
-    asked = text.strip()[:40] if text.strip() else (f"like-{like}" if like else "")
+    asked = text.strip()[:40] if text.strip() else (f"like-{like}" if like else ("image" if image else ""))
     return FileResponse(
         path,
         media_type="text/csv; charset=utf-8" if fmt == "csv" else "text/plain; charset=utf-8",
@@ -228,9 +245,21 @@ async def put_part(
     return stored
 
 
+@agent_router.put("/vision")
+async def put_vision(job_id: str, request: Request, kind: str, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
+    """A file of the model's image encoder (``onnx``, ``checks``), streamed to disk: 이미지로 찾기 on the Hub."""
+    return await _encoder_file(job_id, request, kind, hub, embeddings.vision_file)
+
+
 @agent_router.put("/text")
 async def put_text(job_id: str, request: Request, kind: str, hub: Hub = Depends(get_hub)) -> dict[str, Any]:
     """A file of the model's text encoder (``onnx``, ``tokenizer``, ``checks``), streamed to disk: 글 검색 on the Hub."""
+    return await _encoder_file(job_id, request, kind, hub, embeddings.text_file)
+
+
+async def _encoder_file(job_id: str, request: Request, kind: str, hub: Hub, keep: Any) -> dict[str, Any]:
+    """A file of an encoder the Hub reads queries with, streamed to disk and stored, then handed to ``keep``
+    (``embeddings.text_file`` or ``vision_file``)."""
     token = bearer_token(request)
     incoming = hub.settings.storage_dir / "incoming"
     incoming.mkdir(parents=True, exist_ok=True)
@@ -252,7 +281,7 @@ async def put_text(job_id: str, request: Request, kind: str, hub: Hub = Depends(
             node = services.authenticate_node(db, token)
             if node is None:
                 raise HTTPException(status_code=401, detail="노드 인증 실패")
-            found = embeddings.text_file(db, hub.settings, _storage(hub), node, job_id, kind, blob)
+            found = keep(db, hub.settings, _storage(hub), node, job_id, kind, blob)
             db.commit()
             return found
 

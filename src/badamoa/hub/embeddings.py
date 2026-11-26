@@ -34,6 +34,7 @@ MODELS: dict[str, dict[str, Any]] = {
         "checkpoint": "google/siglip2-base-patch16-256",
         "dim": 768,
         "text": True,  # finds images by words too: its text encoder runs on the Hub (``text_vector_on``)
+        "image": True,  # and by an image put in: its image encoder runs on the Hub (``image_vector_on``)
         "environment": {
             "kind": "auto",
             # torch named itself (transformers does not bring it); ``torch`` picks the build for the node's GPU.
@@ -51,6 +52,7 @@ MODELS: dict[str, dict[str, Any]] = {
         "dim": 8,
         "environment": {"kind": "auto", "requirements": [], "python": "3.12", "torch": False},
         "hidden": True,
+        "image": "dummy",  # an image put in: the Hub makes its few numbers itself (``dummy_vector``)
     },
 }
 DEFAULT_MODEL = "siglip2-base"
@@ -153,7 +155,8 @@ def start(
             raise ServiceError(400, why)
     known = coverage(db, release.id, model)
     text = bool(spec.get("text")) and not text_state(db, model).get("ready")  # 글 검색's encoder still to come
-    if (known["todo"] == 0 and not text) or known["going"]:
+    vision = spec.get("image") is True and not vision_state(db, model).get("ready")  # 이미지로 찾기's, still to come
+    if (known["todo"] == 0 and not text and not vision) or known["going"]:
         return None  # every image has its vector already (and the Hub its text encoder), or a job is on it now
     count = (1 if any((p.info or {}).get("gpus") for p in places) else 0) if gpus is None else max(0, min(gpus, 1))
     job = services.create_job(
@@ -168,6 +171,7 @@ def start(
                 **{k: spec[k] for k in ("script", "checkpoint", "dim")},
                 # the first job also sends the text encoder the Hub reads 글 검색 queries with
                 "export_text": text,
+                "export_vision": vision,  # and the image encoder it reads an image put in with
             },
             "environment": spec["environment"],
             **({"run_id": run_id} if run_id else {}),
@@ -426,6 +430,186 @@ def text_vector_on(settings: HubSettings, model: str, text: str) -> list[float]:
     return [float(v) / norm for v in out]
 
 
+# ---- 이미지로 찾기: the image encoder, on the Hub --------------------------------------------------------------------
+# An embedding job exports the model's image encoder to ONNX too (8-bit when as good), with how the Hub makes its
+# input (size, resampling, scale, mean and std) and a few pictures with their vectors as made there. The Hub checks it
+# reads those pictures the same, and from then on turns an image put in into a vector on its own CPU.
+
+VISION_FILES = ("onnx", "checks")
+QUERY_IMAGES = 200  # images put in kept (by content), the oldest going first
+MAX_QUERY_IMAGE = 30 * 1024 * 1024
+
+
+def _vision_key(model: str) -> str:
+    return f"embedding.vision.{model}"
+
+
+def vision_state(db: Session, model: str = "") -> dict[str, Any]:
+    model = model or DEFAULT_MODEL
+    if MODELS.get(model, {}).get("image") == "dummy":
+        return {"ready": True}  # tests: the Hub makes the vector itself
+    row = db.get(HubSetting, _vision_key(model))
+    return dict(row.value) if row is not None else {}
+
+
+def vision_file(
+    db: Session, settings: HubSettings, storage: Storage, node: Node, job_id: str, kind: str, blob: str
+) -> dict[str, Any]:
+    """A file of the image encoder the job sent (``onnx`` or ``checks``); with both, checked."""
+    job = _job(db, node, job_id)
+    model = (job.params or {}).get("model") or DEFAULT_MODEL
+    if kind not in VISION_FILES:
+        raise ServiceError(400, f"이미지 검색 파일은 {', '.join(VISION_FILES)} 중 하나입니다.")
+    row = db.get(HubSetting, _vision_key(model))
+    state = {k: v for k, v in (dict(row.value) if row is not None else {}).items() if k not in ("ready", "problem")}
+    state[kind] = blob
+    if all(state.get(k) for k in VISION_FILES):
+        problem = _install_vision(settings, storage, model, state)
+        state.update(ready=not problem, problem=problem)
+    if row is None:
+        db.add(HubSetting(key=_vision_key(model), value=state))
+    else:
+        row.value = state  # a new dict: a JSON column changed in place is not saved
+    db.flush()
+    return {"kind": kind, "ready": bool(state.get("ready")), "problem": state.get("problem", "")}
+
+
+def _install_vision(settings: HubSettings, storage: Storage, model: str, state: dict[str, Any]) -> str:
+    """Lay the files out where the Hub loads them from, and check it reads the pictures as the node did ("" when it
+    does)."""
+    import base64  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415
+
+    folder = _text_dir(settings, model)
+    folder.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        _sessions.pop(f"{model}:vision", None)
+        _query_vectors.clear()
+    (folder / "vision.onnx").write_bytes(storage.get_blob(state["onnx"]))
+    (folder / "vision.json").write_bytes(storage.get_blob(state["checks"]))
+    try:
+        checks = json.loads((folder / "vision.json").read_text(encoding="utf-8"))
+        for n, sample in enumerate(checks["samples"], start=1):
+            with Image.open(io.BytesIO(base64.b64decode(sample["png"]))) as picture:
+                mine = _vision_vector(settings, model, picture)
+            same = sum(a * b for a, b in zip(mine, sample["vector"], strict=False))
+            if same < 0.98:
+                return f"확인용 그림 {n}의 벡터가 노드에서 만든 것과 다릅니다 (코사인 {same:.3f})."
+    except Exception as e:  # noqa: BLE001 - say why 이미지로 찾기 is not ready, keep the rest working
+        return f"이미지 검색 모델을 읽지 못했습니다: {type(e).__name__}: {e}"
+    return ""
+
+
+def _vision_loaded(settings: HubSettings, model: str) -> tuple[Any, dict[str, Any]]:
+    with _lock:
+        found = _sessions.get(f"{model}:vision")
+        if found is None:
+            import onnxruntime  # noqa: PLC0415  (only when 이미지로 찾기 is used)
+
+            folder = _text_dir(settings, model)
+            prep = json.loads((folder / "vision.json").read_text(encoding="utf-8"))
+            prep.pop("samples", None)
+            options = onnxruntime.SessionOptions()
+            options.intra_op_num_threads = 4
+            path = str(folder / "vision.onnx")
+            found = (onnxruntime.InferenceSession(path, options, providers=["CPUExecutionProvider"]), prep)
+            _sessions[f"{model}:vision"] = found
+        return found
+
+
+def _vision_vector(settings: HubSettings, model: str, picture: Any) -> list[float]:
+    """A picture's vector with the image encoder the node sent: resized, scaled and normalised as it says."""
+    import numpy as np  # noqa: PLC0415
+
+    session, prep = _vision_loaded(settings, model)
+    height, width = prep["size"]
+    resized = picture.convert("RGB").resize((width, height), resample=int(prep["resample"]))
+    pixels = np.asarray(resized, dtype=np.float32) * float(prep["rescale"])
+    pixels = (pixels - np.array(prep["mean"], dtype=np.float32)) / np.array(prep["std"], dtype=np.float32)
+    batch = pixels.transpose(2, 0, 1)[None].astype(np.float32)
+    out = session.run(None, {session.get_inputs()[0].name: batch})[0][0]
+    norm = float(np.linalg.norm(out)) or 1.0
+    return [float(v) / norm for v in out]
+
+
+def dummy_vector(picture: Any, dim: int) -> list[float]:
+    """The ``dummy`` model's vector (``embedders/dummy.py``): a few numbers of the picture's colours and shape."""
+    width, height = picture.size
+    pixels = list(picture.convert("RGB").resize((2, 1)).getdata())
+    values = [c / 255 for pixel in pixels for c in pixel] + [width / (width + height), height / (width + height)]
+    values = (values + [0.0] * dim)[:dim]
+    norm = sum(v * v for v in values) ** 0.5 or 1.0
+    return [v / norm for v in values]
+
+
+_query_vectors: dict[tuple[str, str], list[float]] = {}  # (model, image put in) → its vector, the last few
+
+
+def _queries_dir(settings: HubSettings) -> Path:
+    return settings.home / "explore" / "queries"
+
+
+def keep_query_image(settings: HubSettings, data: bytes) -> dict[str, Any]:
+    """An image put in to find its like: kept by its content for a while (the screen asks again as its score or
+    version changes, and for 목록 받기), the oldest going first. Returns its id and size."""
+    import hashlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    from PIL import Image, UnidentifiedImageError  # noqa: PLC0415
+
+    if not data:
+        raise ServiceError(400, "이미지가 비어 있습니다.")
+    if len(data) > MAX_QUERY_IMAGE:
+        raise ServiceError(413, f"이미지가 너무 큽니다 ({MAX_QUERY_IMAGE // 1024**2} MB까지).")
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            picture.load()
+            width, height = picture.size
+    except (UnidentifiedImageError, OSError) as e:
+        raise ServiceError(400, "이미지 파일이 아닙니다 (jpg · png · webp · bmp 등).") from e
+    digest = hashlib.sha256(data).hexdigest()
+    folder = _queries_dir(settings)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / digest
+    if path.is_file():
+        path.touch()
+    else:
+        path.write_bytes(data)
+    kept = sorted(folder.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True)
+    for old in kept[QUERY_IMAGES:]:
+        old.unlink(missing_ok=True)
+    return {"id": digest, "width": width, "height": height}
+
+
+def image_vector_on(settings: HubSettings, model: str, image_id: str) -> list[float]:
+    """The vector of an image put in (``keep_query_image``), made on the Hub's CPU."""
+    import io  # noqa: PLC0415
+
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    key = (model, image_id)
+    with _lock:
+        if key in _query_vectors:
+            return _query_vectors[key]
+    path = _queries_dir(settings) / image_id
+    if not (len(image_id) == 64 and all(c in "0123456789abcdef" for c in image_id) and path.is_file()):
+        raise ServiceError(404, "올린 이미지가 Hub에 없습니다. 다시 올려 주세요.")
+    with Image.open(io.BytesIO(path.read_bytes())) as raw:
+        picture = ImageOps.exif_transpose(raw) or raw  # as the person sees it
+        spec = model_of(model)
+        if spec.get("image") == "dummy":
+            vector = dummy_vector(picture, int(spec["dim"]))
+        else:
+            vector = _vision_vector(settings, model, picture)
+    with _lock:
+        if len(_query_vectors) > 50:
+            _query_vectors.clear()
+        _query_vectors[key] = vector
+    return vector
+
+
 # ---- 이미지 탐색: finding a project's images by words or by another image ----------------------------------------
 
 
@@ -439,12 +623,19 @@ def explore_status(db: Session, settings: HubSettings, project_id: str, model: s
     has_vector = exists().where(ImageEmbedding.model == model, ImageEmbedding.sha256 == Item.sha256)
     found = db.scalar(select(func.count()).select_from(Item).where(Item.project_id == project_id, has_vector)) or 0
     text = text_state(db, model)
+    vision = vision_state(db, model)
     return {
         "model": model,
         "title": spec["title"],
         "images": images,
         "embedded": found,
         "text": {"offered": bool(spec.get("text")), "ready": bool(text.get("ready")), "problem": text.get("problem") or ""},
+        # 이미지로 찾기: an image put in, read with the image encoder an embedding job sent
+        "image": {
+            "offered": bool(spec.get("image")),
+            "ready": bool(vision.get("ready")),
+            "problem": vision.get("problem") or "",
+        },
     }
 
 
@@ -460,8 +651,10 @@ def search(
     limit: int = 60,
     model: str = "",
     min_score: float = 0.0,
+    image: str = "",
 ) -> dict[str, Any]:
-    """A project's images (or one version's) nearest to the words ``text`` or to the image ``like`` (an item id),
+    """A project's images (or one version's) nearest to the words ``text``, to the image ``like`` (an item id) or to
+    an image put in (``image``, ``keep_query_image``'s id),
     the nearest first, each with how near (cosine) and a version it is in. ``min_score``: only those at least this
     near; ``more`` says whether more of them are left beyond ``limit``."""
     import numpy as np  # noqa: PLC0415
@@ -481,8 +674,14 @@ def search(
         query = vector_store.vector_of_item(db, settings, model, dim, like)
         if query is None:
             raise ServiceError(404, "이 이미지는 아직 벡터가 없어 비슷한 이미지를 찾을 수 없습니다.")
+    elif image:
+        state = vision_state(db, model)
+        if not state.get("ready"):
+            why = state.get("problem") or "임베딩 작업이 한 번 더 돌면 이미지 검색 모델이 Hub에 들어옵니다."
+            raise ServiceError(409, f"이미지로 찾기를 아직 쓸 수 없습니다. {why}")
+        query = np.array(image_vector_on(settings, model, image), dtype=np.float32)
     else:
-        raise ServiceError(400, "찾을 말(text)이나 이미지(like)를 주세요.")
+        raise ServiceError(400, "찾을 말(text)이나 이미지(like, image)를 주세요.")
     within = (
         list(db.scalars(select(ReleaseItem.item_id).where(ReleaseItem.release_id == release_id))) if release_id else None
     )
@@ -748,6 +947,7 @@ def _job_rows(db: Session, settings: HubSettings, jobs: list[Job]) -> list[dict[
                 "made": int(sent_so_far.get(job.id) or 0),
                 "missing": result.get("missing"),
                 "text": bool((params.get("spec") or {}).get("export_text")),
+                "vision": bool((params.get("spec") or {}).get("export_vision")),
                 "duration_s": view["duration_s"],
                 "created_at": view["created_at"],
                 "finished_at": view["finished_at"],
