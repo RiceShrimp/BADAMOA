@@ -33,3 +33,33 @@ def test_rows_of_an_image_are_found_by_index_also_on_an_older_hub(settings):
     with db.engine.begin() as conn:
         assert "ix_qa_scores_item" in _indexes(conn, "qa_scores")
         assert all(_searched_by_item(conn, table) for table in ITEM_TABLES)
+
+
+def test_many_left_over_files_go_on_a_thread_without_holding_the_database(settings, monkeypatch):
+    """Thumbnails of a big stopped import are deleted after the records are committed, on a thread of their own;
+    one an image holds again stays."""
+    import time
+
+    from badamoa.hub import purge
+    from badamoa.hub.catalog_models import Item, Project
+
+    db = Database(settings.database_url)
+    db.create_all()
+    digests = [f"{n:02x}" * 32 for n in range(1, 5)]
+    paths = [settings.storage_dir / "blobs" / d[:2] / d[2:4] / d for d in digests]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"thumb")
+    monkeypatch.setattr(purge, "FILES_NOW", 1)
+    with db.session() as s:
+        project = Project(name="p")
+        s.add(project)
+        s.flush()
+        s.add(Item(project_id=project.id, sha256="a" * 64, file_name="a.jpg", width=1, height=1, bytes=1, thumb_key=digests[0]))
+        s.flush()
+        purge.remove_unused_soon(settings, s, set(digests))
+        assert not s.in_transaction()  # committed before the files go: nothing waits on the database
+    deadline = time.monotonic() + 10
+    while any(p.exists() for p in paths[1:]) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert [p.exists() for p in paths] == [True, False, False, False]

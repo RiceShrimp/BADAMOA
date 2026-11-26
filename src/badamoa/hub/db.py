@@ -103,6 +103,7 @@ def insert_new(db: Session, model: type, rows: list[dict[str, Any]], unique: lis
 # table each time: 150,000 images stopped against 470,000 check scores held the database for over an hour.
 _ADDED_INDEXES = [
     ("ix_items_project_path", "items", "project_id, rel_path"),
+    ("ix_items_thumb", "items", "thumb_key"),
     ("ix_item_predictions_item", "item_predictions", "item_id"),
     ("ix_label_set_items_item", "label_set_items", "item_id"),
     ("ix_qa_results_item", "qa_results", "item_id"),

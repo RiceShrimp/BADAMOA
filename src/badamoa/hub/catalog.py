@@ -845,6 +845,8 @@ def pause_import(db: Session, user: User, job_id: str, via: str = "api") -> dict
         raise ServiceError(400, "데이터셋 등록이 아닙니다.")
     if job.status not in ACTIVE:
         raise ServiceError(409, "이미 끝난 등록입니다.")
+    if job.cancel_requested:  # 중지 pressed already: what it read is going, or it is pausing
+        raise ServiceError(409, "이미 멈추는 중입니다." if (job.params or {}).get("paused") else "이미 중지하는 중입니다.")
     release = db.scalar(select(Release).where(Release.job_id == job.id))
     if release is not None:
         job.params = {**(job.params or {}), "paused": True}
@@ -1107,6 +1109,10 @@ def imports(db: Session) -> list[dict[str, Any]]:
                 "started_at": iso(job.started_at),
                 "finished_at": iso(job.finished_at),
                 "error": job.error or "",
+                # asked to stop, its server not done yet: "stop" (what it read goes) or "pause" (it stays)
+                "stopping": ("pause" if params.get("paused") else "stop")
+                if job.status in ACTIVE and job.cancel_requested
+                else "",
             }
         )
     return out
@@ -1131,7 +1137,7 @@ def drop_unfinished_imports(db: Session, settings: HubSettings) -> int:
         thumbs |= purge._drop_release(db, release)
     if stale:
         db.flush()
-        purge._remove_unused(settings, db, thumbs)
+        purge.remove_unused_soon(settings, db, thumbs)
     return len(stale)
 
 

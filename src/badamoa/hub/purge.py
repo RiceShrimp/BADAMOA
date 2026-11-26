@@ -17,6 +17,8 @@ Copies of a removed version that other servers received are removed from those s
 
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import timedelta
 from typing import Any
 
@@ -30,6 +32,8 @@ from .db import utcnow
 from .models import Job, User
 from .services import ServiceError
 from .train_models import ModelJob, ModelVersion, Run, RunFile, Tag, Template
+
+log = logging.getLogger(__name__)
 
 CHUNK = 900  # SQLite's limit on bound parameters is 999
 KINDS = ("projects", "releases", "runs", "models", "templates")
@@ -59,21 +63,55 @@ def _project_blobs(db: Session, project_id: str) -> set[str]:
     return blobs
 
 
+FILES_NOW = 2000  # left-over files removed before going on; more go on a thread of their own
+
+
 def _remove_unused(settings: HubSettings, db: Session, candidates: set[str]) -> tuple[int, int]:
-    """Delete the stored files among ``candidates`` that nothing uses any more. Returns (files, bytes)."""
+    """Delete the stored files among ``candidates`` that nothing uses any more. Returns (files, bytes).
+
+    What the caller removed is committed first, so the database is not held while the files go (an import of
+    150,000 images stopped leaves as many thumbnails: minutes of deleting). Each batch is looked up again just
+    before it goes: an import may have taken a thumbnail back meanwhile."""
     if not candidates:
         return 0, 0
-    live = cleanup.live_blobs(db)
+    db.commit()
+    unused = sorted(candidates - cleanup.live_blobs(db))
+    db.commit()  # the reading ends: writers do not wait on it
     removed = freed = 0
-    for digest in candidates - live:
-        path = settings.storage_dir / "blobs" / digest[:2] / digest[2:4] / digest
-        try:
-            size = path.stat().st_size
-            path.unlink()
-        except OSError:
-            continue
-        removed, freed = removed + 1, freed + size
+    for chunk in _chunks(unused):
+        taken = set(db.scalars(select(Item.thumb_key).where(Item.thumb_key.in_(chunk))))
+        db.commit()
+        for digest in chunk:
+            if digest in taken:
+                continue
+            path = settings.storage_dir / "blobs" / digest[:2] / digest[2:4] / digest
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError:
+                continue
+            removed, freed = removed + 1, freed + size
     return removed, freed
+
+
+def remove_unused_soon(settings: HubSettings, db: Session, candidates: set[str]) -> None:
+    """``_remove_unused``, on a thread of its own when there are many: the request or the Hub's sweep that let them
+    go does not wait minutes for the files. Left over if the Hub stops first: its cleanup takes them a day on."""
+    if len(candidates) <= FILES_NOW:
+        _remove_unused(settings, db, candidates)
+        return
+    db.commit()
+    engine = db.get_bind()
+
+    def remove() -> None:
+        try:
+            with Session(engine) as own:
+                files, size = _remove_unused(settings, own, set(candidates))
+            log.info("left-over files removed: %d (%.1f MB)", files, size / 1024**2)
+        except Exception:  # noqa: BLE001  (a thread of its own: say so and leave the rest to the cleanup)
+            log.exception("removing left-over files failed")
+
+    threading.Thread(target=remove, name="remove-unused", daemon=True).start()
 
 
 # ---- removing ---------------------------------------------------------------------------------

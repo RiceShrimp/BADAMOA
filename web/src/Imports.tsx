@@ -25,6 +25,8 @@ export interface ImportInfo {
   started_at: string | null;
   finished_at: string | null;
   error: string;
+  /** Asked to stop, its server not done yet: "stop" (what it read goes) or "pause" (it stays to go on from). */
+  stopping?: "" | "stop" | "pause";
 }
 
 const DISMISSED_KEY = "badamoa.importsSeen";
@@ -173,7 +175,11 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
             ? `일시정지 · ${info.done.toLocaleString()} / ${info.total.toLocaleString()}장 등록함 (${Math.floor(pct)}%) · 이어서 하면 나머지만 읽습니다`
           : info.status === "done"
             ? `완료 · ${info.total.toLocaleString()}장${info.skipped ? ` (읽지 못한 파일 ${info.skipped}개 건너뜀)` : ""}`
-            : runningWords(info, pct);
+            : info.stopping === "pause"
+              ? `일시정지하는 중… · ${info.done.toLocaleString()}장까지 등록한 것은 남깁니다`
+              : info.stopping === "stop"
+                ? "중지하는 중… · 서버가 멈추면 지금까지 읽은 것을 지웁니다"
+                : runningWords(info, pct);
   // Finding images has no end known yet: the bar moves without a %.
   const searching = info.status === "running" && (info.step === "find" || (!info.step && !info.total));
   return (
@@ -183,8 +189,8 @@ export function ImportProgress({ info, compact = false }: { info: ImportInfo; co
       </div>
       <div className="import-progress-line">
         <span className="small">{words}</span>
-        {info.status === "running" && info.step === "read" && <PauseImport info={info} />}
-        {(info.status === "queued" || info.status === "running") && <StopImport info={info} />}
+        {info.status === "running" && info.step === "read" && !info.stopping && <PauseImport info={info} />}
+        {(info.status === "queued" || info.status === "running") && !info.stopping && <StopImport info={info} />}
         {info.status === "paused" && <PausedActions info={info} />}
       </div>
     </div>

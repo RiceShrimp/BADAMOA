@@ -120,3 +120,45 @@ def test_a_resumed_import_on_the_node_skips_the_files_it_holds(tmp_path):
     root = tmp_path / "ds"
     files = [root / "images" / "train" / "a.jpg", root / "images" / "train" / "b.jpg", root / "images" / "val" / "c.jpg"]
     assert [importer._relative(f, root) for f in files if importer._relative(f, root) not in known] == ["images/train/b.jpg"]
+
+
+def test_a_stopped_import_says_so_until_its_server_stops_and_cannot_be_paused_then(client, admin):
+    """중지 pressed: the list says it is stopping (no buttons to press again), 일시정지 is refused, and once its
+    server stops what it read goes."""
+    node_id, node = _node(client, admin)
+    project = client.post("/api/projects", json={"name": "중지"}, headers=admin).json()
+    body = {"node_id": node_id, "path": "/data/stop", "dataset": "stop", "version": "v1"}
+    client.post(f"/api/projects/{project['id']}/imports", json=body, headers=admin)
+    job = _claim(client, node)
+    base = f"/api/agent/jobs/{job}/import"
+    release_id = client.post(base + "/begin", json={"classes": ["car"], "total": 2, "format": "yolo"}, headers=node).json()[
+        "release_id"
+    ]
+    client.post(base + "/items", json={"items": [_item(11)]}, headers=node)
+    listed = {i["job_id"]: i for i in client.get("/api/imports", headers=admin).json()}
+    assert listed[job]["stopping"] == ""
+
+    assert client.post(f"/api/jobs/{job}/cancel", headers=admin).status_code == 200
+    listed = {i["job_id"]: i for i in client.get("/api/imports", headers=admin).json()}
+    assert (listed[job]["status"], listed[job]["stopping"]) == ("running", "stop")
+    refused = client.post(f"/api/imports/{job}/pause", headers=admin)
+    assert refused.status_code == 409 and "중지하는 중" in refused.json()["detail"]
+
+    client.post(f"/api/agent/jobs/{job}/complete", json={"status": "canceled", "result": {}}, headers=node)
+    assert client.get(f"/api/releases/{release_id}", headers=admin).status_code == 404
+    listed = {i["job_id"]: i for i in client.get("/api/imports", headers=admin).json()}
+    assert (listed[job]["status"], listed[job]["stopping"]) == ("canceled", "")
+
+
+def test_a_paused_import_says_so_until_its_server_stops(client, admin):
+    node_id, node = _node(client, admin)
+    project = client.post("/api/projects", json={"name": "멈춤"}, headers=admin).json()
+    body = {"node_id": node_id, "path": "/data/pause", "dataset": "pause", "version": "v1"}
+    client.post(f"/api/projects/{project['id']}/imports", json=body, headers=admin)
+    job = _claim(client, node)
+    base = f"/api/agent/jobs/{job}/import"
+    client.post(base + "/begin", json={"classes": ["car"], "total": 2, "format": "yolo"}, headers=node)
+    client.post(f"/api/imports/{job}/pause", headers=admin)
+    listed = {i["job_id"]: i for i in client.get("/api/imports", headers=admin).json()}
+    assert listed[job]["stopping"] == "pause"
+    assert client.post(f"/api/imports/{job}/pause", headers=admin).status_code == 409

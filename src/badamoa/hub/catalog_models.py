@@ -85,6 +85,7 @@ class Item(Base):
         UniqueConstraint("project_id", "sha256"),
         Index("ix_items_project_name", "project_id", "file_name"),
         Index("ix_items_project_path", "project_id", "rel_path"),  # a later import finds unchanged files by path
+        Index("ix_items_thumb", "thumb_key"),  # a thumbnail about to go: is it someone's again?
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
