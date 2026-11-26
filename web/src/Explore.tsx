@@ -11,6 +11,7 @@ import { LogTail } from "./Training";
 import { api } from "./api";
 import type { ReleaseInfo, TreeDataset } from "./catalogTypes";
 import type { NodeGpu } from "./trainTypes";
+import { ListDownload } from "./ListDownload";
 import { Badge, Icon, Modal, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
 import "./autolabel.css";
 import "./explore.css";
@@ -791,6 +792,7 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
   const [words, setWords] = useState("");
   const [query, setQuery] = useState<Query | null>(null);
   const [found, setFound] = useState<SearchResult | null>(null);
+  const [asked, setAsked] = useState(""); // the search the results on screen came from (목록 받기 asks it again)
   const [minScore, setMinScore] = useState<Record<ScoreKind, number>>(() => ({ text: keptScore("text"), like: keptScore("like") }));
   const kind: ScoreKind = query && "like" in query ? "like" : "text";
   const lowest = minScore[kind];
@@ -849,7 +851,11 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
     if (release) params.set("release_id", release);
     if (sentLowest > 0) params.set("min_score", String(sentLowest));
     api<SearchResult>(`/projects/${projectId}/explore/search?${params}`)
-      .then((got) => live && setFound(got))
+      .then((got) => {
+        if (!live) return;
+        setFound(got);
+        setAsked(params.toString());
+      })
       .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => live && setBusy(false));
     return () => {
@@ -1001,6 +1007,12 @@ function ExploreProject({ projectId, like = 0 }: { projectId: string; like?: num
                 {busy ? " · 다시 찾는 중…" : ""}
                 {kind === "text" && !found.min_score ? " · 글 검색의 점수는 0.1~0.2만 되어도 잘 맞는 편입니다" : ""}
               </p>
+              {found.items.length > 0 && asked && (
+                <ListDownload
+                  path={`/projects/${projectId}/explore/search/list?${asked}`}
+                  name={`이미지탐색-${query && "text" in query ? query.text.slice(0, 30) : query && "like" in query ? query.like.file_name || found.anchor?.file_name || "비슷한것" : ""}`}
+                />
+              )}
               {found.items.length === 0 && found.min_score > 0 && (
                 <p className="muted">이 점수 이상인 이미지가 없습니다. 점수를 낮춰 보세요.</p>
               )}

@@ -289,3 +289,27 @@ export interface ApiTokenInfo {
   created_at: string;
   last_used_at: string | null;
 }
+
+/** Fetch a file the Hub makes (signed in) and hand it to the browser to save as ``name``. */
+export async function downloadFile(path: string, name: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const resp = await fetch(`/api${path}`, { headers });
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try {
+      const data = await resp.json();
+      if (typeof data.detail === "string") detail = data.detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(resp.status, detail);
+  }
+  const url = URL.createObjectURL(await resp.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

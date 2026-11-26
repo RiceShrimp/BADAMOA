@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from badamoa.core.protocol import ImportBegin, ImportChunk, ImportProgress, ImportSame
 
-from . import catalog, checks, dataset_move, drafts, originals, overview, purge, qa, review, services
+from . import catalog, checks, dataset_move, drafts, item_lists, originals, overview, purge, qa, review, services
 from . import trash as trash_box
-from .catalog_models import Item
+from .catalog_models import Dataset, Item
 from .deps import Hub, admin_user, current_node, current_user, db_session, get_hub
 from .models import Node, User
 
@@ -372,9 +374,7 @@ def get_release(release_id: str, _: User = Depends(current_user), db: Session = 
     return catalog.release_view(db, release_id)
 
 
-@router.get("/releases/{release_id}/items")
-def list_items(
-    release_id: str,
+def item_filters(
     split: str | None = None,
     state: str = "",
     class_id: list[str] = Query(default=[]),  # one or several: class_id=3,5 or class_id=3&class_id=5
@@ -389,9 +389,6 @@ def list_items(
     mistake: str = "",
     changed: str = "",
     let_be: bool = False,
-    offset: int = 0,
-    limit: int = 60,
-    pred: str = "",
     classes: str = "",  # 검수: class ids, comma separated (the findings of these classes)
     conf: float | None = None,  # 검수: a model check's thresholds (FiftyOne's when left out)
     min_area: float | None = None,
@@ -400,37 +397,66 @@ def list_items(
     rules: str = "",  # 검수: the box checks' thresholds, e.g. duplicate:0.9,tiny:5 (the defaults when left out)
     picks: str = "",  # 검수: several checks at once, e.g. rule:duplicate,model:extra (with suspect for a model's)
     ids: str = "",  # only these images, in this order (comma separated): 이미지 탐색's results
+) -> dict[str, Any]:
+    """The conditions a version's list of images is asked with: the version screen's filters and 검수's checks."""
+    return {
+        "split": split,
+        "state": state,
+        "class_id": catalog.class_ids(class_id),
+        "site": site,
+        "camera": camera,
+        "q": q,
+        "edited": edited,
+        "suspect": suspect,
+        "label_set": label_set,
+        "part": part,
+        "check": check,
+        "mistake": mistake,
+        "changed": changed,
+        "let_be": let_be,
+        "classes": [int(c) for c in classes.split(",") if c.strip().lstrip("-").isdigit()],
+        "counting": checks.rule(conf, min_area, reclass_conf, missed_iou),
+        "at": qa.limits(rules),
+        "picks": [p for p in picks.split(",") if p.strip()],
+        "ids": [int(i) for i in ids.split(",") if i.strip().isdigit()],
+    }
+
+
+@router.get("/releases/{release_id}/items")
+def list_items(
+    release_id: str,
+    offset: int = 0,
+    limit: int = 60,
+    pred: str = "",
+    filters: dict[str, Any] = Depends(item_filters),
     _: User = Depends(current_user),
     db: Session = Depends(db_session),
     hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
-    picked = [int(c) for c in classes.split(",") if c.strip().lstrip("-").isdigit()]
-    return catalog.list_items(
-        db,
-        hub.settings,
-        release_id,
-        split=split,
-        state=state,
-        class_id=catalog.class_ids(class_id),
-        site=site,
-        camera=camera,
-        q=q,
-        edited=edited,
-        suspect=suspect,
-        label_set=label_set,
-        part=part,
-        check=check,
-        mistake=mistake,
-        changed=changed,
-        let_be=let_be,
-        offset=offset,
-        limit=limit,
-        classes=picked,
-        counting=checks.rule(conf, min_area, reclass_conf, missed_iou),
-        at=qa.limits(rules),
-        picks=[p for p in picks.split(",") if p.strip()],
-        pred=pred,
-        ids=[int(i) for i in ids.split(",") if i.strip().isdigit()],
+    return catalog.list_items(db, hub.settings, release_id, **filters, offset=offset, limit=limit, pred=pred)
+
+
+@router.get("/releases/{release_id}/items/list")
+def item_list_file(
+    release_id: str,
+    format: str = "csv",  # noqa: A002  (the query's name)
+    filters: dict[str, Any] = Depends(item_filters),
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> FileResponse:
+    """Every image the version screen or 검수 lists under these conditions, as a file: csv (a row per image) or txt
+    (the paths on their server). The header ``X-Images`` says how many."""
+    fmt = item_lists.check_format(format)
+    release = catalog.get_release(db, release_id)
+    dataset = db.get(Dataset, release.dataset_id)
+    path, count = item_lists.write(item_lists.release_rows(db, hub.settings, release_id, filters), fmt, item_lists.COLUMNS)
+    return FileResponse(
+        path,
+        media_type="text/csv; charset=utf-8" if fmt == "csv" else "text/plain; charset=utf-8",
+        filename=item_lists.file_name(dataset.name if dataset else "", release.version, fmt=fmt),
+        headers={"X-Images": str(count)},
+        background=BackgroundTask(os.unlink, path),
     )
 
 

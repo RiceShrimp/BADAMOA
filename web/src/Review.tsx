@@ -28,6 +28,7 @@ import {
 } from "./catalogTypes";
 import { LogTail } from "./Training";
 import { METRIC_LABEL, metric } from "./trainTypes";
+import { ListDownload } from "./ListDownload";
 import { Badge, Icon, Modal, STATUS_LABEL, Stat, duration, timeAgo, usePolling } from "./ui";
 
 /** One label check (rules on the labels) as the Hub counts it. */
@@ -872,6 +873,12 @@ function ReviewRelease({ releaseId }: { releaseId: string }) {
               <button className="link small" onClick={() => setShowLetBe(!showLetBe)}>
                 {showLetBe ? "걸린 것 보기" : `문제 없음으로 둔 것 ${letBeCount.toLocaleString()}장`}
               </button>
+            )}
+            {total > 0 && (
+              <ListDownload
+                path={`/releases/${release.id}/items/list?${query}`}
+                name={`${release.dataset.name}-${release.status === "draft" ? "작업중" : release.version}-검수-${title}${showLetBe ? "-문제없음" : ""}`}
+              />
             )}
             {release.fixable && total > 0 && !showLetBe && (
               <button onClick={() => setMaking(true)} title="찾은 이미지를 일감으로 나눠 사람에게 맡깁니다">

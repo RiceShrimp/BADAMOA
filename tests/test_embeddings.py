@@ -120,6 +120,18 @@ def test_explore_finds_the_nearest_images(hub, release):  # noqa: F811
     assert page["total"] == 3 and [i["id"] for i in page["items"]] == [order[1]]
     every = hub.get(url, params={"ids": ",".join(map(str, order))}).json()["items"]
     assert [i["id"] for i in every] == order
+    # the results as a file: the nearest first, with their scores and where each image is
+    listed = hub.get(f"/api/projects/{project}/explore/search/list", params={"like": first, "format": "csv"})
+    assert listed.status_code == 200 and listed.headers["x-images"] == "7"
+    import csv
+    import io
+
+    rows = list(csv.DictReader(io.StringIO(listed.content.decode("utf-8-sig"))))
+    assert [int(r["item_id"]) for r in rows] == [i["id"] for i in found["items"]]
+    assert [r["rank"] for r in rows] == [str(n) for n in range(1, 8)] and float(rows[0]["score"]) == scores[0]
+    assert rows[0]["version"] == found["items"][0]["release"]["version"] and rows[0]["split"] and rows[0]["path"]
+    paths = hub.get(f"/api/projects/{project}/explore/search/list", params={"like": first, "format": "txt", "limit": 2})
+    assert paths.text.splitlines() == [r["path"] for r in rows[:2]]
 
 
 def test_vectors_without_a_training_and_as_a_pipeline_step(hub, release, tmp_path):  # noqa: F811

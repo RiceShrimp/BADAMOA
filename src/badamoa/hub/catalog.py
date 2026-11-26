@@ -1405,8 +1405,11 @@ def list_items(
     at: dict[str, float] | None = None,
     picks: list[str] | None = None,
     ids: list[int] | None = None,
+    page: bool = True,
 ) -> dict[str, Any]:
     """A page of a release's items. ``ids``: only these, in this order (이미지 탐색's results, opened one by one).
+    ``page=False``: the whole list instead, as ``{"query": …}`` (a select of ``ReleaseItem, Item`` in the list's
+    order), for a list file (``item_lists``).
     ``picks`` (검수, several checks at once): ``rule:<check>`` and ``model:<mistake>``
     (with ``suspect``): the images any of them found, the ones most of them found first; each image says what each
     found on it (``qa_by``, as ``qa`` for one). ``counting``: the thresholds a model check's findings are taken at
@@ -1488,6 +1491,8 @@ def list_items(
         if part is not None:
             query = query.where(LabelSetItem.part == part)
         order = [LabelSetItem.position]
+    if not page:
+        return {"query": query.order_by(*order)}
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = db.execute(query.order_by(*order).offset(max(0, offset)).limit(limit)).all()
     # an evaluation's findings on each image, at the thresholds asked for, against this version's labels

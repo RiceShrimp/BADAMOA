@@ -15,6 +15,7 @@ import { MoveDatasetDialog } from "./DatasetMove";
 import { EmbedHistory, NewEmbedding } from "./Explore";
 import { FolderBrowser, LAYOUT_NAME } from "./FolderBrowser";
 import { ImportProgress, announceImport, useImports } from "./Imports";
+import { ListDownload } from "./ListDownload";
 import { ChangeSummary, DraftActions, DraftLine, DraftNotice } from "./DraftBar";
 import { CHANGE_LABEL } from "./labelDiff";
 import { ItemViewer } from "./ItemViewer";
@@ -487,6 +488,11 @@ function ReleaseView({
           </select>
         )}
         <span className="muted count">{(items?.total ?? 0).toLocaleString()}개</span>
+        <ListDownload
+          path={`/releases/${releaseId}/items/list?${filterQuery}`}
+          name={`${release.dataset.name}-${title}${filterQuery ? "-거른것" : ""}`}
+          disabled={!items?.total}
+        />
         <span className="spacer" />
         {/* how the images are shown: one group, so it moves to a line of its own as a whole when the row is full */}
         <div className="view-controls">

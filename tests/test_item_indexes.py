@@ -55,7 +55,9 @@ def test_many_left_over_files_go_on_a_thread_without_holding_the_database(settin
         project = Project(name="p")
         s.add(project)
         s.flush()
-        s.add(Item(project_id=project.id, sha256="a" * 64, file_name="a.jpg", width=1, height=1, bytes=1, thumb_key=digests[0]))
+        held = Item(project_id=project.id, sha256="a" * 64, file_name="a.jpg", width=1, height=1, bytes=1)
+        held.thumb_key = digests[0]
+        s.add(held)
         s.flush()
         purge.remove_unused_soon(settings, s, set(digests))
         assert not s.in_transaction()  # committed before the files go: nothing waits on the database

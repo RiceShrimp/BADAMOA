@@ -10,10 +10,12 @@ from typing import Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
-from . import catalog, embeddings, services, vector_store
+from . import catalog, embeddings, item_lists, services, vector_store
 from .deps import Hub, admin_user, bearer_token, current_node, current_user, db_session, get_hub
 from .models import Node, User
 from .services import ServiceError
@@ -99,6 +101,38 @@ def explore_search(
     )  # fmt: skip
     db.commit()
     return found
+
+
+@router.get("/projects/{project_id}/explore/search/list")
+def explore_search_file(
+    project_id: str,
+    format: str = "csv",  # noqa: A002  (the query's name)
+    text: str = "",
+    like: int = 0,
+    release_id: str = "",
+    limit: int = 60,
+    model: str = "",
+    min_score: float = 0.0,
+    _: User = Depends(current_user),
+    db: Session = Depends(db_session),
+    hub: Hub = Depends(get_hub),
+) -> FileResponse:
+    """The same search as a file: csv (a row per image, the nearest first, with its score) or txt (the paths)."""
+    fmt = item_lists.check_format(format)
+    found = embeddings.search(
+        db, hub.settings, _storage(hub), project_id, text=text, like=like, release_id=release_id, limit=limit,
+        model=model, min_score=min_score,
+    )  # fmt: skip
+    db.commit()
+    path, count = item_lists.write(item_lists.search_rows(db, found["items"]), fmt, item_lists.SEARCH_COLUMNS)
+    asked = text.strip()[:40] if text.strip() else (f"like-{like}" if like else "")
+    return FileResponse(
+        path,
+        media_type="text/csv; charset=utf-8" if fmt == "csv" else "text/plain; charset=utf-8",
+        filename=item_lists.file_name("search", asked, fmt=fmt),
+        headers={"X-Images": str(count)},
+        background=BackgroundTask(os.unlink, path),
+    )
 
 
 @router.get("/vector-store")

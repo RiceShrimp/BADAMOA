@@ -453,3 +453,44 @@ def test_box_checks_count_at_the_thresholds_asked_for(hub, tmp_path):  # noqa: F
     assert listed("duplicate:0.99")["total"] == 0
     loose = listed("duplicate:0.9")
     assert loose["total"] == 1 and loose["items"][0]["qa"]["boxes"] == [0, 1] and "겹침" in loose["items"][0]["qa"]["note"]
+
+
+def test_the_list_on_screen_downloads_as_csv_or_txt(hub, tmp_path):  # noqa: F811
+    """What the version screen or 검수 lists under its conditions, every image of it, as a file."""
+    import csv
+    import io
+
+    root = make_yolo(tmp_path / "ds")
+    for name, text in LABELS.items():
+        (root / "labels" / name.split("_")[0] / f"{name}.txt").write_text(text, encoding="utf-8")
+    project = hub.post("/api/projects", json={"name": "목록"}).json()
+    v1 = _import(hub, project["id"], root, "v1")
+
+    def rows(**params):
+        got = hub.get(f"/api/releases/{v1}/items/list", params={"format": "csv", **params})
+        assert got.status_code == 200, got.text
+        assert got.headers["content-type"].startswith("text/csv") and "attachment" in got.headers["content-disposition"]
+        text = got.content.decode("utf-8-sig")  # a BOM: Excel reads the Korean
+        listed = list(csv.DictReader(io.StringIO(text)))
+        assert int(got.headers["x-images"]) == len(listed)
+        return listed
+
+    every = rows()
+    assert len(every) == 8 and every[0]["dataset"] and every[0]["version"] == "v1"
+    first = next(r for r in every if r["file_name"] == "train_0000.jpg")
+    assert first["split"] == "train" and first["state"] == "labelled" and first["boxes"] == "2"
+    assert first["classes"] == "person 2" and first["width"] == "320" and first["server"]
+    assert first["path"].replace("\\", "/").endswith("ds/images/train/train_0000.jpg")
+    # the version screen's filters
+    assert {r["split"] for r in rows(split="val")} == {"val"} and len(rows(split="val")) == 2
+    assert [r["file_name"] for r in rows(q="train_000", state="background")] == ["train_0001.jpg", "train_0002.jpg"]
+    # 검수: one check, and several at once (the images any of them found)
+    assert [r["file_name"] for r in rows(check="duplicate")] == ["train_0000.jpg"]
+    assert sorted(r["file_name"] for r in rows(picks="rule:duplicate,rule:tiny")) == ["train_0000.jpg", "train_0004.jpg"]
+    # txt: the paths only, one a line
+    txt = hub.get(f"/api/releases/{v1}/items/list", params={"format": "txt", "check": "duplicate"})
+    assert txt.text.splitlines() == [first["path"]]
+    assert hub.get(f"/api/releases/{v1}/items/list", params={"format": "xlsx"}).status_code == 400
+    # the page the screen shows comes out as before
+    page = hub.get(f"/api/releases/{v1}/items", params={"split": "val", "limit": 1}).json()
+    assert page["total"] == 2 and len(page["items"]) == 1
